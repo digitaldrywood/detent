@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -16,10 +18,7 @@ func TestLocalAppAuthentication(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
 	f := newNativeFixture(t, nil, "", "Example project")
 	second := newNativeFixture(t, f.service, f.project.OrganizationID, "Second project")
-	worker := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "example-worker", "scope": "worker"})
-	requireNativeStatus(t, worker, http.StatusCreated)
-	var workerToken tokenResponse
-	decodeHubResponse(t, worker, &workerToken)
+	workerToken := tokenResponse{Token: f.worker(t, "example-worker")}
 	for _, test := range []struct {
 		name, method, path, token, origin, site string
 		bearer                                  bool
@@ -107,10 +106,10 @@ func TestLocalAppAuthentication(t *testing.T) {
 		})
 	}
 	t.Run("independent local preferences", func(t *testing.T) {
-		response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "second administrator", "scope": "admin"})
-		requireNativeStatus(t, response, http.StatusCreated)
-		var other tokenResponse
-		decodeHubResponse(t, response, &other)
+		other, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "second administrator", Scope: apiScopeAdmin})
+		if err != nil {
+			t.Fatal(err)
+		}
 		base := "/api/v2/organizations/" + string(f.project.OrganizationID)
 		request := func(token, method, path, body string) *httptest.ResponseRecorder {
 			t.Helper()
@@ -121,6 +120,20 @@ func TestLocalAppAuthentication(t *testing.T) {
 			f.service.Handler().ServeHTTP(rec, req)
 			requireNativeStatus(t, rec, http.StatusOK)
 			return rec
+		}
+		f.service.releaseNotes = testReleaseBuilds()
+		f.service.config.Version = "1.2.1"
+		for _, token := range []string{testHubAdminToken, other.Token} {
+			var notes releaseNotesPage
+			decodeHubResponse(t, request(token, http.MethodGet, base+"/release-notes?limit=1", ""), &notes)
+			if notes.HasUnread || len(notes.Builds) != 1 || notes.Builds[0].Unread || notes.NextCursor == "" {
+				t.Fatalf("new local release baseline=%+v", notes)
+			}
+			var older releaseNotesPage
+			decodeHubResponse(t, request(token, http.MethodGet, base+"/release-notes?limit=2&cursor="+notes.NextCursor, ""), &older)
+			if older.HasUnread || len(older.Builds) != 2 || older.Builds[0].Version != "v1.2.0-op.r.1.g123456789abc" || older.NextCursor != "" {
+				t.Fatalf("local release pagination=%+v", older)
+			}
 		}
 		for _, token := range []string{testHubAdminToken, other.Token} {
 			request(token, http.MethodPut, base+"/work-view-preference", `{"query":"view=list"}`)
@@ -164,6 +177,12 @@ func TestLocalAppAuthentication(t *testing.T) {
 				t.Fatalf("release notes=%+v", notes)
 			}
 		}
+		f.service.config.Version = "1.2.0"
+		var rollback releaseNotesPage
+		decodeHubResponse(t, request(testHubAdminToken, http.MethodPut, base+"/release-notes/seen", `{}`), &rollback)
+		if rollback.HasUnread || rollback.Builds[0].Unread || len(rollback.Builds) != 3 {
+			t.Fatalf("local rollback moved preference backward=%+v", rollback)
+		}
 		var rank organizationProjectRank
 		decodeHubResponse(t, request(testHubAdminToken, http.MethodGet, base+"/project-rank", ""), &rank)
 		ids := []tracker.ProjectID{created.ID, second.project.ID, f.project.ID}
@@ -198,6 +217,30 @@ func TestLocalAppAuthentication(t *testing.T) {
 		}
 		if len(owners) != 2 {
 			t.Fatalf("preferences share an owner: %v", owners)
+		}
+		for _, identity := range []struct{ id, token string }{{bootstrapTokenID, testHubAdminToken}, {other.ID, other.Token}} {
+			var before, after accessstore.Member
+			if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(r tenantstore.Reader) error {
+				var err error
+				before, err = r.AccessMember(t.Context(), "local_"+identity.id)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if before.PrincipalID != identity.id || before.MembershipID != "local_"+identity.id || before.Role != "admin" || !before.Active || !before.NotifyIssues || before.OrganizationID != f.project.OrganizationID {
+				t.Fatalf("local administrator membership = %+v", before)
+			}
+			request(identity.token, http.MethodPut, base+"/work-view-preference", `{"query":"view=list"}`)
+			if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(r tenantstore.Reader) error {
+				var err error
+				after, err = r.AccessMember(t.Context(), "local_"+identity.id)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if after != before {
+				t.Fatalf("repeated local write changed membership: before=%+v after=%+v", before, after)
+			}
 		}
 	})
 

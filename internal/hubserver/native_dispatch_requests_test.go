@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -34,15 +34,22 @@ import (
 // and move the item the ways a person or the orchestrator would.
 type dispatchGuardFixture struct {
 	*conversationWorkerFixture
-	worktreeState  string
-	completionBody string
-	checkpoint     *tracker.NativeCheckpoint
+	worktreeState      string
+	completionBody     string
+	checkpoint         *tracker.NativeCheckpoint
+	authority          apiCredential
+	acceptanceRecorded bool
 }
 
 func newDispatchGuardFixture(t *testing.T) dispatchGuardFixture {
 	t.Helper()
 	f := dispatchGuardFixture{conversationWorkerFixture: newConversationWorkerFixture(t), worktreeState: "clean"}
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("fixture authority status%d: %v", status, err)
+	}
+	f.authority = credential
 	return f
 }
 
@@ -50,7 +57,7 @@ func (f dispatchGuardFixture) scope() nativeScope {
 	return nativeScope{
 		organization: f.project.OrganizationID,
 		project:      f.project.ID,
-		credential:   apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin},
+		credential:   f.authority,
 	}
 }
 
@@ -59,23 +66,40 @@ func (f dispatchGuardFixture) candidate(t *testing.T) bool {
 	t.Helper()
 	scope := f.scope()
 	ctx := f.service.runDetailContext(t.Context())
-	if _, err := readNativeAttemptRecord(ctx, f.service.database.reader, scope, string(f.issue.WorkItemID), f.attempt, f.service.config.now()); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		t.Fatal(err)
+	request := tracker.NativeClaim{WorkItemID: f.issue.WorkItemID, PolicyID: f.policy, MachineID: f.runner.binding.MachineID, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	now := f.service.config.now()
+	var plan nativeClaimPlan
+	err := f.service.config.TenantRepository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.service.authorizeAccessScope(ctx, r, scope, true); err != nil {
+			return err
+		}
+		query := nativeTenantCandidateQuery(scope, request, f.issue.WorkItemID, now)
+		query.IncludeLeasedAnchor = true
+		page, err := r.CandidatePage(ctx, query)
+		if err != nil {
+			return err
+		}
+		if len(page.Items) == 0 {
+			return ErrNoClaimableWork
+		}
+		plan, err = f.service.readNativeClaimPlanRows(ctx, scope, request, now, r, &page.Items[0], nativeClaimPlan{})
+		return err
+	})
+	if err == nil {
+		if err = f.service.prepareNativeClaimLegacyAuditFacts(ctx, scope, []nativeClaimPlan{plan}); err == nil {
+			plans := []nativeClaimPlan{plan}
+			if err = f.service.prepareNativeClaimApprovals(ctx, scope, plans); err == nil {
+				_, err = f.service.hydrateNativeClaimPlan(ctx, scope, request, now, plans[0], nil)
+			}
+		}
 	}
-	tx, err := f.service.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if errors.Is(err, ErrNoClaimableWork) {
+		return false
+	}
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("current typed claim candidate: %v", err)
 	}
-	defer tx.Rollback()
-	ids, err := claimCandidateIDs(ctx, tx, claimCandidateQuery{NativeScope: &scope, Scope: string(f.project.ID)}, nil, nil, nil, nil, nil, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("claimCandidateIDs() error = %v", err)
-	}
-	var id tracker.WorkItemID
-	if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", f.project.OrganizationID, f.project.ID, f.issue.WorkItemID).Scan(&id); err != nil {
-		t.Fatalf("read issue row id: %v", err)
-	}
-	return slices.Contains(ids, id)
+	return true
 }
 
 // succeed finishes the running attempt and releases its lease, which is
@@ -110,6 +134,10 @@ func (f dispatchGuardFixture) finish(t *testing.T, disposition ...*tracker.Nativ
 		checkpoint.Data.Handoff = f.checkpoint
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, checkpoint), http.StatusOK)
+	if f.acceptanceRecorded {
+		event.Data.Runtime = &tracker.NativeRuntimeObservation{Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: true}}
+	}
+
 	event.Data.Sequence++
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 }
@@ -133,6 +161,123 @@ func (f dispatchGuardFixture) continueConversation(t *testing.T, key string) {
 		t.Fatal(err)
 	}
 
+}
+
+func configureDispatchGuardState(t *testing.T, f dispatchGuardFixture, state tracker.NativeState) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		if state.Terminal {
+			state.Dispatchable = false
+		}
+		for _, target := range []tracker.NativeState{{Name: "Blocked", Transitions: []string{"Todo"}}, {Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}}} {
+			if !slices.ContainsFunc(project.States, func(candidate tracker.NativeState) bool { return candidate.Name == target.Name }) {
+				project.States = append(project.States, target)
+			}
+		}
+		index := slices.IndexFunc(project.States, func(candidate tracker.NativeState) bool { return candidate.Name == state.Name })
+		if index < 0 {
+			project.States = append(project.States, state)
+		} else {
+			project.States[index] = state
+		}
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func moveDispatchGuardFixture(t *testing.T, f dispatchGuardFixture, state string) {
+	t.Helper()
+	initial := f
+	initial.completionBody, initial.worktreeState, initial.checkpoint = "", "clean", nil
+	initial.succeed(t, &tracker.NativeDisposition{Status: "in_progress"})
+	current := f.reload(t)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		for i := range project.States {
+			if project.States[i].Name == current.State && !slices.Contains(project.States[i].Transitions, state) {
+				project.States[i].Transitions = append(project.States[i].Transitions, state)
+			}
+		}
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/workflow", testHubAdminToken, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "fixture-dispatch-lane"}, ExpectedRevision: current.Revision, State: state, Reason: "user_requested"})
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &f.issue)
+	f.claim(t)
+}
+
+func rewriteDispatchAttemptFixture(t *testing.T, f dispatchGuardFixture, mutate func(*tracker.NativeRunData)) {
+	t.Helper()
+	ctx := f.service.runDetailContext(t.Context())
+	scope := f.scope()
+	before, err := f.service.readNativeAttemptSnapshotTenant(ctx, scope, string(f.issue.WorkItemID), f.attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.service.readNativeAttemptRunTenant(ctx, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutate(&run)
+	raw, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := f.service.runDetailStore().StoreDetail(ctx, string(scope.organization), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateNativeDetailReference(ctx, f.service.runDetailStore(), scope.organization, ref, raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.service.config.now()})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := conversationTestAdmin(t, f.service).ExecContext(ctx, `UPDATE native_attempts SET payload_object_key=$1,claim_disposition=NULL WHERE organization_id=$2 AND id=$3 AND sequence=$4 AND payload_object_key=$5 AND lease_id=$6 AND fencing_token=$7 AND run_id=$8 AND status=$9`, ref.Key, scope.organization, f.attempt, before.attempt.Sequence, before.attempt.PayloadObjectKey, before.attempt.LeaseID, before.attempt.FencingToken, before.attempt.RunID, before.attempt.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		t.Fatalf("fixture attempt CAS rows%d: %v", count, err)
+	}
+	after, err := f.service.readNativeAttemptSnapshotTenant(ctx, scope, string(f.issue.WorkItemID), f.attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts, err := f.service.prepareAttemptClaimFacts(ctx, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.SetAttemptClaimFacts(ctx, facts) }); err != nil {
+		t.Fatal(err)
+	}
+	retained, err := f.service.readNativeAttemptRunTenant(ctx, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := json.Marshal(retained)
+	if err != nil || string(old) != string(original) {
+		t.Fatalf("fixture changed immutable attempt history: %v", err)
+	}
 }
 
 func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
@@ -288,33 +433,16 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					test.disposition = &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, BlockerEvidence: signal.Blockers}
 				}
 			}
-			_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,0,?,?,?)`, f.project.ID, "Fixing", "Fixing", !test.manualHold, formatHubTime(f.now), formatHubTime(f.now))
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Fixing') WHERE native_id=?`, f.project.ID, f.issue.WorkItemID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			configureDispatchGuardState(t, f, tracker.NativeState{Name: "Fixing", Dispatchable: !test.manualHold, Transitions: []string{"Merging", "Blocked"}})
 			if test.moveRefusal {
-				states := append(append([]tracker.NativeState(nil), f.project.States...), tracker.NativeState{Name: "Fixing", Dispatchable: !test.manualHold, Terminal: test.terminal, Transitions: []string{"Blocked"}})
-				raw, err := marshalNative(states)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				configureDispatchGuardState(t, f, tracker.NativeState{Name: "Fixing", Dispatchable: !test.manualHold, Transitions: []string{"Blocked"}})
 			}
+			moveDispatchGuardFixture(t, f, "Fixing")
 			revision := f.reload(t).Revision
+			f.acceptanceRecorded = test.accepted
 			f.finish(t, test.disposition)
-			if test.accepted {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET acceptance_recorded=1,data_json = json_set(data_json, '$.runtime.completion.acceptance_recorded', json('true')) WHERE id = ?`, f.attempt); err != nil {
-					t.Fatal(err)
-				}
-			}
 			if test.aged {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET updated_at = ? WHERE id = ?`, formatHubTime(f.now.Add(-2*time.Hour)), f.attempt); err != nil {
+				if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE native_attempts SET updated_at=$1 WHERE organization_id=$2 AND id=$3", f.now.Add(-2*time.Hour), f.project.OrganizationID, f.attempt); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -322,26 +450,17 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			var historicalVersion string
 			var changePath string
 			if test.reviewOutcome != "" {
-				states := append(append([]tracker.NativeState(nil), f.project.States...), tracker.NativeState{Name: "Fixing", Dispatchable: true, Transitions: []string{"Merging", "Blocked"}}, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}})
-				raw, err := marshalNative(states)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,0,1,?,?)", f.project.ID, "Merging", "Merging", formatHubTime(f.now), formatHubTime(f.now)); err != nil {
-					t.Fatal(err)
-				}
+				configureDispatchGuardState(t, f, tracker.NativeState{Name: "Fixing", Dispatchable: true, Transitions: []string{"Merging", "Blocked"}})
+				configureDispatchGuardState(t, f, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}})
 			}
 			if test.publication != "" {
 				rules := tracker.ChangeReviewPolicy{PolicyID: f.policy, RequireReview: true}
 				if test.reviewOutcome != "" {
-					var principal string
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = 'operator-conversation-worker'").Scan(&principal); err != nil {
-						t.Fatal(err)
+					principal, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.worker), "", "")
+					if err != nil || status != http.StatusOK {
+						t.Fatalf("fixture worker authority status%d: %v", status, err)
 					}
-					rules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}
+					rules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal.ID, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
 				path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes"
@@ -374,31 +493,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					if test.otherVersion {
 						finalization.VersionID = "version_other"
 					}
-					ctx := f.service.runDetailContext(t.Context())
-					attempt, err := f.service.readNativeAttempt(ctx, f.scope(), string(f.issue.WorkItemID), f.attempt)
-					if err != nil {
-						t.Fatal(err)
-					}
-					attempt.Finalization = &finalization
-					raw, err := json.Marshal(attempt.NativeRunData)
-					if err != nil {
-						t.Fatal(err)
-					}
-					ref, err := prepareChangeContent(ctx, string(f.project.OrganizationID), raw)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-						if _, err := recordPayloadAttachment(ctx, tx, f.scope(), f.issue.WorkItemID, ref, formatHubTime(f.now)); err != nil {
-							return err
-						}
-						if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET payload_object_key=? WHERE id=?", ref.Key, f.attempt); err != nil {
-							return err
-						}
-						return updateAttemptHotProjection(ctx, tx, f.attempt, "succeeded", attempt.NativeRunData)
-					}); err != nil {
-						t.Fatal(err)
-					}
+					rewriteDispatchAttemptFixture(t, f, func(run *tracker.NativeRunData) {
+						run.Finalization = &finalization
+					})
 				}
 				if test.machineVerdict != "" {
 					audit := tracker.ChangeReview{ID: newNativeID("review"), VersionID: published.ID, Decision: "approved", CreatedAt: f.now, SecurityAudit: &tracker.SecurityAuditReview{Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "audit-invocation", ProjectID: string(f.project.ID), Repository: published.Repository, BaseSHA: published.BaseSHA, HeadSHA: published.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: f.now, StartedAt: f.now.Add(-time.Second), CompletedAt: f.now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}}
@@ -410,16 +507,21 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					if test.historicalReview {
 						review.VersionID, result.VersionID = historicalVersion, historicalVersion
 					}
-					ctx := f.service.runDetailContext(t.Context())
-					if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-						for _, evidence := range []tracker.ChangeReview{audit, review} {
-							if err := storeChangeReview(ctx, tx, string(f.project.OrganizationID), change.ID, evidence); err != nil {
-								return err
-							}
+					for _, review := range []tracker.ChangeReview{audit, review} {
+						raw, err := json.Marshal(review)
+						if err != nil {
+							t.Fatal(err)
 						}
-						return nil
-					}); err != nil {
-						t.Fatal(err)
+						row, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: f.project.OrganizationID, ChangeID: change.ID, Kind: "review"}, raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+							_, err := w.AppendEvidence(t.Context(), row)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
 					}
 				}
 				if test.newerChange {
@@ -427,7 +529,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusOK)
 					var draft tracker.ChangeRequest
 					decodeHubResponse(t, response, &draft)
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_requests SET record_json=json_set(record_json, '$.created_at', ?) WHERE id=?", formatHubTime(f.now.Add(time.Hour)), draft.ID); err != nil {
+					if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE change_requests SET created_at=$1 WHERE organization_id=$2 AND project_id=$3 AND id=$4", f.now.Add(time.Hour), f.project.OrganizationID, f.project.ID, draft.ID); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -447,9 +549,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				}
 			}
 			if test.terminal {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET terminal=1 WHERE project_id=? AND detent_state='Fixing'", f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				configureDispatchGuardState(t, f, tracker.NativeState{Name: "Fixing", Dispatchable: !test.manualHold, Terminal: true, Transitions: []string{"Blocked"}})
 			}
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/attempts/"+f.attempt, f.worker, nil)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -461,7 +561,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			claim := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
 			if test.expiredLease {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(f.now.Add(-time.Minute)), f.lease.ID); err != nil {
+				if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.now.Add(-time.Minute), f.project.OrganizationID, f.lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -495,7 +595,12 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			if test.continued {
 				wantGeneration = 1
 			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE native_id = ?", f.issue.WorkItemID).Scan(&generation); err != nil || generation != wantGeneration {
+			err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.WorkItem(t.Context(), f.project.ID, f.issue.WorkItemID)
+				generation = row.DispatchGeneration
+				return err
+			})
+			if err != nil || generation != wantGeneration {
 				t.Fatalf("dispatch generation=%d, want %d, error=%v", generation, wantGeneration, err)
 			}
 			if got := f.candidate(t); got != test.wantCandidate {
@@ -508,7 +613,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				payload := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "admission": map[string]any{"context": context, "runner_revision": 1}}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, payload), http.StatusOK)
 				if test.fullHost {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE id=?", r.binding.MachineID); err != nil {
+					if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, r.binding.MachineID); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -763,9 +868,11 @@ func TestRecordNativeAttemptCapturesDispatchState(t *testing.T) {
 	var revision, generation int64
 	read := func(t *testing.T) {
 		t.Helper()
-		if err := f.service.database.db.QueryRowContext(t.Context(),
-			"SELECT work_item_revision, dispatch_generation FROM native_attempts WHERE id = ?", f.attempt,
-		).Scan(&revision, &generation); err != nil {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			row, err := r.Attempt(t.Context(), f.attempt)
+			revision, generation = row.WorkItemRevision, row.DispatchGeneration
+			return err
+		}); err != nil {
 			t.Fatalf("read attempt dispatch state: %v", err)
 		}
 	}
@@ -801,17 +908,18 @@ func TestClaimCandidatesIgnoreAnsweredOnProjectionProfile(t *testing.T) {
 		t.Fatal("the native guard must suppress the answered item")
 	}
 
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET profile = 'github_compatible' WHERE id = ?", f.project.ID); err != nil {
+	if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE projects SET profile='github_compatible' WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, f.project.ID); err != nil {
 		t.Fatalf("switch the project to the projection profile: %v", err)
 	}
-	tx := f.tx(t)
-	defer tx.Rollback()
-	ids, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{}, nil, nil, nil, nil, nil, nil, nil, map[tracker.RepositoryID]struct{}{0: {}})
-	if err != nil {
-		t.Fatalf("claimCandidateIDs() error = %v", err)
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.worker), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("fixture worker authority status%d: %v", status, err)
 	}
-	if len(ids) == 0 {
-		t.Fatal("a projected item must stay claimable: its revision is not the tracker's")
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	request := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("projected-session"), ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	lease, err := f.service.claimNativeIssueTenant(t.Context(), scope, request, 10*time.Minute)
+	if err != nil || lease.LeaseID == "" {
+		t.Fatalf("a projected item must stay claimable: its revision is not the tracker's: %v", err)
 	}
 }
 
@@ -842,17 +950,20 @@ func TestNativeDerivedHoldDispatchEquivalence(t *testing.T) {
 			}
 			f.succeed(t, test.disposition)
 			if test.state != "" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET dispatchable=0, terminal=? WHERE project_id=? AND detent_state=?", test.state == "Done", f.project.ID, f.reload(t).State); err != nil {
-					t.Fatal(err)
-				}
+				current := f.reload(t)
+				configureDispatchGuardState(t, f, tracker.NativeState{Name: current.State, Dispatchable: false, Terminal: test.state == "Done"})
 			}
 			before := f.candidate(t)
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_remove(data_json,
- '$.disposition.blockers', '$.disposition.blocker_evidence', '$.disposition.status',
- CASE WHEN json_extract(data_json, '$.disposition.reason_code') = 'permission_wait'
- THEN '$.disposition.blockers' ELSE '$.disposition.reason_code' END) WHERE id=?`, f.attempt); err != nil {
-				t.Fatal(err)
-			}
+			rewriteDispatchAttemptFixture(t, f, func(run *tracker.NativeRunData) {
+				if run.Disposition != nil {
+					run.Disposition.Blockers = false
+					run.Disposition.BlockerEvidence = nil
+					run.Disposition.Status = ""
+					if run.Disposition.ReasonCode != "permission_wait" {
+						run.Disposition.ReasonCode = ""
+					}
+				}
+			})
 			after := f.candidate(t)
 			if before != test.want || after != test.want {
 				t.Fatalf("before=%t after=%t want=%t", before, after, test.want)

@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
@@ -112,13 +113,24 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 		t.Fatal(err)
 	}
 	defer repository.Close()
+	hosted := &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_org_example", PublicURL: "https://hub.example.test"}
+	deployment, generation := "origin", int64(0)
+	if hosted.SharedEntry != nil {
+		deployment, generation = "shared", hosted.SharedEntry.Generation
+	}
+	checkoutRepository := ""
+	for _, option := range options {
+		if option.checkoutRepository != "" {
+			checkoutRepository = option.checkoutRepository
+		}
+	}
 	for _, organization := range []tracker.OrganizationID{"org_example", "org_other"} {
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-"), CreatedAt: now}); err != nil {
 				return err
 			}
-			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization), AllocationGeneration: 1}); err != nil {
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization), BootstrapSubject: hosted.BootstrapSubject, Deployment: deployment, PublicURL: hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 				return err
 			}
 			key := bytes.Repeat([]byte{0x5a}, 32)
@@ -132,11 +144,18 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 			if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now}); err != nil {
 				return err
 			}
-			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
+			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
 				Core:   corestore.Project{OrganizationID: organization, ID: tracker.ProjectID("prj_" + string(organization)), Name: "Example project", Slug: "example", Profile: "native", CreatedAt: now},
 				States: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}},
-			}); err != nil {
+			})
+			if err != nil {
 				return err
+			}
+			if checkoutRepository != "" {
+				record.Settings.CheckoutRepository = checkoutRepository
+				if _, err := w.UpdateProjectRecord(t.Context(), record); err != nil {
+					return err
+				}
 			}
 			credential := token
 			if organization != "org_example" {
@@ -157,8 +176,14 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 				return err
 			}
 			expires := now.Add(time.Hour)
+			workerCredential := credential + "-worker"
+			for _, option := range options {
+				if option.workerCredential != "" && organization == "org_example" {
+					workerCredential = option.workerCredential
+				}
+			}
 			workerID, enrollmentID := "worker_"+string(organization), "enrollment_"+string(organization)
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: workerID, Name: "Example worker", Hash: apikey.HashToken(credential + "-worker"), Scope: "worker", ProjectAccess: "selected", Kind: "service", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: workerID, Name: "Example worker", Hash: apikey.HashToken(workerCredential), Scope: "worker", ProjectAccess: "selected", Kind: "service", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
 				return err
 			}
 			if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, ProjectID: project, TokenID: workerID}); err != nil {
@@ -175,7 +200,7 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: string(binding.MachineID), Hostname: "example", Capacity: 2, Version: "1.0.0"}); err != nil {
 				return err
 			}
-			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: workerID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", IsolationTier: string(isolation.NativeTrusted), Operations: operations, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{project}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: workerID, EnrollmentID: enrollmentID, DisplayName: "Example runner", Scope: "projects", State: "active", IsolationTier: string(isolation.NativeTrusted), Operations: operations, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{project}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 				return err
 			}
 			return w.UpdateRunnerCapacityConfig(t.Context(), binding.RunnerID, runnerauth.CapacityConfig{Revision: artifact.Digest([]byte(organization)), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, ObservedAt: now})
@@ -221,11 +246,10 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 	if err != nil {
 		t.Fatal(err)
 	}
+	hosted.Provider = provider
 	config := hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres,
 		Postgres: &postgres.Config{Connection: connection, Pool: budgets}, SecretKeys: keys, Content: content,
-		RunDetails: hubmaintenance.LimitDetails(&clihangDetails{data: make(map[string][]byte)}), Hosted: &hubserver.HostedConfig{
-			OrganizationID: "org_example", WorkOSOrganizationID: "provider_org_example", PublicURL: "https://hub.example.test", Provider: provider,
-		}}
+		RunDetails: hubmaintenance.LimitDetails(&clihangDetails{data: make(map[string][]byte)}), Hosted: hosted}
 	for _, option := range options {
 		if option.details != nil {
 			config.RunDetails = hubmaintenance.LimitDetails(option.details)
@@ -313,7 +337,77 @@ func (s *clihangDetails) read(ctx context.Context, key string) ([]byte, error) {
 }
 
 type clihangPostgresOptions struct {
-	details attachment.DetailStore
-	seed    func(*postgres.Repository) error
-	config  *hubserver.Config
+	details            attachment.DetailStore
+	seed               func(*postgres.Repository) error
+	config             *hubserver.Config
+	checkoutRepository string
+	workerCredential   string
+}
+
+type enrolledPolicyProject struct {
+	configPath string
+	checkout   string
+	origin     string
+	config     globalconfig.Config
+	adminToken string
+}
+
+func newEnrolledPolicyProject(t *testing.T, workflow string) enrolledPolicyProject {
+	t.Helper()
+	const adminToken = "fixture-admin"
+	workerCredential, err := apikey.GenerateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, _ := clihangPostgresHub(t, adminToken, nil, clihangPostgresOptions{checkoutRepository: "example-org/orders", workerCredential: workerCredential})
+	server := httptest.NewServer(service.Handler())
+	t.Cleanup(server.Close)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(root, "checkouts")
+	sources := filepath.Join(root, "sources")
+	origin := filepath.Join(sources, "orders.git")
+	source := filepath.Join(workspace, "orders")
+	for _, dir := range []string{origin, workspace} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(origin, "WORKFLOW.md"), []byte(workflow), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runDoctorWorkflowSourceGit(t, origin, "init")
+	runDoctorWorkflowSourceGit(t, origin, "add", "WORKFLOW.md")
+	runDoctorWorkflowSourceGit(t, origin, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "initial workflow")
+	runDoctorWorkflowSourceGit(t, workspace, "clone", origin, source)
+	runDoctorWorkflowSourceGit(t, source, "config", "url."+sources+string(os.PathSeparator)+".insteadOf", "git@github.com:example-org/")
+	runDoctorWorkflowSourceGit(t, source, "remote", "set-url", "origin", "git@github.com:example-org/orders.git")
+	organization := tracker.OrganizationID("org_example")
+	identityPath := filepath.Join(root, "private", "identity.json")
+	if err := os.MkdirAll(filepath.Dir(identityPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := json.Marshal(runnerauth.File{Schema: 1, HubURL: server.URL, Credential: workerCredential, Identity: runnerauth.Identity{
+		Binding: clihangBinding(organization), Scope: "projects", OrganizationID: organization, ProjectIDs: []tracker.ProjectID{"prj_org_example"},
+		Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, ExpiresAt: time.Now().Add(time.Hour),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identityPath, identity, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "global.yaml")
+	cfg, err := globalconfig.DefaultAt(configPath, globalconfig.WithHome(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WorkspaceRoot = workspace
+	cfg.Client = globalconfig.HubClient{URL: server.URL, IdentityFile: identityPath, OrganizationID: string(organization)}
+	if err := globalconfig.Write(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	return enrolledPolicyProject{configPath: configPath, checkout: source, origin: origin, config: cfg, adminToken: adminToken}
 }

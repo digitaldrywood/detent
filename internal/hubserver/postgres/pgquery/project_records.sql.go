@@ -110,7 +110,7 @@ func (q *Queries) BoundProjectRecord(ctx context.Context, arg BoundProjectRecord
 }
 
 const createProjectSettings = `-- name: CreateProjectSettings :exec
-INSERT INTO project_settings(organization_id,project_id) VALUES($1,$2)
+INSERT INTO project_settings(organization_id,project_id,aging_enabled,archive_completed_after_days,archive_cancelled_after_days) VALUES($1,$2,false,30,7)
 `
 
 type CreateProjectSettingsParams struct {

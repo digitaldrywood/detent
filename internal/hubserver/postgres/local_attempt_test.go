@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -39,6 +40,8 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 					}
 					lease := claimLease(t, repository, org, claim)
 					event := attemptEvent(lease)
+					event.CheckpointObjectKey = new("example/source-checkpoint")
+					event.CheckpointPreservesSource = new(true)
 					beat := func(offset time.Duration) *time.Time {
 						return new(lease.RenewedAt.Truncate(time.Microsecond).Add(offset))
 					}
@@ -78,7 +81,12 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 					if got, replay, err := write(event); err != nil || replay || got.LocalAttemptID != 0 || !got.LocalAttemptIDRecorded {
 						t.Fatalf("unobserved start: %+v replay=%v err=%v", got, replay, err)
 					}
+					if got, _, err := write(event); err != nil || got.CheckpointPreservesSource == nil || !*got.CheckpointPreservesSource {
+						t.Fatalf("source checkpoint insert: %+v err=%v", got, err)
+					}
 					event.Sequence, event.LocalAttemptID, event.PayloadObjectKey = 2, 42, "example/observed"
+					event.CheckpointObjectKey = new("example/clean-checkpoint")
+					event.CheckpointPreservesSource = new(false)
 					event.RuntimeHeartbeatAt, event.RuntimeOrdered = beat(900*time.Nanosecond), true
 					if got, replay, err := write(event); err != nil || replay || got.LocalAttemptID != 42 || !got.LocalAttemptIDRecorded || got.RuntimeHeartbeatAt == nil || !got.RuntimeHeartbeatAt.Truncate(time.Microsecond).Equal(*beat(0)) {
 						t.Fatalf("accepted correlation: %+v replay=%v err=%v", got, replay, err)
@@ -86,10 +94,20 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 					if got, replay, err := write(event); err != nil || !replay || got.LocalAttemptID != 42 {
 						t.Fatalf("replay: %+v replay=%v err=%v", got, replay, err)
 					}
+					if got, _, err := write(event); err != nil || got.CheckpointPreservesSource == nil || *got.CheckpointPreservesSource || got.CheckpointObjectKey == nil || *got.CheckpointObjectKey != "example/clean-checkpoint" {
+						t.Fatalf("false checkpoint replacement: %+v err=%v", got, err)
+					}
+					replayFact := event
+					replayFact.CheckpointPreservesSource = new(true)
+					if got, replay, err := write(replayFact); err != nil || !replay || got.CheckpointPreservesSource == nil || *got.CheckpointPreservesSource {
+						t.Fatalf("internal fact changed receipt identity or stored classification: %+v replay=%v err=%v", got, replay, err)
+					}
 					for _, test := range []struct {
 						name   string
 						change func(*leasestore.AttemptEvent)
 					}{
+						{"checkpoint key without fact", func(e *leasestore.AttemptEvent) { e.Sequence = 3; e.CheckpointPreservesSource = nil }},
+						{"checkpoint fact without key", func(e *leasestore.AttemptEvent) { e.Sequence = 3; e.CheckpointObjectKey = nil }},
 						{"changed replay", func(e *leasestore.AttemptEvent) { e.LocalAttemptID = 43 }},
 						{"sequence gap", func(e *leasestore.AttemptEvent) { e.Sequence = 4; e.LocalAttemptID = 43 }},
 						{"rebound identity", func(e *leasestore.AttemptEvent) { e.Sequence = 3; e.LocalAttemptID = 43 }},
@@ -194,8 +212,12 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 						t.Fatalf("accepted usage rows=%d err=%v", tokens, err)
 					}
 					event.Sequence, event.LocalAttemptID, event.Status, event.PayloadObjectKey, event.RuntimeHeartbeatAt = 10, 0, "failed", "example/finished", nil
+					event.CheckpointObjectKey, event.CheckpointPreservesSource = nil, nil
 					if got, _, err := write(event); err != nil || got.LocalAttemptID != 42 || got.RuntimeHeartbeatAt != nil || got.RuntimeSummarySequence != 10 {
 						t.Fatalf("later omitted correlation: %+v err=%v", got, err)
+					}
+					if got, replay, err := write(event); err != nil || !replay || got.CheckpointPreservesSource == nil || *got.CheckpointPreservesSource || got.CheckpointObjectKey == nil || *got.CheckpointObjectKey != "example/clean-checkpoint" {
+						t.Fatalf("checkpoint-free finish lost retained key/fact: %+v err=%v", got, err)
 					}
 					if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
 						_, err := w.Release(t.Context(), leaseFence(lease), "finished")
@@ -206,6 +228,23 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 				}
 			}
 			repository, _ = attemptCountedRepository(t, repository, pool)
+			if queued {
+				columnAdded := false
+				t.Cleanup(func() {
+					if !columnAdded {
+						return
+					}
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+					defer cancel()
+					if _, err := admin.ExecContext(cleanup, `ALTER TABLE native_attempts DROP COLUMN test_nullable_attempt_column`); err != nil {
+						t.Error(err)
+					}
+				})
+				if _, err := admin.ExecContext(t.Context(), `ALTER TABLE native_attempts ADD COLUMN test_nullable_attempt_column text`); err != nil {
+					t.Fatal(err)
+				}
+				columnAdded = true
+			}
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 				for _, test := range []struct {
 					project tracker.ProjectID
@@ -238,6 +277,13 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 				lease := claimLease(t, repository, org, claim)
 				event := attemptEvent(lease)
 				event.LocalAttemptID = 42
+				if queued {
+					event.CheckpointObjectKey = new("example/next-checkpoint")
+					event.CheckpointPreservesSource = new(true)
+					event.ArtifactsObjectKey = new("example/next-artifacts")
+					event.RuntimeOrdered = true
+					event.RuntimeHeartbeatAt = new(lease.RenewedAt.Truncate(time.Microsecond))
+				}
 				recordLeaseAttempt(t, repository, org, event)
 				if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
 					_, err := w.Release(t.Context(), leaseFence(lease), "finished")
@@ -246,9 +292,60 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 					t.Fatal(err)
 				}
 				claim.LeaseID, claim.SessionID = "lease_third", "session_third"
-				third := attemptEvent(claimLease(t, repository, org, claim))
+				thirdLease := claimLease(t, repository, org, claim)
+				third := attemptEvent(thirdLease)
 				third.LocalAttemptID = 42
+				if queued {
+					third.CheckpointObjectKey = new("example/third-checkpoint")
+					third.CheckpointPreservesSource = new(false)
+					third.ArtifactsObjectKey = new("example/third-artifacts")
+					third.RuntimeOrdered = true
+					third.RuntimeHeartbeatAt = new(thirdLease.RenewedAt.Truncate(time.Microsecond))
+				}
 				recordLeaseAttempt(t, repository, org, third)
+				if queued {
+					var expected, expectedLatest leasestore.Attempt
+					if err := repository.ReadLeases(t.Context(), org, corestore.Serving, func(r leasestore.Reader) error {
+						var err error
+						expected, err = r.Attempt(t.Context(), event.ID)
+						if err != nil {
+							return err
+						}
+						expectedLatest, err = r.LatestAttempt(t.Context(), 1)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if expected.ID != event.ID || expectedLatest.ID != third.ID || expected.ID == expectedLatest.ID || expected.LocalAttemptID != 42 || !expected.LocalAttemptIDRecorded || expected.CheckpointObjectKey == nil || *expected.CheckpointObjectKey != "example/next-checkpoint" || expected.ArtifactsObjectKey == nil || *expected.ArtifactsObjectKey != "example/next-artifacts" || expected.RuntimeHeartbeatAt == nil || expectedLatest.CheckpointObjectKey == nil || *expectedLatest.CheckpointObjectKey != "example/third-checkpoint" || expectedLatest.ArtifactsObjectKey == nil || *expectedLatest.ArtifactsObjectKey != "example/third-artifacts" || expectedLatest.RuntimeHeartbeatAt == nil {
+						t.Fatalf("compatibility fixture %s: attempt=%+v latest=%+v", org, expected, expectedLatest)
+					}
+					if expected.CheckpointPreservesSource == nil || !*expected.CheckpointPreservesSource || expectedLatest.CheckpointPreservesSource == nil || *expectedLatest.CheckpointPreservesSource {
+						t.Fatalf("extra-column source facts did not persist: older=%+v latest=%+v", expected, expectedLatest)
+					}
+					for _, attemptID := range []string{event.ID, ""} {
+						if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+							facts := w.(interface {
+								WithRunnerEventFacts(context.Context, eventstore.RunCommand, func(tenantstore.Writer) error) error
+							})
+							return facts.WithRunnerEventFacts(t.Context(), eventstore.RunCommand{Project: "prj_1", WorkItem: "wi_1", LeaseID: lease.LeaseID, AttemptID: attemptID}, func(w tenantstore.Writer) error {
+								got, err := w.Attempt(t.Context(), event.ID)
+								if err != nil {
+									return err
+								}
+								latest, err := w.LatestAttempt(t.Context(), 1)
+								if err != nil {
+									return err
+								}
+								if !reflect.DeepEqual(got, expected) || !reflect.DeepEqual(latest, expectedLatest) {
+									t.Fatalf("extra-column snapshot %s/%q: attempt=%+v latest=%+v", org, attemptID, got, latest)
+								}
+								return nil
+							})
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				if err := repository.ReadLeases(t.Context(), org, corestore.Serving, func(r leasestore.Reader) error {
 					matches, err := r.LocalAttemptMatches(t.Context(), "prj_1", "wi_1", 42)
 					if err == nil && (len(matches) != 2 || matches[0] == matches[1] || !slices.Contains([]string{"attempt_lease_1", "attempt_lease_next", "attempt_lease_third"}, matches[0]) || !slices.Contains([]string{"attempt_lease_1", "attempt_lease_next", "attempt_lease_third"}, matches[1])) {

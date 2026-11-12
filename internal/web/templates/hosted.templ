@@ -9,7 +9,7 @@ templ HostedPage(data HostedPageData) {
 }
 
 templ hostedWorkspacePage(data HostedPageData) {
-	@AppShell(DashboardShellData{Hosted: &data}, nil) {
+	@hostedAppShell(data) {
 		<main id="hosted-content" class="min-h-0 flex-1 overflow-y-auto p-4 md:p-8">
 			<div class="mx-auto w-full max-w-4xl space-y-6">
 				if data.SupportActor != "" {

@@ -2,13 +2,10 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"os"
+	"net/http"
+	"slices"
 	"time"
-
-	"github.com/digitaldrywood/detent/internal/cloudorigin"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var (
@@ -16,123 +13,79 @@ var (
 	ErrHostedMetadataUnavailable = errors.New("hosted metadata is unavailable")
 )
 
-type HostedMetadata struct {
-	OrganizationID         tracker.OrganizationID `json:"organization_id"`
-	ProviderOrganizationID string                 `json:"provider_organization_id"`
-	Members                int                    `json:"members"`
-	Projects               int                    `json:"projects"`
-	Runners                int                    `json:"runners"`
-	Events                 int                    `json:"events"`
-	LastActivity           time.Time              `json:"last_activity"`
-	DatabaseBytes          int64                  `json:"database_bytes"`
-	Healthy                bool                   `json:"healthy"`
+type hostedMetadataResponse struct {
+	OrganizationID         string            `json:"organization_id"`
+	ProviderOrganizationID string            `json:"provider_organization_id"`
+	Members                *int64            `json:"members"`
+	Projects               *int64            `json:"projects"`
+	Runners                *int64            `json:"runners"`
+	Events                 *int64            `json:"events"`
+	LastActivity           *time.Time        `json:"last_activity"`
+	DatabaseBytes          *int64            `json:"database_bytes"`
+	Healthy                bool              `json:"healthy"`
+	UnavailableUsage       []string          `json:"unavailable_usage"`
+	Entitlement            HostedEntitlement `json:"entitlement"`
+	PlanID                 string            `json:"plan_id"`
+	StorageQuotaBytes      int64             `json:"storage_quota_bytes,omitempty"`
+	EventQuota             int64             `json:"event_quota,omitempty"`
+	CostDrivers            struct {
+		ActiveIssues          *int64           `json:"active_issues"`
+		ArchivedIssues        *int64           `json:"archived_issues"`
+		DatabaseBytes         *int64           `json:"database_bytes"`
+		WALBytes              *int64           `json:"wal_bytes"`
+		Requests              *int64           `json:"requests"`
+		RequestBytes          *int64           `json:"request_bytes"`
+		ResponseBytes         *int64           `json:"response_bytes"`
+		ArtifactRetainedBytes *int64           `json:"artifact_retained_bytes"`
+		ArtifactReservedBytes *int64           `json:"artifact_reserved_bytes"`
+		RelayBytes            *int64           `json:"relay_bytes"`
+		WindowEndsAt          time.Time        `json:"window_ends_at"`
+		OperatorAI            chatUsageSummary `json:"operator_ai"`
+		OperatorAICostUSD     *float64         `json:"operator_ai_cost_usd"`
+	} `json:"cost_drivers"`
 }
 
-func (d *database) bindHostedDatabase(ctx context.Context, cfg *HostedConfig) error {
-	var organization, provider, bootstrap, publicURL, deployment string
-	var generation int64
-	err := d.db.QueryRowContext(ctx, "SELECT organization_id, provider_id, bootstrap_subject, public_url, deployment, allocation_generation FROM hosted_tenant WHERE singleton = 1").Scan(&organization, &provider, &bootstrap, &publicURL, &deployment, &generation)
-	if err == nil {
-		if cfg == nil || organization != cfg.OrganizationID || bootstrap != cfg.BootstrapSubject {
-			return ErrHostedDatabaseBinding
-		}
-		// Cloud's hostname change retains the same shared allocation. Preserve the
-		// immutable stored origin as deployment history, including on rollback.
-		if publicURL != cfg.PublicURL && (deployment != "shared" || cfg.SharedEntry == nil || !cloudorigin.Aliases(publicURL, cfg.PublicURL)) {
-			return ErrHostedDatabaseBinding
-		}
-		wantDeployment, wantGeneration := cfg.deployment()
-		if deployment != wantDeployment || generation != wantGeneration {
-			return ErrHostedDatabaseBinding
-		}
-		if cfg.WorkOSOrganizationID != provider && (cfg.WorkOSOrganizationID != "" || bootstrap == "") {
-			return ErrHostedDatabaseBinding
-		}
-		d.hostedOrganization = tracker.OrganizationID(organization)
-		return nil
+func (s *Service) readHostedMetadata(ctx context.Context) (hostedMetadataResponse, error) {
+	if s.config.Hosted == nil || s.database == nil {
+		return hostedMetadataResponse{}, ErrHostedMetadataUnavailable
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return ErrHostedDatabaseBinding
-	}
-	if cfg == nil {
-		return nil
-	}
-	if cfg.OrganizationID == "" || cfg.PublicURL == "" || cfg.WorkOSOrganizationID == "" && cfg.BootstrapSubject == "" {
-		return ErrHostedDatabaseBinding
-	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return ErrHostedDatabaseBinding
-	}
-	defer tx.Rollback()
-	var organizations, local, content int
-	if err := tx.QueryRowContext(ctx, `
-SELECT (SELECT count(*) FROM organizations),
-       (SELECT count(*) FROM organizations WHERE local = 1),
-       (SELECT count(*) FROM projects) + (SELECT count(*) FROM repositories)
-       + (SELECT count(*) FROM issues) + (SELECT count(*) FROM machines)
-       + (SELECT count(*) FROM native_commands) + (SELECT count(*) FROM hosted_members)
-       + (SELECT count(*) FROM hosted_sessions) + (SELECT count(*) FROM github_webhook_inbox)`).Scan(&organizations, &local, &content); err != nil {
-		return ErrHostedDatabaseBinding
-	}
-	if organizations != 1 || local != 1 || content != 0 {
-		return ErrHostedDatabaseBinding
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE organizations SET id = ? WHERE local = 1", cfg.OrganizationID); err != nil {
-		return ErrHostedDatabaseBinding
-	}
-	deployment, generation = cfg.deployment()
-	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_tenant (singleton, organization_id, provider_id, bootstrap_subject, public_url, deployment, allocation_generation) VALUES (1, ?, ?, ?, ?, ?, ?)", cfg.OrganizationID, cfg.WorkOSOrganizationID, cfg.BootstrapSubject, cfg.PublicURL, deployment, generation); err != nil {
-		return ErrHostedDatabaseBinding
-	}
-	if err := tx.Commit(); err != nil {
-		return ErrHostedDatabaseBinding
-	}
-	d.hostedOrganization = tracker.OrganizationID(cfg.OrganizationID)
-	return nil
-}
-
-func (d *database) hostedMetadata(ctx context.Context) (HostedMetadata, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if d.hostedOrganization == "" {
-		return HostedMetadata{}, ErrHostedMetadataUnavailable
+	health, status := s.readInstanceHealth(ctx)
+	if status != http.StatusOK {
+		return hostedMetadataResponse{}, ErrHostedMetadataUnavailable
 	}
-	var result HostedMetadata
-	var activity sql.NullString
-	err := d.reader.QueryRowContext(ctx, `
-SELECT h.organization_id, h.provider_id,
-       (SELECT count(*) FROM hosted_members WHERE active = 1),
-       (SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = h.organization_id),
-       (SELECT count(*) FROM runner_identities WHERE organization_id = h.organization_id AND removed_at IS NULL),
-       (SELECT count(*) FROM collaboration_events WHERE organization_id = h.organization_id),
-       (SELECT activity FROM (
-         SELECT recorded_at AS activity FROM collaboration_events WHERE organization_id = h.organization_id
-         UNION ALL SELECT created_at FROM hosted_sessions
-       ) ORDER BY julianday(activity) DESC LIMIT 1)
-FROM hosted_tenant h WHERE h.singleton = 1 AND h.organization_id = ?`, d.hostedOrganization).Scan(&result.OrganizationID, &result.ProviderOrganizationID, &result.Members, &result.Projects, &result.Runners, &result.Events, &activity)
+	usage, err := s.operatorBillingUsage(ctx, s.config.now())
 	if err != nil {
-		return HostedMetadata{}, ErrHostedMetadataUnavailable
+		return hostedMetadataResponse{}, ErrHostedMetadataUnavailable
 	}
-	if activity.Valid {
-		result.LastActivity, err = parseTimeValue(activity.String)
-		if err != nil {
-			return HostedMetadata{}, ErrHostedMetadataUnavailable
-		}
+	unavailable := append(slices.Clone(usage.UnavailableUsage), "database_bytes", "wal_bytes")
+	slices.Sort(unavailable)
+	report := hostedMetadataResponse{
+		OrganizationID:         usage.OrganizationID,
+		ProviderOrganizationID: usage.ProviderOrganizationID,
+		Members:                usage.Members,
+		Projects:               usage.Projects,
+		Runners:                usage.Runners,
+		Events:                 usage.Events,
+		LastActivity:           usage.LastActivity,
+		Healthy:                health.Status == "ok",
+		UnavailableUsage:       slices.Compact(unavailable),
+		Entitlement:            usage.Entitlement,
+		PlanID:                 usage.PlanID,
+		StorageQuotaBytes:      usage.StorageQuotaBytes,
+		EventQuota:             usage.EventQuota,
 	}
-	for _, suffix := range []string{"", "-wal"} {
-		info, err := os.Stat(d.path + suffix)
-		if err != nil {
-			if suffix != "" && errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return HostedMetadata{}, ErrHostedMetadataUnavailable
-		}
-		result.DatabaseBytes += info.Size()
-	}
-	if err := d.health(ctx); err != nil {
-		return HostedMetadata{}, ErrHostedMetadataUnavailable
-	}
-	result.Healthy = true
-	return result, nil
+	report.CostDrivers.ActiveIssues = usage.CostDrivers.ActiveIssues
+	report.CostDrivers.ArchivedIssues = usage.CostDrivers.ArchivedIssues
+	report.CostDrivers.Requests = usage.CostDrivers.Requests
+	report.CostDrivers.RequestBytes = usage.CostDrivers.RequestBytes
+	report.CostDrivers.ResponseBytes = usage.CostDrivers.ResponseBytes
+	report.CostDrivers.ArtifactRetainedBytes = usage.CostDrivers.ArtifactRetainedBytes
+	report.CostDrivers.ArtifactReservedBytes = usage.CostDrivers.ArtifactReservedBytes
+	report.CostDrivers.RelayBytes = usage.CostDrivers.RelayBytes
+	report.CostDrivers.WindowEndsAt = usage.CostDrivers.WindowEndsAt
+	report.CostDrivers.OperatorAI = usage.CostDrivers.OperatorAI
+	report.CostDrivers.OperatorAICostUSD = usage.CostDrivers.OperatorAICostUSD
+	return report, nil
 }

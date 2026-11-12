@@ -42,6 +42,9 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 				{ID: crossID, ProjectID: target.project.ID, Number: 1, Title: "Private target " + string(org), State: "Todo"},
 			}
 			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: source.project.ID, WorkItemID: sourceID, Number: 1, Revision: 1, Profile: "native"}, Title: "Source " + string(org), Body: "Public source body", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "owner"}, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{sameID, crossID}, Blockers: links, Dependents: slices.Clone(links), Related: slices.Clone(links), DependencyReady: true, BlockedReason: tracker.DependencyReason{Text: "private dependency reason"}, UnblocksReason: tracker.DependencyReason{Text: "private unblock reason"}}
+			issue.Change = &tracker.NativeIssueChange{ChangeID: "change_shared", HeadSHA: "private-source-head"}
+			issue.ListChange = &tracker.NativeListChange{HeadSHA: "private-list-head", Branch: "private-list-branch"}
+			issue.PullRequest = &tracker.NativePullRequest{Number: 42, URL: "https://example.test/pull/42"}
 			payload, err := viewstore.NewContent(service.runDetailStore()).PrepareBoard(t.Context(), tracker.NativeBoardCard{Issue: issue})
 			if err != nil {
 				t.Fatal(err)
@@ -87,7 +90,7 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 			details.beforeRead = func(context.Context) error { return errors.New("serving read accessed an object") }
 			check := func(label string, scope nativeScope, want []tracker.NativeWorkItemID, wantChange bool) {
 				t.Helper()
-				for _, include := range []string{"board", "work"} {
+				for _, include := range []string{"", "board", "work"} {
 					page, err := service.readBoardRecords(t.Context(), scope, url.Values{"include": {include}, "limit": {"10"}})
 					if err != nil {
 						t.Fatalf("%s/%s: %v", label, include, err)
@@ -103,6 +106,15 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 						items = append(items, page.Work.Items...)
 					}
 					for _, got := range items {
+						if !wantChange && (got.Change != nil || got.ListChange != nil || got.PullRequest != nil) {
+							t.Errorf("%s/%s exposed hidden change fields: change=%+v list=%+v PR=%+v", label, include, got.Change, got.ListChange, got.PullRequest)
+						}
+						if wantChange && (got.ListChange == nil || got.ListChange.HeadSHA != "private-list-head" || got.ListChange.Branch != "private-list-branch" || got.PullRequest == nil || got.PullRequest.Number != 42 || got.PullRequest.URL != "https://example.test/pull/42") {
+							t.Errorf("%s/%s lost permitted change fields: list=%+v PR=%+v", label, include, got.ListChange, got.PullRequest)
+						}
+						if wantChange && include == "board" && (got.Change == nil || got.Change.ChangeID != "change_shared" || got.Change.HeadSHA != "private-source-head") {
+							t.Errorf("%s/%s lost permitted Change: %+v", label, include, got.Change)
+						}
 						if !slices.Equal(got.Dependencies, want) {
 							t.Errorf("%s/%s dependencies=%v want=%v", label, include, got.Dependencies, want)
 						}
@@ -148,6 +160,23 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 			reporter := scope
 			reporter.credential.HostedRole, reporter.credential.HostedPrincipal = "reporter", "owner"
 			check("reporter owns target", reporter, []tracker.NativeWorkItemID{sameID}, true)
+			for _, test := range []struct {
+				principal string
+				visible   bool
+			}{{"another-owner", false}, {"owner", true}} {
+				if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+					row, err := w.BoardItem(t.Context(), source.project.ID, sourceID)
+					if err != nil {
+						return err
+					}
+					row.Display.ChangePrincipalID = test.principal
+					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: source.project.ID, WorkItemID: sourceID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				check("stored Change owner "+test.principal, reporter, []tracker.NativeWorkItemID{sameID}, test.visible)
+				check("operator stored Change owner "+test.principal, scope, []tracker.NativeWorkItemID{sameID}, true)
+			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
 				item, err := w.WorkItem(t.Context(), source.project.ID, sameID)
 				if err != nil {

@@ -770,6 +770,78 @@ func TestPostgresFixtureBounds(t *testing.T) {
 		t.Fatalf("releasing fixture capacity did not admit the active fifth request: %v", admitted.err)
 	}
 	releases = append(releases, admitted.release)
+	for _, release := range releases {
+		if err := release(bounded); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releases = nil
+	for _, cancelCaller := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit deadline/canceled=%t", cancelCaller), func(t *testing.T) {
+			supplied, stop := testContext(t)
+			defer stop()
+			caller, cancel := context.WithCancel(supplied)
+			defer cancel()
+			deadline, _ := caller.Deadline()
+			var observed time.Time
+			scoped := NewTemplate(func(ctx context.Context, db *sql.DB) error {
+				var ok bool
+				observed, ok = ctx.Deadline()
+				if !ok || observed != deadline {
+					return errors.New("fixture did not retain supplied deadline")
+				}
+				return migrateFixture(ctx, db)
+			})
+			t.Cleanup(func() {
+				cleanup, finish := context.WithDeadline(context.WithoutCancel(caller), deadline)
+				defer finish()
+				if err := scoped.Close(cleanup); err != nil {
+					t.Error(err)
+				}
+			})
+			var names []string
+			t.Run("isolated clones", func(t *testing.T) {
+				first := scoped.DatabaseContext(caller, t)
+				second := scoped.DatabaseContext(caller, t)
+				for _, db := range []*sql.DB{first, second} {
+					var name string
+					if err := db.QueryRowContext(caller, "SELECT current_database()").Scan(&name); err != nil {
+						t.Fatal(err)
+					}
+					names = append(names, name)
+					if db.Stats().MaxOpenConnections != connectionLimit {
+						t.Fatal("explicit-context fixture connection pool is unbounded")
+					}
+				}
+				if names[0] == names[1] {
+					t.Fatal("explicit-context fixtures reused a database")
+				}
+				for _, organization := range []string{"first", "second"} {
+					if _, err := first.ExecContext(caller, "INSERT INTO records VALUES($1,'explicit-deadline','private')", organization); err != nil {
+						t.Fatal(err)
+					}
+					var count int
+					if err := second.QueryRowContext(caller, "SELECT count(*) FROM records WHERE organization_id=$1 AND id='explicit-deadline'", organization).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("explicit-context fixture leaked rows: count=%d error=%v", count, err)
+					}
+				}
+				if cancelCaller {
+					cancel()
+				}
+			})
+			if observed != deadline {
+				t.Fatalf("initialization deadline=%v want=%v", observed, deadline)
+			}
+			cleanup, finish := context.WithDeadline(context.WithoutCancel(caller), deadline)
+			defer finish()
+			for _, name := range names {
+				var exists bool
+				if err := scoped.server.admin.QueryRowContext(cleanup, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)", name).Scan(&exists); err != nil || exists {
+					t.Fatalf("explicit-context cleanup leaked canceled=%t database=%s exists=%t error=%v", cancelCaller, name, exists, err)
+				}
+			}
+		})
+	}
 }
 
 func TestPostgresRoleWaitsForOwnerBackendExit(t *testing.T) {

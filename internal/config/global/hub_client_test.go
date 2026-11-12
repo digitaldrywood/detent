@@ -86,11 +86,13 @@ func TestHubRunnerIdentityConfiguration(t *testing.T) {
 func TestHubClientValidation(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		config string
-		want   string
+		name           string
+		config         string
+		want           string
+		runtimeProject bool
 	}{
 		{name: "mapping", config: "client: enabled", want: "client: must be a mapping"},
+		{name: "unmapped runner project", config: "client:\n  hub_url: https://hub.example.test\n  token_env: HUB_TOKEN\n  organization_id: org_example", want: "Hub runner project must be mapped in client.native_projects", runtimeProject: true},
 		{name: "native organization", config: "client:\n  hub_url: https://hub.example.test\n  native_projects:\n    local: prj_example", want: "client.organization_id is required"},
 		{name: "native project path", config: "client:\n  hub_url: https://hub.example.test\n  organization_id: org_example\n  native_projects:\n    local: prj_bad/path", want: "client.native_projects must map"},
 		{name: "URL required", config: "client:\n  capacity: 2", want: "client.hub_url is required"},
@@ -101,15 +103,30 @@ func TestHubClientValidation(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := Parse([]byte(`apiVersion: detent/v1
+			cfg, err := Parse([]byte(`apiVersion: detent/v1
 kind: GlobalConfig
 `+test.config+`
 global:
   max_concurrent_agents: 8
   scheduling: weighted
 `), test.name+".yaml")
+			operation := "Parse"
+			if test.runtimeProject {
+				if err != nil {
+					t.Fatalf("Parse() error before runtime project: %v", err)
+				}
+				paths := createProjectFiles(t)
+				cfg.Projects = []Project{{ID: "local", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1}}
+				mapped := cfg
+				mapped.Client.NativeProjects = map[string]string{"local": "prj_example"}
+				if err := mapped.Validate(); err != nil {
+					t.Fatalf("Validate() error for mapped runtime project: %v", err)
+				}
+				operation = "Validate"
+				err = cfg.Validate()
+			}
 			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("Parse() error = %v, want containing %q", err, test.want)
+				t.Fatalf("%s() error = %v, want containing %q", operation, err, test.want)
 			}
 		})
 	}

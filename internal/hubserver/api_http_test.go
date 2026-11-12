@@ -135,8 +135,10 @@ func TestAPIRefusals(t *testing.T) {
 		if err := decodeAPIJSON(c, &request); err != nil {
 			return err
 		}
-		_, err := updateMonthlyBudgetOperation(request)(c.Request().Context(), nil, nativeScope{}, time.Time{})
-		return s.nativeAPIError(c, err)
+		if err := request.Policy.Validate(); err != nil {
+			return s.nativeAPIError(c, nativePublicInvalid(err.Error()))
+		}
+		return nil
 	}
 	for _, test := range []struct {
 		name, path, body, code, reason string
@@ -155,7 +157,6 @@ func TestAPIRefusals(t *testing.T) {
 		{"token selected projects", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"selected"}`, "invalid_request", "Selected project access requires at least one project", http.StatusUnprocessableEntity, keyRefusal(true)},
 		{"token all projects", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"all","project_ids":["private-project"]}`, "invalid_request", "All project access cannot include selected project IDs", http.StatusUnprocessableEntity, keyRefusal(true)},
 		{"outbox limit", "/api/v1/outbox/health?limit=0", "", "invalid_query", "limit must be between 1 and 200", http.StatusUnprocessableEntity, (*Service).outboxHealth},
-		{"backup destination", "/api/v1/backup", `{}`, "invalid_request", "A new absolute backup output path is required", http.StatusUnprocessableEntity, (*Service).backupDatabase},
 		{"attachment metadata", nativeBase + "/attempts/:attempt/attachment-metadata", `{}`, "invalid_request", "Invalid attachment metadata", http.StatusUnprocessableEntity, (*Service).recordCloudAttachment},
 		{"archive query", nativeBase + "/work-items?archive_url=private-token", "", "invalid_request", "archive_url supports true or false", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
 		{"repeated archive query", nativeBase + "/work-items?archive_url=true&archive_url=false", "", "invalid_request", "archive_url supports true or false", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
@@ -170,11 +171,10 @@ func TestAPIRefusals(t *testing.T) {
 			return s.nativeAPIError(c, s.checkAttachmentEvidence(c, nil))
 		}},
 		{"outbox cursor", "/api/v1/outbox/health?cursor=private-token", "", "invalid_cursor", "Outbox cursor is invalid", http.StatusUnprocessableEntity, (*Service).outboxHealth},
-		{"claim ID", "/api/v1/claims", `{"work_item_id":-1}`, "invalid_claim", "work_item_id must be positive when supplied", http.StatusUnprocessableEntity, (*Service).claimWorkItem},
-		{"claim TTL", "/api/v1/claims", `{"ttl_seconds":-1}`, "invalid_claim", "ttl_seconds must be between 1 and 86400", http.StatusUnprocessableEntity, (*Service).claimWorkItem},
-		{"dependency", "/api/v1/work-items/:id/dependencies", `{}`, "invalid_dependency", "Dependency action and a distinct positive blocker_work_item_id are required", http.StatusUnprocessableEntity, (*Service).changeWorkItemDependency},
-		{"order", "/api/v1/work-items/:id/order", `{}`, "invalid_order", "Scope, state, and rank are required", http.StatusUnprocessableEntity, (*Service).changeWorkItemOrder},
-		{"private query", "/api/v1/work-items?priority=private-token", "", "invalid_query", "priority filter value is invalid", http.StatusUnprocessableEntity, (*Service).listWorkItems},
+		{"claim ID", nativeBase + "/claims", `{"work_item_id":-1}`, "invalid_request", "Request body contains an invalid field type", http.StatusUnprocessableEntity, (*Service).claimNativeIssue},
+		{"claim body limit", nativeBase + "/claims", `{"session_id":"` + strings.Repeat("x", maxAPIRequestBodyBytes) + `"}`, "payload_too_large", "Request body is too large", http.StatusRequestEntityTooLarge, (*Service).claimNativeIssue},
+		{"claim TTL", nativeBase + "/claims", `{"ttl_seconds":-1,"protocol_major":2,"capabilities":["native_issues","scoped_collaboration"]}`, "invalid_request", "Lease TTL is invalid", http.StatusUnprocessableEntity, (*Service).claimNativeIssue},
+		{"dependency key", nativeBase + "/work-items/:item/dependencies", `{}`, "invalid_request", "An idempotency key of at most 128 bytes is required", http.StatusUnprocessableEntity, (*Service).changeNativeDependency},
 		{"key administration", "/internal/keys/admin", "", "forbidden", "Organization administrator service access is required", http.StatusForbidden, (*Service).entryKeyAdmin},
 		{"key context", "/internal/keys/context", "", "forbidden", "Shared service identity is required to read key context", http.StatusForbidden, (*Service).entryKeyContext},
 		{"key audit", "/internal/keys/audit", `{"key_id":"key_example","owner":"private-token","event":"created"}`, "forbidden", "Shared service access is required to record key audit events", http.StatusForbidden, (*Service).entryKeyAudit},
@@ -217,7 +217,11 @@ func TestAPIRefusals(t *testing.T) {
 			if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
 				t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
 			}
-			if entry["level"] != "WARN" || entry["code"] != test.code || entry["reason"] != test.reason || entry["error"] != test.reason || entry["route"] != c.Path() || failure.Message != test.reason {
+			message := test.reason
+			if test.name == "claim ID" {
+				message = "Request body is invalid: invalid type for field work_item_id"
+			}
+			if entry["level"] != "WARN" || entry["code"] != test.code || entry["reason"] != test.reason || entry["error"] != test.reason || entry["route"] != c.Path() || failure.Message != message {
 				t.Fatalf("refusal = %#v, log = %#v", failure, entry)
 			}
 			if entry["organization_id"] != "" || entry["project_id"] != "" {
@@ -228,6 +232,66 @@ func TestAPIRefusals(t *testing.T) {
 					t.Fatalf("private context escaped: %s", private)
 				}
 			}
+		})
+	}
+	var logs hostedLogBuffer
+	native := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+	first, second := native.create(t, "first refusal item"), native.create(t, "second refusal item")
+	for _, test := range []struct {
+		name, method, path, body, message string
+	}{
+		{"private query", http.MethodGet, native.base + "/work-items?priority=private-token", "", "priority must be between zero and three"},
+		{"dependency action", http.MethodPost, native.base + "/work-items/" + string(first.WorkItemID) + "/dependencies", fmt.Sprintf(`{"idempotency_key":"invalid-operation","expected_revision":1,"related_work_item_id":%q,"operation":"private-token"}`, second.WorkItemID), "Relationship operation must be add or remove"},
+		{"dependency distinct item", http.MethodPost, native.base + "/work-items/" + string(first.WorkItemID) + "/dependencies", fmt.Sprintf(`{"idempotency_key":"self-dependency","expected_revision":1,"related_work_item_id":%q,"operation":"add"}`, first.WorkItemID), "An issue cannot be related to itself"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			logStart := len(logs.String())
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			request.Header.Set(echo.HeaderAuthorization, "Bearer "+native.token)
+			native.service.Handler().ServeHTTP(response, request)
+			failure := requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
+			logged := logs.String()[logStart:]
+			route := nativeBase + "/work-items"
+			if strings.Contains(test.path, "/dependencies") {
+				route += "/:item/dependencies"
+			}
+			var entry map[string]any
+			matched := 0
+			for _, line := range strings.Split(strings.TrimSpace(logged), "\n") {
+				if line == "" {
+					continue
+				}
+				var candidate map[string]any
+				if err := json.Unmarshal([]byte(line), &candidate); err != nil {
+					t.Fatalf("invalid JSON log: %v: %s", err, line)
+				}
+				if candidate["level"] == "WARN" && candidate["route"] == route && candidate["method"] == test.method && candidate["code"] == "invalid_request" {
+					entry = candidate
+					matched++
+				}
+			}
+			if matched != 1 {
+				t.Fatalf("matching request refusal warnings=%d, want1: %s", matched, logged)
+			}
+			if entry["route"] != route || entry["organization_id"] != string(native.project.OrganizationID) || entry["project_id"] != string(native.project.ID) {
+				t.Fatalf("validated refusal scope or route = %#v", entry)
+			}
+			if failure.Message != test.message || entry["level"] != "WARN" || entry["reason"] != test.message || entry["error"] != test.message || entry["code"] != "invalid_request" {
+				t.Fatalf("refusal = %#v, log = %#v", failure, entry)
+			}
+			if strings.Contains(logged+response.Body.String(), "private-token") {
+				t.Fatal("private query or operation escaped in refusal")
+			}
+		})
+	}
+	for _, test := range []struct{ name, method, path string }{
+		{"retired backup", http.MethodPost, "/api/v1/backup"},
+		{"retired ordering", http.MethodPost, "/api/v1/work-items/1/order"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireNativeCode(t, performHubAPIRequest(t, native.service, test.method, test.path, native.token, map[string]string{}), http.StatusNotFound, "not_found")
 		})
 	}
 }

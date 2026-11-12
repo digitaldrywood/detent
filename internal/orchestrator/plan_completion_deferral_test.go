@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +16,6 @@ import (
 )
 
 func TestPlanCompletionCoordinationDeferral(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	for _, restart := range []bool{false, true} {
 		name := "retry"
 		if restart {
@@ -30,13 +25,7 @@ func TestPlanCompletionCoordinationDeferral(t *testing.T) {
 			now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
 			issue := completionDeferralIssue("plan", "In Progress")
 			tracker := &planCompletionTracker{completionDeferralConnector: completionDeferralConnector{issue: issue}}
-			dbPath := filepath.Join(t.TempDir(), "detent.db")
-			runtimeStore := openCompletionDeferralStoreWithoutCleanup(t, dbPath)
-			t.Cleanup(func() {
-				if err := runtimeStore.Close(); err != nil {
-					t.Error(err)
-				}
-			})
+			runtimeStore := newRuntimeFixture()
 			cfg := completionDeferralConfig()
 			shared := &planCompletionCoordination{}
 			ownerConfig := scheduleowner.Config{Enabled: true, Key: "plan-project"}.Normalized("example/repo", "")
@@ -91,10 +80,6 @@ func TestPlanCompletionCoordinationDeferral(t *testing.T) {
 				t.Fatal("completion retried before GitHub reset deadline")
 			}
 			if restart {
-				if err := runtimeStore.Close(); err != nil {
-					t.Fatal(err)
-				}
-				runtimeStore = openCompletionDeferralStoreWithoutCleanup(t, dbPath)
 				orch = Orchestrator{cfg: cfg, connector: tracker, workAttempts: runtimeStore, laneCoordination: shared, now: func() time.Time { return now }}
 				state = newState(cfg)
 				orch.recoverDurableWorkAttempts(t.Context(), &state, now)

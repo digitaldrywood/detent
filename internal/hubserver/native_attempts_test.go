@@ -23,14 +23,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -40,21 +41,37 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func claimNativeAttempt(t *testing.T, f nativeFixture, worker, machine, session string, item tracker.NativeWorkItemID, policyIDs ...string) tracker.NativeLease {
+func claimNativeAttempt(t *testing.T, f nativeFixture, worker, hostname, session string, item tracker.NativeWorkItemID, policyIDs ...string) tracker.NativeLease {
 	t.Helper()
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": machine, "hostname": machine, "version": "test", "capacity": 1}), http.StatusOK)
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+	if err != nil || status != http.StatusOK || credential.Runner.MachineID == "" {
+		t.Fatalf("attempt runner authentication status=%d: %v", status, err)
+	}
+	machineID := credential.Runner.MachineID
+	report := map[string]any{"id": machineID, "hostname": hostname, "display_name": "Example runner", "version": "test", "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, report), http.StatusOK)
+	report["capacity_configuration"] = runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.now()}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machineID)+"/heartbeat", worker, report), http.StatusOK)
 	policyID := hubTestPolicy().ID
 	if len(policyIDs) > 0 {
 		policyID = policyIDs[0]
 	}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{
-		PolicyID: policyID, WorkItemID: item, MachineID: tracker.MachineID(machine), SessionID: session,
+		PolicyID: policyID, WorkItemID: item, MachineID: machineID, SessionID: session,
 		TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
 	})
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease
 	decodeHubResponse(t, response, &lease)
 	return lease
+}
+
+func reportRunnerCapacity(t *testing.T, service *Service, projectBase, credential string, machine tracker.MachineID, displayName string, backends isolation.Report, capacity int) {
+	t.Helper()
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, projectBase+"/machines/"+string(machine)+"/heartbeat", credential, map[string]any{
+		"display_name": displayName, "capacity": capacity, "version": "test", "backend_isolation": backends,
+		"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, Manageable: true, ObservedAt: service.config.now()},
+	}), http.StatusOK)
 }
 
 func nativeStartedEvent(lease tracker.NativeLease) tracker.NativeRunEvent {
@@ -103,8 +120,12 @@ func nativeAttemptListingScope(t *testing.T, f nativeFixture) nativeScope {
 	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 }
 
-func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker.NativeIssue, session string) tracker.NativeLease {
+func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker.NativeIssue, session string, duration ...time.Duration) tracker.NativeLease {
 	t.Helper()
+	ttl := time.Hour
+	if len(duration) > 0 {
+		ttl = duration[0]
+	}
 	f := runner.nativeFixture
 	var claimed leasestore.Lease
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -112,7 +133,7 @@ func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker
 		if err != nil {
 			return fmt.Errorf("read attempt work item %s: %w", issue.WorkItemID, err)
 		}
-		claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(runner.binding.MachineID), SessionID: session, LeaseID: newNativeID("lease"), TTL: time.Hour})
+		claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(runner.binding.MachineID), SessionID: session, LeaseID: newNativeID("lease"), TTL: ttl})
 		if err != nil {
 			return fmt.Errorf("claim work item: %w", err)
 		}
@@ -473,6 +494,140 @@ func BenchmarkNativeAttemptPageEncoding(b *testing.B) {
 	}
 }
 
+func reopenNativeAttemptService(t *testing.T, previous *Service) *Service {
+	t.Helper()
+	admin := nativeAttemptTestDatabase(t, nativeFixture{service: previous})
+	config := previous.config
+	config.TenantRepository, config.AccessRepository, config.BillingRepository = nil, nil, nil
+	config.NativeRunEvents, config.ConversationDispatch, config.ProjectParticipants = nil, nil, nil
+	store, err := openPostgresDatabase(t.Context(), *config.Postgres)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := store.postgres
+	projectRecordDatabases.Store(repository, admin)
+	t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
+	config.Hosted = startupConfig(config.Postgres.Connection).Hosted
+	restarted := openLocalPostgresHubTestService(t, repository, config)
+	restarted.database.hostedOrganization, restarted.localOrganization, restarted.requestMetrics.organization = previous.database.hostedOrganization, previous.localOrganization, previous.requestMetrics.organization
+	if restarted.config.Postgres.Connection.Database != previous.config.Postgres.Connection.Database || restarted.config.TenantRepository == previous.config.TenantRepository {
+		t.Fatal("attempt restart changed database or retained closed repository")
+	}
+	return restarted
+}
+
+func appendNativeAttemptHistoryFixture(t *testing.T, f nativeFixture, value tracker.CollaborationEvent) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), prepared); return err }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func copyNativeAttemptFixture(t *testing.T, f nativeFixture, worker string, issue tracker.NativeIssue, first tracker.NativeLease, sourceID string, index int) tracker.NativeLease {
+	t.Helper()
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("copy runner status=%d: %v", status, err)
+	}
+	source, err := f.service.readNativeAttemptTenant(t.Context(), nativeAttemptListingScope(t, f), string(issue.WorkItemID), sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.FencingToken != first.FencingToken {
+		t.Fatal("copy source changed")
+	}
+	var template leasestore.Attempt
+	var checkpoint attachment.ArchiveReference
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		template, err = r.Attempt(t.Context(), source.AttemptID)
+		if err != nil {
+			return err
+		}
+		reader, ok := r.(attemptArchiveReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		object, err := reader.ArchiveObjectByKey(t.Context(), stringValue(template.CheckpointObjectKey))
+		checkpoint = object.Reference
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := runnerFixture{nativeFixture: f, binding: credential.Runner.Binding}
+	lease := nativeAttemptFixtureLease(t, runner, issue, fmt.Sprintf("historical-%d", index), 90*time.Second)
+	start := nativeStartedEvent(lease)
+	for _, sequence := range []int64{1, 2, 3} {
+		data := start.Data
+		status := "running"
+		if sequence == 3 {
+			data = source.NativeRunData
+			data.AttemptID, data.RunID, data.LeaseID, data.FencingToken, data.SessionID = start.Data.AttemptID, start.Data.RunID, lease.ID, lease.FencingToken, lease.SessionID
+			status = "succeeded"
+		} else if sequence == 2 {
+			data.Handoff = nativeTestCheckpoint()
+		}
+		data.Sequence = sequence
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := f.service.runDetailStore().StoreDetail(t.Context(), string(f.project.OrganizationID), raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event := leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: string(lease.ID), FencingToken: int64(lease.FencingToken)}, RunID: data.RunID, Sequence: sequence, Status: status, StartedAt: source.StartedAt, PayloadReference: ref, PayloadObjectKey: ref.Key, Usage: data.Usage}
+		if sequence > 1 {
+			event.CheckpointObjectKey, event.CheckpointPreservesSource, event.CheckpointReference = template.CheckpointObjectKey, template.CheckpointPreservesSource, checkpoint
+		}
+		if data.Runtime != nil {
+			event.RuntimeHeartbeatAt = new(data.Runtime.HeartbeatAt)
+		}
+		if data.Disposition != nil && data.Disposition.HumanAction {
+			event.HumanActionStatus = new(data.Disposition.Status)
+		}
+		var history *eventstore.Event
+		if sequence == 3 {
+			actor := (nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}).actor()
+			value := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			history = &prepared
+		}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			attempt, err := w.RecordAttempt(t.Context(), event)
+			if err != nil {
+				return err
+			}
+			if err := w.SetAttemptClaimFacts(t.Context(), attemptClaimFacts(attempt, nativeAttemptClaimDisposition(data, source.Checkpoint, issue.ProjectID), false)); err != nil {
+				return err
+			}
+			if history != nil {
+				_, err = w.AppendEvent(t.Context(), *history)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+	return lease
+}
+
 func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
@@ -508,6 +663,7 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 	foreignPreProvider.Data.TerminalFailure = &tracker.NativeTerminalFailure{ObservedAt: time.Now().UTC(), Stage: "pre_provider", ErrorClass: "lease_released", Error: "dispatch deferred"}
 
 	lifecycleTest := t
+	startedPublished := false
 	for _, test := range []struct {
 		name     string
 		event    tracker.NativeRunEvent
@@ -531,7 +687,6 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.restart {
-				config := f.service.config
 				started := time.Now()
 				if err := f.service.Shutdown(testenv.WaitContext(t, context.Background())); err != nil {
 					t.Fatal(err)
@@ -539,7 +694,7 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 				if err := f.service.Close(); err != nil {
 					t.Fatal(err)
 				}
-				f.service = openTestService(lifecycleTest, config)
+				f.service = reopenNativeAttemptService(lifecycleTest, f.service)
 				t.Logf("hub_restart_seconds=%.6f", time.Since(started).Seconds())
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90})
 				requireNativeStatus(t, response, http.StatusOK)
@@ -564,12 +719,19 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 					t.Fatalf("foreign session bypassed lease ownership: %+v", result)
 				}
 			}
-			var revision int64
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce((SELECT analytics_revision FROM native_attempts WHERE id=?),0)", start.Data.AttemptID).Scan(&revision); err != nil {
+			if test.name == "start" {
+				startedPublished = true
+			}
+			var projectedSequence int64
+			if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT COALESCE((SELECT e.run_sequence FROM report_attempt_facts a JOIN report_event_facts e ON e.organization_id=a.organization_id AND e.event_id=a.latest_event_id WHERE a.organization_id=$1 AND a.attempt_id=$2),0)", f.project.OrganizationID, start.Data.AttemptID).Scan(&projectedSequence); err != nil {
 				t.Fatal(err)
 			}
-			if revision != test.revision {
-				t.Fatalf("analytics revision=%d, want %d", revision, test.revision)
+			wantSequence := test.revision
+			if startedPublished {
+				wantSequence++
+			}
+			if projectedSequence != wantSequence {
+				t.Fatalf("report projected sequence=%d, want %d", projectedSequence, wantSequence)
 			}
 			if strings.Contains(response.Body.String(), "sentinel-private") {
 				t.Fatal("public rejection disclosed private payload")
@@ -634,7 +796,7 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 		}
 	}
 	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type LIKE 'run.%'").Scan(&count); err != nil || count != 3 {
+	if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type LIKE 'run.%'", f.project.OrganizationID, f.project.ID, issue.WorkItemID).Scan(&count); err != nil || count != 3 {
 		t.Fatalf("run event count = %d, error = %v", count, err)
 	}
 }
@@ -644,31 +806,24 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		retained bool
-		archive  bool
+		closed   bool
 	}{
 		{name: "expired attempt"},
 		{name: "released retained source after runner loss", retained: true},
-		{name: "unresolved closed source stays hot", retained: true, archive: true},
+		{name: "closed unresolved source survives retention and restart", retained: true, closed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-			config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}}
-			f := newNativeFixture(t, openTestService(t, config), "", "recovery")
+			clock := &leaseTestClock{value: now}
+			config := Config{Clock: clock.Now, RunDetails: &memoryRunDetails{}}
+			f := newNativeFixture(t, newClockedPostgresNativeService(t, config), "", "recovery")
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			issue := f.create(t, "work")
-			worker := f.worker(t, "worker")
-			firstMachine := "first-machine"
-			var owner runnerFixture
-			if test.retained {
-				owner = prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
-				owner.enroll(t)
-				worker, firstMachine = owner.redemption.Credential, string(owner.binding.MachineID)
-			}
+			owner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
+			owner.enroll(t)
+			worker, firstMachine := owner.redemption.Credential, string(owner.binding.MachineID)
 			claim := func(token, machine, session string) tracker.NativeLease {
 				t.Helper()
-				if !test.retained {
-					return claimNativeAttempt(t, f, token, machine, session, issue.WorkItemID)
-				}
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, tracker.NativeClaim{
 					PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: tracker.MachineID(machine), SessionID: session,
 					TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
@@ -734,24 +889,27 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Generation: 27, Phase: "implementation", HeartbeatAt: now, Phases: []tracker.NativePhase{{Name: "implementation", StartedAt: now}}, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 168, Generation: 27, Dropped: 3, Unpaired: 2, Coverage: "partial", AsOf: now}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 			for _, elapsed := range []time.Duration{30 * time.Second, 70 * time.Second} {
-				now = now.Add(elapsed)
+				clock.Advance(elapsed)
+				now = clock.Now()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
 			}
 			if test.retained {
-				var raw, checkpoint string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT payload_object_key,checkpoint_object_key FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw, &checkpoint); err != nil {
-					t.Fatal(err)
-				}
-				if raw == "" || checkpoint == "" {
-					t.Fatal("attempt or checkpoint is not reference-backed")
-				}
-				if _, err := decodeRunCheckpoint(f.service.runDetailContext(t.Context()), f.service.database.reader, checkpoint); err != nil {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					attempt, err := r.Attempt(t.Context(), event.Data.AttemptID)
+					if err != nil {
+						return err
+					}
+					if attempt.PayloadObjectKey == "" || attempt.CheckpointObjectKey == nil || *attempt.CheckpointObjectKey == "" {
+						t.Fatal("attempt or checkpoint is not reference-backed")
+					}
+					return nil
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			var evidence tracker.NativeRuntimeEvidence
 			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/runtime", worker, nil), &evidence)
-			if !evidence.Attempt.Current || evidence.Attempt.RuntimeFreshness != "expired" {
+			if !evidence.Attempt.Current || evidence.Attempt.RuntimeFreshness != "expired" || !reflect.DeepEqual(evidence.Attempt.Checkpoint, &wantCheckpoint) {
 				t.Fatalf("renewal manufactured activity freshness=%#v", evidence.Attempt)
 			}
 			if test.retained {
@@ -763,49 +921,44 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			if err := f.service.Close(); err != nil {
 				t.Fatal(err)
 			}
-			f.service = openTestService(t, config)
-			now = now.Add(90*time.Second + time.Nanosecond)
+			f.service = reopenNativeAttemptService(t, f.service)
+			clock.Advance(90*time.Second + time.Nanosecond)
+			now = clock.Now()
 			if test.retained {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(now.Add(-runnerauth.HeartbeatTimeout-time.Minute)), owner.binding.RunnerID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), owner.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					identity.LastHeartbeatAt = now.Add(-runnerauth.HeartbeatTimeout - time.Minute)
+					return w.UpdateRunnerIdentity(t.Context(), identity)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if test.archive {
-				ctx := f.service.runDetailContext(t.Context())
-				previousContent := f.service.config.Content
-				f.service.config.Content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
-					t.Error("unresolved source was archived")
-					return nil, errors.New("unexpected publication")
-				}
-				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-				move := func(state string, at time.Time) {
+			if test.closed {
+				move := func(state string) {
 					t.Helper()
-					if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-						current, _, err := readNativeIssue(ctx, tx, scope, string(issue.WorkItemID))
-						if err != nil {
-							return err
-						}
-						from := current.State
-						current.State = state
-						_, err = persistNativeIssue(ctx, tx, scope, current, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: state}, at)
-						return err
-					}); err != nil {
-						t.Fatal(err)
-					}
+					current := readWorkItem(t, f, issue.WorkItemID, "")
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "retention-" + state}, ExpectedRevision: current.Revision, State: state, Reason: "user_requested"}), http.StatusOK)
 				}
-				move("Done", now.Add(-73*time.Hour))
-				if err := f.service.archiveClosedNativeIssues(ctx, now); err != nil {
+				move("Done")
+				if err := f.service.maintainNativeRetention(t.Context(), now.Add(73*time.Hour)); err != nil {
 					t.Fatal(err)
 				}
-				f.service.config.Content = previousContent
-				var pointers int
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_storage_archives WHERE work_item_id=?", issue.WorkItemID).Scan(&pointers); err != nil {
+				if err := f.service.Close(); err != nil {
 					t.Fatal(err)
 				}
-				if pointers != 0 {
-					t.Fatal("unresolved Change was archived")
+				f.service = reopenNativeAttemptService(t, f.service)
+				if current := readWorkItem(t, f, issue.WorkItemID, ""); current.Archived || current.State != "Done" {
+					t.Fatal("retention or restart lost the live closed unresolved issue")
 				}
-				move("Todo", now)
+				var retained tracker.NativeRecovery
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/recovery", worker, nil), &retained)
+				if retained.ChangeDetail == nil || len(retained.ChangeDetail.Versions) != 1 || retained.ChangeDetail.Versions[0].ID != version.ID || !reflect.DeepEqual(retained.ChangeDetail.Versions[0].Source, version.Source) {
+					t.Fatal("retention lost unresolved immutable source")
+				}
+				move("Todo")
 			}
 			refuseEvidence := func(mutation tracker.Mutation) {
 				t.Helper()
@@ -813,13 +966,8 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback()
 				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-				err = recordAttachmentEvidence(t.Context(), tx, scope, attachment.EvidenceRequest{Mutation: mutation, WorkItemID: issue.WorkItemID, AttemptID: event.Data.AttemptID, Caption: "Expired evidence"}, attachment.Metadata{}, now)
+				err = f.service.checkAttachmentEvidenceTenant(t.Context(), scope, attachment.EvidenceRequest{Mutation: mutation, WorkItemID: issue.WorkItemID, AttemptID: event.Data.AttemptID, Caption: "Expired evidence"})
 				want := "stale_execution"
 				if test.retained && mutation.LeaseID != "" && mutation.LeaseID != lease.ID {
 					want = "not_found"
@@ -1095,7 +1243,8 @@ func TestNativeCheckpointValidation(t *testing.T) {
 
 func TestNativeAttemptPageBounds(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "large-attempts")
 	worker := f.worker(t, "worker")
@@ -1103,54 +1252,18 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 	output := strings.Repeat("<", 64<<10)
 	var fences []tracker.FencingToken
 	var first tracker.NativeLease
+	var firstAttempt string
 	for index := range 51 {
 		if index > 0 {
-			id := newNativeID("lease")
-			result, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases
- (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at)
- SELECT ?, issue_id, machine_id, ?, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at FROM leases WHERE lease_id = ?`, id, fmt.Sprintf("historical-%d", index), first.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			fence, err := result.LastInsertId()
-			if err != nil {
-				t.Fatal(err)
-			}
-			var raw, checkpointRaw string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(payload_object_key,''),data_json),COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) FROM native_attempts WHERE lease_id=?", first.ID).Scan(&raw, &checkpointRaw); err != nil {
-				t.Fatal(err)
-			}
-			ctx := f.service.runDetailContext(t.Context())
-			var data tracker.NativeRunData
-			if err := decodeRunDetail(ctx, f.service.database.reader, raw, &data); err != nil {
-				t.Fatal(err)
-			}
-			data.AttemptID, data.LeaseID, data.FencingToken, data.RunID = fmt.Sprintf("attempt_historical_%d", index), tracker.LeaseID(id), tracker.FencingToken(fence), fmt.Sprintf("run_historical_%d", index)
-			encoded, err := json.Marshal(data)
-			if err != nil {
-				t.Fatal(err)
-			}
-			checkpoint, err := decodeRunCheckpoint(ctx, f.service.database.reader, checkpointRaw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			checkpointJSON, err := json.Marshal(checkpoint)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts
- (id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,artifact_ids_json,started_at,updated_at,work_item_revision,dispatch_generation)
- SELECT ?,organization_id,project_id,work_item_id,?,?,?,sequence,status,?,?,artifact_ids_json,started_at,updated_at,work_item_revision,dispatch_generation FROM native_attempts WHERE lease_id=?`, data.AttemptID, id, fence, data.RunID, string(encoded), string(checkpointJSON), first.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			fences = append(fences, tracker.FencingToken(fence))
+			lease := copyNativeAttemptFixture(t, f, worker, issue, first, firstAttempt, index)
+			fences = append(fences, lease.FencingToken)
 			continue
 		}
 		lease := claimNativeAttempt(t, f, worker, "machine", fmt.Sprintf("session-%d", index), issue.WorkItemID)
 		first = lease
 		start := nativeStartedEvent(lease)
 		start.IdempotencyKey = fmt.Sprintf("start-%d", index)
+		firstAttempt = start.Data.AttemptID
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
 		checkpoint := start
 		checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", fmt.Sprintf("checkpoint-%d", index), 2
@@ -1170,7 +1283,23 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
 		var dispositionStatus string
 		var dispositionHumanAction bool
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT disposition_status,disposition_human_action FROM native_attempts WHERE id=?", finish.Data.AttemptID).Scan(&dispositionStatus, &dispositionHumanAction); err != nil {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			attempt, err := r.Attempt(t.Context(), finish.Data.AttemptID)
+			if err != nil {
+				return err
+			}
+			dispositionHumanAction = stringValue(attempt.ClaimDisposition) == "human_action"
+			deltas, err := r.BoardDeltas(t.Context(), f.project.ID, 0, corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			for _, delta := range deltas {
+				if delta.Topic == "human_action" && delta.EntityID == finish.Data.AttemptID && delta.Kind == "upsert" {
+					dispositionStatus = delta.Status
+				}
+			}
+			return nil
+		}); err != nil {
 			t.Fatal(err)
 		}
 		if dispositionStatus != "blocked" || !dispositionHumanAction {
@@ -1315,27 +1444,23 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 	if !omitted {
 		t.Fatal("fixture did not exercise large history data omission")
 	}
-	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers", worker, nil)
+	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers&limit=100", worker, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var projected tracker.Page[tracker.CollaborationEvent]
 	decodeHubResponse(t, response, &projected)
 	found := false
 	for _, event := range projected.Items {
-		if event.Type == "run.finished" {
-			found = event.DataOmission == nil && event.Data.Run != nil && event.Data.Run.FencingToken == first.FencingToken && event.Data.Run.AttemptID != "" && event.Data.Run.Runtime == nil
+		if event.Type == "run.finished" && event.Data.Run != nil && event.Data.Run.FencingToken == first.FencingToken {
+			found = event.DataOmission == nil && event.Data.Run.AttemptID != "" && event.Data.Run.Runtime == nil
 		}
 	}
 	if !found {
 		t.Fatal("blocker history omitted recorded run authority")
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events
- (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at)
- SELECT ?, organization_id, project_id, work_item_id, sequence+100, 'issue.edited', schema_version,
- '{"kind":"human","principal_id":"operator"}', json_set(data_json, '$.revision', '9'), recorded_at
- FROM collaboration_events WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND type = 'run.finished'`, newNativeID("evt"), f.project.OrganizationID, f.project.ID, issue.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers", worker, nil)
+	firstRun := full[0].NativeRunData
+	edit := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Revision: 9, Run: &firstRun}}
+	appendNativeAttemptHistoryFixture(t, f, edit)
+	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers&limit=100", worker, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &projected)
 	found = false
@@ -1363,9 +1488,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',data_json=? WHERE lease_id=?", string(encoded), first.ID); err != nil {
-		t.Fatal(err)
-	}
+	nativeAttemptListingPayload(t, f, full[0].AttemptID, encoded)
 	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=detail&limit=1", worker, nil)
 	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 	if len(full) == 0 {
@@ -1375,9 +1498,12 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		t.Fatal("oversized record refusal lost item or attempt identity")
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=blockers&limit=1", worker, nil), http.StatusOK)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE lease_id = ?`, strings.Repeat("<", 64<<10), first.ID); err != nil {
+	oversized.CompletionBody = strings.Repeat("<", 64<<10)
+	encoded, err = json.Marshal(oversized)
+	if err != nil {
 		t.Fatal(err)
 	}
+	nativeAttemptListingPayload(t, f, full[0].AttemptID, encoded)
 	for _, view := range []string{"blockers", "recorded_blockers"} {
 		t.Run("oversized_pagination/"+view, func(t *testing.T) {
 			params := url.Values{"view": {view}, "limit": {"200"}}
@@ -1456,27 +1582,29 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 	denied := other.worker(t, "denied")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=blockers", denied, nil), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers", denied, nil), http.StatusNotFound)
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	var historyRecord eventstore.Event
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		rows, err := r.HistoryEvents(t.Context(), f.project.ID, issue.WorkItemID, 0, corestore.MaxPageSize)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.Type == "run.finished" {
+				historyRecord = row
+				return nil
+			}
+		}
+		return corestore.ErrNotFound
+	}); err != nil {
+		t.Fatal(err)
+	}
+	historySource, err := eventstore.NewContent(f.service.runDetailStore()).Event(t.Context(), historyRecord)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	var sequence int64
-	var source string
-	if err := tx.QueryRowContext(t.Context(), "SELECT max(sequence) FROM collaboration_events WHERE work_item_id=?", issue.WorkItemID).Scan(&sequence); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.QueryRowContext(t.Context(), "SELECT id FROM collaboration_events WHERE work_item_id=? AND type='run.finished' LIMIT 1", issue.WorkItemID).Scan(&source); err != nil {
-		t.Fatal(err)
-	}
-	for index := range 101 {
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
-SELECT ?,organization_id,project_id,work_item_id,?,type,schema_version,actor_json,data_json,recorded_at FROM collaboration_events WHERE id=?`, newNativeID("evt"), sequence+int64(index)+1, source); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
+	for range 101 {
+		historySource.ID, historySource.AggregateSequence = newNativeID("evt"), 0
+		appendNativeAttemptHistoryFixture(t, f, historySource)
 	}
 	started := time.Now()
 	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=timeline&direction=newest&limit=100", worker, nil)
@@ -1496,131 +1624,252 @@ SELECT ?,organization_id,project_id,work_item_id,?,type,schema_version,actor_jso
 }
 
 func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
-	for _, mode := range []string{"superseded", "released", "expired repair", "released repair", "superseded repair", "revoked", "release rollback"} {
+	for _, mode := range []string{"superseded", "superseded imported", "released", "expired repair", "released repair", "superseded repair", "revoked", "release rollback"} {
 		t.Run(mode, func(t *testing.T) {
-			now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
-			details := &memoryRunDetails{}
-			f := newDefaultNativeFixture(t, Config{RunDetails: details, now: func() time.Time { return now }})
-			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-				t.Fatal(err)
-			}
+			ctx := t.Context()
+			clock := &leaseTestClock{value: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+			f := newDefaultNativeFixture(t, Config{now: clock.Now})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			owner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
-			owner.enroll(t)
+			enroll := func() runnerFixture {
+				t.Helper()
+				runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+				runner.enroll(t)
+				path := f.base + "/machines/" + string(runner.binding.MachineID) + "/heartbeat"
+				body := map[string]any{"capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, body), http.StatusOK)
+				return runner
+			}
+			owner := enroll()
 			items := []tracker.NativeIssue{f.create(t, "Lost execution"), f.create(t, "Current execution")}
-			leases := make([]tracker.NativeLease, len(items))
+			claim := func(runner runnerFixture, item tracker.NativeWorkItemID, session string, ttl int64) tracker.NativeLease {
+				t.Helper()
+				request := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: item, MachineID: runner.binding.MachineID, SessionID: session, TTLSeconds: ttl, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request)
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				return lease
+			}
+			leases := []tracker.NativeLease{
+				claim(owner, items[0].WorkItemID, "lost-session", 90),
+				claim(owner, items[1].WorkItemID, "current-session", 180),
+			}
+			lease := leases[0]
+			organization, project := f.project.OrganizationID, f.project.ID
+			repository := f.service.config.TenantRepository
+			admin := nativeAttemptTestDatabase(t, f)
+			var newerAttempt leasestore.Attempt
+			if mode == "superseded imported" {
+				if _, err := admin.ExecContext(ctx, `UPDATE leases SET released_at=$1,release_reason='released' WHERE organization_id=$2 AND lease_id=$3`,
+					clock.Now(), organization, string(lease.ID)); err != nil {
+					t.Fatal(err)
+				}
+				newerRunner := enroll()
+				newer := claim(newerRunner, items[0].WorkItemID, "newer-session", 90)
+				event := nativeStartedEvent(newer)
+				event.IdempotencyKey = "start_newer"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(items[0].WorkItemID)+"/events", newerRunner.redemption.Credential, event), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(newer.ID)+"/release", newerRunner.redemption.Credential,
+					tracker.NativeLeaseMutation{FencingToken: newer.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					newerAttempt, err = r.Attempt(ctx, event.Data.AttemptID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if newer.FencingToken <= lease.FencingToken || newerAttempt.Status != "cancelled" {
+					t.Fatalf("expected newer terminal attempt: %+v", newerAttempt)
+				}
+				if _, err := admin.ExecContext(ctx, `UPDATE leases SET released_at=NULL,release_reason='' WHERE organization_id=$1 AND lease_id=$2`,
+					organization, string(lease.ID)); err != nil {
+					t.Fatal(err)
+				}
+			}
 			events := make([]tracker.NativeRunEvent, len(items))
 			for i, item := range items {
-				claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: item.WorkItemID, MachineID: owner.binding.MachineID, SessionID: fmt.Sprintf("session-%d", i), TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", owner.redemption.Credential, claim)
-				requireNativeStatus(t, response, http.StatusOK)
-				decodeHubResponse(t, response, &leases[i])
 				events[i] = nativeStartedEvent(leases[i])
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", owner.redemption.Credential, events[i]), http.StatusOK)
 			}
-			f.service.maintainNativeBoard(t.Context())
-			lease := leases[0]
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-			exec := func(query string, args ...any) {
-				t.Helper()
-				if _, err := f.service.database.db.ExecContext(t.Context(), query, args...); err != nil {
-					t.Fatal(err)
-				}
+			if err := f.service.maintainBoardRecords(ctx); err != nil {
+				t.Fatal(err)
 			}
+
 			switch mode {
-			case "release rollback":
-				exec("CREATE TRIGGER reject_attempt_cancel BEFORE UPDATE OF status ON native_attempts BEGIN SELECT RAISE(ABORT, 'cancel failed'); END")
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusInternalServerError)
-				var released bool
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT released_at IS NOT NULL FROM leases WHERE lease_id=?", lease.ID).Scan(&released); err != nil {
-					t.Fatal(err)
+			case "released", "release rollback":
+				want := http.StatusNoContent
+				if mode == "release rollback" {
+					if _, err := admin.ExecContext(ctx, `CREATE FUNCTION reject_attempt_cancel() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cancel failed'; END $$`); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := admin.ExecContext(ctx, `CREATE TRIGGER reject_attempt_cancel BEFORE UPDATE OF status ON native_attempts FOR EACH ROW WHEN (NEW.status = 'cancelled') EXECUTE FUNCTION reject_attempt_cancel()`); err != nil {
+						t.Fatal(err)
+					}
+					want = http.StatusInternalServerError
 				}
-				if released {
-					t.Fatal("lease release committed without attempt cancellation")
-				}
-			case "released":
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), want)
 			case "revoked":
-				ctx := f.service.runDetailContext(t.Context())
-				_, err := prepareContentMutation(ctx, f.service.database.reader, func() (struct{}, error) {
-					tx, err := f.service.database.db.BeginTx(ctx, nil)
+				if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(ctx, owner.binding.RunnerID)
 					if err != nil {
-						return struct{}{}, err
+						return err
 					}
-					defer tx.Rollback()
-					if err := revokeRunnerIdentityInTx(ctx, tx, scope, owner.binding.RunnerID, now); err != nil {
-						return struct{}{}, err
-					}
-					return struct{}{}, tx.Commit()
-				})
-				if err != nil {
+					return w.RevokeAccessCredential(ctx, identity.TokenID, clock.Now())
+				}); err != nil {
 					t.Fatal(err)
 				}
 			default:
-				exec("UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(now), lease.ID)
-				if mode == "superseded" {
-					replacement := claimNativeAttempt(t, f, f.worker(t, "replacement"), "replacement-machine", "replacement-session", items[0].WorkItemID)
-					if replacement.FencingToken <= lease.FencingToken {
+				clock.Advance(lease.ExpiresAt.Sub(clock.Now()))
+				if mode == "released repair" || mode == "superseded repair" {
+					result, err := admin.ExecContext(ctx, `UPDATE leases SET released_at=$1, release_reason='released' WHERE organization_id=$2 AND lease_id=$3 AND fencing_token=$4`, clock.Now(), organization, string(lease.ID), int64(lease.FencingToken))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if n, err := result.RowsAffected(); err != nil || n != 1 {
+						t.Fatalf("seed one released lease: rows=%d error=%v", n, err)
+					}
+				}
+				if mode == "superseded" || mode == "superseded imported" || mode == "superseded repair" {
+					replacement := enroll()
+					current := claim(replacement, items[0].WorkItemID, "replacement-session", 90)
+					if current.FencingToken <= lease.FencingToken || int64(current.FencingToken) <= newerAttempt.FencingToken {
 						t.Fatal("replacement reused fencing token")
 					}
-				} else {
-					if mode == "released repair" {
-						exec("UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), lease.ID)
+				}
+				if mode != "superseded" && mode != "superseded imported" {
+					if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+						now := clock.Now()
+						usage, err := r.ClaimCapacityUsage(ctx, string(owner.binding.MachineID), owner.binding.RunnerID, project, "", now)
+						if err != nil {
+							return err
+						}
+						if usage.Host != 1 || usage.Runner != 1 || usage.Project != 1 {
+							t.Errorf("stale attempt consumed capacity: %+v", usage)
+						}
+						fleet, err := r.(runnerstore.FleetReader).FleetLeases(ctx, now, 10)
+						if err != nil {
+							return err
+						}
+						var assigned []tracker.NativeWorkItemID
+						for _, row := range fleet {
+							if row.RunnerID == owner.binding.RunnerID {
+								assigned = append(assigned, row.Lease.WorkItemID)
+							}
+						}
+						if len(assigned) != 1 || assigned[0] != items[1].WorkItemID {
+							t.Errorf("runner fleet leases=%v, want only live peer %s", assigned, items[1].WorkItemID)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
 					}
-					if mode == "superseded repair" {
-						exec("UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), lease.ID)
-						replacement := claimNativeAttempt(t, f, f.worker(t, "replacement"), "replacement-machine", "replacement-session", items[0].WorkItemID)
-						if replacement.FencingToken <= lease.FencingToken {
-							t.Fatal("replacement reused fencing token")
+					if err := f.service.maintainBoardRecords(ctx); err != nil {
+						t.Fatal(err)
+					}
+					scope := nativeAttemptListingScope(t, f)
+					board, err := f.service.readBoardRecordsFor(ctx, scope, url.Values{"include": {"board"}}, true)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if mode != "superseded repair" {
+						found := false
+						for _, card := range board.Cards {
+							if card.Issue.WorkItemID == items[0].WorkItemID {
+								found = true
+								if card.Execution != nil {
+									t.Errorf("expired execution remained on board: %+v", card.Execution)
+								}
+							}
+						}
+						if !found {
+							t.Error("expired work item missing from board")
 						}
 					}
-					runner, err := readRunner(f.service.runDetailContext(t.Context()), f.service.database.reader, scope.organization, owner.binding.RunnerID, now)
-					if err != nil {
-						t.Fatal(err)
-					}
-					fleet := hostedFleetRunnerView(runner, "test", map[tracker.ProjectID]bool{scope.project: true}, now)
-					if runner.Used != 1 || runner.HostUsed != 1 || runner.ProjectUsed[scope.project] != 1 || len(fleet.Leases) != 1 || fleet.Leases[0].WorkItemID != items[1].WorkItemID {
-						t.Fatalf("stale row consumed capacity or fleet slot: runner=%+v fleet=%+v", runner, fleet)
-					}
-					if _, err := readNativeBoardExecution(t.Context(), f.service.database.reader, scope, string(items[0].WorkItemID), nil, now); mode != "superseded repair" && !errors.Is(err, sql.ErrNoRows) {
-						t.Fatalf("expired execution remained on board: %v", err)
-					}
-					summary, err := readNativeBoardSummary(t.Context(), f.service.database.reader, scope, url.Values{}, now)
-					if err != nil {
-						t.Fatal(err)
+					if board.Work == nil {
+						t.Fatal("board summary missing")
 					}
 					running := 0
-					for _, lane := range summary.Lanes {
+					for _, lane := range board.Work.Lanes {
 						running += lane.Running
 					}
 					if running != 1 {
-						t.Fatalf("board counted stale attempts: running=%d", running)
+						t.Errorf("board counted stale attempts: running=%d", running)
 					}
-					if err := f.service.convertLegacyStorage(t.Context(), now); err != nil {
+				}
+				if mode == "expired repair" {
+					scope := nativeAttemptListingScope(t, f)
+					var issueID int64
+					if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+						item, err := r.WorkItem(ctx, project, items[0].WorkItemID)
+						issueID = item.ID
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					prepared, err := f.service.prepareExpiredNativeLeaseCancellation(ctx, scope, issueID, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if prepared == nil {
+						t.Fatal("expired running attempt has no cancellation")
+					}
+					if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+						_, err := w.ExpireWithCancellation(ctx, leasestore.Fence{LeaseID: string(lease.ID), FencingToken: int64(lease.FencingToken)}, prepared.attemptCancellation())
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
+
+			if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+				if newerAttempt.ID != "" {
+					current, err := r.Attempt(ctx, newerAttempt.ID)
+					if err != nil {
+						return err
+					}
+					if !reflect.DeepEqual(current, newerAttempt) {
+						t.Errorf("replacement changed newer terminal attempt: before=%+v after=%+v", newerAttempt, current)
+					}
+				}
+				if mode == "release rollback" {
+					stored, err := r.Lease(ctx, string(lease.ID))
+					if err != nil {
+						return err
+					}
+					if stored.ReleasedAt != nil {
+						t.Error("lease release committed without attempt cancellation")
+					}
+				}
+				for i, event := range events {
+					attempt, err := r.Attempt(ctx, event.Data.AttemptID)
+					if err != nil {
+						return err
+					}
+					want := "running"
+					if mode != "release rollback" && (i == 0 || mode == "revoked") {
+						want = "cancelled"
+					}
+					if attempt.Status != want {
+						t.Errorf("item %d stored status=%s, want %s", i, attempt.Status, want)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeAttemptListingScope(t, f)
 			for i, event := range events {
-				var status, raw string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT status,COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&status, &raw); err != nil {
-					t.Fatal(err)
+				if mode == "release rollback" || i != 0 && mode != "revoked" {
+					continue
 				}
-				want := "running"
-				if mode != "release rollback" && (i == 0 || mode == "revoked") {
-					want = "cancelled"
+				attempt, err := f.service.readNativeAttemptTenant(ctx, scope, string(items[i].WorkItemID), event.Data.AttemptID)
+				if err != nil {
+					t.Errorf("read item %d retained attempt: %v", i, err)
+					continue
 				}
-				if status != want {
-					t.Fatalf("item %d stored status=%s, want %s", i, status, want)
-				}
-				if want == "cancelled" {
-					var data tracker.NativeRunData
-					if err := decodeStorageJSON(f.service.runDetailContext(t.Context()), []byte(raw), &data); err != nil {
-						t.Fatal(err)
-					}
-					if data.Outcome != "cancelled" || data.TerminalFailure == nil || data.TerminalFailure.ErrorClass != "lease_released" {
-						t.Fatalf("missing typed lease cancellation: %+v", data)
-					}
+				if attempt.Outcome != "cancelled" || attempt.TerminalFailure == nil || attempt.TerminalFailure.ErrorClass != "lease_released" {
+					t.Errorf("item %d missing typed lease cancellation: sequence=%d outcome=%q failure=%+v", i, attempt.Sequence, attempt.Outcome, attempt.TerminalFailure)
 				}
 			}
 		})

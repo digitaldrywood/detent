@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +17,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -71,8 +74,8 @@ type conversationModel struct {
 // catalogue in the order it wants read. Sorting is the client's business, and
 // what it does with the order is decide where the backend's default sits
 // (BackendDefault, `app/lib/preferences.ts`).
-func (s *Service) conversationModelChoices(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, projects []string, now time.Time) ([]conversationModel, error) {
-	models, err := reportedProviderModels(ctx, query, organization, projects, now)
+func (s *Service) conversationModelChoices(ctx context.Context, reader tenantstore.Reader, projects []tracker.ProjectID, now time.Time) ([]conversationModel, error) {
+	models, err := reportedProviderModels(ctx, reader, projects, now)
 	if err != nil {
 		return nil, err
 	}
@@ -91,15 +94,49 @@ func (s *Service) hasLunaCoordinator() bool {
 	return s.conversations != nil && s.conversations.config.Backend != nil && s.conversations.config.Model == genkitbackend.Model
 }
 
-func (s *Service) conversationModelChoiceGranted(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, now time.Time) (bool, error) {
+func (s *Service) conversationModelChoiceGranted(ctx context.Context, reader tenantstore.Reader, organization tracker.OrganizationID, now time.Time) (bool, error) {
 	if s.database.plans() == nil || s.database.hostedOrganization != organization {
 		return false, nil
 	}
-	entitlement, err := s.database.hostedEntitlement(ctx, query, now)
+	entitlement, err := s.database.hostedEntitlementRecord(ctx, reader, now)
 	if err != nil {
 		return false, err
 	}
 	return slices.Contains(entitlement.Features, "model_choice"), nil
+}
+
+func (s *Service) validateConversationPreferences(ctx context.Context, reader tenantstore.Reader, record conversationstore.Conversation, preferences conversation.Preferences, now time.Time) error {
+	models, err := s.conversationModelChoices(ctx, reader, []tracker.ProjectID{record.ProjectID}, now)
+	if err != nil {
+		return err
+	}
+	if s.hasLunaCoordinator() {
+		if record.WorkItemID != "" {
+			models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID == genkitbackend.Model })
+		} else {
+			model := preferences.ModelValue()
+			if model == "" {
+				model = s.conversationDefaultModel()
+			}
+			if model == genkitbackend.Model {
+				if effort := preferences.EffortValue(); effort != "" && effort != "low" && effort != "medium" {
+					return nativePublicInvalid("Conversation preferences are invalid")
+				}
+			} else {
+				granted, err := s.conversationModelChoiceGranted(ctx, reader, record.OrganizationID, now)
+				if err != nil {
+					return err
+				}
+				if !granted {
+					return nativePublicInvalid("Conversation preferences are invalid")
+				}
+			}
+		}
+	}
+	if err := conversation.ValidatePreferences(preferences, conversationModelValidationChoices(models)); err != nil {
+		return nativePublicInvalid("Conversation preferences are invalid")
+	}
+	return nil
 }
 
 // conversationModelValidationChoices is what ValidatePreferences checks
@@ -132,58 +169,31 @@ func (s *Service) conversationDefaultModel() string {
 // installations of it, and offering the intersection would hide a level one of
 // them can honour while offering the union would promise one the other cannot;
 // the hub picks the first and stays honest about where it came from.
-func reportedProviderModels(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, projects []string, now time.Time) ([]conversationModel, error) {
-	statement := `SELECT DISTINCT r.provider_reports_json FROM runner_identities r
-JOIN api_tokens t ON t.id = r.token_id
-WHERE r.organization_id = ? AND r.state = 'active' AND t.revoked_at IS NULL`
-	args := []any{organization}
-	if projects != nil {
-		if len(projects) == 0 {
-			return []conversationModel{}, nil
-		}
-		encoded, err := sqlList(projects)
-		if err != nil {
-			return nil, fmt.Errorf("encode project list: %w", err)
-		}
-		statement += ` AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = r.token_id AND g.organization_id = r.organization_id
- AND g.project_id IN (SELECT value FROM sql_rows(?))))`
-		args = append(args, encoded)
-	}
-	rows, err := querySQL(ctx, query, statement, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list runner provider reports: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
+func reportedProviderModels(ctx context.Context, reader tenantstore.Reader, projects []tracker.ProjectID, now time.Time) ([]conversationModel, error) {
 	models := []conversationModel{}
-	seen := map[string]struct{}{}
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, fmt.Errorf("scan runner provider reports: %w", err)
-		}
-		var reports []providercapacity.Report
-		if err := json.Unmarshal([]byte(raw), &reports); err != nil {
-			return nil, fmt.Errorf("decode runner provider reports: %w", err)
-		}
-		for _, report := range reports {
-			if !reportFresh(report, now) {
-				continue
-			}
-			for _, model := range report.Models {
-				model = strings.TrimSpace(model)
-				if model == "" {
-					continue
-				}
-				if _, duplicate := seen[model]; duplicate {
-					continue
-				}
-				seen[model] = struct{}{}
-				models = append(models, conversationModelFromReport(report, model))
-			}
-		}
+	if projects != nil && len(projects) == 0 {
+		return models, nil
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list runner provider reports: %w", err)
+	owner, ok := reader.(runnerstore.ProviderCatalogReader)
+	if !ok {
+		return nil, conversationContentUnavailable()
+	}
+	catalog, err := owner.RunnerProviderCatalog(ctx, projects, now)
+	if err != nil {
+		return nil, fmt.Errorf("list runner provider catalog: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, model := range catalog {
+		id := strings.TrimSpace(model.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		report := providercapacity.Report{Provider: model.Provider}
+		if model.Detail != nil {
+			report.ModelDetails = []providercapacity.ModelDetail{*model.Detail}
+		}
+		models = append(models, conversationModelFromReport(report, id))
 	}
 	return models, nil
 }
@@ -226,31 +236,120 @@ func conversationAgentOverrideBody(body string, preferences conversation.Prefere
 	return agentoverride.ApplyToIssueBody(body, conversationAgentOverride(preferences))
 }
 
-// writeAgentOverride keeps a linked conversation's issue body in step with
-// its preferences. The issue is read and persisted inside the caller's
-// transaction, so the revision the update bumps is the one it read; a body
-// that already says the right thing is left alone, which is what makes a
-// second identical change write nothing.
-func (c *conversationService) writeAgentOverride(ctx context.Context, tx *sql.Tx, scope nativeScope, record conversationRecord, now time.Time) error {
+type conversationPreferenceIssue struct {
+	plan    workItemRecordPlan
+	fields  workItemRecordFields
+	version eventstore.CollaborationVersion
+	event   eventstore.Event
+	search  searchstore.Document
+	changed bool
+}
+
+func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope nativeScope, record conversationRecord, preferences conversation.Preferences) (conversationPreferenceIssue, error) {
+	var result conversationPreferenceIssue
 	if record.WorkItemID == "" {
-		return nil
+		return result, nil
 	}
-	issue, _, err := readNativeIssue(ctx, tx, scope, record.WorkItemID)
+	plan, err := s.loadWorkItemPlan(ctx, scope, record.WorkItemID, "", tracker.UpdateIssue{})
 	if err != nil {
-		return fmt.Errorf("read linked issue for preferences: %w", err)
+		return result, err
 	}
-	body := conversationAgentOverrideBody(issue.Body, record.Preferences)
-	if body == issue.Body {
+	result.plan = plan
+	body := conversationAgentOverrideBody(plan.issue.Body, preferences)
+	if body == plan.issue.Body {
+		return result, nil
+	}
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		return s.authorizeWorkItemRecordScope(ctx, reader, scope)
+	}); err != nil {
+		return result, err
+	}
+	now := s.config.now().UTC().Truncate(time.Microsecond)
+	plan.issue.Body = body
+	plan.issue.Revision++
+	plan.issue.UpdatedAt, plan.issue.LastActivityAt = now, now
+	plan.fields = []string{"body"}
+	result.plan, result.changed = plan, true
+	result.fields, err = s.prepareWorkItemFields(ctx, scope.organization, plan)
+	if err != nil {
+		return result, err
+	}
+	raw, err := json.Marshal(plan.issue)
+	if err != nil {
+		return result, err
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	result.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, RecordID: record.WorkItemID, Revision: int64(plan.issue.Revision)}, raw)
+	if err != nil {
+		return result, err
+	}
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+	if err != nil {
+		return result, err
+	}
+	result.event, err = content.PrepareEvent(ctx, scope.organization, raw)
+	if err != nil {
+		return result, err
+	}
+	result.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + record.WorkItemID, SourceID: record.WorkItemID, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+	return result, err
+}
+
+func (p conversationPreferenceIssue) lock(ctx context.Context, writer tenantstore.Writer) error {
+	if p.plan.current.ID == 0 {
 		return nil
 	}
-	issue.Body = body
-	if _, err := persistNativeIssue(ctx, tx, scope, issue, "issue.edited",
-		tracker.CollaborationData{Fields: []string{"body"}}, now); err != nil {
-		return fmt.Errorf("write conversation preferences to issue: %w", err)
+	project, err := writer.ProjectRecord(ctx, p.plan.current.ProjectID)
+	if err != nil {
+		return err
 	}
-	c.logger.Info("conversation.preferences_written",
-		"conversation_id", record.ID, "work_item_id", record.WorkItemID,
-		"model", record.Preferences.Model, "reasoning_effort", record.Preferences.ReasoningEffort)
+	if !sameWorkItemProjectPlan(p.plan.project, project) {
+		return corestore.ErrSerializationFailure
+	}
+	current, err := writer.LockWorkItem(ctx, p.plan.current.ProjectID, p.plan.current.NativeID)
+	if err != nil {
+		return err
+	}
+	if current.Revision != p.plan.current.Revision {
+		return nativeConflict(tracker.Revision(current.Revision))
+	}
+	return nil
+}
+
+func (p conversationPreferenceIssue) write(ctx context.Context, writer tenantstore.Writer) error {
+	if !p.changed {
+		return nil
+	}
+	if err := writeWorkItemRecord(ctx, writer, p.plan, p.fields); err != nil {
+		return err
+	}
+	source, err := writer.LinkedSource(ctx, p.plan.current.ProjectID, p.plan.current.NativeID)
+	if err == nil {
+		if source.SnapshotSHA256 != "" {
+			source.ExpectedSnapshotSHA256 = new(source.SnapshotSHA256)
+		}
+		source.BodyOwned = true
+		if _, err := writer.UpdateLinkedSource(ctx, source); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, corestore.ErrNotFound) {
+		return err
+	}
+	if _, err := writer.CreateCollaborationVersion(ctx, p.version); err != nil {
+		return err
+	}
+	if err := writer.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: p.version.OrganizationID, ProjectID: p.version.ProjectID, WorkItemID: p.version.WorkItemID, Revision: p.version.Revision, VersionSHA256: p.version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(p.plan.issue.Body)}); err != nil {
+		return err
+	}
+	if _, err := writer.AppendEvent(ctx, p.event); err != nil {
+		return err
+	}
+	if err := writer.PutSearch(ctx, p.search, p.plan.current.Revision); err != nil {
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		return writer.PutSearch(ctx, p.search, 0)
+	}
 	return nil
 }
 

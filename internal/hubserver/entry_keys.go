@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Claims) (apiCredential, int, error) {
@@ -196,7 +197,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 	case operatortool.Reports, operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerHost, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.Activity, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate:
 		definitions, err := (hubFleetExecutor{service: s}).ListTools(ctx)
 		return entryKeyHasDefinition(definitions, name), err
-	case "set_project_icon", "set_organization_logo", "approve_project_policy", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics:
+	case "set_project_icon", "set_organization_logo", "approve_project_policy", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", "save_onboarding", operatortool.GetOrganizationModelSelection, operatortool.UpdateOrganizationModelSelection, operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics:
 		definitions, err := (hubProjectExecutor{service: s}).ListTools(ctx)
 		return entryKeyHasDefinition(definitions, name), err
 	case operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
@@ -296,7 +297,7 @@ func entryKeyToolSupported(name string) bool {
 		return true
 	case operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
 		return true
-	case "set_project_icon", "set_organization_logo", "approve_project_policy", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.Activity:
+	case "set_project_icon", "set_organization_logo", "approve_project_policy", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", "save_onboarding", operatortool.GetOrganizationModelSelection, operatortool.UpdateOrganizationModelSelection, operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.Activity:
 		return true
 	case operatortool.EditComment, operatortool.RestoreItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity:
 		return true
@@ -431,7 +432,11 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 			return s.refusedAPIError(c, http.StatusConflict, conflict.Code, conflict.Message, conflict)
 		}
 		if errors.Is(err, mutation.ErrConflict) {
-			return s.nativeAPIError(c, nativeConflict(0))
+			var revision tracker.Revision
+			if conflict != nil {
+				revision = tracker.Revision(conflict.CurrentRevision)
+			}
+			return s.nativeAPIError(c, nativeConflict(revision))
 		}
 		var request *operatortool.RequestError
 		if errors.As(err, &request) {
@@ -547,8 +552,6 @@ func entryKeyWorkspaceTool(name string) bool {
 	if name == operatortool.ActionResult || name == operatortool.ConnectionInfo {
 		return true
 	}
-	if _, err := operatortool.WorkspaceDefinition(name); err != nil {
-		return false
-	}
-	return strings.Contains(name, "conversation") || name == "list_work_item_references" || name == "list_project_actions" || name == "create_project_action" || name == "patch_project_action" || name == "delete_project_action"
+	_, err := operatortool.WorkspaceDefinition(name)
+	return err == nil
 }

@@ -38,7 +38,7 @@ func tenantAuthorityFixture(t *testing.T, configure ...func(*pgxpool.Config)) (*
 	}
 	t.Cleanup(pools.Close)
 	for _, org := range []string{"first", "second"} {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations VALUES ($1,$1,$1,true,'2026-01-01')`, org); err != nil {
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations VALUES ($1,$1,$1,false,'2026-01-01')`, org); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.ExecContext(t.Context(), `INSERT INTO hosted_tenant VALUES ($1,$1,'','','',1)`, org); err != nil {
@@ -83,6 +83,36 @@ func TestAuthorityIsolatesTenantsAndRejectsRevokedCredentials(t *testing.T) {
 				t.Fatalf("Resolve()=%v, denied=%v", err, test.denied)
 			}
 		})
+	}
+	if _, err := db.ExecContext(t.Context(), `DELETE FROM hosted_tenant WHERE organization_id='second'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		input  tenantauth.RequestIdentity
+		denied bool
+	}{
+		{"local credential without hosted tenant", tenantauth.RequestIdentity{Local: true, Organization: "second", CredentialHash: "same-proof"}, false},
+		{"hosted credential requires tenant", tenantauth.RequestIdentity{Organization: "second", CredentialHash: "same-proof"}, true},
+		{"local revoked credential", tenantauth.RequestIdentity{Local: true, Organization: "first", CredentialHash: "same-proof"}, true},
+		{"local wrong credential", tenantauth.RequestIdentity{Local: true, Organization: "second", CredentialHash: "wrong"}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scope, err := authority.Resolve(t.Context(), test.input)
+			if test.denied {
+				if !errors.Is(err, tenantauth.ErrDenied) {
+					t.Fatalf("Resolve()=%v, want denied", err)
+				}
+			} else if err != nil || scope.Organization() != test.input.Organization || scope.Principal().CredentialID != "same" {
+				t.Fatalf("local authority=%v error=%v", scope, err)
+			}
+		})
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE api_tokens SET hosted_user_id='user',hosted_membership_id='membership' WHERE organization_id='second'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.Resolve(t.Context(), tenantauth.RequestIdentity{Local: true, Organization: "second", CredentialHash: "same-proof"}); !errors.Is(err, tenantauth.ErrDenied) {
+		t.Fatalf("local hosted member error=%v", err)
 	}
 	pools.Close()
 	if _, err := authority.Resolve(t.Context(), tenantauth.RequestIdentity{Organization: "second", CredentialHash: "same-proof"}); !errors.Is(err, tenantauth.ErrUnavailable) || errors.Is(err, tenantauth.ErrDenied) {

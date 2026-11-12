@@ -25,6 +25,16 @@ import (
 )
 
 func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential apiCredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
+	return s.readDiagnosticsTenant(ctx, credential, w, "")
+}
+
+func (s *Service) readDiagnosticsTenant(ctx context.Context, credential apiCredential, w operatortool.AnalyticsWindow, requested tracker.ProjectID) (diagnosticsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if s.config.TenantRepository == nil {
+		return diagnosticsReport{}, workItemStorageUnavailable()
+	}
+	ctx = s.runDetailContext(ctx)
 	var ids []tracker.ProjectID
 	var err error
 	projectPartial := false
@@ -48,7 +58,7 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 		if !ok {
 			return ErrProjectParticipants
 		}
-		projects, err := projectReader.ProjectAccessPage(ctx, projectAccessFilter(credential, "", "", 100))
+		projects, err := projectReader.ProjectAccessPage(ctx, projectAccessFilter(credential, requested, "", 100))
 		if err != nil {
 			return err
 		}
@@ -62,6 +72,9 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 		}
 		for _, project := range projects {
 			ids = append(ids, project.ProjectID)
+		}
+		if requested != "" && (len(ids) != 1 || ids[0] != requested) {
+			return operatortool.ErrAccessDenied
 		}
 		snapshot, err = reader.DiagnosticsSnapshot(ctx, ids, w.From, w.To, s.config.now().UTC(), principal)
 		if err != nil {
@@ -98,6 +111,47 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 	report := projectTenantDiagnostics(snapshot, w)
 	content := eventstore.NewContent(s.runDetailStore())
 
+	attemptValues, attemptErrors := readDiagnosticObjects(snapshot.AttemptRecords, func(attempt diagnosticstore.Attempt) (tracker.NativeRunData, error) {
+		if attempt.Event.ID == "" {
+			return tracker.NativeRunData{}, artifact.ErrMissing
+		}
+		value, err := content.Event(ctx, attempt.Event)
+		if err != nil {
+			return tracker.NativeRunData{}, err
+		}
+		if value.Data.Run == nil || value.Data.Run.AttemptID != attempt.ID || value.AggregateID != attempt.WorkItemID || value.ProjectID != attempt.ProjectID {
+			return tracker.NativeRunData{}, artifact.ErrIntegrity
+		}
+		return *value.Data.Run, nil
+	})
+	valuesByAttempt := make(map[string]tracker.NativeRunData, len(attemptValues))
+	for index, value := range attemptValues {
+		if err := attemptErrors[index]; errors.Is(err, fs.ErrNotExist) || errors.Is(err, artifact.ErrMissing) {
+			report.Partial = true
+			continue
+		} else if err != nil {
+			return diagnosticsReport{}, fmt.Errorf("read diagnostic attempt: %w", err)
+		}
+		valuesByAttempt[snapshot.AttemptRecords[index].ID] = value
+	}
+	planning, validation := populateTenantAttemptDiagnostics(&report, snapshot, valuesByAttempt, w)
+	failures := diagnosticNativeFailures(snapshot, valuesByAttempt, w)
+	failurePage := nativeFailureSignaturePage(groupNativeFailures(failures), 0, 100)
+	report.Partial = report.Partial || failurePage.NextOffset != nil
+	refusalCount := 0
+	for _, failure := range failurePage.Items {
+		if reason, ok := strings.CutPrefix(failure.Signature, "landing refused: "); ok {
+			report.Refused = append(report.Refused, diagnosticsRefusal{Reason: reason, Count: failure.Count})
+			refusalCount += failure.Count
+		}
+	}
+	slices.SortFunc(report.Refused, func(a, b diagnosticsRefusal) int { return strings.Compare(a.Reason, b.Reason) })
+	for index := range report.Coverage {
+		if report.Coverage[index].Source == "Landing refusal reason" && refusalCount > 0 {
+			report.Coverage[index].Observed = &refusalCount
+		}
+	}
+
 	ready, claimed, skipped := 0, 0, 0
 	for _, lease := range snapshot.Leases {
 		if !lease.AcquiredAt.Before(w.From) {
@@ -112,8 +166,27 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 			decisions = append(decisions, event)
 		}
 	}
-	decisionValues, decisionErrors := readDiagnosticObjects(decisions, func(event eventstore.Event) (tracker.CollaborationEvent, error) { return content.Event(ctx, event) })
+	decisionObjects := slices.Clone(decisions)
+	for _, event := range decisions {
+		if prior, ok := snapshot.PriorDecisions[event.ID]; ok {
+			decisionObjects = append(decisionObjects, prior)
+		}
+	}
+	decisionValues, decisionErrors := readDiagnosticObjects(decisionObjects, func(event eventstore.Event) (tracker.CollaborationEvent, error) { return content.Event(ctx, event) })
+	decisionPayloads := make(map[string]tracker.CollaborationEvent, len(decisionValues))
 	for index, value := range decisionValues {
+		if decisionErrors[index] == nil {
+			decisionPayloads[decisionObjects[index].ID] = value
+		}
+	}
+	for _, err := range decisionErrors {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, artifact.ErrMissing) {
+			report.Partial = true
+		} else if err != nil {
+			return diagnosticsReport{}, fmt.Errorf("read diagnostic scheduler event: %w", err)
+		}
+	}
+	for index, value := range decisionValues[:len(decisions)] {
 		err := decisionErrors[index]
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, artifact.ErrMissing) {
 			report.Partial = true
@@ -138,6 +211,29 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 			}
 		}
 	}
+	queue, queueClaims := 0, 0
+	for _, event := range decisions {
+		value, ok := decisionPayloads[event.ID]
+		if !ok || value.Data.Decision == nil || value.Data.Decision.Source != "native_claim" || value.Data.Decision.Outcome != "claimed" {
+			continue
+		}
+		queueClaims++
+		prior, found := snapshot.PriorDecisions[event.ID]
+		previous, decoded := decisionPayloads[prior.ID]
+		if !found || !decoded {
+			report.Partial = true
+			continue
+		}
+		if nativeAnalyticsCapacityInterval(previous.Data.Decision, value.Data.Decision, prior.RecordedAt, event.RecordedAt) {
+			queue++
+		}
+	}
+	for index := range report.Coverage {
+		if report.Coverage[index].Source == "Queue intervals" {
+			report.Coverage[index].Observed = &queue
+			report.Coverage[index].Total = &queueClaims
+		}
+	}
 	report.Claimed = &claimed
 
 	if !missingDecision || ready > 0 {
@@ -145,6 +241,12 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 	}
 	if !missingDecision || skipped > 0 {
 		report.Skipped = &skipped
+	}
+	for index := range report.Coverage {
+		if report.Coverage[index].Source == "Skip reasons" {
+			report.Coverage[index].Observed = report.Skipped
+			report.Coverage[index].Total = report.Skipped
+		}
 	}
 	for _, skip := range skips {
 		report.SkipReasons = append(report.SkipReasons, skip)
@@ -187,6 +289,18 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 				}
 			}
 		}
+		if name == "Plan gate" && planning > 0 {
+			effect := fmt.Sprintf("%d recorded planning phases", planning)
+			row.Effect = &effect
+		}
+		if name == "Validator gate" && validation > 0 {
+			effect := fmt.Sprintf("%d recorded validation phases", validation)
+			row.Effect = &effect
+		}
+		if name == "Merge method" && report.MergeLanded > 0 {
+			effect := fmt.Sprintf("%d recorded landings", report.MergeLanded)
+			row.Effect = &effect
+		}
 		report.Configuration = append(report.Configuration, row)
 	}
 	report.Requests, err = s.diagnosticsRequestMetrics(ctx)
@@ -194,30 +308,28 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 }
 
 func projectTenantDiagnostics(snapshot diagnosticstore.Snapshot, w operatortool.AnalyticsWindow) diagnosticsReport {
-	out := diagnosticsReport{From: w.From, To: w.To, Partial: snapshot.Partial, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}, StorageConversions: []diagnosticsStorageConversion{}, Refused: []diagnosticsRefusal{}}
+	out := diagnosticsReport{From: w.From, To: w.To, Partial: snapshot.Partial, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}, Refused: []diagnosticsRefusal{}}
 	transitions := 0
 	waits := []float64{}
-	mergeStarted := map[[2]string]time.Time{}
 	for _, event := range snapshot.Events {
-		if event.Type != "workflow.transitioned" || !event.RecordedAt.Before(w.To) {
+		if event.Type != "workflow.transitioned" || event.RecordedAt.Before(w.From) || !event.RecordedAt.Before(w.To) {
 			continue
 		}
 		transitions++
-		key := [2]string{string(event.ProjectID), string(event.WorkItemID)}
 		if event.ToState == "Merging" {
 			out.MergeEntered++
-			mergeStarted[key] = event.RecordedAt
 		}
-		if event.FromState == "Merging" {
-			if start, ok := mergeStarted[key]; ok {
-				waits = append(waits, event.RecordedAt.Sub(start).Seconds())
-				delete(mergeStarted, key)
-			}
-			if event.ToState == "Done" {
-				out.MergeLanded++
-			}
+		if event.FromState == "Merging" && event.ToState == "Done" {
+			out.MergeLanded++
 		}
 	}
+	receipts := len(snapshot.Landings)
+	for _, landing := range snapshot.Landings {
+		if landing.EnteredAt != nil {
+			waits = append(waits, landing.At.Sub(*landing.EnteredAt).Seconds())
+		}
+	}
+
 	for at := w.From; at.Before(w.To); at = at.Add(time.Hour) {
 		out.Capacity = append(out.Capacity, diagnosticsCapacity{Hour: at})
 	}
@@ -231,7 +343,7 @@ func projectTenantDiagnostics(snapshot diagnosticstore.Snapshot, w operatortool.
 		maximum := slices.Max(waits)
 		out.MergeWaitMax = &maximum
 	}
-	out.Coverage = []diagnosticsCoverage{{Source: "Transitions", Observed: &transitions}, {Source: "Attempts", Observed: &snapshot.Attempts}, {Source: "Usage joins", Total: &snapshot.Attempts}, {Source: "Activity receipts"}, {Source: "Queue intervals"}, {Source: "Merge identity", Total: &out.MergeLanded}, {Source: "Landing refusal reason"}, {Source: "Detector tick"}}
+	out.Coverage = []diagnosticsCoverage{{Source: "Transitions", Observed: &transitions}, {Source: "Attempts", Observed: &snapshot.Attempts}, {Source: "Usage joins", Total: &snapshot.Attempts}, {Source: "Activity receipts"}, {Source: "Queue intervals"}, {Source: "Skip reasons"}, {Source: "Merge identity", Observed: &receipts, Total: &out.MergeLanded}, {Source: "Landing refusal reason"}, {Source: "Detector tick"}}
 	return out
 }
 
@@ -335,4 +447,56 @@ func populateTenantLeaseOccupancy(out *diagnosticsReport, leases []diagnosticsto
 		bucket := &out.Capacity[index]
 		bucket.Slots = (held[index] + active) / minTime(bucket.Hour.Add(time.Hour), out.To).Sub(bucket.Hour).Seconds()
 	}
+}
+
+func populateTenantAttemptDiagnostics(out *diagnosticsReport, snapshot diagnosticstore.Snapshot, values map[string]tracker.NativeRunData, w operatortool.AnalyticsWindow) (int, int) {
+	usage := make(map[string]bool)
+	for _, row := range snapshot.Usage {
+		if !row.Period.Before(w.From) && row.Period.Before(w.To) {
+			usage[row.AttemptID] = true
+		}
+	}
+	observedUsage := len(usage)
+	activity := nativeAnalyticsActivityTiming{}
+	planning, validation := 0, 0
+	for _, attempt := range snapshot.AttemptRecords {
+		value, ok := values[attempt.ID]
+		if !ok {
+			activity.ProfilesUnavailable++
+			continue
+		}
+		if value.Runtime == nil || value.Runtime.Activity == nil || !validAnalyticsActivity(*value.Runtime.Activity) {
+			activity.ProfilesUnavailable++
+		} else {
+			addNativeAnalyticsActivity(&activity, *value.Runtime.Activity, w.From, w.To)
+		}
+		if value.Runtime == nil {
+			continue
+		}
+		if value.Runtime.PhasesDropped > 0 {
+			out.Partial = true
+		}
+		for _, phase := range value.Runtime.Phases {
+			if phase.FinishedAt.IsZero() || !phase.FinishedAt.After(phase.StartedAt) || phase.FinishedAt.Before(w.From) || !phase.FinishedAt.Before(w.To) {
+				continue
+			}
+			if phase.Name == "planning" {
+				planning++
+			}
+			if phase.Name == "validation" {
+				validation++
+			}
+		}
+	}
+	receipts, total := activity.ProfilesObserved, activity.ProfilesObserved+activity.ProfilesUnavailable
+	for index := range out.Coverage {
+		switch out.Coverage[index].Source {
+		case "Usage joins":
+			out.Coverage[index].Observed = &observedUsage
+		case "Activity receipts":
+			out.Coverage[index].Observed = &receipts
+			out.Coverage[index].Total = &total
+		}
+	}
+	return planning, validation
 }

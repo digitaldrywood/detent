@@ -3,9 +3,9 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -24,19 +24,43 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestHubMCPWorkCommands(t *testing.T) {
 	f := linkedFixture(t)
+	scope := analyticsTestScope(t, f)
+	updateProject := func(ctx context.Context, mutate func(*projectstore.Record)) error {
+		return f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			mutate(&project)
+			_, err = w.UpdateProjectRecord(ctx, project)
+			return err
+		})
+	}
+	setVisual := func(ctx context.Context, visual bool) error {
+		return f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			return w.UpdateProjectContent(ctx, scope.project, project.Core.ContentSettingsRevision, visual)
+		})
+	}
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
-	call := func(name, key string, fields map[string]any) (json.RawMessage, bool) {
-		t.Helper()
+	invoke := func(name, key string, fields map[string]any) (json.RawMessage, bool, error) {
 		if fields["project_id"] == nil {
 			fields["project_id"] = f.project.ID
 		}
@@ -44,30 +68,50 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			fields["request_id"] = key
 		}
 		body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": fields, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}}}
-		response := performHubWorkCall(t, f.service, path, f.token, name, body)
-		requireNativeStatus(t, response, http.StatusOK)
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return nil, false, err
+		}
+		request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+f.token)
+		request.Header.Set("Mcp-Protocol-Version", "2026-07-28")
+		request.Header.Set("Mcp-Method", "tools/call")
+		request.Header.Set("Mcp-Name", name)
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			return nil, false, fmt.Errorf("MCP request status=%d: %s", response.Code, response.Body.String())
+		}
 		var envelope struct {
 			Result struct {
 				IsError bool            `json:"isError"`
 				Content json.RawMessage `json:"structuredContent"`
 			} `json:"result"`
 		}
-		decodeHubResponse(t, response, &envelope)
-		if envelope.Result.IsError && len(envelope.Result.Content) == 0 {
-			t.Logf("MCP %s request %s error response=%s", name, key, response.Body.String())
+		if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+			return nil, false, err
 		}
 		if name == operatortool.CreateChange || name == operatortool.PublishChangeVersion || envelope.Result.IsError {
-			return envelope.Result.Content, envelope.Result.IsError
+			return envelope.Result.Content, envelope.Result.IsError, nil
 		}
 		var content struct {
 			Data json.RawMessage `json:"data"`
 		}
 		if err := json.Unmarshal(envelope.Result.Content, &content); err != nil {
+			return nil, false, err
+		}
+		return content.Data, envelope.Result.IsError, nil
+	}
+	call := func(t *testing.T, name, key string, fields map[string]any) (json.RawMessage, bool) {
+		t.Helper()
+		raw, failed, err := invoke(name, key, fields)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return content.Data, envelope.Result.IsError
+		return raw, failed
 	}
-	raw, failed := call("file_issue", "create", map[string]any{"title": "Created", "description": "Keep body" + issueContractTestSections, "state": "Todo"})
+	raw, failed := call(t, "file_issue", "create", map[string]any{"title": "Created", "description": "Keep body" + issueContractTestSections, "state": "Todo"})
 	var created tracker.NativeIssue
 	if err := json.Unmarshal(raw, &created); err != nil || failed || created.WorkItemID == "" {
 		t.Fatalf("create=%s %v failed=%t", raw, err, failed)
@@ -83,77 +127,129 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		} else {
 			fields["queue_priority"] = "high"
 		}
-		refused, failed := call(tool, "native-"+tool, fields)
+		refused, failed := call(t, tool, "native-"+tool, fields)
 		var refusal operatortool.RequestError
 		if !failed || json.Unmarshal(refused, &refusal) != nil || refusal.Code != "invalid_request" || refusal.Message != "Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority" {
 			t.Fatalf("%s native refusal=%s failed=%t", tool, refused, failed)
 		}
 	}
-	replay, failed := call("file_issue", "create", map[string]any{"title": "Created", "description": "Keep body" + issueContractTestSections, "state": "Todo"})
+	replay, failed := call(t, "file_issue", "create", map[string]any{"title": "Created", "description": "Keep body" + issueContractTestSections, "state": "Todo"})
 	if failed || string(raw) != string(replay) {
 		t.Fatalf("creation replay=%s", replay)
 	}
 	t.Run("concurrent replication writer", func(t *testing.T) {
-		replica, err := sql.Open("sqlite", sqliteDSN(f.service.config.DatabasePath, time.Second))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = replica.Close() })
+		admin := nativeAttemptTestDatabase(t, f)
 		var contended tracker.NativeIssue
 		for _, tool := range []string{operatortool.FileIssue, operatortool.AddComment} {
-			conn, err := replica.Conn(t.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := conn.ExecContext(t.Context(), "BEGIN IMMEDIATE"); err != nil {
-				t.Fatal(err)
-			}
-			released := make(chan error, 1)
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				_, err := conn.ExecContext(t.Context(), "ROLLBACK")
-				released <- errors.Join(err, conn.Close())
-			}()
-			fields := map[string]any{"title": "Contended", "description": "Written while replication holds the lock" + issueContractTestSections, "state": "Todo"}
-			if tool == operatortool.AddComment {
-				fields = map[string]any{"identifier": contended.WorkItemID, "body": "Written while replication holds the lock"}
-			}
-			started := time.Now()
-			raw, failed := call(tool, "replication-contention-"+tool, fields)
-			waited := time.Since(started)
-			if err := <-released; err != nil {
-				t.Fatal(err)
-			}
-			if waited < 250*time.Millisecond {
-				t.Fatalf("%s finished in %s without waiting on the held replication lock", tool, waited)
-			}
-			if failed || !strings.Contains(string(raw), "Written while replication holds the lock") {
-				t.Fatalf("%s under a held replication lock = %s failed=%t", tool, raw, failed)
-			}
-			if tool == operatortool.FileIssue {
-				if err := json.Unmarshal(raw, &contended); err != nil || contended.WorkItemID == "" {
-					t.Fatalf("contended issue = %s: %v", raw, err)
+			t.Run(tool, func(t *testing.T) {
+				conn, err := admin.Conn(t.Context())
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
+				deadline, ok := t.Deadline()
+				if !ok {
+					t.Fatal("test deadline is required")
+				}
+				finished := make(chan struct{})
+				started := false
+				defer func() {
+					ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+					defer cancel()
+					_, rollbackErr := conn.ExecContext(ctx, "ROLLBACK")
+					if err := errors.Join(rollbackErr, conn.Close()); err != nil {
+						t.Error(err)
+					}
+					if started {
+						<-finished
+					}
+				}()
+				if _, err := conn.ExecContext(t.Context(), "BEGIN"); err != nil {
+					t.Fatal(err)
+				}
+				var locked tracker.ProjectID
+				if err := conn.QueryRowContext(t.Context(), "SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE", scope.organization, scope.project).Scan(&locked); err != nil {
+					t.Fatal(err)
+				}
+				var blockerPID int
+				if err := conn.QueryRowContext(t.Context(), "SELECT pg_backend_pid()").Scan(&blockerPID); err != nil {
+					t.Fatal(err)
+				}
+				fields := map[string]any{"title": "Contended", "description": "Written while replication holds the lock" + issueContractTestSections, "state": "Todo"}
+				if tool == operatortool.AddComment {
+					fields = map[string]any{"identifier": contended.WorkItemID, "body": "Written while replication holds the lock"}
+				}
+				type result struct {
+					raw    json.RawMessage
+					failed bool
+					err    error
+				}
+				results := make(chan result, 1)
+				started = true
+				go func() {
+					defer close(finished)
+					raw, failed, err := invoke(tool, "replication-contention-"+tool, fields)
+					results <- result{raw, failed, err}
+				}()
+				blocked := false
+				testenv.WaitUntil(t, t.Context(), func() error {
+					select {
+					case <-finished:
+						return nil
+					default:
+					}
+					if err := conn.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)))", blockerPID).Scan(&blocked); err != nil {
+						return err
+					}
+					if blocked {
+						return nil
+					}
+					return fmt.Errorf("%s has not reached the held project lock", tool)
+				})
+				if !blocked {
+					observed := <-results
+					if observed.err != nil {
+						t.Fatal(observed.err)
+					}
+					t.Fatalf("%s did not wait on the held replication lock", tool)
+				}
+				if _, err := conn.ExecContext(t.Context(), "ROLLBACK"); err != nil {
+					t.Fatal(err)
+				}
+				<-finished
+				observed := <-results
+				if observed.err != nil {
+					t.Fatal(observed.err)
+				}
+				raw, failed := observed.raw, observed.failed
+				if failed || !strings.Contains(string(raw), "Written while replication holds the lock") {
+					t.Fatalf("%s under a held replication lock = %s failed=%t", tool, raw, failed)
+				}
+				if tool == operatortool.FileIssue {
+					if err := json.Unmarshal(raw, &contended); err != nil || contended.WorkItemID == "" {
+						t.Fatalf("contended issue = %s: %v", raw, err)
+					}
+				}
+			})
 		}
 	})
 	t.Run("reused attachment contract", func(t *testing.T) {
-		record := attachment.Metadata{ID: conversation.NewAttachmentID(), ProjectID: string(f.project.ID), Name: "file.txt"}
-		_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) SELECT ?,?,?,id,'file.txt','text/plain',5,?,? FROM api_tokens LIMIT 1`, record.ID, f.project.OrganizationID, f.project.ID, artifact.Digest([]byte("hello")), formatHubTime(time.Now()))
-		if err != nil {
+		record := attachment.Metadata{ID: conversation.NewAttachmentID(), ProjectID: string(f.project.ID), Uploader: scope.credential.ID, Name: "file.txt", ContentType: "text/plain", Size: 5, SHA256: artifact.Digest([]byte("hello")), CreatedAt: time.Now().UTC()}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: scope.organization, Kind: "attachment", Metadata: record})
+		}); err != nil {
 			t.Fatal(err)
 		}
 		body := record.Markdown(string(f.project.OrganizationID)) + issueContractTestSections
 		var items []tracker.NativeIssue
 		for _, key := range []string{"first-attachment", "second-attachment"} {
 			fields := map[string]any{"title": key, "description": body, "state": "Todo"}
-			raw, failed := call(operatortool.FileIssue, key, fields)
+			raw, failed := call(t, operatortool.FileIssue, key, fields)
 			var item tracker.NativeIssue
 			if err := json.Unmarshal(raw, &item); err != nil || failed || item.WorkItemID == "" || item.Body != body {
 				t.Fatalf("%s result=%s isError=%t err=%v", key, raw, failed, err)
 			}
 			items = append(items, item)
-			replay, failed := call(operatortool.FileIssue, key, fields)
+			replay, failed := call(t, operatortool.FileIssue, key, fields)
 			if failed || string(replay) != string(raw) {
 				t.Fatalf("%s replay=%s isError=%t", key, replay, failed)
 			}
@@ -161,7 +257,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		if items[0].WorkItemID == items[1].WorkItemID {
 			t.Fatal("attachment reuse returned the first issue")
 		}
-		raw, failed := call(operatortool.AddComment, "attachment-comment", map[string]any{"identifier": items[1].WorkItemID, "body": body})
+		raw, failed := call(t, operatortool.AddComment, "attachment-comment", map[string]any{"identifier": items[1].WorkItemID, "body": body})
 		var comment tracker.NativeComment
 		if err := json.Unmarshal(raw, &comment); err != nil || failed || comment.ID == "" || comment.Body != body {
 			t.Fatalf("comment result=%s isError=%t err=%v", raw, failed, err)
@@ -179,7 +275,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		if receipt.Result.Content.CommentID != comment.ID || !strings.HasSuffix(receipt.Result.Content.URL, "/comments#"+comment.ID) {
 			t.Fatalf("add_comment receipt = %+v, want comment_id %s", receipt.Result.Content, comment.ID)
 		}
-		metadata, err := f.service.readCloudAttachment(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, record.ID)
+		metadata, err := f.service.readCloudAttachment(t.Context(), scope, record.ID)
 		if err != nil || len(metadata.ReferencedBy) != 3 {
 			t.Fatalf("references=%v err=%v", metadata.ReferencedBy, err)
 		}
@@ -195,7 +291,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	})
 	for rank := 1; rank <= 4; rank++ {
 		fields := map[string]any{"title": "Priority", "description": "Exact rank" + issueContractTestSections, "priority": rank}
-		raw, failed := call("file_issue", "rank-"+strconv.Itoa(rank), fields)
+		raw, failed := call(t, "file_issue", "rank-"+strconv.Itoa(rank), fields)
 		var item tracker.NativeIssue
 		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Priority == nil || *item.Priority != rank-1 || item.State != "Todo" {
 			t.Fatalf("rank %d=%s %v", rank, raw, err)
@@ -212,13 +308,13 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	}
 	f.service.config.ImportBackend = linkedTestImporter{snapshot: largeSnapshot}
 	linkedArgs := map[string]any{"github_issue_url": largeSnapshot.URL, "state": "Todo"}
-	linkedRaw, failed := call("file_issue", "linked", linkedArgs)
+	linkedRaw, failed := call(t, "file_issue", "linked", linkedArgs)
 	var linked tracker.NativeIssue
 	if err := json.Unmarshal(linkedRaw, &linked); err != nil || failed || linked.State != "Triage" || linked.LinkedSource == nil || linked.LinkedSource.URL != "https://github.com/acme/orders/issues/12" {
 		t.Fatalf("linked creation=%s %v", linkedRaw, err)
 	}
 	for _, key := range []string{"linked", "duplicate-link"} {
-		replay, failed := call("file_issue", key, linkedArgs)
+		replay, failed := call(t, "file_issue", key, linkedArgs)
 		if failed || string(replay) != string(linkedRaw) {
 			t.Fatalf("linked retry=%s", replay)
 		}
@@ -230,7 +326,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			fields = map[string]any{"identifier": linked.WorkItemID, "expected_revision": strconv.FormatInt(int64(linked.Revision), 10), "title": "Updated large item"}
 			key = "large-edit"
 		}
-		bounded, failed := call(tool, key, fields)
+		bounded, failed := call(t, tool, key, fields)
 		var item struct {
 			tracker.NativeIssue
 			ContentRead struct {
@@ -283,19 +379,22 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		}
 	}
 	f.service.config.ImportBackend = linkedTestImporter{snapshot: linkedSnapshot()}
-	if _, failed := call("file_issue", "linked", map[string]any{"github_issue_url": "github.com/acme/orders/issues/13", "state": "Todo"}); !failed {
+	if _, failed := call(t, "file_issue", "linked", map[string]any{"github_issue_url": "github.com/acme/orders/issues/13", "state": "Todo"}); !failed {
 		t.Fatal("changed linked creation retry was accepted")
 	}
 	for _, link := range []string{"https://github.com/acme/private/issues/12", "https://github.com/acme/orders/pull/12", "https://example.com/acme/orders/issues/12"} {
-		if _, failed := call("file_issue", link, map[string]any{"github_issue_url": link}); !failed {
+		if _, failed := call(t, "file_issue", link, map[string]any{"github_issue_url": link}); !failed {
 			t.Fatalf("foreign linkage accepted: %s", link)
 		}
 	}
 	t.Run("repository association diagnostics", func(t *testing.T) {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=NULL WHERE id=?", f.project.ID); err != nil {
+		if err := updateProject(t.Context(), func(project *projectstore.Record) {
+			project.Settings.Repository, project.Settings.CheckoutRepository = "", ""
+			project.Settings.RepositoryEnabled = false
+		}); err != nil {
 			t.Fatal(err)
 		}
-		raw, failed := call("file_issue", "unbound-link", map[string]any{"github_issue_url": "github.com/acme/orders/issues/13", "state": "Todo"})
+		raw, failed := call(t, "file_issue", "unbound-link", map[string]any{"github_issue_url": "github.com/acme/orders/issues/13", "state": "Todo"})
 		var refusal struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
@@ -303,21 +402,15 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		if err := json.Unmarshal(raw, &refusal); err != nil || !failed || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "get_project_integration") || !strings.Contains(refusal.Message, "bind_native_repository") {
 			t.Fatalf("missing association refusal=%s failed=%t err=%v", raw, failed, err)
 		}
-		raw, failed = call("file_issue", "unbound-native", map[string]any{"description": nativeContractTestBody, "title": "Native without repository", "state": "Todo"})
+		raw, failed = call(t, "file_issue", "unbound-native", map[string]any{"description": nativeContractTestBody, "title": "Native without repository", "state": "Todo"})
 		var native tracker.NativeIssue
 		if err := json.Unmarshal(raw, &native); err != nil || failed || native.LinkedSource != nil || native.Body != nativeContractTestBody || native.Number != linked.Number+1 {
 			t.Fatalf("unbound native creation=%s failed=%t err=%v", raw, failed, err)
 		}
-		states := append([]tracker.NativeState(nil), f.project.States...)
-		states = append(states, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
-		stateJSON, err := json.Marshal(states)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository='acme/orders', states_json=? WHERE id=?", string(stateJSON), f.project.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id,source_name,detent_state,dispatchable,terminal,created_at,updated_at) SELECT project_id,'Backlog','Backlog',0,0,created_at,updated_at FROM workflow_states WHERE project_id=? AND detent_state='Todo'", f.project.ID); err != nil {
+		if err := updateProject(t.Context(), func(project *projectstore.Record) {
+			project.Settings.CheckoutRepository = "acme/orders"
+			project.States = append(project.States, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
+		}); err != nil {
 			t.Fatal(err)
 		}
 		args := map[string]any{"github_issue_url": "github.com/Acme/Orders/issues/13", "state": "Backlog"}
@@ -326,17 +419,17 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		snapshot.Provenance.ExternalID = "I_13"
 		snapshot.Comments[0].Provenance.ExternalID = "C_13"
 		f.service.config.ImportBackend = linkedTestImporter{snapshot: snapshot}
-		raw, failed = call("file_issue", "checkout-link", args)
+		raw, failed = call(t, "file_issue", "checkout-link", args)
 		var item tracker.NativeIssue
 		if err := json.Unmarshal(raw, &item); err != nil || failed || item.State != "Triage" || item.LinkedSource == nil || item.LinkedSource.Status != "complete" {
 			t.Fatalf("checkout link=%s failed=%t err=%v", raw, failed, err)
 		}
 		for _, key := range []string{"checkout-link", "checkout-duplicate"} {
-			if replay, failed := call("file_issue", key, args); failed || string(raw) != string(replay) {
+			if replay, failed := call(t, "file_issue", key, args); failed || string(raw) != string(replay) {
 				t.Fatalf("checkout replay=%s failed=%t", replay, failed)
 			}
 		}
-		raw, failed = call("file_issue", "checkout-foreign", map[string]any{"github_issue_url": "github.com/acme/private/issues/13", "state": "Backlog"})
+		raw, failed = call(t, "file_issue", "checkout-foreign", map[string]any{"github_issue_url": "github.com/acme/private/issues/13", "state": "Backlog"})
 		if err := json.Unmarshal(raw, &refusal); err != nil || !failed || refusal.Code != "invalid_request" || refusal.Message != "GitHub issue must belong to this native project's attached repository" {
 			t.Fatalf("foreign association refusal=%s failed=%t err=%v", raw, failed, err)
 		}
@@ -349,7 +442,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		{"explicit unlinked Triage", "Triage", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			raw, failed := call("file_issue", test.name, map[string]any{"description": nativeContractTestBody, "title": test.name, "state": test.state})
+			raw, failed := call(t, "file_issue", test.name, map[string]any{"description": nativeContractTestBody, "title": test.name, "state": test.state})
 			if failed != test.failed {
 				t.Fatalf("creation=%s failed=%t", raw, failed)
 			}
@@ -375,7 +468,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			test.fields["identifier"] = identifier
-			raw, failed := call(test.tool, test.name, test.fields)
+			raw, failed := call(t, test.tool, test.name, test.fields)
 			var detail operatortool.RequestError
 			if err := json.Unmarshal(raw, &detail); err != nil || !failed || detail.Code != "invalid_request" || detail.Message != test.message {
 				t.Fatalf("validation = %s, failed=%t, err=%v", raw, failed, err)
@@ -384,7 +477,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	}
 	commentBody := strings.Repeat("Discuss `approval` at /chat/approval. ", 25)
 	var comment tracker.NativeComment
-	raw, failed = call("add_comment", "comment", map[string]any{"identifier": identifier, "body": commentBody, "target": "issue"})
+	raw, failed = call(t, "add_comment", "comment", map[string]any{"identifier": identifier, "body": commentBody, "target": "issue"})
 	if err := json.Unmarshal(raw, &comment); err != nil || failed || comment.ID == "" || comment.Body != commentBody {
 		t.Fatalf("comment=%s %v", raw, err)
 	}
@@ -392,21 +485,21 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if err := json.Unmarshal(raw, &commentFields); err != nil || string(commentFields["revision"]) != `"1"` {
 		t.Fatalf("comment revision=%s err=%v", raw, err)
 	}
-	replay, failed = call("add_comment", "comment", map[string]any{"identifier": id, "body": commentBody, "target": "issue"})
+	replay, failed = call(t, "add_comment", "comment", map[string]any{"identifier": id, "body": commentBody, "target": "issue"})
 	if failed || string(raw) != string(replay) {
 		t.Fatal("comment replay changed identity")
 	}
-	if _, failed := call("add_comment", "comment", map[string]any{"identifier": identifier, "body": "Changed retry"}); !failed {
+	if _, failed := call(t, "add_comment", "comment", map[string]any{"identifier": identifier, "body": "Changed retry"}); !failed {
 		t.Fatal("changed comment retry was accepted")
 	}
 	t.Run("visual reference refusals", func(t *testing.T) {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+		if err := setVisual(t.Context(), true); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
 			defer cancel()
-			if _, err := f.service.database.db.ExecContext(ctx, "UPDATE projects SET require_visual_attachments=0 WHERE id=?", f.project.ID); err != nil {
+			if err := setVisual(ctx, false); err != nil {
 				t.Error(err)
 			}
 		})
@@ -421,7 +514,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			{operatortool.AddComment, map[string]any{"identifier": id, "body": visual}},
 			{operatortool.EditComment, map[string]any{"identifier": id, "comment_id": comment.ID, "body": visual, "expected_revision": commentFields["revision"]}},
 		} {
-			raw, failed := call(test.tool, "visual-"+test.tool, test.fields)
+			raw, failed := call(t, test.tool, "visual-"+test.tool, test.fields)
 			var refusal operatortool.RequestError
 			if !failed || json.Unmarshal(raw, &refusal) != nil || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, attachment.VisualReferenceMessage) || strings.Contains(refusal.Message, "private") {
 				t.Fatalf("%s refusal=%s failed=%v", test.tool, raw, failed)
@@ -448,7 +541,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			if tt.fields["identifier"] == nil {
 				tt.fields["identifier"] = identifier
 			}
-			_, failed := call(tt.tool, tt.name, tt.fields)
+			_, failed := call(t, tt.tool, tt.name, tt.fields)
 			if failed != tt.failed {
 				t.Fatalf("failed=%t want=%t", failed, tt.failed)
 			}
@@ -459,14 +552,14 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		t.Fatalf("mutation result=%+v", current)
 	}
 	for _, reference := range []string{identifier, strconv.Itoa(created.Number), id} {
-		raw, failed = call("list_comments", "", map[string]any{"identifier": reference, "limit": 1})
+		raw, failed = call(t, "list_comments", "", map[string]any{"identifier": reference, "limit": 1})
 		var comments tracker.Page[tracker.NativeComment]
 		if err := json.Unmarshal(raw, &comments); err != nil || failed || len(comments.Items) != 1 || comments.Items[0].Body != "Edited comment" || comments.NextCursor != "" {
 			t.Fatalf("discussion=%s %v", raw, err)
 		}
 	}
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	raw, failed = call(operatortool.CreateChange, "mcp-change", map[string]any{"work_item_id": id, "title": "Operator source"})
+	raw, failed = call(t, operatortool.CreateChange, "mcp-change", map[string]any{"work_item_id": id, "title": "Operator source"})
 	var change operatortool.ChangeResult
 	if err := json.Unmarshal(raw, &change); err != nil || failed || change.ChangeID == "" {
 		t.Fatalf("MCP Change creation=%s %v", raw, err)
@@ -608,7 +701,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 				}
 				return
 			}
-			raw, failed := call(operatortool.PublishChangeVersion, denied.name, arguments)
+			raw, failed := call(t, operatortool.PublishChangeVersion, denied.name, arguments)
 			if !failed {
 				t.Fatal("invalid source publication succeeded")
 			}
@@ -629,7 +722,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if len(unpublished.Versions) != 0 {
 		t.Fatal("source refusals published a version")
 	}
-	raw, failed = call(operatortool.PublishChangeVersion, "mcp-publication", fields)
+	raw, failed = call(t, operatortool.PublishChangeVersion, "mcp-publication", fields)
 	var published operatortool.ChangeResult
 	if err := json.Unmarshal(raw, &published); err != nil || failed || published.Version == nil || published.Detail == nil || published.Detail.Change.CurrentVersion != published.Version.ID || published.WorkItemState != current.State || published.Version.RunID != "" || published.Version.AttemptID != "" {
 		t.Fatalf("MCP operator publication=%s %v", raw, err)
@@ -638,7 +731,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		t.Fatal("MCP source publication changed source, policy or operator provenance")
 	}
 	t.Run("Change visual reference refusals", func(t *testing.T) {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+		if err := setVisual(t.Context(), true); err != nil {
 			t.Fatal(err)
 		}
 
@@ -656,13 +749,13 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			{operatortool.DiscussChange, map[string]any{"work_item_id": id, "change_id": change.ChangeID, "body": "https://figma.com/design/example?secret=hidden"}},
 			{operatortool.ReviewChange, map[string]any{"work_item_id": id, "change_id": change.ChangeID, "version_id": published.Version.ID, "expected_revision": published.Detail.Change.Revision, "decision": "commented", "body": "https://figma.com/design/example?secret=hidden"}},
 		} {
-			raw, failed := call(test.tool, "visual-"+test.tool, test.fields)
+			raw, failed := call(t, test.tool, "visual-"+test.tool, test.fields)
 			var refusal operatortool.RequestError
 			if !failed || json.Unmarshal(raw, &refusal) != nil || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, attachment.VisualReferenceMessage) || strings.Contains(refusal.Message, "hidden") {
 				t.Fatalf("%s refusal=%s failed=%v", test.tool, raw, failed)
 			}
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=0 WHERE id=?", f.project.ID); err != nil {
+		if err := setVisual(t.Context(), false); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -693,7 +786,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	}
 	foreignSource := sourceOther.path + "/versions/" + published.Version.ID + "/source"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreignSource, sourceOther.token, nil), http.StatusNotFound)
-	replay, failed = call(operatortool.PublishChangeVersion, "mcp-publication", fields)
+	replay, failed = call(t, operatortool.PublishChangeVersion, "mcp-publication", fields)
 	var sourceReplay operatortool.ChangeResult
 	if failed || json.Unmarshal(replay, &sourceReplay) != nil || sourceReplay.Version == nil || sourceReplay.Version.ID != published.Version.ID || !bytes.Equal(sourceReplay.Receipt, published.Receipt) {
 		t.Fatal("source retry changed the immutable publication receipt")
@@ -704,20 +797,16 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if !bytes.Equal(bytes.TrimSpace(response.Body.Bytes()), published.Receipt) {
 		t.Fatal("HTTP and MCP source publication do not share the command receipt")
 	}
-	states := append([]tracker.NativeState(nil), f.project.States...)
-	for i := range states {
-		if states[i].Name == "In Progress" {
-			states[i].OperatorOnly = true
+	if err := updateProject(t.Context(), func(project *projectstore.Record) {
+		for i := range project.States {
+			if project.States[i].Name == "In Progress" {
+				project.States[i].OperatorOnly = true
+			}
 		}
-	}
-	stateJSON, err := json.Marshal(states)
-	if err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", string(stateJSON), f.project.ID); err != nil {
-		t.Fatal(err)
-	}
-	raw, failed = call(operatortool.WorkList, "", map[string]any{"query": "Edited"})
+	raw, failed = call(t, operatortool.WorkList, "", map[string]any{"query": "Edited"})
 	var listed struct {
 		Items []map[string]json.RawMessage `json:"items"`
 	}
@@ -731,42 +820,47 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if observed := readWorkItem(t, f, created.WorkItemID, ""); observed.State != current.State || observed.Revision != current.Revision {
 		t.Fatal("worker request changed workflow")
 	}
+	largeMoveBody := strings.Repeat("<", 60000)
+	response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+id, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "large-move-body"}, ExpectedRevision: current.Revision, Body: &largeMoveBody})
+	requireNativeStatus(t, response, http.StatusOK)
+	var bodyUpdated tracker.NativeIssue
+	decodeHubResponse(t, response, &bodyUpdated)
+	if bodyUpdated.Revision != current.Revision+1 || bodyUpdated.Body != largeMoveBody {
+		t.Fatalf("large move setup=%+v", bodyUpdated)
+	}
 	for _, key := range []string{"operator-move", "operator-move"} {
-		largeMoveBody := strings.Repeat("<", 60000)
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", largeMoveBody, created.WorkItemID); err != nil {
-			t.Fatal(err)
-		}
-		raw, failed = call(operatortool.MoveItem, key, map[string]any{"identifier": id, "expected_revision": listed.Items[0]["revision"], "target_state": "In Progress"})
+		raw, failed = call(t, operatortool.MoveItem, key, map[string]any{"identifier": id, "expected_revision": bodyUpdated.Revision, "target_state": "In Progress"})
 		var moved tracker.NativeIssue
-		if err := json.Unmarshal(raw, &moved); err != nil || failed || moved.State != "In Progress" || moved.Revision != current.Revision+1 {
+		if err := json.Unmarshal(raw, &moved); err != nil || failed || moved.State != "In Progress" || moved.Revision != bodyUpdated.Revision+1 {
 			t.Fatalf("Hub workflow command=%s %v", raw, err)
 		}
 		if !strings.Contains(string(raw), `"content_read"`) || readWorkItem(t, f, created.WorkItemID, "").Body != largeMoveBody {
 			t.Fatal("large move receipt lost its marker or truncated stored body")
 		}
 	}
+
 	blocker := f.create(t, "blocker")
 	for _, dependency := range []struct {
 		identifier, related string
 		revision            any
 	}{
-		{identifier, string(f.project.ID) + "#" + strconv.Itoa(blocker.Number), 4},
-		{id, string(blocker.WorkItemID), json.RawMessage(`4.0`)},
+		{identifier, string(f.project.ID) + "#" + strconv.Itoa(blocker.Number), 5},
+		{id, string(blocker.WorkItemID), json.RawMessage(`5.0`)},
 	} {
-		raw, failed = call("set_dependency", "dependency", map[string]any{"identifier": dependency.identifier, "related": dependency.related, "operation": "add", "expected_revision": dependency.revision})
+		raw, failed = call(t, "set_dependency", "dependency", map[string]any{"identifier": dependency.identifier, "related": dependency.related, "operation": "add", "expected_revision": dependency.revision})
 		var item tracker.NativeIssue
-		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 5 || len(item.Dependencies) != 1 || item.Dependencies[0] != blocker.WorkItemID {
+		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 6 || len(item.Dependencies) != 1 || item.Dependencies[0] != blocker.WorkItemID {
 			t.Fatalf("dependency alias/replay=%s %v", raw, err)
 		}
 	}
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "ungranted")
 	foreign := other.create(t, "foreign")
 	for _, related := range []string{"prj_foreign#" + strconv.Itoa(blocker.Number), string(foreign.WorkItemID)} {
-		if _, failed := call("set_dependency", "foreign-"+related, map[string]any{"identifier": identifier, "related": related, "operation": "add", "expected_revision": "5"}); !failed {
+		if _, failed := call(t, "set_dependency", "foreign-"+related, map[string]any{"identifier": identifier, "related": related, "operation": "add", "expected_revision": "6"}); !failed {
 			t.Fatalf("foreign dependency accepted: %s", related)
 		}
 	}
-	if current := readWorkItem(t, f, created.WorkItemID, ""); current.Revision != 5 || len(current.Dependencies) != 1 {
+	if current := readWorkItem(t, f, created.WorkItemID, ""); current.Revision != 6 || len(current.Dependencies) != 1 {
 		t.Fatalf("foreign dependency changed item=%+v", current)
 	}
 	for _, test := range []struct {
@@ -778,13 +872,13 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		{"foreign alias stale revision", "prj_foreign#" + strconv.Itoa(created.Number), ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			raw, failed := call(operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "title": "Correction", "expected_revision": "4"})
+			raw, failed := call(t, operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "title": "Correction", "expected_revision": "5"})
 			var conflict operatortool.ConflictError
 			if !failed {
 				t.Fatal("stale edit succeeded")
 			}
 			if test.code != "" {
-				if err := json.Unmarshal(raw, &conflict); err != nil || conflict.Code != test.code || conflict.CurrentRevision != 5 {
+				if err := json.Unmarshal(raw, &conflict); err != nil || conflict.Code != test.code || conflict.CurrentRevision != 6 {
 					t.Fatalf("conflict=%s %v", raw, err)
 				}
 			} else if len(raw) != 0 {
@@ -793,9 +887,9 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		})
 	}
 	for range 2 {
-		raw, failed := call(operatortool.EditItem, "fresh correction", map[string]any{"identifier": identifier, "title": "Correction", "expected_revision": "5"})
+		raw, failed := call(t, operatortool.EditItem, "fresh correction", map[string]any{"identifier": identifier, "title": "Correction", "expected_revision": "6"})
 		var corrected tracker.NativeIssue
-		if err := json.Unmarshal(raw, &corrected); err != nil || failed || corrected.Revision != 6 || corrected.Title != "Correction" {
+		if err := json.Unmarshal(raw, &corrected); err != nil || failed || corrected.Revision != 7 || corrected.Title != "Correction" {
 			t.Fatalf("fresh edit/replay=%s %v", raw, err)
 		}
 	}
@@ -809,7 +903,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		var large tracker.NativeIssue
 		decodeHubResponse(t, response, &large)
 		for range 2 {
-			raw, failed := call(operatortool.EditItem, "large-body-edit", map[string]any{"identifier": large.WorkItemID, "body": correctedBody, "expected_revision": "1"})
+			raw, failed := call(t, operatortool.EditItem, "large-body-edit", map[string]any{"identifier": large.WorkItemID, "body": correctedBody, "expected_revision": "1"})
 			var edited tracker.NativeIssue
 			if err := json.Unmarshal(raw, &edited); err != nil || failed || edited.Body != correctedBody || edited.Revision != 2 {
 				t.Fatalf("large body correction bytes=%d revision=%d failed=%t err=%v", len(edited.Body), edited.Revision, failed, err)
@@ -822,7 +916,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			{"large stale revision", large.WorkItemID},
 			{"large foreign project", foreign.WorkItemID},
 		} {
-			raw, failed := call(operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "body": originalBody, "expected_revision": "1"})
+			raw, failed := call(t, operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "body": originalBody, "expected_revision": "1"})
 			if !failed {
 				t.Fatalf("%s accepted", test.name)
 			}
@@ -855,33 +949,61 @@ func TestHubMCPWorkCommands(t *testing.T) {
 // GitHub-compatible relationships, ordering and priority use the same commands
 // as the hub dashboard, while lane mutations stay unavailable without their owner.
 func TestHubMCPCompatibilityCommands(t *testing.T) {
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
-	_, id := seedProjection(t, service.database.db)
-	var project, organization, nativeID string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT project_id, organization_id, native_id FROM issues WHERE id=?", id).Scan(&project, &organization, &nativeID); err != nil {
-		t.Fatal(err)
+	const nativeID = "wi_compatible_first"
+	const related = "wi_compatible_second"
+	newFixture := func(t *testing.T, sourceRepository, integrationRepository string, enabled bool) (nativeFixture, tracker.ProjectID) {
+		t.Helper()
+		f := newNativeFixture(t, nil, "", "compatibility authority")
+		service := f.service
+		organization := f.project.OrganizationID
+		project := tracker.ProjectID(newNativeID("prj"))
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			stored, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Compatible project", Profile: "github_compatible", RequireDependencies: true}, States: nativeFixtureStates()})
+			if err != nil {
+				return err
+			}
+			stored.Settings.Repository, stored.Settings.CheckoutRepository, stored.Settings.RepositoryEnabled = integrationRepository, integrationRepository, enabled
+			_, err = w.UpdateProjectRecord(t.Context(), stored)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		source := newCoreNeutralFixture(t, organization, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
+		source.add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
+		var repositoryID any
+		if sourceRepository != "" {
+			owner, name, _ := strings.Cut(sourceRepository, "/")
+			source.add("repositories", map[string]any{"id": 1, "github_owner": owner, "github_name": name})
+			repositoryID = 1
+		}
+		const stamp = "2026-10-01T00:00:00Z"
+		actor := tracker.Actor{Kind: "human", PrincipalID: "example-owner"}
+		for index, id := range []tracker.NativeWorkItemID{nativeID, related} {
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: id, Number: index + 1, Revision: 1, Profile: "github_compatible"}, Title: "Retained source", Body: "Retained GitHub content", State: "Todo", Actor: actor, CreatedAt: parseTestTime(t, stamp), UpdatedAt: parseTestTime(t, stamp), LastActivityAt: parseTestTime(t, stamp)}
+			if sourceRepository != "" {
+				issue.ExternalReferences = []tracker.ExternalReference{tracker.GitHubIssueSourceReference(fmt.Sprintf("I_retained_%d", index+1), fmt.Sprintf("https://github.com/%s/issues/%d", sourceRepository, index+1))}
+			}
+			source.add("issues", map[string]any{"id": 41 + index, "native_id": id, "project_id": project, "number": index + 1, "revision": 1, "event_sequence": 1, "title": issue.Title, "body": issue.Body, "actor_json": string(historyTestJSON(t, actor)), "archived": 0, "created_at": stamp, "updated_at": stamp, "native_created_at": stamp, "native_updated_at": stamp, "last_activity_at": stamp, "workflow_state_id": 1, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-owner", "repository_id": repositoryID})
+			source.add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
+			source.add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
+		}
+		count, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()})
+		if err != nil || count != 2 {
+			t.Fatalf("retained compatible import=%d error=%v", count, err)
+		}
+		return f, project
 	}
-	result, err := service.database.db.ExecContext(t.Context(), "INSERT INTO issues (repository_id,github_node_id,github_number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at) SELECT repository_id,'I_related',2,'Related','https://example.test/2','open',source_version,source_updated_at,synchronized_at,created_at,updated_at FROM issues WHERE id=?", id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	relatedInternal, err := result.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var related string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE id=?", relatedInternal).Scan(&related); err != nil {
-		t.Fatal(err)
-	}
-	path := "/api/v2/organizations/" + organization + "/mcp"
-	call := func(name, key string, fields map[string]any) bool {
+	f, project := newFixture(t, "example-org/example-project", "example-org/example-project", true)
+	service, organization := f.service, f.project.OrganizationID
+	call := func(t *testing.T, f nativeFixture, project tracker.ProjectID, name, key string, fields map[string]any) bool {
+		path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
 		t.Helper()
 		fields["project_id"] = project
 		if fields["identifier"] == nil {
-			fields["identifier"] = project + "#1"
+			fields["identifier"] = string(project) + "#1"
 		}
 		fields["request_id"] = key
-		response := performHubWorkCall(t, service, path, testHubAdminToken, name, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": fields, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}}})
+		response := performHubWorkCall(t, f.service, path, testHubAdminToken, name, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": fields, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}}})
 		requireNativeStatus(t, response, http.StatusOK)
 		return strings.Contains(response.Body.String(), `"isError":true`)
 	}
@@ -890,7 +1012,7 @@ func TestHubMCPCompatibilityCommands(t *testing.T) {
 		fields     map[string]any
 		failed     bool
 	}{
-		{"dependency", "set_dependency", map[string]any{"related": project + "#2", "operation": "add"}, false},
+		{"dependency", "set_dependency", map[string]any{"related": string(project) + "#2", "operation": "add"}, false},
 		{"dependency replay", "set_dependency", map[string]any{"related": related, "operation": "add"}, false},
 		{"foreign dependency", "set_dependency", map[string]any{"related": "wi_foreign", "operation": "add"}, true},
 		{"foreign related prefix", "set_dependency", map[string]any{"related": "prj_foreign#2", "operation": "add"}, true},
@@ -902,22 +1024,88 @@ func TestHubMCPCompatibilityCommands(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			key := strings.TrimSuffix(tt.name, " replay")
-			if failed := call(tt.tool, key, tt.fields); failed != tt.failed {
+			if failed := call(t, f, project, tt.tool, key, tt.fields); failed != tt.failed {
 				t.Fatalf("failed=%t want=%t", failed, tt.failed)
 			}
 		})
 	}
+	if !call(t, f, project, operatortool.SetQueuePriority, "priority", map[string]any{"queue_scope": "fleet", "state": "Todo", "queue_priority": "low"}) {
+		t.Fatal("changed priority retry was accepted")
+	}
 	var count int
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_dependencies WHERE dependent_issue_id=? AND blocker_issue_id=?", id, relatedInternal).Scan(&count); err != nil || count != 1 {
+	admin := nativeAttemptTestDatabase(t, f)
+	if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_dependencies d JOIN issues dependent ON dependent.organization_id=d.organization_id AND dependent.id=d.dependent_issue_id JOIN issues blocker ON blocker.organization_id=d.organization_id AND blocker.id=d.blocker_issue_id WHERE d.organization_id=$1 AND dependent.project_id=$2 AND dependent.native_id=$3 AND blocker.project_id=$2 AND blocker.native_id=$4", organization, project, nativeID, related).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("dependency count=%d %v", count, err)
 	}
-	var rank string
-	var priority int
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT rank,priority_override FROM queue_entries WHERE issue_id=? AND scope='fleet'", id).Scan(&rank, &priority); err != nil || rank != "0001" || priority != tracker.QueuePriorityHigh {
-		t.Fatalf("queue=%s %d %v", rank, priority, err)
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		entry, err := r.QueueEntry(t.Context(), project, nativeID, "fleet")
+		if err != nil {
+			return err
+		}
+		if entry.Rank != "0001" || entry.Priority == nil || *entry.Priority != tracker.QueuePriorityHigh {
+			return fmt.Errorf("queue=%+v", entry)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&count); err != nil || count != 1 {
+	if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbound WHERE organization_id=$1 AND project_id=$2", organization, project).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("outbox count=%d %v", count, err)
+	}
+
+	var outbound projectstore.GitHubOutbound
+	var key string
+	if err := admin.QueryRowContext(t.Context(), "SELECT command_key FROM github_outbound WHERE organization_id=$1 AND project_id=$2", organization, project).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		owner, ok := w.(projectstore.GitHubOutboxWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		outbound, err = owner.GitHubOutbound(t.Context(), key)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := eventstore.NewContent(service.runDetailStore()).Receipt(t.Context(), outbound.Payload)
+	var desired WorkflowLabelDesired
+	if err != nil || json.Unmarshal(payload, &desired) != nil || outbound.Repository != "example-org/example-project" || outbound.IssueNumber != 1 || outbound.Kind != string(MutationWorkflowLabel) || outbound.Outcome != "unattempted" || len(outbound.Key) != 79 || !strings.HasPrefix(outbound.Key, "queue-priority:") || desired.Label != "priority:high" || desired.ManagedPrefix != "priority:" || desired.Clear {
+		t.Fatalf("priority outbound=%+v desired=%s error=%v", outbound, payload, err)
+	}
+	for _, scenario := range []struct {
+		name, source, repository string
+		enabled                  bool
+	}{
+		{"local source", "", "example-org/example-project", true},
+		{"disabled integration", "example-org/example-project", "example-org/example-project", false},
+		{"mismatched integration", "example-org/foreign-project", "example-org/example-project", true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f, project := newFixture(t, scenario.source, scenario.repository, scenario.enabled)
+			for range 2 {
+				if call(t, f, project, operatortool.SetQueuePriority, "local-priority", map[string]any{"queue_scope": "fleet", "state": "Todo", "queue_priority": "high"}) {
+					t.Fatal("local priority was refused without an eligible remote source")
+				}
+			}
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				entry, err := r.QueueEntry(t.Context(), project, nativeID, "fleet")
+				if err != nil {
+					return err
+				}
+				if entry.Priority == nil || *entry.Priority != tracker.QueuePriorityHigh {
+					return fmt.Errorf("local priority=%+v", entry)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbound WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, project).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("ineligible source outbound count=%d error=%v", count, err)
+			}
+		})
 	}
 }
 

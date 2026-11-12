@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bufio"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -39,14 +45,20 @@ func TestHostedEventsWorkspace(t *testing.T) {
 			if state == workspacesession.StateClosed {
 				requireNativeStatus(t, f.request(t, user, http.MethodDelete, f.base+"/workspaces/"+session.ID, nil), http.StatusNoContent)
 			} else if state != workspacesession.StateRequested {
-				err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-					record, err := readWorkspaceByID(t.Context(), tx, session.ID)
+				err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(writer tenantstore.Writer) error {
+					owner := writer.(postgres.WorkspaceWriter)
+					record, err := owner.WorkspaceSession(t.Context(), f.project, session.ID)
 					if err != nil {
 						return err
 					}
-					record.Capabilities = &workspacesession.Capabilities{Files: true}
+					expected := record
+					record.Capabilities = []string{"files"}
 					record.ReadOnly = true
-					_, err = f.service.workspaces.transition(t.Context(), tx, record, state, "", now)
+					now := f.service.config.now()
+					if state == workspacesession.StateReady && record.OpenedAt == nil {
+						record.OpenedAt = &now
+					}
+					_, err = updateWorkspaceState(t.Context(), owner, record, expected, state, "", now)
 					return err
 				})
 				if err != nil {
@@ -77,6 +89,37 @@ func TestHostedEventsWorkspace(t *testing.T) {
 				}
 				break
 			}
+			if state == workspacesession.StateReady {
+				response := f.request(t, user, http.MethodPost, f.base+"/actions", projectActionRequest{Mutation: tracker.Mutation{IdempotencyKey: "stream-action"}, Name: "Example action", Command: "true"})
+				requireNativeStatus(t, response, http.StatusCreated)
+				var action workspacesession.Action
+				decodeHubResponse(t, response, &action)
+				runID := newNativeID("run")
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+					_, err := w.(postgres.RelayActionWriter).CreateActionRun(t.Context(), postgres.CreateActionRunInput{ID: runID, OrganizationID: f.service.accessOrganization(), ProjectID: f.project, ActionID: action.ID, WorkspaceID: session.ID, CreatedBy: user.identity.Subject, CreatedAt: f.service.config.now()})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				for {
+					kind, data := readHostedEvent(t, scanner)
+					if !strings.HasPrefix(kind, "action_run.") {
+						continue
+					}
+					var actual workspacesession.Run
+					if err := json.Unmarshal([]byte(data), &actual); err != nil {
+						t.Fatal(err)
+					}
+					response := f.request(t, user, http.MethodGet, f.base+"/actions/"+action.ID+"/runs/"+runID, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var expected workspacesession.Run
+					decodeHubResponse(t, response, &expected)
+					if kind != "action_run.queued" || actual.ID != runID || actual.WorkspaceID != session.ID || actual.Command != "true" || !reflect.DeepEqual(actual, expected) {
+						t.Fatalf("action event=%q resource=%#v API=%#v", kind, actual, expected)
+					}
+					break
+				}
+			}
 		}) {
 			return
 		}
@@ -91,7 +134,17 @@ func TestHostedEventsWorkspace(t *testing.T) {
 		t.Fatalf("reconnected resource = %q %#v: %v", kind, resumed, err)
 	}
 	var open int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM workspace_items WHERE workspace_id = ? AND closed_at IS NULL", session.ID).Scan(&open); err != nil || open != 0 {
+	err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(reader tenantstore.Reader) error {
+		item, err := reader.(postgres.WorkspaceReader).WorkspaceDispatchItem(t.Context(), f.project, session.ID)
+		if err != nil {
+			return err
+		}
+		if item.ClosedAt == nil {
+			open++
+		}
+		return nil
+	})
+	if err != nil || open != 0 {
 		t.Fatalf("dispatch association still open = %d: %v", open, err)
 	}
 	requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/workspaces", workspaceRequest{
@@ -99,8 +152,10 @@ func TestHostedEventsWorkspace(t *testing.T) {
 	}), http.StatusForbidden)
 	other := f
 	other.project = "prj_other"
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO projects(id, organization_id, name, profile, states_json, created_at, github_repository_enabled)
-VALUES (?, 'org_security', 'Other project', 'native', '[]', ?, 0)`, other.project, formatHubTime(time.Now())); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(writer tenantstore.Writer) error {
+		_, err := writer.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: other.project, Name: "Other project", Profile: "native"}, States: nativeFixtureStates()})
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	other.grant(t, user, false, false)
@@ -129,17 +184,17 @@ func TestHostedEventsActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
 	scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: "fixture", Scope: apiScopeAdmin}}
 	appendEvent := func(item tracker.NativeWorkItemID, kind string, data tracker.CollaborationData) {
 		t.Helper()
-		if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-			return appendLegacyNativeHistory(t.Context(), tx, scope, string(item), kind, data, now)
-		}); err != nil {
-			t.Fatal(err)
-		}
+		appendAnalyticsTestEvent(t, f.service, scope, item, kind, data, f.service.config.now())
 	}
 	for range 10 {
 		appendEvent(high, "issue.edited", tracker.CollaborationData{})
 	}
-	previous, _, err := readDashboardWatermark(t.Context(), f.service.database.reader, scope)
-	if err != nil {
+	var previous int64
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		watermark, err := r.BoardSequence(t.Context(), scope.project)
+		previous = watermark.Sequence
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	scanner := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(previous, 10))
@@ -161,19 +216,16 @@ func TestHostedEventsHealthFinding(t *testing.T) {
 	scope := nativeScope{organization: "org_security", project: f.project}
 	write := func(at time.Time, findings []healthFinding) int64 {
 		t.Helper()
-		previous, _, err := readDashboardWatermark(t.Context(), f.service.database.reader, scope)
+		var previous int64
+		err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			watermark, err := r.BoardSequence(t.Context(), scope.project)
+			previous = watermark.Sequence
+			return err
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		if _, err := writeHealthEvaluation(t.Context(), tx, "org_security", at, findings); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
+		if err := f.service.publishHealthEvaluation(t.Context(), scope.organization, at, findings); err != nil {
 			t.Fatal(err)
 		}
 		return previous
@@ -222,8 +274,12 @@ func TestHostedEventsIssue(t *testing.T) {
 	user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 	item, unrelated := f.seedIssue(t, 1), f.seedIssue(t, 2)
 	scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: "fixture", Scope: apiScopeAdmin}}
-	previous, _, err := readDashboardWatermark(t.Context(), f.service.database.reader, scope)
-	if err != nil {
+	var previous int64
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		watermark, err := r.BoardSequence(t.Context(), scope.project)
+		previous = watermark.Sequence
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	scanner := openHostedTestStream(t, f, user, "?work_item="+string(item)+"&since="+strconv.FormatInt(previous, 10))
@@ -239,11 +295,7 @@ func TestHostedEventsIssue(t *testing.T) {
 		{"selected change", item, "change.version_published", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-				return appendLegacyNativeHistory(t.Context(), tx, scope, string(test.item), test.kind, tracker.CollaborationData{}, now)
-			}); err != nil {
-				t.Fatal(err)
-			}
+			appendAnalyticsTestEvent(t, f.service, scope, test.item, test.kind, tracker.CollaborationData{}, f.service.config.now())
 			next := previous
 			for {
 				kind, data := readHostedEvent(t, scanner)
@@ -271,28 +323,76 @@ func TestHostedEventsIssue(t *testing.T) {
 	for _, query := range []string{"?work_item=invalid", "?work_item=wi_missing"} {
 		requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/"+string(f.project)+"/events"+query, nil), http.StatusNotFound)
 	}
-	rows, err := f.service.database.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN SELECT event_sequence FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, item)
+	config, err := f.service.config.Postgres.Connection.PoolConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	var plan []string
-	for rows.Next() {
-		var id, parent, unused int
-		var detail string
-		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
-			t.Fatal(err)
+	pgtransport.Configure(config)
+	config.MaxConns = 3
+	config.ConnConfig.Tracer = runtimeHistoryTrace{}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+	if err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
 		}
-		plan = append(plan, detail)
-		if !strings.Contains(detail, "SEARCH issues USING INDEX") {
-			t.Fatalf("unbounded issue observation query: %s", detail)
+	})
+	capture := &runtimeHistoryTraceCapture{}
+	ctx := context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture)
+	if err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.WorkItem(ctx, scope.project, item)
+		if err == nil && (row.NativeID != item || row.EventSequence < 1) {
+			return errors.New("selected issue observation did not return current evidence")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture.mu.Lock()
+	statements := append([]tracedStatement(nil), capture.statements...)
+	capture.mu.Unlock()
+	var selected []tracedStatement
+	for _, statement := range statements {
+		if strings.HasPrefix(statement.query, "-- name: GetWorkItem :one") {
+			selected = append(selected, statement)
 		}
 	}
-	if err := rows.Err(); err != nil || len(plan) == 0 {
-		t.Fatalf("query plan=%v err=%v", plan, err)
+	if len(selected) != 1 {
+		t.Fatalf("selected issue observation statements=%d, want 1", len(selected))
 	}
-	t.Logf("selected issue observation query plan: %v", plan)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ?", user.identity.Subject); err != nil {
+	admin := hostedPostgresAdmin(t, f.service)
+	if _, err := admin.ExecContext(t.Context(), "ANALYZE issues"); err != nil {
+		t.Fatal(err)
+	}
+	plan, raw := reportsExplainPostgresPlan(t, admin, scope.organization, selected[0], "enable_seqscan=off", "enable_bitmapscan=off")
+	indexed, observed := false, float64(0)
+	var inspect func(reportsBudgetPlan)
+	inspect = func(node reportsBudgetPlan) {
+		if node.Loops > 0 && node.Index != "" && strings.Contains(node.Condition, "native_id") {
+			indexed = true
+		}
+		if node.Relation == "issues" {
+			observed += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+		}
+		for _, child := range node.Plans {
+			inspect(child)
+		}
+	}
+	inspect(plan)
+	if !indexed || observed != 1 {
+		t.Fatalf("unbounded issue observation query: %s", raw)
+	}
+	t.Logf("selected issue observation query plan: %s", raw)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, scope.project)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/"+string(f.project)+"/events?work_item="+string(item), nil), http.StatusForbidden)

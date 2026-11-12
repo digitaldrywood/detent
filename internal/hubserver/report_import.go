@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 )
 
 type ReportImportTarget interface {
+	ReadRecords(context.Context, tracker.OrganizationID, corestore.Workload, func(eventstore.Reader) error) error
 	ImportReportChangeLandings(context.Context, []postgres.ReportLandingImport) error
 	ImportReportEventProjections(context.Context, []postgres.ReportEventProjectionImport) (int, error)
 	ImportReportEscapeProjections(context.Context, []eventstore.Evidence) error
@@ -56,6 +58,9 @@ func ImportCoreReportLandings(ctx context.Context, target ReportImportTarget, so
 			return err
 		}
 		tx := newCoreNeutralImport(bundle)
+		if err := validateCoreQualityLandings(ctx, tx, source); err != nil {
+			return err
+		}
 		copyHash := bundle.Identity().SourceSHA256
 		summary.SourceSHA256 = copyHash
 		after := ""
@@ -92,7 +97,15 @@ func ImportCoreReportLandings(ctx context.Context, target ReportImportTarget, so
 				if err != nil {
 					return err
 				}
-				batch = append(batch, postgres.ReportLandingImport{Change: record, Receipt: proof})
+				frozen, err := eventstore.VersionLandingFromChange(record)
+				if err != nil {
+					return err
+				}
+				frozen, err = canonicalCoreVersionLanding(ctx, target, eventstore.NewContent(source.Objects), frozen, *row.change.Landed)
+				if err != nil {
+					return err
+				}
+				batch = append(batch, postgres.ReportLandingImport{Change: record, Receipt: proof, Frozen: frozen})
 				proofs = append(proofs, encoded)
 			}
 			if len(batch) > 0 {
@@ -152,6 +165,16 @@ func coreReportLandingProof(ctx context.Context, tx *coreNeutralImport, source C
 }
 
 func restoreCoreReportLanding(ctx context.Context, tx *coreNeutralImport, source CoreChangeImportSource, change *tracker.ChangeRequest) error {
+	if change.CurrentVersion != "" {
+		frozen, err := readCoreQualityLanding(ctx, tx, source, change.ID, change.CurrentVersion)
+		if err != nil {
+			return err
+		}
+		if frozen != nil {
+			change.Landed = frozen
+			return nil
+		}
+	}
 	if change.Landed != nil || change.CurrentVersion == "" {
 		return nil
 	}
@@ -210,7 +233,7 @@ func restoreCoreReportLanding(ctx context.Context, tx *coreNeutralImport, source
 
 func decodeCoreReportData(ctx context.Context, tx *coreNeutralImport, source CoreWorkItemImportSource, raw []byte, data *tracker.CollaborationData) error {
 	objects := reportImportObjects{organization: source.OrganizationID, store: source.Objects}
-	content := &changeContent{store: objects, payloads: map[string][]byte{}, references: map[string]attachment.ArchiveReference{}}
+	content := &changeContent{store: objects, readOrganization: string(source.OrganizationID), payloads: map[string][]byte{}, references: map[string]attachment.ArchiveReference{}}
 	owner := &runDetailContext{store: objects, organization: string(source.OrganizationID), cache: map[string]map[string]tracker.NativeRunData{}}
 	ctx = context.WithValue(ctx, changeContentKey{}, content)
 	ctx = context.WithValue(ctx, runDetailContextKey{}, owner)
@@ -610,4 +633,37 @@ func ImportCoreReportUsage(ctx context.Context, target ReportImportTarget, sourc
 	})
 	summary.ProjectionSHA256 = hex.EncodeToString(digest.Sum(nil))
 	return summary, err
+}
+
+func canonicalCoreVersionLanding(ctx context.Context, target interface {
+	ReadRecords(context.Context, tracker.OrganizationID, corestore.Workload, func(eventstore.Reader) error) error
+}, content *eventstore.Content, expected eventstore.VersionLanding, value tracker.ChangeLanding) (eventstore.VersionLanding, error) {
+	var stored eventstore.VersionLanding
+	err := target.ReadRecords(ctx, expected.OrganizationID, corestore.Background, func(r eventstore.Reader) error {
+		owner, ok := r.(eventstore.VersionLandingReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		stored, err = owner.VersionLanding(ctx, expected.ChangeID, expected.VersionID)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return expected, nil
+	}
+	if err != nil {
+		return expected, err
+	}
+	if stored.OrganizationID != expected.OrganizationID || stored.ProjectID != expected.ProjectID || stored.WorkItemID != expected.WorkItemID || stored.ChangeID != expected.ChangeID || stored.VersionID != expected.VersionID || stored.HeadSHA != expected.HeadSHA || stored.MergeSHA != expected.MergeSHA || stored.BaseRef != expected.BaseRef || !stored.At.Equal(expected.At.UTC().Truncate(time.Microsecond)) {
+		return expected, corestore.ErrRevisionConflict
+	}
+	actual, err := content.VersionLanding(ctx, stored)
+	if err != nil {
+		return expected, err
+	}
+	value.LandedAt = value.LandedAt.UTC().Truncate(time.Microsecond)
+	if !reflect.DeepEqual(actual, value) {
+		return expected, corestore.ErrRevisionConflict
+	}
+	return stored, nil
 }

@@ -55,6 +55,115 @@ var upgradeOrderPending = []int64{
 	20261110042737,
 	20261110042748,
 	20261110042758,
+	20261110154406,
+	20261110164026,
+	20261110215657,
+	20261110221710,
+	20261110233338,
+	20261111005441,
+	20261111010534,
+	20261111011502,
+	20261111015700,
+	20261111015701,
+	20261111022029,
+	20261111022030,
+	20261111030542,
+	20261111031208,
+	20261111045519,
+	20261111045520,
+	20261111045521,
+	20261111045522,
+	20261111055218,
+	20261111055219,
+	20261111062810,
+	20261111062811,
+	20261111062812,
+	20261111062813,
+	20261111062814,
+	20261111064145,
+	20261111131717,
+	20261111133122,
+	20261111150608,
+	20261111151226,
+	20261111151640,
+	20261111180030,
+	20261111192957,
+	20261111192959,
+	20261111193000,
+	20261111193001,
+	20261111194045,
+	20261111194120,
+	20261111194206,
+	20261111195645,
+	20261111195654,
+	20261111195659,
+	20261111200015,
+	20261111200105,
+	20261111201829,
+	20261111201834,
+	20261111202405,
+	20261111202406,
+	20261111203018,
+	20261111203023,
+	20261111210238,
+	20261111211428,
+	20261111211430,
+	20261111211431,
+	20261111213835,
+	20261111215906,
+	20261111221622,
+	20261111221627,
+	20261111221632,
+	20261111222854,
+	20261111225811,
+	20261111230546,
+	20261111231501,
+	20261111232904,
+	20261111232911,
+	20261111234250,
+	20261111234251,
+	20261111234252,
+	20261111234253,
+	20261111234254,
+	20261111235348,
+	20261111235349,
+	20261111235350,
+	20261111235351,
+	20261112001212,
+	20261112001213,
+	20261112001214,
+	20261112001215,
+	20261112004725,
+	20261112013604,
+	20261112013627,
+	20261112031630,
+	20261112032820,
+	20261112032821,
+	20261112032822,
+	20261112033754,
+	20261112035939,
+	20261112042052,
+	20261112042057,
+	20261112042102,
+	20261112042107,
+	20261112043935,
+	20261112043936,
+	20261112043937,
+	20261112043938,
+	20261112043939,
+	20261112043940,
+	20261112043941,
+	20261112043943,
+	20261112043944,
+	20261112082128,
+	20261112092845,
+	20261112101746,
+	20261112105114,
+	20261112112201,
+	20261112124958,
+	20261112130601,
+	20261112135609,
+	20261112155646,
 }
 
 var upgradeOrderTenants = []struct {
@@ -98,6 +207,17 @@ func TestMigrateAppliesPendingVersionsBelowPopulatedHead(t *testing.T) {
 			}
 			if count != 223 || version != upgradeOrderHead {
 				t.Fatalf("populated head ledger = %d/%d", count, version)
+			}
+			var retainedColumn bool
+			if err := db.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='change_issue_links'::regclass AND attname='retained_pr_version_id' AND NOT attisdropped)`).Scan(&retainedColumn); err != nil {
+				t.Fatal(err)
+			}
+			var assignments int
+			if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_lease_assignments").Scan(&assignments); err != nil || assignments != 6 {
+				t.Fatalf("historical runner assignments = %d, want 6: %v", assignments, err)
+			}
+			if retainedColumn {
+				t.Fatal("populated head already has retained PR metadata")
 			}
 			if err := validateSchema(t.Context(), db, source); !errors.Is(err, ErrSchema) {
 				t.Fatalf("incomplete schema validation = %v", err)
@@ -148,8 +268,206 @@ func TestMigrateAppliesPendingVersionsBelowPopulatedHead(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if interrupted {
+				partial := fstest.MapFS{}
+				for _, file := range files {
+					data, err := fs.ReadFile(source, file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if file == "20261111133122_repair_lease_runner_project_initialization.sql" {
+						const committed = "after_expiry := next_expiry;\n   after_lease := next_lease;\n   COMMIT;"
+						replaced := strings.Replace(string(data), committed, committed+"\n   PERFORM 1/0;", 1)
+						if replaced == string(data) {
+							t.Fatal("lease repair has no project batch commit to interrupt")
+						}
+						data = []byte(replaced)
+					}
+					partial[file] = &fstest.MapFile{Data: data}
+				}
+				err := Migrate(t.Context(), config, partial)
+				var pgerr *pgconn.PgError
+				if !errors.As(err, &pgerr) || pgerr.Code != "22012" {
+					t.Fatalf("partial lease repair error = %v, want division by zero", err)
+				}
+				var projects, runners int
+				if err := db.QueryRowContext(t.Context(), "SELECT count(*) FILTER (WHERE project_id IS NOT NULL), count(*) FILTER (WHERE runner_id IS NOT NULL) FROM leases").Scan(&projects, &runners); err != nil {
+					t.Fatal(err)
+				}
+				if projects != 2 || runners != 0 {
+					t.Fatalf("partial lease repair projects/runners = %d/%d, want 2/0", projects, runners)
+				}
+			}
+			if interrupted {
+				partial := fstest.MapFS{}
+				for _, file := range files {
+					data, err := fs.ReadFile(source, file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if file == "20261111192959_attempt_project_initialize.sql" {
+						const committed = "after_attempt := next_attempt;\n   COMMIT;"
+						changed := strings.Replace(string(data), committed, committed+"\n   PERFORM 1/0;", 1)
+						if changed == string(data) {
+							t.Fatal("attempt initialization has no batch commit to interrupt")
+						}
+						data = []byte(changed)
+					}
+					partial[file] = &fstest.MapFile{Data: data}
+				}
+				err := Migrate(t.Context(), config, partial)
+				var failure *pgconn.PgError
+				if !errors.As(err, &failure) || failure.Code != "22012" {
+					t.Fatalf("partial attempt initialization error=%v", err)
+				}
+				var initialized int
+				if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE project_id IS NOT NULL").Scan(&initialized); err != nil || initialized != 1 {
+					t.Fatalf("committed attempt initialization=%d error=%v", initialized, err)
+				}
+				result, err := db.ExecContext(t.Context(), `UPDATE native_attempts SET updated_at=updated_at+interval '1 microsecond' WHERE project_id IS NULL`)
+				if err != nil {
+					t.Fatalf("uninitialized attempt update failed during committed migration batches: %v", err)
+				}
+				if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+					t.Fatalf("uninitialized attempt rows=%d error=%v", rows, err)
+				}
+			}
+			if interrupted {
+				partial := fstest.MapFS{}
+				for _, file := range files {
+					data, err := fs.ReadFile(source, file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if file == "20261111211430_version_landing_initialize.sql" {
+						const committed = "after_version := next_version;\n   COMMIT;"
+						changed := strings.Replace(string(data), committed, committed+"\n   PERFORM 1/0;", 1)
+						if changed == string(data) {
+							t.Fatal("version initialization has no batch commit to interrupt")
+						}
+						data = []byte(changed)
+					}
+					partial[file] = &fstest.MapFile{Data: data}
+				}
+				err := Migrate(t.Context(), config, partial)
+				var failure *pgconn.PgError
+				if !errors.As(err, &failure) || failure.Code != "22012" {
+					t.Fatalf("partial version initialization error=%v", err)
+				}
+				var initialized int
+				if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM change_versions WHERE project_id IS NOT NULL").Scan(&initialized); err != nil || initialized != 4 {
+					t.Fatalf("committed version initialization=%d error=%v", initialized, err)
+				}
+				_, err = db.ExecContext(t.Context(), "UPDATE change_versions SET external_id=external_id WHERE project_id IS NULL")
+				var immutable *pgconn.PgError
+				if !errors.As(err, &immutable) || immutable.Code != "23514" || immutable.Message != "history is immutable" {
+					t.Fatalf("uninitialized immutable version update=%v", err)
+				}
+				var remaining int
+				if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM change_versions WHERE project_id IS NULL").Scan(&remaining); err != nil || remaining != 4 {
+					t.Fatalf("uninitialized version rows=%d error=%v", remaining, err)
+				}
+			}
+			if interrupted {
+				partial := fstest.MapFS{}
+				for _, file := range files {
+					data, err := fs.ReadFile(source, file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if file == "20261111234251_evidence_project_initialize.sql" {
+						const committed = "after_change := next_change; after_sequence := next_sequence;\n   COMMIT;"
+						changed := strings.Replace(string(data), committed, committed+"\n   PERFORM 1/0;", 1)
+						if changed == string(data) {
+							t.Fatal("evidence initialization has no batch commit to interrupt")
+						}
+						data = []byte(changed)
+					}
+					partial[file] = &fstest.MapFile{Data: data}
+				}
+				err := Migrate(t.Context(), config, partial)
+				var failure *pgconn.PgError
+				if !errors.As(err, &failure) || failure.Code != "22012" {
+					t.Fatalf("partial evidence initialization error=%v", err)
+				}
+				var initialized int
+				if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM change_evidence WHERE project_id IS NOT NULL").Scan(&initialized); err != nil || initialized != 2 {
+					t.Fatalf("committed evidence initialization=%d error=%v", initialized, err)
+				}
+				_, err = db.ExecContext(t.Context(), "UPDATE change_evidence SET actor_principal_id=actor_principal_id WHERE project_id IS NULL")
+				var immutable *pgconn.PgError
+				if !errors.As(err, &immutable) || immutable.Code != "23514" || immutable.Message != "history is immutable" {
+					t.Fatalf("uninitialized immutable evidence update=%v", err)
+				}
+			}
+			if interrupted {
+				partial := fstest.MapFS{}
+				for _, file := range files {
+					data, err := fs.ReadFile(source, file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if file == "20261112001213_evidence_quality_initialize.sql" {
+						const committed = "after_change := next_change; after_sequence := next_sequence;\n   COMMIT;"
+						changed := strings.Replace(string(data), committed, committed+"\n   PERFORM 1/0;", 1)
+						if changed == string(data) {
+							t.Fatal("quality initialization has no committed batch to interrupt")
+						}
+						data = []byte(changed)
+					}
+					partial[file] = &fstest.MapFile{Data: data}
+				}
+				err := Migrate(t.Context(), config, partial)
+				var failure *pgconn.PgError
+				if !errors.As(err, &failure) || failure.Code != "22012" {
+					t.Fatalf("partial quality initialization error=%v", err)
+				}
+				var initialized int
+				if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM change_evidence WHERE quality_at IS NOT NULL").Scan(&initialized); err != nil || initialized != 2 {
+					t.Fatalf("committed quality initialization=%d error=%v", initialized, err)
+				}
+				_, err = db.ExecContext(t.Context(), "UPDATE change_evidence SET quality_at=quality_at WHERE quality_at IS NULL")
+				var immutable *pgconn.PgError
+				if !errors.As(err, &immutable) || immutable.Code != "23514" || immutable.Message != "history is immutable" {
+					t.Fatalf("uninitialized quality evidence mutated=%v", err)
+				}
+			}
 			if err := Migrate(t.Context(), config, source); err != nil {
-				t.Fatalf("upgrade populated head: %v", err)
+				t.Fatal(err)
+			}
+			var reviewTimes, escapeTimes int
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FILTER(WHERE e.kind='review' AND e.quality_at=e.created_at),count(*) FILTER(WHERE e.kind='discussion' AND e.quality_at=f.observed_at AND e.quality_at<e.created_at) FROM change_evidence e LEFT JOIN report_escape_facts f ON f.organization_id=e.organization_id AND f.change_id=e.change_id AND f.evidence_sequence=e.sequence`).Scan(&reviewTimes, &escapeTimes); err != nil || reviewTimes != 2 || escapeTimes != 2 {
+				t.Fatalf("retained quality times reviews=%d escapes=%d error=%v", reviewTimes, escapeTimes, err)
+			}
+			var evidenceProjects, badEvidenceProjects, preservedEvidence int
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER(WHERE e.project_id IS DISTINCT FROM c.project_id),count(*) FILTER(WHERE e.payload_sha256=repeat('c',64) AND ((e.sequence=1 AND e.kind='review') OR (e.sequence=2 AND e.kind='discussion')) AND e.actor_principal_id='actor_example') FROM change_evidence e LEFT JOIN change_requests c ON c.organization_id=e.organization_id AND c.id=e.change_id`).Scan(&evidenceProjects, &badEvidenceProjects, &preservedEvidence); err != nil || evidenceProjects != 4 || badEvidenceProjects != 0 || preservedEvidence != 4 {
+				t.Fatalf("retained evidence initialization=%d mismatches=%d preserved=%d error=%v", evidenceProjects, badEvidenceProjects, preservedEvidence, err)
+			}
+
+			var versionProjects, badVersionProjects, knownVersionHistories int
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER(WHERE v.project_id IS DISTINCT FROM c.project_id),count(*) FILTER(WHERE v.landing_history_known) FROM change_versions v LEFT JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id`).Scan(&versionProjects, &badVersionProjects, &knownVersionHistories); err != nil || versionProjects != 8 || badVersionProjects != 0 || knownVersionHistories != 0 {
+				t.Fatalf("retained version initialization: rows=%d mismatches=%d invented-history=%d error=%v", versionProjects, badVersionProjects, knownVersionHistories, err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions(organization_id,id,change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id) SELECT organization_id,'version_wrong_project',change_id,9999,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,'prj_other' FROM change_versions WHERE organization_id='org_first' AND id='version_change_pr_none_1'`); err == nil {
+				t.Fatal("version accepted another project's change")
+			} else {
+				var failure *pgconn.PgError
+				if !errors.As(err, &failure) || failure.Code != "23503" || failure.ConstraintName != "change_versions_project_identity" {
+					t.Fatalf("version project constraint=%v", err)
+				}
+			}
+
+			var attemptProjects, badAttemptProjects int
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER(WHERE a.project_id IS DISTINCT FROM i.project_id) FROM native_attempts a LEFT JOIN work_item_identities i ON i.organization_id=a.organization_id AND i.id=a.issue_id`).Scan(&attemptProjects, &badAttemptProjects); err != nil || attemptProjects != 2 || badAttemptProjects != 0 {
+				t.Fatalf("retained attempt project initialization: rows=%d mismatches=%d error=%v", attemptProjects, badAttemptProjects, err)
+			}
+			if _, err := db.ExecContext(t.Context(), `UPDATE native_attempts SET project_id='prj_other' WHERE organization_id='org_first' AND id='attempt_shared'`); err == nil {
+				t.Fatal("attempt project identity accepted another project")
+			} else {
+				var failure *pgconn.PgError
+				if !errors.As(err, &failure) || failure.Code != "23503" || failure.ConstraintName != "native_attempts_project_identity" {
+					t.Fatalf("attempt identity failure=%v", err)
+				}
 			}
 			if err := validateSchema(t.Context(), db, source); err != nil {
 				t.Fatal(err)
@@ -216,6 +534,38 @@ func TestMigrateAppliesPendingVersionsBelowPopulatedHead(t *testing.T) {
 			}
 		})
 	}
+	t.Run("retained attempt initializes after live issue deletion", func(t *testing.T) {
+		db := populated.Database(t)
+		config := migrationTestLogin(t, db, MigrationRoleName)
+		if _, err := db.ExecContext(t.Context(), `UPDATE leases SET released_at=greatest(renewed_at,clock_timestamp()) WHERE issue_id=1`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(t.Context(), `DELETE FROM issues WHERE id=1`); err != nil {
+			t.Fatal(err)
+		}
+		landedAt := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+		if _, err := db.ExecContext(t.Context(), `UPDATE change_requests SET landed_version_id=current_version_id,landed_at=$1,landed_head_sha=repeat('1',40),landed_merge_sha=repeat('3',40),landed_base_ref='main' WHERE id='change_pr_referenced'`, landedAt); err != nil {
+			t.Fatal(err)
+		}
+		if err := Migrate(t.Context(), config, source); err != nil {
+			t.Fatal(err)
+		}
+		for _, org := range []string{"org_first", "org_second"} {
+			var versionProject, sourceKey, landedKey string
+			var known bool
+			var at time.Time
+			if err := db.QueryRowContext(t.Context(), `SELECT v.project_id,v.landing_history_known,v.landed_at,c.payload_object_key,v.landed_object_key FROM change_versions v JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id WHERE v.organization_id=$1 AND v.id='version_change_pr_referenced_4'`, org).Scan(&versionProject, &known, &at, &sourceKey, &landedKey); err != nil || versionProject != "prj_shared" || !known || !at.Equal(landedAt) || landedKey != sourceKey || landedKey == "" {
+				t.Fatalf("retained current landing project=%q known=%v at=%v source=%q frozen=%q error=%v", versionProject, known, at, sourceKey, landedKey, err)
+			}
+
+			var project, payload string
+			var live bool
+			if err := db.QueryRowContext(t.Context(), `SELECT a.project_id,a.payload_object_key,EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=a.organization_id AND i.id=a.issue_id) FROM native_attempts a WHERE a.organization_id=$1 AND a.id='attempt_shared'`, org).Scan(&project, &payload, &live); err != nil || project != "prj_shared" || payload != org+"/retained_payload" || live {
+				t.Fatalf("retained project=%q payload=%q live=%v error=%v", project, payload, live, err)
+			}
+		}
+	})
+
 }
 
 func populatedHeadMigrations(t *testing.T) fstest.MapFS {
@@ -287,8 +637,29 @@ func seedUpgradeOrderTenants(ctx context.Context, db *sql.DB) error {
 			 SELECT $1,'prj_shared','wi_todo_1','decision_todo_'||n,n,'scheduler.decision',1,'human','actor_example',CURRENT_TIMESTAMP,'orgs/'||$1||'/blobs/sha256/bb/'||repeat('b',64),repeat('b',64),1,1,2 FROM generate_series(1,$2::bigint+1) n
 			 UNION ALL SELECT $1,'prj_other','wi_other','decision_other_1',1,'scheduler.decision',1,'human','actor_example',CURRENT_TIMESTAMP,'orgs/'||$1||'/blobs/sha256/bb/'||repeat('b',64),repeat('b',64),1,1,2
 			 UNION ALL SELECT $1,'prj_shared','wi_done','created_done',1,'issue.created',1,'human','actor_example',CURRENT_TIMESTAMP,'orgs/'||$1||'/blobs/sha256/bb/'||repeat('b',64),repeat('b',64),1,1,2`,
+			`INSERT INTO change_requests(organization_id,project_id,work_item_id,id,title,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+			 SELECT $1,'prj_shared',c.item,c.id,'Example '||c.id,'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1
+			 FROM (VALUES('change_pr_referenced','wi_todo_1'),('change_pr_none','wi_todo_2')) c(id,item)`,
+			`INSERT INTO change_versions(organization_id,id,change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+			 SELECT $1,'version_'||v.change_id||'_'||v.number,v.change_id,v.number,repeat('1',40),repeat('2',40),repeat('2',40),'https://github.com/example/repo','policy_example','human','actor_example',
+			 CASE WHEN v.external_id<>'' THEN 'github' ELSE '' END,v.external_id,CASE WHEN v.external_id<>'' THEN 'https://github.com/example/repo/pull/'||v.external_id ELSE '' END,
+			 'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1
+			 FROM (VALUES('change_pr_referenced',1,'11'),('change_pr_referenced',3,'33'),('change_pr_referenced',4,''),('change_pr_none',1,'')) v(change_id,number,external_id)`,
+			`INSERT INTO change_evidence(organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known)
+             SELECT $1,'change_pr_none',n,'version_change_pr_none_1',CASE WHEN n=1 THEN 'review' ELSE 'discussion' END,'source_evidence_'||n,'human','actor_example',CASE WHEN n=1 THEN 'changes_requested' ELSE '' END,CURRENT_TIMESTAMP,'orgs/'||$1||'/blobs/sha256/cc/'||repeat('c',64),repeat('c',64),1,1,CASE WHEN n=1 THEN 'human' ELSE '' END,true FROM generate_series(1,2)n`,
+			`INSERT INTO report_escape_facts(organization_id,change_id,evidence_sequence,occurrence_id,kind,cause,observed_at)
+             SELECT organization_id,change_id,sequence,'quality-occurrence','revert','missing_criterion',created_at-interval '1 hour' FROM change_evidence WHERE organization_id=$1 AND sequence=2`,
+			`UPDATE change_requests SET current_version_id=CASE id WHEN 'change_pr_referenced' THEN 'version_change_pr_referenced_4' ELSE 'version_change_pr_none_1' END
+			 WHERE organization_id=$1 AND id IN ('change_pr_referenced','change_pr_none')`,
+			`INSERT INTO change_issue_links(organization_id,project_id,work_item_id,change_id,created_at)
+			 SELECT organization_id,project_id,work_item_id,id,created_at FROM change_requests WHERE organization_id=$1 AND id IN ('change_pr_referenced','change_pr_none')`,
 			`INSERT INTO machines(organization_id,id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) SELECT $1,'machine_shared','example',1,'example',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP`,
 			`INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at) SELECT $1,'lease_shared',1,'machine_shared','session_shared',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+interval '1 hour'`,
+			`INSERT INTO api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES($1,'lease_runner_token','Example lease runner',$1||'_lease_runner',$1||'_lease_runner','worker',true,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+			`INSERT INTO runner_enrollments(organization_id,id,runner_id,machine_id,token_hash,scope,operations,created_at,expires_at,created_by) VALUES($1,'lease_enrollment','runner_shared','machine_shared',md5($1)||md5($1),'organization',ARRAY['claim'],CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+interval '1 day','example_operator')`,
+			`INSERT INTO runner_identities(organization_id,runner_id,machine_id,token_id,enrollment_id,scope,operations,capacity_limit,reported_capacity,created_at,expires_at,last_heartbeat_at) VALUES($1,'runner_shared','machine_shared','lease_runner_token','lease_enrollment','organization',ARRAY['claim'],3,3,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+interval '1 day',CURRENT_TIMESTAMP)`,
+			`INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at) VALUES($1,'lease_other',14,'machine_shared','session_other',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+interval '1 hour',NULL),($1,'lease_released',11,'machine_shared','session_released',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+interval '1 hour',CURRENT_TIMESTAMP)`,
+			`INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) SELECT $1,lease_id,'runner_shared',CURRENT_TIMESTAMP FROM leases WHERE organization_id=$1 AND lease_id IN ('lease_shared','lease_other','lease_released')`,
 			`INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) VALUES($1,'run_shared',1)`,
 			`INSERT INTO native_attempts(organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,started_at,updated_at)
 			 SELECT organization_id,'attempt_shared',issue_id,lease_id,fencing_token,'run_shared',1,'succeeded',work_item_revision,0,$1||'/retained_payload',$1||'/retained_checkpoint',acquired_at,renewed_at FROM leases WHERE organization_id=$1 AND lease_id='lease_shared'`,
@@ -328,6 +699,9 @@ func requireUpgradeOrderBackfills(t *testing.T, db *sql.DB, organization tracker
 		{"active population", `SELECT value||' '||initialized FROM hosted_usage_counters WHERE organization_id=$1 AND name='unarchived_issues'`, fmt.Sprintf("%d true", weight+3)},
 		{"history population", `SELECT value||' '||initialized FROM hosted_usage_counters WHERE organization_id=$1 AND name='history_records'`, fmt.Sprintf("%d true", (weight+5)+(weight+3)+weight)},
 		{"archive accounting", `SELECT count(*)::text FROM archive_usage_counters WHERE organization_id=$1`, "1"},
+		{"retained PR historical pointers", `SELECT string_agg(change_id||'/'||work_item_id||'='||COALESCE(retained_pr_version_id,'NULL'),' ' ORDER BY change_id) FROM change_issue_links WHERE organization_id=$1 AND change_id IN ('change_pr_referenced','change_pr_none')`, "change_pr_none/wi_todo_2=NULL change_pr_referenced/wi_todo_1=version_change_pr_referenced_3"},
+		{"lease runner and project bindings", `SELECT string_agg(lease_id||'='||COALESCE(project_id,'NULL')||'/'||COALESCE(runner_id,'NULL'),' ' ORDER BY lease_id) FROM leases WHERE organization_id=$1 AND lease_id IN ('lease_shared','lease_other','lease_released')`, "lease_other=prj_other/runner_shared lease_released=NULL/runner_shared lease_shared=prj_shared/runner_shared"},
+		{"retained PR immutable sources", `SELECT count(*)||' '||count(*) FILTER (WHERE external_provider='github' AND external_url<>'') FROM change_versions WHERE organization_id=$1 AND change_id IN ('change_pr_referenced','change_pr_none')`, "4 2"},
 		{"board populations", `SELECT string_agg(project_id||'/'||kind||'/'||has_state||'/'||state_name||'='||value,' ' ORDER BY project_id,kind,has_state,state_name) FROM local_board_populations WHERE organization_id=$1`,
 			fmt.Sprintf("prj_other/project/false/=1 prj_other/state/true/Todo=1 prj_shared/project/false/=%d prj_shared/state/false/=1 prj_shared/state/true/Done=1 prj_shared/state/true/Todo=%d", weight+2, weight+1)},
 		{"scheduler heads", `SELECT string_agg(project_id||'/'||work_item_id||'/'||head_kind||'='||id||'@'||sequence,' ' ORDER BY project_id,work_item_id,head_kind) FROM scheduler_event_heads WHERE organization_id=$1`,

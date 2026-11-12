@@ -187,11 +187,3 @@ func queryRowSQL(ctx context.Context, query nativeQueryer, statement string, arg
 	}
 	return sqlParameterRow{row: query.QueryRowContext(ctx, statement, args...)}
 }
-
-func execSQL(ctx context.Context, query nativeExecer, statement string, args ...any) (sql.Result, error) {
-	statement, args, err := bindSQLParameters(statement, args)
-	if err != nil {
-		return nil, fmt.Errorf("bind SQL parameters: %w", err)
-	}
-	return query.ExecContext(ctx, statement, args...)
-}

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -175,73 +174,4 @@ func (timedJSONSerializer) Serialize(c echo.Context, i any, indent string) error
 	}
 	_, err := c.Response().Write(body.Bytes())
 	return err
-}
-
-// timedRows counts the time spent stepping a result set toward the request's
-// db span, since SQLite does most of a query's work while rows are read.
-type timedRows struct {
-	committed func()
-	driver.Rows
-	timing       *requestTiming
-	writer       *timedConn
-	holder       writerHold
-	writerTiming *writerTiming
-	writerStart  time.Time
-}
-
-func (r *timedRows) Next(dest []driver.Value) error {
-	start := time.Now()
-	err := r.Rows.Next(dest)
-	r.timing.addDB(start)
-	return err
-}
-
-func (r *timedRows) Close() error {
-	start := time.Now()
-	err := r.Rows.Close()
-	if err == nil && r.committed != nil {
-		r.committed()
-		r.committed = nil
-	}
-	r.timing.addDB(start)
-	if r.holder.n != 0 {
-		r.writerTiming.add(r.writerStart)
-		r.writer.endWriterHold(&r.holder)
-	}
-	return err
-}
-
-func (r *timedRows) ColumnTypeDatabaseTypeName(index int) string {
-	if typed, ok := r.Rows.(driver.RowsColumnTypeDatabaseTypeName); ok {
-		return typed.ColumnTypeDatabaseTypeName(index)
-	}
-	return ""
-}
-
-func (r *timedRows) ColumnTypeLength(index int) (int64, bool) {
-	if typed, ok := r.Rows.(driver.RowsColumnTypeLength); ok {
-		return typed.ColumnTypeLength(index)
-	}
-	return 0, false
-}
-
-func (r *timedRows) ColumnTypeNullable(index int) (bool, bool) {
-	if typed, ok := r.Rows.(driver.RowsColumnTypeNullable); ok {
-		return typed.ColumnTypeNullable(index)
-	}
-	return false, false
-}
-
-func (r *timedRows) ColumnTypePrecisionScale(index int) (int64, int64, bool) {
-	if typed, ok := r.Rows.(driver.RowsColumnTypePrecisionScale); ok {
-		return typed.ColumnTypePrecisionScale(index)
-	}
-	return 0, 0, false
-}
-
-func (r *timedRows) ColumnTypeScanType(index int) reflect.Type {
-	if typed, ok := r.Rows.(driver.RowsColumnTypeScanType); ok {
-		return typed.ColumnTypeScanType(index)
-	}
-	return reflect.TypeFor[any]()
 }

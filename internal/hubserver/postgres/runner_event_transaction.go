@@ -50,7 +50,11 @@ WHERE a.organization_id=$1 AND a.lease_id=$2 FOR UPDATE OF r`, s.organization, c
 }
 
 func (f *runnerEventSession) queueRunFence(cleanup bool) {
-	f.pending.Queue(`SELECT EXISTS(SELECT 1 FROM leases WHERE organization_id=$1 AND lease_id=$2 AND fencing_token=$3 AND (($4 AND (released_at IS NOT NULL OR expires_at<=clock_timestamp())) OR (NOT $4 AND released_at IS NULL AND expires_at>clock_timestamp())))`, f.session.organization, f.command.LeaseID, f.lease.value.FencingToken, cleanup).QueryRow(func(row pgx.Row) error {
+	var clock *time.Time
+	if f.session.leaseClock != nil {
+		clock = new(f.session.leaseClock().UTC())
+	}
+	f.pending.Queue(`SELECT EXISTS(SELECT 1 FROM leases WHERE organization_id=$1 AND lease_id=$2 AND fencing_token=$3 AND (($4 AND (released_at IS NOT NULL OR expires_at<=coalesce($5::timestamptz,clock_timestamp()))) OR (NOT $4 AND released_at IS NULL AND expires_at>coalesce($5::timestamptz,clock_timestamp()))))`, f.session.organization, f.command.LeaseID, f.lease.value.FencingToken, cleanup, clock).QueryRow(func(row pgx.Row) error {
 		var valid bool
 		if err := row.Scan(&valid); err != nil {
 			return err

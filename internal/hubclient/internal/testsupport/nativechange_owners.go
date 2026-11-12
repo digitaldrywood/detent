@@ -91,7 +91,7 @@ func NativeChangeWorker(t *testing.T, cfg hubserver.Config, project tracker.Proj
 		if err := w.RedeemRunnerEnrollment(t.Context(), enrollment.ID, id, machine, now); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: id, MachineID: machine, TokenID: credentialID, EnrollmentID: enrollment.ID, Scope: "projects", State: "active", Operations: enrollment.Operations, ProjectIDs: enrollment.ProjectIDs, CapacityLimit: 1, ReportedCapacity: 1, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: id, MachineID: machine, TokenID: credentialID, DisplayName: "Example runner", EnrollmentID: enrollment.ID, Scope: "projects", State: "active", Operations: enrollment.Operations, ProjectIDs: enrollment.ProjectIDs, CapacityLimit: 1, ReportedCapacity: 1, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 			return err
 		}
 		return w.UpdateRunnerCapacityConfig(t.Context(), id, runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: now})

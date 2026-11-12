@@ -374,12 +374,7 @@ adopting new versions. Base changes and scoped grants use the audited entitlemen
 administrator; Stripe reconciliation continues to own subscription access.
 
 The existing owner billing usage export (`/api/cloud/billing`) adds `cost_drivers`:
-active/unarchived and archived native issue counts, separate database and WAL
-bytes, current-window request count and request/response bytes, reported artifact
-retained/reserved bytes, reported relay bytes, and separately attributable Hub
-coordinator AI tokens, turns, and estimated USD cost for the displayed period.
-Unmeasured storage/relay inputs, absent request samples, and incompletely priced
-AI cost are JSON `null`, meaning unknown. A missing WAL file is measured as zero.
+active/unarchived and archived native issue counts, current-window request count and request/response bytes, reported artifact retained/reserved bytes, reported relay bytes, and separately attributable Hub coordinator AI tokens, turns, and estimated USD cost for the displayed period. PostgreSQL reports database and WAL bytes as JSON `null` and lists both fields in `unavailable_usage`. Unmeasured storage or relay inputs, absent request samples, and incompletely priced AI cost are also `null`.
 Request bytes are known only when every sampled request declared its body length.
 Metrics contain counts and estimates, never customer content or credentials.
 These inputs support operator review.

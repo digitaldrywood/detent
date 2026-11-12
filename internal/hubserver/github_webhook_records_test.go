@@ -17,7 +17,7 @@ func gitHubWebhookRecordFixture(t *testing.T) (*Service, *time.Time, map[tracker
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
-	service := &Service{localOrganization: "org", database: &database{now: clock, hostedOrganization: "org"}, config: (Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: clock}).normalized()}
+	service := &Service{localOrganization: "org", notifications: newNotificationBroker(), database: &database{now: clock, hostedOrganization: "org"}, config: (Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: clock}).normalized()}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org", Name: "Example", Slug: "example"})
 	items := make(map[tracker.ProjectID]tracker.NativeWorkItemID)
 	for _, project := range []tracker.ProjectID{"first", "second"} {
@@ -90,10 +90,11 @@ func TestGitHubWebhookReceiptsAcrossProjects(t *testing.T) {
 }
 
 func TestGitHubWebhookCursorRecoveryKeepsObservation(t *testing.T) {
-	for _, event := range []string{"issues", "issue_comment"} {
-		t.Run(event, func(t *testing.T) {
+	for _, test := range []struct{ event, action string }{{"issues", "edited"}, {"issue_comment", "created"}, {"issues", "closed"}, {"issues", "reopened"}} {
+		t.Run(test.event+"/"+test.action, func(t *testing.T) {
 			service, now, items := gitHubWebhookRecordFixture(t)
-			row, payload := gitHubWebhookEdit(t, service, event)
+			row, payload := gitHubWebhookEdit(t, service, test.event)
+			row.Action = test.action
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
 				_, err := w.(projectstore.GitHubIntakeWriter).CreateGitHubWebhook(t.Context(), row)
 				return err
@@ -120,7 +121,7 @@ func TestGitHubWebhookCursorRecoveryKeepsObservation(t *testing.T) {
 					t.Fatalf("cursor=%+v", cursor)
 				}
 				comments, err := r.SelectComments(t.Context(), "first", items["first"], 0, false, 10)
-				if err == nil && event == "issue_comment" && len(comments) != 1 {
+				if err == nil && (test.event == "issue_comment" || test.action == "closed" || test.action == "reopened") && len(comments) != 1 {
 					t.Fatalf("replayed comments=%+v", comments)
 				}
 				return err

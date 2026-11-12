@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -203,41 +202,7 @@ func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
-	if s.config.TenantRepository != nil {
-		result, err := s.updateNativeDependencyReasonTenant(c.Request().Context(), scope, c.Param("item"), request)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSONBlob(http.StatusOK, result)
-	}
-	options := nativeCommandOptions{OperationID: "dependency-reason/" + c.Param("item"), Item: c.Param("item"), RequireLease: true, Feature: "collaboration"}
-	result, err := s.executeNativeMutation(c.Request().Context(), scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
-		if !validDependencyReason(request.Text) || (request.Kind != "blocked" && request.Kind != "unblocks") {
-			return nil, nativePublicInvalid("Reason must be plain text of at most 140 characters and kind blocked or unblocks")
-		}
-		if _, _, err := readNativeIssue(ctx, tx, scope, c.Param("item")); err != nil {
-			return nil, err
-		}
-		issue, _, err := readNativeIssue(ctx, tx, scope, string(request.WorkItemID))
-		if err != nil {
-			return nil, err
-		}
-		reason := issue.BlockedReason
-		column := "blocked_reason"
-		if request.Kind == "unblocks" {
-			reason = issue.UnblocksReason
-			column = "unblocks_reason"
-		}
-		if reason.CurrentBasis == "" || request.Basis != reason.CurrentBasis || request.ExpectedRevision != reason.Revision {
-			return nil, nativeConflict(tracker.Revision(reason.Revision))
-		}
-		_, err = tx.ExecContext(ctx, "UPDATE issues SET "+column+"=?,"+column+"_basis=?,"+column+"_revision="+column+"_revision+1 WHERE native_id=? AND organization_id=? AND project_id=?", request.Text, request.Basis, request.WorkItemID, scope.organization, scope.project)
-		if err != nil {
-			return nil, err
-		}
-		reason.Text, reason.Basis, reason.Revision = request.Text, request.Basis, reason.Revision+1
-		return reason, nil
-	})
+	result, err := s.updateNativeDependencyReasonTenant(c.Request().Context(), scope, c.Param("item"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

@@ -1,9 +1,12 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -17,6 +20,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -425,165 +431,265 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 }
 
 func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
-	descriptor := clientTestPolicy()
-	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
-	lease := tracker.Lease{LeaseSummary: tracker.LeaseSummary{
-		PolicyID: descriptor.ID,
-		ID:       "lease-1", FencingToken: 7, Machine: tracker.MachineSummary{ID: "machine-a", Hostname: "host-a"},
-		SessionID: "session-1", AcquiredAt: now, RenewedAt: now, ExpiresAt: now.Add(90 * time.Second),
-	}, WorkItemID: 42}
-	machine := Machine{ID: "machine-a", Hostname: "host-a", DisplayName: "Build Mac", Capacity: 2, Version: "v1.2.3"}
-	item := WorkItem{WorkItem: tracker.WorkItem{
-		ID: 42, Repository: tracker.RepositoryReference{ID: 4, Owner: "acme", Name: "widgets"},
-		GitHub: tracker.GitHubIssueReference{NodeID: "I_42", Number: 17}, Title: "Ship Hub scheduling",
-		BodyExcerpt: "```detent-agent\nschema: 1\neffort: high\n```", URL: "https://github.com/acme/widgets/issues/17",
-		SourceState: tracker.SourceStateOpen, WorkflowState: &tracker.WorkflowState{Name: "Todo", Dispatchable: true},
-		AuthorID: "alice", Labels: []string{"detent:todo"}, Dispatchability: tracker.Dispatchability{Dispatchable: true}, SyncStatus: tracker.SyncStatusSynced,
-	}, Body: "Full issue body from the Hub"}
-	var mu sync.Mutex
-	var paths []string
-	var claims []ClaimRequest
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Authorization") != "Bearer worker-token" {
-			t.Errorf("Authorization = %q", request.Header.Get("Authorization"))
+	h := newNativeChangeHub(t, true)
+	importedAt := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	var items []tracker.NativeIssue
+	for _, label := range []string{"first", "second"} {
+		item, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Dispatch " + label, Body: "Full issue body from the Hub" + issueContractTestSections, State: "In Progress", Labels: []string{"detent:todo", label}, Assignees: []string{"worker-a"}, Provenance: &tracker.Provenance{Provider: "github", ExternalID: label, AuthorID: "example-author", CreatedAt: importedAt, UpdatedAt: importedAt, ObservedAt: importedAt}})
+		if err != nil {
+			t.Fatal(err)
 		}
-		mu.Lock()
-		paths = append(paths, request.Method+" "+request.URL.Path)
-		mu.Unlock()
-		response.Header().Set("Content-Type", "application/json")
-		switch request.URL.Path {
-		case "/api/v1/repositories/acme/widgets/policy/observed":
-			response.WriteHeader(http.StatusNoContent)
-		case "/api/v1/machines/register", "/api/v1/machines/machine-a/heartbeat":
-			_ = json.NewEncoder(response).Encode(machine)
-		case "/api/v1/claims":
-			var claim ClaimRequest
-			if err := json.NewDecoder(request.Body).Decode(&claim); err != nil {
-				t.Errorf("decode claim: %v", err)
+		confirmIssueContract(t, h.admin, string(item.WorkItemID))
+		items = append(items, item)
+	}
+	clock := time.Now()
+	h.scheduler.now = func() time.Time { return clock }
+	h.native.Transport().SetLocalPolicy(h.project, h.descriptor.ID)
+	if err := h.scheduler.ensureNativeMachine(t.Context(), h.scheduler.nativeProject("local")); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := runnerauth.Load(h.native.Transport().IdentityFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	var responses []struct {
+		path       string
+		status     int
+		code       string
+		lease      bool
+		candidates int
+	}
+	var claims []tracker.NativeClaim
+	transport := fixtureClient(h.native.Transport()).requests.Load()
+	fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		path := request.Method + " " + request.URL.Path
+		if request.URL.Query().Get("view") != "" {
+			path += "?view=" + request.URL.Query().Get("view")
+		}
+		if request.URL.Query().Get("cursor") != "" {
+			path += "&cursor=present"
+		}
+		paths = append(paths, path)
+		if request.Method == http.MethodPost && request.URL.Path == h.native.Scope()+"/claims" {
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			request.Body = io.NopCloser(bytes.NewReader(body))
+			var claim tracker.NativeClaim
+			if err := json.Unmarshal(body, &claim); err != nil {
+				return nil, err
 			}
 			claims = append(claims, claim)
-			response.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(response).Encode(lease)
-		case "/api/v1/work-items/42":
-			_ = json.NewEncoder(response).Encode(item)
-		case "/api/v1/leases/lease-1/renew":
-			renewed := lease
-			renewed.RenewedAt = now
-			renewed.ExpiresAt = now.Add(90 * time.Second)
-			_ = json.NewEncoder(response).Encode(renewed)
-		case "/api/v1/leases/lease-1/release":
-			response.WriteHeader(http.StatusNoContent)
-		default:
-			http.NotFound(response, request)
 		}
+		response, err := transport.RoundTrip(request)
+		if err == nil && request.Method == http.MethodPost && (request.URL.Path == h.native.Scope()+"/claims" || request.URL.Path == h.native.Scope()+"/claims/preview") {
+			body, readErr := io.ReadAll(response.Body)
+			response.Body.Close()
+			response.Body = io.NopCloser(bytes.NewReader(body))
+			if readErr != nil {
+				return response, readErr
+			}
+			var result struct {
+				Code    string            `json:"code"`
+				LeaseID string            `json:"lease_id"`
+				Items   []json.RawMessage `json:"items"`
+			}
+			json.Unmarshal(body, &result)
+			responses = append(responses, struct {
+				path       string
+				status     int
+				code       string
+				lease      bool
+				candidates int
+			}{request.URL.Path, response.StatusCode, result.Code, result.LeaseID != "", len(result.Items)})
+		}
+		return response, err
 	}))
-	defer server.Close()
-
-	client, err := newTestClient(t, Config{URL: server.URL, TokenSource: func() string { return "worker-token" }})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	scheduler, err := newTestScheduler(client, SchedulerConfig{
-		Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second,
-		Now: func() time.Time { return now }, SessionID: func() (string, error) { return "session-1", nil },
-	})
-	if err != nil {
-		t.Fatalf("newTestScheduler() error = %v", err)
-	}
-	issues, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
-		Policy:    descriptor,
-		ProjectID: "widgets", Repository: "acme/widgets", WorkflowStates: []string{"Todo"},
-		Filter: connector.IssueFilterHint{
-			Authors: []string{"alice"}, Assignees: []string{"worker-a"},
-			LabelInclude: []string{"detent:todo"}, LabelExclude: []string{"hold"},
-		},
-	})
-	if err != nil || len(issues) != 1 {
-		t.Fatalf("FetchCandidateIssues() = %#v, %v", issues, err)
-	}
-	if issues[0].ID != "I_42" || issues[0].Identifier != "acme/widgets#17" || issues[0].Description != item.Body || issues[0].AuthorID != "alice" {
-		t.Fatalf("candidate = %#v", issues[0])
-	}
-	claimed, err := scheduler.AdoptClaim(t.Context(), issues[0], now)
-	if err != nil || claimed.Owner != "machine-a" || claimed.LeaseExpiresAt != lease.ExpiresAt {
-		t.Fatalf("AdoptClaim() = %#v, %v", claimed, err)
-	}
-	now = now.Add(31 * time.Second)
-	renewed, err := scheduler.RenewClaim(t.Context(), issues[0].ID, now)
-	if err != nil || renewed.LeaseRenewedAt != now {
-		t.Fatalf("RenewClaim() = %#v, %v", renewed, err)
-	}
-	if renewed.Issue.Labels != nil || renewed.Issue.Assignees != nil || renewed.Issue.BlockedBy != nil || renewed.Issue.Fields != nil {
-		t.Fatalf("RenewClaim() issue = %#v, want sparse lease metadata", renewed.Issue)
-	}
-	if err := scheduler.ReleaseClaim(t.Context(), issues[0].ID, "completed"); err != nil {
-		t.Fatalf("ReleaseClaim() error = %v", err)
-	}
-	if len(scheduler.claimPolicies) != 0 {
-		t.Fatal("released claim retained policy state")
-	}
-
-	wantPaths := []string{
-		"POST /api/v1/repositories/acme/widgets/policy/observed",
-		"POST /api/v1/machines/register",
-		"POST /api/v1/claims",
-		"GET /api/v1/work-items/42",
-		"POST /api/v1/repositories/acme/widgets/policy/observed",
-		"POST /api/v1/machines/machine-a/heartbeat",
-		"POST /api/v1/repositories/acme/widgets/policy/observed",
-		"POST /api/v1/leases/lease-1/renew",
-		"POST /api/v1/leases/lease-1/release",
-	}
-	if !reflect.DeepEqual(paths, wantPaths) {
-		t.Fatalf("Hub requests = %v, want %v", paths, wantPaths)
-	}
-	if len(claims) != 1 || !reflect.DeepEqual(claims[0].Repositories, []string{"acme/widgets"}) || claims[0].SessionID != "session-1" ||
-		!reflect.DeepEqual(claims[0].Authors, []string{"alice"}) || !reflect.DeepEqual(claims[0].Assignees, []string{"worker-a"}) ||
-		!reflect.DeepEqual(claims[0].LabelInclude, []string{"detent:todo"}) || !reflect.DeepEqual(claims[0].LabelExclude, []string{"hold"}) {
-		t.Fatalf("claims = %#v", claims)
+	t.Cleanup(func() { fixtureClient(h.native.Transport()).requests.Store(transport) })
+	for index, item := range items {
+		cycleStart := len(paths)
+		label := []string{"first", "second"}[index]
+		filter := connector.IssueFilterHint{Authors: []string{"example-author"}, Assignees: []string{"worker-a"}, LabelInclude: []string{"detent:todo", label}, LabelExclude: []string{"hold"}}
+		issues, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"In Progress"}, Filter: filter})
+		if err != nil || len(issues) != 1 {
+			t.Logf("dispatch candidate request paths=%v responses=%+v filter=%+v", paths[cycleStart:], responses, filter)
+			for _, claim := range claims {
+				t.Logf("dispatch claim policy=%s states=%v authors=%v assignees=%v include=%v exclude=%v", claim.PolicyID, claim.WorkflowStates, claim.Authors, claim.Assignees, claim.LabelInclude, claim.LabelExclude)
+			}
+			for _, candidate := range items {
+				current, readErr := h.admin.Issue(t.Context(), candidate.WorkItemID)
+				if readErr != nil {
+					t.Logf("dispatch current item id=%s read_error=%v", candidate.WorkItemID, readErr)
+					continue
+				}
+				sourceAuthor := ""
+				if current.Provenance != nil {
+					sourceAuthor = current.Provenance.AuthorID
+				}
+				confirmed := 0
+				if current.IssueContract != nil {
+					confirmed = len(current.IssueContract.ConfirmedSections)
+				}
+				t.Logf("dispatch current item id=%s state=%s archived=%t terminal=%t source_author=%s actor_kind=%s labels=%v assignees=%v contract_present=%t confirmed_sections=%d", current.WorkItemID, current.State, current.Archived, current.Terminal, sourceAuthor, current.Actor.Kind, current.Labels, current.Assignees, current.IssueContract != nil, confirmed)
+				h.seed(func(w tenantstore.Writer) error {
+					facts, err := w.WorkItemFacts(t.Context(), h.project, candidate.WorkItemID)
+					if err != nil {
+						t.Logf("dispatch optional claim facts id=%s read_error=%v", candidate.WorkItemID, err)
+						return nil
+					}
+					queue, err := w.QueueEntry(t.Context(), h.project, candidate.WorkItemID, string(h.project))
+					if err != nil {
+						t.Logf("dispatch optional queue entry id=%s read_error=%v", candidate.WorkItemID, err)
+						return nil
+					}
+					t.Logf("dispatch canonical facts id=%s author=%s assignees=%v queue_state=%s", candidate.WorkItemID, facts.Author, facts.Assignees, queue.State)
+					labels, err := w.WorkItemLabels(t.Context(), h.project, candidate.WorkItemID, corestore.LabelCursor{}, 200)
+					if err != nil {
+						t.Logf("dispatch optional canonical labels id=%s read_error=%v", candidate.WorkItemID, err)
+						return nil
+					}
+					t.Logf("dispatch canonical labels id=%s labels=%v has_more=%t", candidate.WorkItemID, labels.Items, labels.Next.After != "")
+					base := claimstore.CandidateQuery{ProjectID: h.project, Scope: string(h.project), WorkItemID: candidate.WorkItemID, AvailableAt: time.Now(), Limit: 1, RunnerSelection: true}
+					for _, predicate := range []string{"base", "state", "author", "assignee", "labels", "all"} {
+						query := base
+						if predicate == "state" || predicate == "all" {
+							query.States = []string{"In Progress"}
+						}
+						if predicate == "author" || predicate == "all" {
+							query.Authors = filter.Authors
+						}
+						if predicate == "assignee" || predicate == "all" {
+							query.Assignees = filter.Assignees
+						}
+						if predicate == "labels" || predicate == "all" {
+							query.IncludeLabels = filter.LabelInclude
+							query.ExcludeLabels = filter.LabelExclude
+						}
+						page, err := w.CandidatePage(t.Context(), query)
+						if err != nil {
+							t.Logf("dispatch optional candidate id=%s predicate=%s read_error=%v", candidate.WorkItemID, predicate, err)
+							return nil
+						}
+						t.Logf("dispatch canonical candidate id=%s predicate=%s rows=%d", candidate.WorkItemID, predicate, len(page.Items))
+						for _, row := range page.Items {
+							t.Logf("dispatch candidate row id=%s state=%s author=%s assignees=%v labels=%v", row.WorkItemID, row.State, row.Author, row.Assignees, row.Labels)
+						}
+					}
+					approval, err := w.ProjectPolicy(t.Context(), h.project)
+					if err != nil {
+						t.Logf("dispatch optional claim policy id=%s read_error=%v", candidate.WorkItemID, err)
+						return nil
+					}
+					gateKnown, gateEnabled := approval.GitHubPullRequest != nil, false
+					if gateKnown {
+						gateEnabled = *approval.GitHubPullRequest
+					}
+					t.Logf("dispatch policy id=%s github_gate_known=%t stored_github_gate=%t descriptor_github_gate=%t", approval.PolicyID, gateKnown, gateEnabled, h.descriptor.Gates.GitHubPullRequest)
+					return nil
+				})
+				evidence, readErr := h.admin.RuntimeEvidence(t.Context(), candidate.WorkItemID, "")
+				if readErr != nil {
+					t.Logf("dispatch admission id=%s read_error=%v", candidate.WorkItemID, readErr)
+					continue
+				}
+				t.Logf("dispatch admission id=%s entries=%d selection=%s scheduling_source=%s scheduling_outcome=%s", candidate.WorkItemID, len(evidence.Admission), evidence.Selection, evidence.Scheduling.Source, evidence.Scheduling.Outcome)
+				for _, capacity := range evidence.Capacity {
+					t.Logf("dispatch capacity id=%s runner=%s health=%s available=%d exclusions=%v", candidate.WorkItemID, capacity.RunnerID, capacity.Health, capacity.Available, capacity.Exclusions)
+				}
+				for _, admission := range evidence.Admission {
+					t.Logf("dispatch admission id=%s runner=%s revision=%d source=%s outcome=%s reason_code=%s", candidate.WorkItemID, admission.RunnerID, admission.RunnerRevision, admission.Source, admission.Outcome, admission.ReasonCode)
+				}
+			}
+			t.Fatalf("FetchCandidateIssues() = %#v, %v", issues, err)
+		}
+		if issues[0].ID != string(item.WorkItemID) || issues[0].Identifier != fmt.Sprintf("%s#%d", item.ProjectID, item.Number) || issues[0].Description != item.Body || issues[0].AuthorID != "example-author" {
+			t.Fatalf("candidate = %#v", issues[0])
+		}
+		lease := h.scheduler.nativeClaims[issues[0].ID].lease
+		claimed, err := h.scheduler.AdoptClaim(t.Context(), issues[0], time.Now())
+		if err != nil || claimed.Owner != string(h.scheduler.machine.ID) || !claimed.LeaseExpiresAt.Equal(lease.ExpiresAt) {
+			t.Fatalf("AdoptClaim() = %#v, %v", claimed, err)
+		}
+		renewed, err := h.scheduler.RenewClaim(t.Context(), issues[0].ID, time.Now())
+		if err != nil || !renewed.LeaseRenewedAt.After(claimed.LeaseRenewedAt) || renewed.LeaseExpiresAt.Before(claimed.LeaseExpiresAt) {
+			t.Fatalf("RenewClaim() = %#v, %v", renewed, err)
+		}
+		if renewed.Issue.Labels != nil || renewed.Issue.Assignees != nil || renewed.Issue.BlockedBy != nil || renewed.Issue.Fields != nil {
+			t.Fatalf("RenewClaim() issue = %#v, want sparse lease metadata", renewed.Issue)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issues[0].ID, "completed"); err != nil {
+			t.Fatal(err)
+		}
+		if len(h.scheduler.claimPolicies) != 0 {
+			t.Fatal("released claim retained policy state")
+		}
+		if _, err := h.native.Renew(t.Context(), lease, 60); !nativeLeaseLost(err) {
+			t.Fatalf("released Hub lease remains renewable: %v", err)
+		}
+		if len(claims) != index+1 {
+			t.Fatalf("claim count = %d, want %d", len(claims), index+1)
+		}
+		cycle := paths[cycleStart:]
+		counts := make(map[string]int)
+		for _, path := range cycle {
+			counts[path]++
+		}
+		base := h.native.Scope()
+		leasePath := base + "/leases/" + string(lease.ID)
+		wantCounts := map[string]int{
+			"GET /api/v2/organizations/" + string(h.organization) + "/runners/" + identity.Identity.RunnerID + "/routing": 1,
+			"POST " + base + "/claims": 1,
+			"GET " + base + "/work-items/" + string(item.WorkItemID) + "?view=recovery": 1,
+			"POST " + leasePath + "/validate":                                           2,
+			"POST " + leasePath + "/renew":                                              2,
+			"POST " + leasePath + "/release":                                            1,
+		}
+		if index == 0 {
+			wantCounts["POST "+base+"/policy/observed"] = 1
+		}
+		if !reflect.DeepEqual(counts, wantCounts) {
+			t.Fatalf("native cycle requests = %v, want %v; order=%v", counts, wantCounts, cycle)
+		}
+		observedAt, claimedAt := -1, -1
+		for position, path := range paths {
+			if path == "POST "+base+"/policy/observed" {
+				observedAt = position
+			}
+			if position >= cycleStart && path == "POST "+base+"/claims" {
+				claimedAt = position
+			}
+		}
+		if observedAt < 0 || claimedAt <= observedAt {
+			t.Fatalf("native claim preceded policy observation: %v", paths)
+		}
+		claim := claims[index]
+		if claim.PolicyID != h.descriptor.ID || claim.SessionID == "" || !reflect.DeepEqual(claim.Authors, filter.Authors) || !reflect.DeepEqual(claim.Assignees, filter.Assignees) || !reflect.DeepEqual(claim.LabelInclude, filter.LabelInclude) || !reflect.DeepEqual(claim.LabelExclude, filter.LabelExclude) {
+			t.Fatalf("claim lost scope: %+v", claim)
+		}
 	}
 }
 
-func TestIssueFromWorkItemMapsQueuePriorityAndSyncMetadata(t *testing.T) {
-	syncedAt := time.Date(2026, 9, 3, 12, 34, 56, 0, time.FixedZone("offset", -5*60*60))
-	tests := []struct {
+func TestIssueFromNativeMapsQueuePriorityAndScopeMetadata(t *testing.T) {
+	for _, test := range []struct {
 		name         string
 		rank         int
 		wantPriority int
-		wantName     string
 	}{
-		{name: "urgent", rank: tracker.QueuePriorityUrgent, wantPriority: 1, wantName: "urgent"},
-		{name: "high", rank: tracker.QueuePriorityHigh, wantPriority: 2, wantName: "high"},
-		{name: "normal", rank: tracker.QueuePriorityNormal, wantPriority: 3, wantName: "normal"},
-		{name: "low", rank: tracker.QueuePriorityLow, wantPriority: 4, wantName: "low"},
-	}
-	for _, test := range tests {
+		{"urgent", tracker.QueuePriorityUrgent, 1}, {"high", tracker.QueuePriorityHigh, 2}, {"normal", tracker.QueuePriorityNormal, 3}, {"low", tracker.QueuePriorityLow, 4},
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			item := WorkItem{WorkItem: tracker.WorkItem{
-				ID:             42,
-				Repository:     tracker.RepositoryReference{Owner: "acme", Name: "widgets"},
-				GitHub:         tracker.GitHubIssueReference{NodeID: "I_42", Number: 17},
-				Queue:          &tracker.QueueSummary{PriorityRank: &test.rank},
-				SyncStatus:     tracker.SyncStatusPending,
-				SourceSyncedAt: &syncedAt,
-			}}
-
-			issue := issueFromWorkItem(item)
+			item := tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_example", OrganizationID: "org_example", ProjectID: "project_example", Revision: 7}, Priority: &test.rank}
+			issue := issueFromNative(item)
 			if issue.Priority == nil || *issue.Priority != test.wantPriority {
 				t.Fatalf("Priority = %v, want %d", issue.Priority, test.wantPriority)
 			}
-			if issue.PriorityName != test.wantName {
-				t.Fatalf("PriorityName = %q, want %q", issue.PriorityName, test.wantName)
+			if issue.PriorityName != test.name {
+				t.Fatalf("PriorityName = %q, want %q", issue.PriorityName, test.name)
 			}
-			if got := issue.Metadata["hub_sync_status"]; got != string(tracker.SyncStatusPending) {
-				t.Fatalf("hub_sync_status = %q, want %q", got, tracker.SyncStatusPending)
-			}
-			if got := issue.Metadata["hub_source_synced_at"]; got != syncedAt.UTC().Format(time.RFC3339) {
-				t.Fatalf("hub_source_synced_at = %q, want UTC timestamp", got)
+			if issue.Metadata["hub_organization_id"] != "org_example" || issue.Metadata["hub_project_id"] != "project_example" || issue.Metadata["hub_revision"] != "7" || issue.Metadata["hub_profile"] != "native" {
+				t.Fatalf("native scope metadata = %#v", issue.Metadata)
 			}
 		})
 	}
@@ -614,25 +720,25 @@ func TestSchedulerHubOutageIsUnavailableBeforeClaim(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(test.handler)
-			defer server.Close()
-			client, err := newTestClient(t, Config{URL: server.URL, TokenSource: func() string { return "worker-token" }})
-			if err != nil {
-				t.Fatalf("New() error = %v", err)
-			}
-			scheduler, err := newTestScheduler(client, SchedulerConfig{
-				Machine:           Machine{ID: "machine-a", Hostname: "host-a", Capacity: 1, Version: "dev"},
-				HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second,
-			})
-			if err != nil {
-				t.Fatalf("newTestScheduler() error = %v", err)
-			}
-			issues, err := scheduler.FetchCandidateIssues(context.Background(), orchestrator.SchedulingRequest{Policy: clientTestPolicy(), Repository: "acme/widgets"})
+			h := newNativeChangeHub(t, true)
+			h.createInProgress(t, "Wait through a Hub outage")
+			transport := fixtureClient(h.native.Transport()).requests.Load()
+			fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				recorder := httptest.NewRecorder()
+				test.handler.ServeHTTP(recorder, request)
+				return recorder.Result(), nil
+			}))
+			t.Cleanup(func() { fixtureClient(h.native.Transport()).requests.Store(transport) })
+			issues, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"In Progress"}})
 			if !errors.Is(err, ErrUnavailable) || !errors.Is(err, orchestrator.ErrSchedulingUnavailable) || len(issues) != 0 {
 				t.Fatalf("FetchCandidateIssues() = %#v, %v", issues, err)
 			}
-			if strings.Contains(err.Error(), "worker-token") {
-				t.Fatalf("error leaked token: %v", err)
+			identity, loadErr := runnerauth.Load(h.native.Transport().IdentityFile())
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if strings.Contains(err.Error(), string(identity.Credential)) {
+				t.Fatal("error leaked runner credential")
 			}
 		})
 	}
@@ -670,48 +776,40 @@ func TestSchedulerRoutingDeferralsRemainQueued(t *testing.T) {
 	}
 }
 
-func TestLegacyIntakeOffClaimsOnlyAdmittedContinuation(t *testing.T) {
-	t.Parallel()
-	queued := tracker.WorkItem{ID: 1, GitHub: tracker.GitHubIssueReference{NodeID: "queued"}, WorkflowState: &tracker.WorkflowState{Name: "Todo"}}
-	cohort := tracker.WorkItem{ID: 2, GitHub: tracker.GitHubIssueReference{NodeID: "admitted"}, WorkflowState: &tracker.WorkflowState{Name: "Rework"}}
-	claims := 0
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/work-items":
-			if r.URL.Query().Get("repository") != "example/local" {
-				t.Error("lost repository scope")
+func TestNativeClaimsOnlyAdmittedContinuation(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	queued := h.createInProgress(t, "Queued item")
+	admitted := h.createInProgress(t, "Admitted continuation")
+	released := 0
+	request := orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"In Progress"},
+		CandidateKnownWait: func(issue connector.Issue) bool { return issue.ID == queued.ID },
+		CandidateReady: func(_ context.Context, issue connector.Issue) bool {
+			if issue.ID == queued.ID {
+				t.Fatal("known wait reached readiness evaluation")
 			}
-			if r.URL.Query().Get("cursor") == "" {
-				_ = json.NewEncoder(w).Encode(map[string]any{"items": []tracker.WorkItem{queued}, "next_cursor": "next"})
-			} else {
-				_ = json.NewEncoder(w).Encode(map[string]any{"items": []tracker.WorkItem{cohort}})
-			}
-		case "/api/v1/claims":
-			var claim ClaimRequest
-			if err := json.NewDecoder(r.Body).Decode(&claim); err != nil {
-				t.Error(err)
-			}
-			if claim.WorkItemID != cohort.ID || claim.PolicyID != "approved" || len(claim.LabelExclude) != 1 {
-				t.Fatalf("unscoped claim: %+v", claim)
-			}
-			claims++
-			_ = json.NewEncoder(w).Encode(tracker.Lease{LeaseSummary: tracker.LeaseSummary{ID: "lease"}, WorkItemID: cohort.ID})
-		case "/api/v1/work-items/2":
-			_ = json.NewEncoder(w).Encode(WorkItem{WorkItem: cohort})
-		default:
-			t.Errorf("unexpected request: %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
-	client, err := newTestClient(t, Config{URL: "https://hub.test", TokenSource: func() string { return "test" }, HTTPClient: providerHandlerClient(handler)})
-	if err != nil {
+			return true
+		},
+		CandidateAdmission: func(issue connector.Issue) (func(), bool) { return func() { released++ }, issue.ID == admitted.ID },
+	}
+	issues, err := h.scheduler.FetchCandidateIssues(t.Context(), request)
+	if err != nil || len(issues) != 1 || issues[0].ID != admitted.ID || released != 1 {
+		t.Fatalf("continuation claims = %v, admission releases=%d, err=%v", issues, released, err)
+	}
+	if _, found := h.scheduler.nativeClaims[queued.ID]; found {
+		t.Fatal("known wait acquired a lease")
+	}
+	if err := h.scheduler.ReleaseClaim(t.Context(), admitted.ID, "dispatch_deferred"); err != nil {
 		t.Fatal(err)
 	}
-	scheduler := &Scheduler{client: client, claims: make(map[string]tracker.Lease), claimPolicies: make(map[string]claimPolicy)}
-	request := orchestrator.SchedulingRequest{Repository: "example/local", WorkflowStates: []string{"Todo", "Rework"}, CandidateKnownWait: func(issue connector.Issue) bool { return issue.ID != "admitted" }, CandidateAdmission: func(issue connector.Issue) (func(), bool) { return func() {}, issue.ID == "admitted" }}
-	issues, err := scheduler.fetchLegacyContinuation(t.Context(), request, ClaimRequest{PolicyID: "approved", LabelExclude: []string{"held"}})
-	if err != nil || claims != 1 || len(issues) != 1 || issues[0].ID != "admitted" {
-		t.Fatalf("cohort claims = %v, claims=%d, err=%v", issues, claims, err)
+	request.CandidateKnownWait = nil
+	request.CandidateReady = func(context.Context, connector.Issue) bool { return true }
+	request.CandidateAdmission = func(issue connector.Issue) (func(), bool) { return func() {}, issue.ID == queued.ID }
+	issues, err = h.scheduler.FetchCandidateIssues(t.Context(), request)
+	if err != nil || len(issues) != 1 || issues[0].ID != queued.ID {
+		t.Fatalf("previously waiting item is not usable: %v, %v", issues, err)
+	}
+	if err := h.scheduler.ReleaseClaim(t.Context(), queued.ID, "dispatch_deferred"); err != nil {
+		t.Fatal(err)
 	}
 }
 

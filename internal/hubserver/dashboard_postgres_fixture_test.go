@@ -1,9 +1,12 @@
 package hubserver
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -12,9 +15,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func controlledPostgresDelivery(t *testing.T, cfg dashboardDeliveryConfig) (hostedSecurityFixture, hostedSecurityUser, *dashboardDelivery) {
+func controlledPostgresDelivery(t *testing.T, cfg dashboardDeliveryConfig, configure ...func(*pgxpool.Config)) (hostedSecurityFixture, hostedSecurityUser, *dashboardDelivery) {
 	t.Helper()
-	repository := projectRecordPostgres(t)
+	repository, _ := projectRecordPostgresWithAdmin(t, 3, configure...)
 	f := accountPreferencesPostgresFixture(t, repository)
 	f.project = "prj_security"
 	f.base = "/api/v2/organizations/org_security/projects/prj_security"
@@ -35,10 +38,13 @@ func controlledPostgresDelivery(t *testing.T, cfg dashboardDeliveryConfig) (host
 	}
 	user := f.user(t, "stream-member", "member", "stream@example.test", "", "")
 	dashboardPostgresGrant(t, f, user)
-	cfg.newTimer = func(time.Duration) dashboardTimer {
-		return dashboardTimer{channel: make(chan time.Time), reset: func(time.Duration) {}, stop: func() {}}
+	if cfg.newTimer == nil {
+		cfg.newTimer = func(time.Duration) dashboardTimer {
+			return dashboardTimer{channel: make(chan time.Time), reset: func(time.Duration) {}, stop: func() {}}
+		}
 	}
 	f.service.config.dashboardDelivery = &cfg
+	f.service.database.dashboardCommitted = boardCommitChannel(repository)
 	d := newDashboardDelivery(f.service)
 	f.service.dashboard = d
 	t.Cleanup(d.stop)
@@ -94,27 +100,40 @@ func dashboardPostgresHead(t *testing.T, f hostedSecurityFixture) int64 {
 
 func dashboardPostgresAppend(t *testing.T, f hostedSecurityFixture, name string) int64 {
 	t.Helper()
-	ref, err := f.service.config.RunDetails.StoreDetail(t.Context(), "org_security", []byte(`{}`))
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		number, err := w.NextWorkItemNumber(t.Context(), f.project)
+		if err != nil {
+			return err
+		}
+		_, err = w.CreateWorkItem(t.Context(), corestore.WorkItem{
+			OrganizationID: "org_security", ProjectID: f.project, NativeID: tracker.NativeWorkItemID("wi_" + name),
+			Number: number, Title: name, WorkflowStateName: new("Todo"), CreatedAt: f.service.config.now(),
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return dashboardPostgresHead(t, f)
+}
+
+func dashboardPostgresLane(ctx context.Context, w tenantstore.Writer, project tracker.ProjectID) error {
+	record, err := w.ProjectRecord(ctx, project)
 	if err != nil {
+		return err
+	}
+	record.Core.RequireDependencies = !record.Core.RequireDependencies
+	_, err = w.UpdateProjectRecord(ctx, record)
+	return err
+}
+
+func appendDashboardPostgresLane(t *testing.T, f hostedSecurityFixture) int64 {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		return dashboardPostgresLane(t.Context(), w, f.project)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	admin := usagePostgresAdmin(t, f.service)
-	tx, err := admin.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = tx.Rollback() })
-	var sequence int64
-	if err := tx.QueryRowContext(t.Context(), `INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES('org_security',$1,1,0) ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=native_board_sequences.sequence+1 RETURNING sequence`, f.project).Scan(&sequence); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_board_deltas(organization_id,project_id,sequence,work_item_id,current_object_key,current_sha256,current_bytes,current_content_bytes) VALUES('org_security',$1,$2,$3,$4,$5,$6,$7)`, f.project, sequence, name, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	return sequence
+	return dashboardPostgresHead(t, f)
 }
 
 func dashboardPostgresIssue(t *testing.T, f hostedSecurityFixture, number int64) tracker.NativeWorkItemID {

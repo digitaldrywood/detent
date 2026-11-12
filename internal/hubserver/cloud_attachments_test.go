@@ -1,9 +1,14 @@
 package hubserver
 
 import (
-	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
+	"maps"
+	"math"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +17,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -39,13 +50,13 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			if err := json.Unmarshal(raw, &record); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) SELECT 'prj_foreign',organization_id,'foreign',profile,states_json,created_at,0 FROM projects WHERE id=?`, f.project); err != nil {
-				t.Fatal(err)
-			}
 			foreign := conversation.NewAttachmentID()
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES(?,'org_security','prj_foreign',?,'file.txt','text/plain',10,?,?)`, foreign, record.Uploader, record.SHA256, formatHubTime(time.Now())); err != nil {
-				t.Fatal(err)
-			}
+			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: "prj_foreign", Name: "foreign", Slug: "foreign", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+					return err
+				}
+				return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: "org_security", Kind: "attachment", Metadata: attachment.Metadata{ID: foreign, ProjectID: "prj_foreign", Uploader: record.Uploader, Name: "file.txt", ContentType: "text/plain", Size: 10, SHA256: record.SHA256, CreatedAt: time.Now().UTC()}})
+			})
 			body := "![image](attachment:" + record.ID + ")\n[file](attachment:" + record.ID + ")\n![foreign](attachment:" + foreign + ")"
 			if strings.HasPrefix(source, "change") {
 				body = "![image](attachment:" + record.ID + ")"
@@ -61,9 +72,7 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				body = "![image][shot]\n\n[shot]: " + destination
 			}
 			if strings.Contains(source, "-visual") {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project); err != nil {
-					t.Fatal(err)
-				}
+				send(http.MethodPut, "/content-settings", cloudContentSettingsRequest{Mutation: tracker.Mutation{IdempotencyKey: "enable-visual"}, ContentChange: projectsettings.ContentChange{RequireVisualAttachments: true}}, http.StatusOK)
 				body = "Screenshot: https://example.test/preview " + body
 				if !strings.HasSuffix(source, "-reference") {
 					body += ". Documentation: [API guide](https://example.test/docs) [Pull request](https://github.com/example-org/example-project/pull/1)"
@@ -93,12 +102,30 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			}
 			assertReference := func(id, item, comment string) {
 				t.Helper()
-				var gotItem, gotComment string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT coalesce(work_item_id,''),coalesce(comment_id,'') FROM attachments WHERE id=?", id).Scan(&gotItem, &gotComment); err != nil {
-					t.Fatal(err)
+				project := f.project
+				if id == foreign {
+					project = "prj_foreign"
 				}
-				if gotItem != item || gotComment != comment {
-					t.Fatalf("reference=%s/%s want %s/%s", gotItem, gotComment, item, comment)
+				cloudAttachmentRead(t, f, func(r tenantstore.Reader) error {
+					references, err := r.AttachmentReferences(t.Context(), project, id, 201)
+					if err != nil {
+						return err
+					}
+					want := 1
+					if item == "" {
+						want = 0
+					}
+					if len(references) != want || want == 1 && (string(references[0].WorkItemID) != item || references[0].CommentID != comment) {
+						t.Fatalf("refs=%+v want %s/%s", references, item, comment)
+					}
+					return nil
+				})
+				if id != foreign {
+					response := f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + id})
+					var metadata attachment.Metadata
+					if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &metadata) != nil || metadata.WorkItemID != item || metadata.CommentID != comment {
+						t.Fatalf("reference metadata=%d %s want %s/%s", response.Code, response.Body.String(), item, comment)
+					}
 				}
 			}
 			assertReference(record.ID, string(issue.WorkItemID), comment.ID)
@@ -111,9 +138,9 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				if err := json.Unmarshal(raw, &reused); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_comments WHERE id=?", reused.ID); err != nil {
-					t.Fatal(err)
-				}
+				cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
+					return w.DeleteComment(t.Context(), f.project, issue.WorkItemID, reused.ID)
+				})
 				assertReference(record.ID, string(issue.WorkItemID), "")
 				response := f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + record.ID})
 				if response.Code != http.StatusOK {
@@ -138,7 +165,7 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				assertReference(record.ID, string(issue.WorkItemID), comment.ID)
 			}
 			if strings.HasSuffix(source, "-title") {
-				send(http.MethodPut, "/content-settings", cloudContentSettingsRequest{Mutation: tracker.Mutation{IdempotencyKey: "disable-visual"}}, http.StatusOK)
+				send(http.MethodPut, "/content-settings", cloudContentSettingsRequest{Mutation: tracker.Mutation{IdempotencyKey: "disable-visual"}, ContentChange: projectsettings.ContentChange{ExpectedRevision: 1}}, http.StatusOK)
 				raw = send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "priority-only"}, ExpectedRevision: issue.Revision, Priority: tracker.SetPriority(new(2))}, http.StatusOK)
 				if err := json.Unmarshal(raw, &issue); err != nil {
 					t.Fatal(err)
@@ -168,11 +195,14 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				}
 			}
 			assertReference(foreign, "", "")
-			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_references WHERE attachment_id=?", record.ID).Scan(&count); err != nil || count != 1 {
-				t.Fatalf("references=%d err=%v", count, err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE attachments SET created_at=? WHERE id=?", formatHubTime(time.Now().Add(-attachment.OrphanTTL-time.Hour)), record.ID); err != nil {
+			cloudAttachmentRead(t, f, func(r tenantstore.Reader) error {
+				references, err := r.AttachmentReferences(t.Context(), f.project, record.ID, 201)
+				if err == nil && len(references) != 1 {
+					t.Fatalf("references=%d", len(references))
+				}
+				return err
+			})
+			if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE attachments SET created_at=$1 WHERE organization_id=$2 AND project_id=$3 AND id=$4", time.Now().Add(-attachment.OrphanTTL-time.Hour), "org_security", f.project, record.ID); err != nil {
 				t.Fatal(err)
 			}
 			sweep := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/attachments/expired", body: "{}"})
@@ -215,9 +245,7 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			if err := json.Unmarshal(raw, &last); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_comments WHERE id=?", other.ID); err != nil {
-				t.Fatal(err)
-			}
+			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error { return w.DeleteComment(t.Context(), f.project, copyItem, other.ID) })
 			response = f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + record.ID})
 			if response.Code != http.StatusOK {
 				t.Fatalf("retained copy read=%d %s", response.Code, response.Body.String())
@@ -229,15 +257,80 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			if err := json.Unmarshal(raw, &last); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_comments WHERE id=?", last.ID); err != nil {
-				t.Fatal(err)
-			}
+			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error { return w.DeleteComment(t.Context(), f.project, copyItem, last.ID) })
 			response = f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + record.ID})
 			if response.Code != http.StatusNotFound {
 				t.Fatalf("last source deletion read=%d", response.Code)
 			}
 		})
 	}
+	t.Run("unchanged deleted link retains binding without read access", func(t *testing.T) {
+		v := newVerificationFixture(t)
+		reporter, member := v.users["reporter"], v.users["member"]
+		response := v.request(t, reporter, http.MethodPost, v.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "unreadable-source"}, Type: "bug", Title: "Editable attachment report", Body: reporterBugSections})
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		record := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "private-upload.png", ContentType: "image/png", Size: 100, Width: 1, Height: 1, SHA256: artifact.Digest([]byte("private-image"))}
+		response = v.request(t, member, http.MethodPost, v.base+"/attachment-metadata", record)
+		requireNativeStatus(t, response, http.StatusCreated)
+		decodeHubResponse(t, response, &record)
+		metadataPath := v.base + "/attachment-metadata/" + record.ID
+		requireNativeStatus(t, v.request(t, reporter, http.MethodGet, metadataPath, nil), http.StatusNotFound)
+		path := v.base + "/work-items/" + string(issue.WorkItemID)
+		linkedBody := reporterBugSections + issueContractTestSections + "\n![Image](attachment:" + record.ID + ")"
+		response = v.request(t, member, http.MethodPatch, path, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "member-links-image"}, ExpectedRevision: issue.Revision, Body: &linkedBody})
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &issue)
+		response = v.request(t, reporter, http.MethodGet, metadataPath, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var visible attachment.Metadata
+		decodeHubResponse(t, response, &visible)
+		if visible.ID != record.ID || visible.WorkItemID != string(issue.WorkItemID) || len(visible.ReferencedBy) != 1 || visible.ReferencedBy[0].WorkItemID != string(issue.WorkItemID) {
+			t.Fatalf("own bound other-uploader metadata=%+v", visible)
+		}
+		requireNativeStatus(t, v.request(t, member, http.MethodDelete, metadataPath, nil), http.StatusNoContent)
+		requireNativeStatus(t, v.request(t, reporter, http.MethodGet, metadataPath, nil), http.StatusNotFound)
+		var before []attachmentstore.Reference
+		cloudAttachmentRead(t, v.hostedSharedFixture, func(r tenantstore.Reader) error {
+			var err error
+			before, err = r.AttachmentReferences(t.Context(), v.project, record.ID, 201)
+			if err == nil && (len(before) != 1 || before[0].WorkItemID != issue.WorkItemID || before[0].CommentID != "" || before[0].RetainWithWorkItem) {
+				t.Fatalf("deleted attachment lost its ordinary source binding before edit: %+v", before)
+			}
+			return err
+		})
+		editedBody := linkedBody + "\nReporter update"
+		response = v.request(t, reporter, http.MethodPatch, path, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reporter-retains-unreadable-link"}, ExpectedRevision: issue.Revision, Body: &editedBody})
+		requireNativeStatus(t, response, http.StatusOK)
+		var edited tracker.NativeIssue
+		decodeHubResponse(t, response, &edited)
+		if edited.Body != editedBody || edited.Revision != issue.Revision+1 {
+			t.Fatalf("reporter edit body/revision=%+v", edited)
+		}
+		cloudAttachmentRead(t, v.hostedSharedFixture, func(r tenantstore.Reader) error {
+			after, err := r.AttachmentReferences(t.Context(), v.project, record.ID, 201)
+			if err != nil {
+				return err
+			}
+			if !slices.Equal(before, after) {
+				t.Fatalf("unchanged unreadable binding changed: before=%+v after=%+v", before, after)
+			}
+			row, err := r.Attachment(t.Context(), v.project, record.ID)
+			if err == nil && (row.Metadata.DeletedAt == nil || row.Metadata.WorkItemID != string(issue.WorkItemID) || row.Metadata.CommentID != "") {
+				t.Fatalf("edit changed deleted attachment authority: %+v", row.Metadata)
+			}
+			return err
+		})
+		response = v.request(t, reporter, http.MethodGet, metadataPath, nil)
+		requireNativeStatus(t, response, http.StatusNotFound)
+		for _, private := range []string{record.Name, record.SHA256, record.Uploader} {
+			if private != "" && strings.Contains(response.Body.String(), private) {
+				t.Fatalf("unreadable metadata response exposed private field: %s", response.Body.String())
+			}
+		}
+	})
+
 }
 
 func TestCloudAttachmentQuota(t *testing.T) {
@@ -259,18 +352,27 @@ func TestCloudAttachmentQuota(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
-			var plans HostedPlansConfig
+			plans := capacityHostedPlans()
+			base := PlanReference{ID: test.plan, Version: 1}
 			if test.plan == "" {
-				plans = hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": test.allowance, "api_mutations": test.apiLimit})
-			} else {
-				plans = capacityHostedPlans()
-				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id=?,base_version=1", test.plan); err != nil {
-					t.Fatal(err)
-				}
+				plans = pilotHostedPlans()
+				plan := plans.Plans[0]
+				plan.ID = "example-attachment-plan"
+				plan.Allowances = maps.Clone(plan.Allowances)
+				plan.Allowances["collaboration_bytes"], plan.Allowances["api_mutations"] = test.allowance, test.apiLimit
+				plans.Plans, plans.Base, base = []HostedPlan{plan}, plan.PlanReference, plan.PlanReference
 			}
+			if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+				t.Fatal(err)
+			}
+			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
+				assignment, err := w.BillingAssignment(t.Context())
+				if err != nil {
+					return err
+				}
+				assignment.Base = billingstore.PlanReference{ID: base.ID, Version: base.Version}
+				return w.SetBillingAssignment(t.Context(), assignment, assignment.Revision)
+			})
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			record := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "file.txt", ContentType: "text/plain", Size: 100, SHA256: artifact.Digest([]byte("hello"))}
 			body, err := json.Marshal(record)
@@ -282,18 +384,52 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			f.service.config.now = func() time.Time { return now }
 			f.service.database.now = f.service.config.now
 			window := now.Unix() / plans.WindowSeconds * plans.WindowSeconds
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR REPLACE INTO hosted_usage_windows(window_start,metric,amount) VALUES(?,'api_mutations',?)", window, test.used); err != nil {
+			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
+				if test.used > 0 {
+					result, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: "org_security", ID: "attachment-quota-seed", WindowStart: time.Unix(window, 0), Metric: "api_mutations", Amount: test.used}, math.MaxInt64)
+					if err != nil {
+						return err
+					}
+					if !result.Allowed || !result.Applied {
+						t.Fatalf("seed usage=%+v", result)
+					}
+				}
+				if test.retained > 0 {
+					result, err := w.AdjustCollaborationBytes(t.Context(), test.retained, math.MaxInt64)
+					if err != nil {
+						return err
+					}
+					if !result.Allowed {
+						t.Fatalf("seed retained=%+v", result)
+					}
+				}
+				return nil
+			})
+			installReportsBudgetTrace(t, f.service)
+			var preflightQueries []string
+			timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) { preflightQueries = append(preflightQueries, query) }}
+			request := httptest.NewRequest(http.MethodPost, f.base+"/attachment-metadata/check", strings.NewReader(`{"size":100}`))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-CSRF-Token", csrf)
+			signed, err := cloudassert.Sign(f.key, f.claims(&owner, cloudassert.KindBrowser, http.MethodPost, request.URL.RequestURI(), []byte(`{"size":100}`)))
+			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO machines(id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id,token_id) VALUES('unrelated','unrelated','unrelated',1,'test','invalid',?,?,'org_security',?)`, formatHubTime(now), formatHubTime(now), bootstrapTokenID); err != nil {
-				t.Fatal(err)
-			}
-			if test.retained > 0 {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_usage_counters SET value=? WHERE name='collaboration_bytes'", test.retained); err != nil {
-					t.Fatal(err)
+			request.Header.Set(cloudassert.Header, signed)
+			preflight := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(preflight, request.WithContext(withRequestTiming(t.Context(), timing)))
+			counterRead := false
+			for _, query := range preflightQueries {
+				if strings.Contains(query, "hosted_usage_counters") {
+					counterRead = true
+				}
+				if strings.Contains(query, "machines") || strings.Contains(query, "hosted_usage_windows") {
+					t.Fatalf("preflight read unrelated population: %s", query)
 				}
 			}
-			preflight := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/attachment-metadata/check", body: `{"size":100}`, csrf: csrf})
+			if !counterRead {
+				t.Fatal("preflight did not read collaboration bytes")
+			}
 			wantPreflight := http.StatusOK
 			if test.allowance < record.Size+test.retained {
 				wantPreflight = http.StatusTooManyRequests
@@ -301,28 +437,39 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if preflight.Code != wantPreflight {
 				t.Fatalf("preflight=%d %s", preflight.Code, preflight.Body.String())
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET last_heartbeat_at=? WHERE id='unrelated'", formatHubTime(now)); err != nil {
-				t.Fatal(err)
-			}
+
 			response := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/attachment-metadata", body: string(body), csrf: csrf})
 			if response.Code != test.status {
 				t.Fatalf("upload=%d %s", response.Code, response.Body.String())
 			}
-			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE id=?", record.ID).Scan(&count); err != nil {
-				t.Fatal(err)
-			}
+			count := 0
+			cloudAttachmentRead(t, f, func(r tenantstore.Reader) error {
+				_, err := r.Attachment(t.Context(), f.project, record.ID)
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
+				if err == nil {
+					count = 1
+				}
+				return err
+			})
 			if test.status == http.StatusTooManyRequests {
 				if count != 0 || !strings.Contains(response.Body.String(), "allowance_exhausted") {
 					t.Fatal("quota refusal retained metadata or changed allowance error")
 				}
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE operation LIKE 'attachment.record %'").Scan(&count); err != nil || count != 0 {
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_command_states WHERE organization_id=$1 AND operation LIKE 'attachment.record %'", "org_security").Scan(&count); err != nil || count != 0 {
 					t.Fatalf("quota refusal retained receipt: count=%d error=%v", count, err)
 				}
-				var used int64
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT amount FROM hosted_usage_windows WHERE window_start=? AND metric='api_mutations'", window).Scan(&used); err != nil || used != test.used {
-					t.Fatalf("quota refusal changed API usage: used=%d error=%v", used, err)
-				}
+				cloudAttachmentRead(t, f, func(r tenantstore.Reader) error {
+					used, err := r.BillingUsage(t.Context(), time.Unix(window, 0), "api_mutations")
+					if errors.Is(err, corestore.ErrNotFound) && test.used == 0 {
+						err = nil
+					}
+					if err == nil && used != test.used {
+						t.Fatalf("quota refusal changed API usage: used=%d", used)
+					}
+					return err
+				})
 				if test.name == "API exhausted" {
 					var failure hostedLimitError
 					decodeHubResponse(t, response, &failure)
@@ -332,7 +479,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 				}
 				return
 			}
-			usage, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, time.Now())
+			usage, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -343,17 +490,16 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if replay.Code != http.StatusCreated || replay.Body.String() != response.Body.String() {
 				t.Fatalf("metadata replay=%d %s", replay.Code, replay.Body.String())
 			}
-			replayedUsage, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, time.Now())
+			replayedUsage, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now())
 			if err != nil || replayedUsage["collaboration_bytes"] != usage["collaboration_bytes"] || replayedUsage["api_mutations"] != 2 || usage["api_mutations"] != 2 {
 				t.Fatalf("metadata replay consumption=%v err=%v", replayedUsage, err)
 			}
 			if test.retained == 0 {
-				if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
-					return recountCollaborationBytes(t.Context(), tx)
-				}); err != nil {
-					t.Fatal(err)
+				var stored int64
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT COALESCE(sum(size),0) FROM attachments WHERE organization_id=$1 AND object_deleted_at IS NULL AND NOT customer_owned", "org_security").Scan(&stored); err != nil || stored != record.Size {
+					t.Fatalf("stored attachment bytes=%d error=%v", stored, err)
 				}
-				recounted, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, now, "collaboration_bytes")
+				recounted, err := f.service.database.hostedConsumption(t.Context(), nil, now, "collaboration_bytes")
 				if err != nil || recounted["collaboration_bytes"] != record.Size {
 					t.Fatalf("metadata recount consumption=%v err=%v", recounted, err)
 				}
@@ -366,10 +512,7 @@ func TestCloudAttachmentRetention(t *testing.T) {
 	t.Parallel()
 	f := newHostedSharedFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
-	var principal string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", owner.identity.Subject).Scan(&principal); err != nil {
-		t.Fatal(err)
-	}
+	principal := cloudAttachmentPrincipal(t, f, owner.identity.Subject)
 	item := f.seedIssue(t, 1)
 	now := time.Now().UTC()
 	for _, test := range []struct {
@@ -384,22 +527,33 @@ func TestCloudAttachmentRetention(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			id := conversation.NewAttachmentID()
-			var reference, deleted any
-			if test.referenced {
-				reference = string(item)
-			}
-			if test.deleted {
-				deleted = formatHubTime(now)
-			}
-			_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,work_item_id,deleted_at) VALUES(?,'org_security',?,?,'file.txt','text/plain',10,?,?,?,?)`, id, f.project, principal, artifact.Digest([]byte("hello")), formatHubTime(now.Add(-test.age)), reference, deleted)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if test.referenced && !test.deleted {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", item); err != nil {
-					t.Fatal(err)
+			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
+				metadata := attachment.Metadata{ID: id, ProjectID: string(f.project), Uploader: principal, Name: "file.txt", ContentType: "text/plain", Size: 10, SHA256: artifact.Digest([]byte("hello")), CreatedAt: now.Add(-test.age)}
+				if test.referenced {
+					metadata.WorkItemID = string(item)
 				}
-			}
+				if err := w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: "org_security", Kind: "attachment", Metadata: metadata}); err != nil {
+					return err
+				}
+				if test.referenced {
+					if err := w.BindAttachment(t.Context(), attachmentstore.Reference{ProjectID: f.project, AttachmentID: id, WorkItemID: item}); err != nil {
+						return err
+					}
+				}
+				if test.deleted {
+					return w.(attachmentstore.DeletionWriter).DeleteAttachment(t.Context(), f.project, id, now)
+				}
+				if test.referenced {
+					row, err := w.WorkItem(t.Context(), f.project, item)
+					if err != nil {
+						return err
+					}
+					row.Archived = true
+					_, err = w.UpdateWorkItem(t.Context(), row)
+					return err
+				}
+				return nil
+			})
 			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
@@ -441,22 +595,26 @@ func TestCloudAttachmentReferenceDeletion(t *testing.T) {
 			f := newHostedSharedFixture(t)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			item := f.seedIssue(t, 1)
-			var principal string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", owner.identity.Subject).Scan(&principal); err != nil {
-				t.Fatal(err)
-			}
+			principal := cloudAttachmentPrincipal(t, f, owner.identity.Subject)
 			id := conversation.NewAttachmentID()
-			_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES(?,'org_security',?,?,'file.txt','text/plain',10,?,?)`, id, f.project, principal, artifact.Digest([]byte("hello")), formatHubTime(time.Now()))
-			if err != nil {
-				t.Fatal(err)
-			}
+			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
+				return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: "org_security", Kind: "attachment", Metadata: attachment.Metadata{ID: id, ProjectID: string(f.project), Uploader: principal, Name: "file.txt", ContentType: "text/plain", Size: 10, SHA256: artifact.Digest([]byte("hello")), CreatedAt: time.Now().UTC()}})
+			})
 			var comment string
 			if test.comment {
-				comment = "comment_test"
-				_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,'org_security',?,?,1,1,'body','{}',?,?)`, comment, f.project, item, formatHubTime(time.Now()), formatHubTime(time.Now()))
+				payload, err := json.Marshal(tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "source-comment"}, Body: "body"})
 				if err != nil {
 					t.Fatal(err)
 				}
+				response := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/work-items/" + string(item) + "/comments", body: string(payload), csrf: cloudassert.CSRFToken("shared-"+owner.identity.Subject, "org_security")})
+				if response.Code != http.StatusOK {
+					t.Fatalf("comment=%d %s", response.Code, response.Body.String())
+				}
+				var saved tracker.NativeComment
+				if err := json.Unmarshal(response.Body.Bytes(), &saved); err != nil {
+					t.Fatal(err)
+				}
+				comment = saved.ID
 			}
 			payload, err := json.Marshal(map[string]string{"work_item_id": string(item), "comment_id": comment})
 			if err != nil {
@@ -466,23 +624,44 @@ func TestCloudAttachmentReferenceDeletion(t *testing.T) {
 			if response.Code != 204 {
 				t.Fatalf("reference=%d %s", response.Code, response.Body.String())
 			}
-			if test.retained {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE attachment_references SET retain_with_work_item=1 WHERE attachment_id=?", id); err != nil {
-					t.Fatal(err)
+			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
+				if test.retained {
+					if err := w.BindAttachment(t.Context(), attachmentstore.Reference{ProjectID: f.project, AttachmentID: id, WorkItemID: item, RetainWithWorkItem: true}); err != nil {
+						return err
+					}
 				}
-			}
-
-			statement, args := "DELETE FROM issues WHERE native_id=?", []any{item}
-			if test.comment {
-				statement, args = "DELETE FROM native_comments WHERE id=?", []any{comment}
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), statement, args...); err != nil {
-				t.Fatal(err)
-			}
+				if test.comment {
+					return w.DeleteComment(t.Context(), f.project, item, comment)
+				}
+				return w.DeleteWorkItem(t.Context(), f.project, item)
+			})
 			response = f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + id})
 			if response.Code != 404 {
 				t.Fatalf("deleted reference read=%d", response.Code)
 			}
 		})
 	}
+}
+
+func cloudAttachmentRead(t *testing.T, f hostedSharedFixture, read func(tenantstore.Reader) error) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, read); err != nil {
+		t.Fatal(err)
+	}
+}
+func cloudAttachmentWrite(t *testing.T, f hostedSharedFixture, write func(tenantstore.Writer) error) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, write); err != nil {
+		t.Fatal(err)
+	}
+}
+func cloudAttachmentPrincipal(t *testing.T, f hostedSharedFixture, user string) string {
+	t.Helper()
+	var principal string
+	cloudAttachmentRead(t, f, func(r tenantstore.Reader) error {
+		member, err := r.AccessMember(t.Context(), user)
+		principal = member.PrincipalID
+		return err
+	})
+	return principal
 }

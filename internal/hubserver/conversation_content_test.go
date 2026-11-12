@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -17,6 +16,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type conversationContentFixture struct {
@@ -25,10 +28,16 @@ type conversationContentFixture struct {
 	fail           bool
 	commitThenFail bool
 	onIO           func() error
+	onContextIO    func(context.Context) error
 	publications   int
 }
 
-func (s *conversationContentFixture) PublishContent(_ context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+func (s *conversationContentFixture) PublishContent(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+	if s.onContextIO != nil {
+		if err := s.onContextIO(ctx); err != nil {
+			return attachment.ArchiveReference{}, err
+		}
+	}
 	if s.onIO != nil {
 		if err := s.onIO(); err != nil {
 			return attachment.ArchiveReference{}, err
@@ -54,7 +63,12 @@ func (s *conversationContentFixture) PublishContent(_ context.Context, organizat
 	return ref, nil
 }
 
-func (s *conversationContentFixture) ReadContent(_ context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+func (s *conversationContentFixture) ReadContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if s.onContextIO != nil {
+		if err := s.onContextIO(ctx); err != nil {
+			return nil, err
+		}
+	}
 	if s.onIO != nil {
 		if err := s.onIO(); err != nil {
 			return nil, err
@@ -87,30 +101,28 @@ func TestConversationPayloadBytesStayBounded(t *testing.T) {
 			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 			record := f.create(t, f.record(f.owner, "payload", now))
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Text: strings.Repeat("x", size), Data: json.RawMessage(`{"value":"` + strings.Repeat("y", size) + `"}`), Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
-			tx := f.tx(t)
-			if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
+			if err := f.appendMessage(t, t.Context(), &message); err != nil {
 				t.Fatal(err)
 			}
 			body := map[string]string{"text": strings.Repeat("z", size)}
-			if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventHeartbeat, body, now); err != nil {
+			if _, err := f.appendEvent(t, t.Context(), record.ID, conversation.EventHeartbeat, body, now); err != nil {
 				t.Fatal(err)
 			}
-			f.commit(t, tx)
 			var messageBytes, eventBytes int
-			if err := f.store.reader.QueryRowContext(t.Context(), `SELECT length(CAST(text AS BLOB))+length(CAST(data_json AS BLOB))+length(CAST(actor_json AS BLOB)) FROM conversation_messages WHERE id=?`, message.ID).Scan(&messageBytes); err != nil {
+			if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), `SELECT octet_length(text)+octet_length(data_json)+octet_length(actor_json) FROM conversation_messages WHERE organization_id=$1 AND id=$2`, f.organization, message.ID).Scan(&messageBytes); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.store.reader.QueryRowContext(t.Context(), `SELECT length(CAST(body_json AS BLOB)) FROM conversation_events WHERE conversation_id=?`, record.ID).Scan(&eventBytes); err != nil {
+			if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), `SELECT octet_length(body_json) FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2`, f.organization, record.ID).Scan(&eventBytes); err != nil {
 				t.Fatal(err)
 			}
 			if messageBytes != 4 || eventBytes != 2 {
 				t.Fatalf("inline payload bytes: message=%d event=%d; want 4 and 2", messageBytes, eventBytes)
 			}
-			got, err := f.store.listMessages(t.Context(), f.store.reader, record.ID, 0, 10)
+			got, err := f.listMessages(t.Context(), record.ID, 0, 10)
 			if err != nil || len(got) != 1 || got[0].Text != message.Text || !bytes.Equal(got[0].Data, message.Data) || got[0].Actor != message.Actor {
 				t.Fatalf("message round trip: messages=%d err=%v", len(got), err)
 			}
-			events, err := f.store.listEvents(t.Context(), f.store.reader, record.ID, 0, 10)
+			events, err := f.listEvents(t.Context(), record.ID, 0, 10)
 			if err != nil || len(events) != 1 {
 				t.Fatalf("event round trip: events=%d err=%v", len(events), err)
 			}
@@ -125,270 +137,238 @@ func TestConversationPayloadBytesStayBounded(t *testing.T) {
 func TestConversationPayloadRequiresPublication(t *testing.T) {
 	for _, configured := range []bool{false, true} {
 		t.Run(strconv.FormatBool(configured), func(t *testing.T) {
-			f := newConversationFixture(t)
-			f.store.contents = nil
+			objects := &conversationContentFixture{}
+			f := newConversationWorkerFixture(t, objects)
+			requireNativeStatus(t, f.bind(t, f.bindBody()), http.StatusOK)
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-publication", "turn_id": "turn-publication"}, map[string]any{"type": "delta", "provider_item_id": "publication-message", "text": "private content"}), http.StatusAccepted)
+			admin := nativeAttemptTestDatabase(t, f.nativeFixture)
+			counts := func() (messages, events, attachments int) {
+				t.Helper()
+				if err := admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2),(SELECT count(*) FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2),(SELECT count(*) FROM conversation_attachments WHERE organization_id=$1 AND conversation_id=$2)`, f.project.OrganizationID, f.record.ID).Scan(&messages, &events, &attachments); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			beforeMessages, beforeEvents, beforeAttachments := counts()
+			if beforeMessages != 1 {
+				t.Fatalf("publication fixture messages=%d, want 1", beforeMessages)
+			}
+			beforePublications := objects.publications
 			if configured {
-				f.store.contents = &conversationContentFixture{}
+				objects.setFail(true)
+			} else {
+				f.chat.store.contents = nil
 			}
-			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-			record := f.createLegacyConversation(t, f.record(f.owner, "publication", now))
-			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "private content", Data: json.RawMessage(`{"key":"value"}`), Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
-			tx := f.tx(t)
-			if err := f.store.appendMessage(t.Context(), tx, &message); err == nil {
-				t.Fatal("unpublished message was accepted")
+			message := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", f.token, conversation.Command{Key: "publication-message", Kind: conversation.CommandMessage, Text: "unpublished private message"})
+			if message.Code < 400 {
+				t.Fatalf("unpublished message was accepted: status=%d", message.Code)
 			}
-			if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]string{"text": "private event"}, now); err == nil {
-				t.Fatal("unpublished event was accepted")
+			event := f.turnEvents(t, map[string]any{"type": "item", "kind": "tool", "provider_item_id": "publication-tool", "summary": "private event", "data": map[string]any{"tool": "example"}})
+			if event.Code < 400 {
+				t.Fatalf("unpublished event was accepted: status=%d", event.Code)
 			}
-			if err := f.insertLegacyMessage(t, t.Context(), tx, &message); err != nil {
-				t.Fatal(err)
+			delta := f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "publication-message", "text": "more private text"})
+			if delta.Code < 400 {
+				t.Fatalf("unpublished delta was accepted: status=%d", delta.Code)
 			}
-			chat := &conversationService{store: f.store}
-			if err := chat.appendDeltaAt(t.Context(), tx, record.ID, message.ID, int64(len(message.Text)), "more private text", now); err == nil {
-				t.Fatal("unpublished delta was accepted")
+			if configured && objects.publications <= beforePublications {
+				t.Fatal("fixture never attempted publication")
 			}
-			if err := tx.Rollback(); err != nil {
-				t.Fatal(err)
+			messages, events, attachments := counts()
+			if messages != beforeMessages || events != beforeEvents || attachments != beforeAttachments {
+				t.Fatalf("failed publication left messages=%d events=%d attachments=%d; want %d/%d/%d", messages, events, attachments, beforeMessages, beforeEvents, beforeAttachments)
 			}
-			for _, table := range []string{"conversation_messages", "conversation_events", "attachments"} {
-				var count int
-				if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil || count != 0 {
-					t.Fatalf("%s rows=%d error=%v", table, count, err)
+			f.chat.store.contents = objects
+			stored := f.messages(t)
+			if len(stored) != 1 {
+				t.Fatalf("failed publication changed message population: %d", len(stored))
+			}
+			for _, message := range stored {
+				if message.Text != "private content" {
+					t.Fatalf("failed publication changed content: %q", message.Text)
 				}
 			}
+
 		})
 	}
 }
 
-type conversationDeltaQueryRecorder struct {
-	nativeQueryer
-	statements []string
-	arguments  [][]any
+func postgresContentTestMessage(t *testing.T, f *postgresStorageArchiveFixture, conversationID string, role conversation.Role, text string, delivery conversation.Delivery) conversationMessageRecord {
+	t.Helper()
+	message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: conversationID, Role: role, Kind: conversation.MessageText, Text: text, Delivery: delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.scope.credential.ID}, CreatedAt: f.now(), UpdatedAt: f.now()}
+	raw, err := json.Marshal(conversationContent{Text: text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := f.service.conversations.store.publishPayload(t.Context(), string(f.project.OrganizationID), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message.ContentID = contentArchiveID(string(f.project.OrganizationID), ref)
+	f.write(t, func(w tenantstore.Writer) error {
+		if err := w.PutConversationContent(t.Context(), conversationstore.ContentObject{OrganizationID: f.project.OrganizationID, ID: message.ContentID, Reference: ref, CreatedAt: f.now()}); err != nil {
+			return err
+		}
+		row, err := w.CreateMessage(t.Context(), conversationMessageToStore(f.project.OrganizationID, message))
+		if err == nil {
+			message = conversationMessageFromStore(row)
+		}
+		return err
+	})
+	message.Text = text
+	return message
 }
 
-func (q *conversationDeltaQueryRecorder) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
-	if strings.Contains(statement, "type='message.delta'") {
-		q.statements = append(q.statements, statement)
-		q.arguments = append(q.arguments, args)
+func postgresContentTestDelta(t *testing.T, f *postgresStorageArchiveFixture, message conversationMessageRecord, text string, offset int64) attachment.ArchiveReference {
+	t.Helper()
+	raw, err := json.Marshal(conversationDeltaFact{MessageID: message.ID, Text: text, Offset: offset, Bytes: len(text)})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return q.nativeQueryer.QueryContext(ctx, statement, args...)
+	ref, err := f.service.conversations.store.publishPayload(t.Context(), string(f.project.OrganizationID), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := contentArchiveID(string(f.project.OrganizationID), ref)
+	f.write(t, func(w tenantstore.Writer) error {
+		if err := w.PutConversationContent(t.Context(), conversationstore.ContentObject{OrganizationID: f.project.OrganizationID, ID: id, Reference: ref, CreatedAt: f.now()}); err != nil {
+			return err
+		}
+		_, err := w.AppendConversationEvent(t.Context(), conversationstore.Event{OrganizationID: f.project.OrganizationID, ConversationID: message.ConversationID, Event: conversation.Event{Type: conversation.EventMessageDelta, Data: raw, CreatedAt: f.now()}, ContentReference: id})
+		return err
+	})
+	return ref
 }
 
 func TestConversationSnapshotIgnoresStoredDeltas(t *testing.T) {
 	for _, endpoint := range []string{"snapshot", "messages"} {
 		for _, tt := range []struct {
-			name      string
-			completed bool
-			legacy    bool
-		}{
-			{name: "active"},
-			{name: "completed", completed: true},
-			{name: "legacy active", legacy: true},
-			{name: "legacy completed", completed: true, legacy: true},
-		} {
+			name              string
+			completed, legacy bool
+		}{{name: "active"}, {name: "completed", completed: true}, {name: "legacy active", legacy: true}, {name: "legacy completed", completed: true, legacy: true}} {
 			t.Run(endpoint+"/"+tt.name, func(t *testing.T) {
-				f := newStorageArchiveFixture(t)
-				objects := &conversationContentFixture{}
-				f.store.contents = objects
-				record := f.create(t, f.record(f.owner, "retained deltas", f.now))
-				message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
-				tx := f.tx(t)
-				if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
-					t.Fatal(err)
-				}
-				f.commit(t, tx)
-				for _, text := range []string{"stored ", "prefix 🌍"} {
-					tx = f.tx(t)
-					if err := f.appendDelta(t, f.service.conversations, t.Context(), tx, &message, text, f.now); err != nil {
-						t.Fatal(err)
-					}
-					f.commit(t, tx)
-				}
-				storedBytes := len(message.Text)
-				if tt.completed {
-					message.Delivery = conversation.DeliveryCompleted
-				}
-				tx = f.tx(t)
-				if err := f.updateChatMessage(t, f.service.conversations, t.Context(), tx, message, f.now); err != nil {
-					t.Fatal(err)
-				}
-				f.commit(t, tx)
+				f := newPostgresStorageArchiveFixture(t)
+				issue := f.closed(t)
+				record := f.messages(t, issue.WorkItemID, 0, conversation.VisibilityShared)
+				text := "stored prefix 🌍"
+				delivery := conversation.DeliveryCompleted
 				if !tt.completed {
-					tx = f.tx(t)
-					if err := f.appendDelta(t, f.service.conversations, t.Context(), tx, &message, " and suffix", f.now); err != nil {
-						t.Fatal(err)
-					}
-					f.commit(t, tx)
+					text += " and suffix"
+					delivery = conversation.DeliveryResponding
+				}
+				message := postgresContentTestMessage(t, f, record.ID, conversation.RoleAssistant, text, delivery)
+				for _, delta := range []struct {
+					text   string
+					offset int64
+				}{{"stored ", 0}, {"prefix 🌍", int64(len("stored "))}, {" and suffix", int64(len("stored prefix 🌍"))}} {
+					ref := postgresContentTestDelta(t, f, message, delta.text, delta.offset)
+					f.bodies.mu.Lock()
+					delete(f.bodies.content, ref.Key)
+					f.bodies.mu.Unlock()
 				}
 				if tt.legacy {
-					if _, err := f.store.db.ExecContext(t.Context(), "UPDATE conversation_messages SET stored_text_bytes=NULL WHERE id=?", message.ID); err != nil {
+					if _, err := nativeAttemptTestDatabase(t, f.nativeFixture).ExecContext(t.Context(), `UPDATE conversation_messages SET stored_text_bytes=NULL WHERE organization_id=$1 AND id=$2`, f.project.OrganizationID, message.ID); err != nil {
 						t.Fatal(err)
 					}
-				} else {
-					messages, err := f.store.listMessageRows(t.Context(), f.store.reader, record.ID, 0, 10)
-					if err != nil {
-						t.Fatal(err)
-					}
-					query := &conversationDeltaQueryRecorder{nativeQueryer: f.store.reader}
-					batch := newConversationReadBatch(string(f.organization))
-					if err := batch.captureMessages(t.Context(), query, messages); err != nil {
-						t.Fatal(err)
-					}
-					if tt.completed {
-						if len(query.statements) != 0 {
-							t.Fatalf("completed message queried retained delta history %d times", len(query.statements))
-						}
-					} else {
-						if len(query.statements) != 1 || len(query.arguments[0]) != 5 || query.arguments[0][2] != int64(storedBytes) || query.arguments[0][4] != int64(len(" and suffix")+1) {
-							t.Fatalf("delta query did not bound the missing suffix: %+v", query.arguments)
-						}
-						rows, err := f.store.reader.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+query.statements[0], query.arguments[0]...)
-						if err != nil {
-							t.Fatal(err)
-						}
-						defer rows.Close()
-						var plan strings.Builder
-						for rows.Next() {
-							var id, parent, unused int
-							var detail string
-							if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
-								t.Fatal(err)
-							}
-							plan.WriteString(detail)
-						}
-						if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-							t.Fatal(err)
-						}
-						if !strings.Contains(plan.String(), "delta_offset>? AND delta_offset<?") || strings.Contains(plan.String(), "TEMP B-TREE") {
-							t.Fatalf("delta suffix query scans or sorts retained history: %s", plan.String())
-						}
-					}
 				}
-				if _, err := f.store.db.ExecContext(t.Context(), `DELETE FROM attachments WHERE id IN
-(SELECT content_attachment_id FROM conversation_events WHERE conversation_id=? AND message_id=? AND type='message.delta' AND delta_offset<?)`, record.ID, message.ID, storedBytes); err != nil {
-					t.Fatal(err)
-				}
-				scope := nativeScope{organization: f.organization, project: f.project.ID, credential: apiCredential{ID: f.owner, Scope: apiScopeOperator}}
-				objects.onIO = func() error {
-					if occupied := f.store.reader.Stats().InUse + f.store.db.Stats().InUse; occupied != 0 {
-						t.Errorf("object read holds %d database connections", occupied)
+				reads := 0
+				f.bodies.onIO = func() error { reads++; return nil }
+				deltaQueries := 0
+				readContext := conversationObjectIOContext(t, f.bodies, func(_ time.Time, query string) {
+					if strings.Contains(query, "FROM conversation_events") && strings.Contains(query, "delta_offset") {
+						deltaQueries++
 					}
-					return nil
-				}
+				})
 				var raw json.RawMessage
 				var err error
 				if endpoint == "snapshot" {
-					raw, err = f.service.readConversationSnapshot(t.Context(), scope, record.ID)
+					raw, err = f.service.readConversationSnapshot(readContext, f.scope, record.ID)
 				} else {
-					raw, err = f.service.readConversationMessages(t.Context(), scope, record.ID, 0, 10)
+					raw, err = f.service.readConversationMessages(readContext, f.scope, record.ID, 0, 10)
 				}
 				if err != nil {
-					t.Fatalf("read touched retained deltas already in the archive: %v", err)
+					t.Fatalf("canonical read touched unavailable retained delta objects: %v", err)
 				}
 				var response conversationSnapshot
 				if err := json.Unmarshal(raw, &response); err != nil {
 					t.Fatal(err)
 				}
-				if len(response.Messages) != 1 || response.Messages[0].Text != message.Text {
+				if len(response.Messages) != 1 || response.Messages[0].Text != text {
 					t.Fatalf("message content changed: %+v", response.Messages)
+				}
+				if deltaQueries != 0 {
+					t.Fatalf("canonical message read queried retained deltas %d times", deltaQueries)
+				}
+				if reads != 1 {
+					t.Fatalf("canonical message read fetched %d objects, want 1", reads)
 				}
 			})
 		}
 	}
 }
 
-func TestConversationDeltaReadRejectsRowsBeyondMissingBytes(t *testing.T) {
-	f := newStorageArchiveFixture(t)
-	f.store.contents = &conversationContentFixture{}
-	record := f.create(t, f.record(f.owner, "invalid delta history", f.now))
-	message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
-	tx := f.tx(t)
-	if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
-		t.Fatal(err)
-	}
-	for range 4 {
-		if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageDelta, conversationDeltaFact{MessageID: message.ID, Text: "x", Offset: 0, Bytes: 1}, f.now); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f.commit(t, tx)
-	message.TextBytes = 1
-	if _, err := readConversationMessageDeltas(t.Context(), f.store.reader, message); err == nil {
-		t.Fatal("delta rows exceeding the missing byte count were accepted")
+func TestConversationCanonicalReadRejectsInvalidBodyLength(t *testing.T) {
+	for _, tt := range []struct {
+		name             string
+		stored, declared int64
+	}{{"stored bytes", 1, 2}, {"declared bytes", 2, 1}} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newPostgresStorageArchiveFixture(t)
+			issue := f.closed(t)
+			record := f.messages(t, issue.WorkItemID, 0, conversation.VisibilityShared)
+			message := postgresContentTestMessage(t, f, record.ID, conversation.RoleAssistant, "xx", conversation.DeliveryResponding)
+			if _, err := nativeAttemptTestDatabase(t, f.nativeFixture).ExecContext(t.Context(), `UPDATE conversation_messages SET stored_text_bytes=$3,text_bytes=$4 WHERE organization_id=$1 AND id=$2`, f.project.OrganizationID, message.ID, tt.stored, tt.declared); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.readConversationMessages(t.Context(), f.scope, record.ID, 0, 10); err == nil {
+				t.Fatal("canonical content exceeding its persisted byte boundary was accepted")
+			}
+		})
 	}
 }
 
 func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
 	for _, endpoint := range []string{"snapshot", "messages"} {
 		t.Run(endpoint, func(t *testing.T) {
-			f := newStorageArchiveFixture(t)
-			f.service.outbox.stop()
-			objects := &conversationContentFixture{}
-			f.store.contents = objects
-			record := f.create(t, f.record(f.owner, "read transaction", f.now))
-			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
-			tx := f.tx(t)
-			if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
-				t.Fatal(err)
-			}
-			saved := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "saved text", Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
-			if err := f.appendMessage(t, t.Context(), tx, &saved); err != nil {
-				t.Fatal(err)
-			}
-			f.commit(t, tx)
-			tx = f.tx(t)
-			if err := f.appendDelta(t, f.service.conversations, t.Context(), tx, &message, "streamed text", f.now); err != nil {
-				t.Fatal(err)
-			}
-			question := conversationQuestionRecord{Question: conversation.Question{ID: conversation.NewQuestionID(), ConversationID: record.ID, MessageID: message.ID, Status: conversation.QuestionPending, Prompts: []conversation.Prompt{{ID: "prompt", Question: "Continue?"}}, CreatedAt: f.now, UpdatedAt: f.now}}
-			if err := f.upsertQuestion(t, t.Context(), tx, question); err != nil {
-				t.Fatal(err)
-			}
-			f.commit(t, tx)
-			reads := 0
+			f := newPostgresStorageArchiveFixture(t)
+			issue := f.closed(t)
+			record := f.messages(t, issue.WorkItemID, 0, conversation.VisibilityPrivate)
+			message := postgresContentTestMessage(t, f, record.ID, conversation.RoleAssistant, "streamed text", conversation.DeliveryResponding)
+			saved := postgresContentTestMessage(t, f, record.ID, conversation.RoleUser, "saved text", conversation.DeliverySaved)
+			delta := postgresContentTestDelta(t, f, message, "streamed text", 0)
+			question := conversation.Question{ID: conversation.NewQuestionID(), ConversationID: record.ID, MessageID: message.ID, Status: conversation.QuestionPending, Prompts: []conversation.Prompt{{ID: "prompt", Question: "Continue?"}}, CreatedAt: f.now(), UpdatedAt: f.now()}
+			f.write(t, func(w tenantstore.Writer) error {
+				return w.UpsertQuestion(t.Context(), conversationstore.Question{OrganizationID: f.project.OrganizationID, ConversationID: record.ID, Question: question})
+			})
+			ctx := conversationObjectIOContext(t, f.bodies)
 			read := func(scope nativeScope) (json.RawMessage, error) {
 				if endpoint == "snapshot" {
-					return f.service.readConversationSnapshot(t.Context(), scope, record.ID)
+					return f.service.readConversationSnapshot(ctx, scope, record.ID)
 				}
-				return f.service.readConversationMessages(t.Context(), scope, record.ID, 0, 10)
+				return f.service.readConversationMessages(ctx, scope, record.ID, 0, 10)
 			}
-			scope := nativeScope{organization: f.organization, project: f.project.ID, credential: apiCredential{ID: f.owner, Scope: apiScopeOperator}}
-			deniedScope := scope
-			deniedScope.credential.ID = f.other
-			objects.onIO = func() error {
-				reads++
-				return nil
-			}
-			_, err := read(deniedScope)
-			var denied *nativeError
-			if !errors.As(err, &denied) || denied.Code != "not_found" {
+			reads := 0
+			f.bodies.onIO = func() error { reads++; return nil }
+			denied := f.scope
+			denied.credential.ID = "different-owner"
+			_, err := read(denied)
+			var deniedError *nativeError
+			if !errors.As(err, &deniedError) || deniedError.Code != "not_found" {
 				t.Fatalf("unauthorized read result=%v", err)
 			}
 			if reads != 0 {
-				t.Errorf("unauthorized read fetched %d objects", reads)
+				t.Fatalf("unauthorized read fetched %d objects", reads)
 			}
-			reads = 0
-			objects.onIO = func() error {
+			f.bodies.onIO = func() error {
 				reads++
-				if occupied := f.store.reader.Stats().InUse; occupied != 0 {
-					t.Errorf("object read holds %d reader connections", occupied)
-				}
-				if occupied := f.store.db.Stats().InUse; occupied != 0 {
-					t.Errorf("object read holds %d writer connections", occupied)
-				}
 				if reads == 1 {
-					if _, err := f.store.db.ExecContext(t.Context(), `DELETE FROM attachments
-WHERE id IN (SELECT content_attachment_id FROM conversation_messages WHERE conversation_id=?
-UNION SELECT content_attachment_id FROM conversation_events WHERE conversation_id=? AND type='message.delta')`, record.ID, record.ID); err != nil {
-						return err
-					}
-					if _, err := f.store.db.ExecContext(t.Context(), "DELETE FROM conversation_events WHERE conversation_id=? AND type='message.delta'", record.ID); err != nil {
-						return err
-					}
+					f.bodies.mu.Lock()
+					delete(f.bodies.content, delta.Key)
+					f.bodies.mu.Unlock()
 				}
 				return nil
 			}
-			raw, err := read(scope)
+			raw, err := read(f.scope)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -414,7 +394,7 @@ UNION SELECT content_attachment_id FROM conversation_events WHERE conversation_i
 				}
 			}
 			if reads < 2 {
-				t.Fatalf("expected message and delta object reads, got %d", reads)
+				t.Fatalf("expected canonical message object reads, got %d", reads)
 			}
 		})
 	}
@@ -422,9 +402,6 @@ UNION SELECT content_attachment_id FROM conversation_events WHERE conversation_i
 
 func TestConversationEventStorageFootprint(t *testing.T) {
 	f := newConversationFixture(t)
-	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-		t.Fatal(err)
-	}
 	compressed := map[string][]byte{}
 	f.store.contents = conversationArchiveStore{call: func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 		if request.Write {
@@ -445,56 +422,31 @@ func TestConversationEventStorageFootprint(t *testing.T) {
 	}
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	record := f.create(t, f.record(f.owner, "footprint", now))
-	payloadBytes := func() int64 {
-		var size int64
-		if err := f.store.reader.QueryRowContext(t.Context(), "SELECT sum(payload) FROM dbstat").Scan(&size); err != nil {
+	beforeObjects := objectBytes()
+	const count = 32
+	var inline int64
+	for index := range count {
+		body := map[string]any{"text": strings.Repeat("representative event content ", 2048), "index": index}
+		raw, err := marshalNative(body)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return size
-	}
-	const count = 32
-	measure := func(archived bool) int64 {
-		before := payloadBytes()
-		beforeObjects := objectBytes()
-		for index := range count {
-			body := map[string]any{"text": strings.Repeat("representative event content ", 2048), "index": index}
-			raw, err := marshalNative(body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx := t.Context()
-			if archived {
-				ctx, err = f.store.preparePayload(ctx, string(record.OrganizationID), []byte(raw))
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			tx := f.tx(t)
-			if archived {
-				_, err = f.store.appendEvent(ctx, tx, record.ID, conversation.EventHeartbeat, body, now)
-			} else {
-				if _, err := tx.ExecContext(ctx, "UPDATE conversations SET event_seq=event_seq+1 WHERE id=?", record.ID); err != nil {
-					t.Fatal(err)
-				}
-				_, err = tx.ExecContext(ctx, "INSERT INTO conversation_events(conversation_id,seq,type,body_json,created_at,conversion_state) VALUES(?,?,?,?,?,2)", record.ID, index+1, conversation.EventHeartbeat, raw, conversationTime(now))
-				if err == nil {
-					metadata, metadataErr := eventQueryMetadata([]byte(raw))
-					err = metadataErr
-					if err == nil {
-						err = metadata.write(ctx, tx, "conversation_events", "conversation_id=? AND seq=?", record.ID, index+1)
-					}
-				}
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			f.commit(t, tx)
+		inline += int64(len(raw))
+		if _, err := f.appendEvent(t, t.Context(), record.ID, conversation.EventHeartbeat, body, now); err != nil {
+			t.Fatal(err)
 		}
-		return payloadBytes() - before + objectBytes() - beforeObjects
 	}
-	inline, archived := measure(false), measure(true)
+	var metadata int64
+	var rows int
+	if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), `SELECT count(*),coalesce(sum(pg_column_size(e)),0) FROM conversation_events e WHERE organization_id=$1 AND conversation_id=$2`, f.organization, record.ID).Scan(&rows, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if rows != count {
+		t.Fatalf("stored events=%d, want %d", rows, count)
+	}
+	archived := metadata + objectBytes() - beforeObjects
 	saved := float64(inline-archived) / count
-	t.Logf("fixture: events=%d inline_total=%d archived_sqlite_plus_gzip_total=%d net_bytes_saved_per_event=%.2f", count, inline, archived, saved)
+	t.Logf("fixture: events=%d uncompressed_body_total=%d archived_postgres_rows_plus_gzip_total=%d net_bytes_saved_per_event=%.2f", count, inline, archived, saved)
 	if saved <= 0 {
 		t.Fatalf("fixture did not save bytes: %.2f", saved)
 	}
@@ -510,8 +462,10 @@ func TestConversationPublicationRechecksTokenExpiry(t *testing.T) {
 		return now
 	})
 	record := f.create(t, f.token, map[string]any{"title": "publication expiry"}).Conversation
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=? WHERE id=?", formatHubTime(now.Add(time.Minute)), f.ownerID); err != nil {
+	if result, err := nativeAttemptTestDatabase(t, f.nativeFixture).ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=$1 WHERE organization_id=$2 AND id=$3", now.Add(time.Minute), f.project.OrganizationID, f.ownerID); err != nil {
 		t.Fatal(err)
+	} else if count, err := result.RowsAffected(); err != nil || count != 1 {
+		t.Fatalf("expiry rows=%d, error=%v", count, err)
 	}
 	calls := 0
 	objects.onIO = func() error {
@@ -531,7 +485,7 @@ func TestConversationPublicationRechecksTokenExpiry(t *testing.T) {
 		t.Fatal("fixture did not advance the clock after planning")
 	}
 	var messages, events int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM conversation_messages WHERE conversation_id=?),(SELECT count(*) FROM conversation_events WHERE conversation_id=?)", record.ID, record.ID).Scan(&messages, &events); err != nil || messages != 0 || events != 0 {
+	if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2),(SELECT count(*) FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2)", f.project.OrganizationID, record.ID).Scan(&messages, &events); err != nil || messages != 0 || events != 0 {
 		t.Fatalf("expired write left messages=%d events=%d error=%v", messages, events, err)
 	}
 }
@@ -553,12 +507,27 @@ func TestConversationRejectedCreateDoesNotPublish(t *testing.T) {
 			objects := &conversationContentFixture{}
 			f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
 			if test.noFeature {
-				config := pilotHostedPlans()
-				for i := range config.Plans {
-					config.Plans[i].Features = []string{}
-				}
-				f.service.database.hostedOrganization = f.project.OrganizationID
-				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &config}); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					assignment, err := w.BillingAssignment(t.Context())
+					if err != nil {
+						return err
+					}
+					plans := []billingstore.PlanReference{assignment.Base}
+					if assignment.Subscription != nil {
+						plans = append(plans, *assignment.Subscription)
+					}
+					for _, reference := range plans {
+						plan, err := w.BillingPlan(t.Context(), reference)
+						if err != nil {
+							return err
+						}
+						plan.Features = []string{}
+						if err := w.ReplaceBillingPlan(t.Context(), plan); err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}

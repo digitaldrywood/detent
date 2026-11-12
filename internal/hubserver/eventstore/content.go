@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -19,6 +21,7 @@ import (
 )
 
 var ErrInvalidRecord = errors.New("invalid event or change record")
+var ErrScheduledSourceIncomplete = errors.New("scheduled source projection incomplete")
 
 type Content struct{ store attachment.DetailStore }
 
@@ -144,7 +147,7 @@ func Reference(key, digest string, compressed, content int64) attachment.Archive
 	return attachment.ArchiveReference{Key: key, SHA256: digest, CompressedSize: compressed, UncompressedSize: content, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
 }
 
-func (c *Content) PrepareEvent(ctx context.Context, organization tracker.OrganizationID, raw []byte) (Event, error) {
+func (c *Content) PrepareEvent(ctx context.Context, organization tracker.OrganizationID, raw []byte, usage ...*reportstore.AttemptUsage) (Event, error) {
 	var value tracker.CollaborationEvent
 	if json.Unmarshal(raw, &value) != nil || value.OrganizationID != organization || value.ID == "" || value.ProjectID == "" || value.AggregateID == "" || value.SchemaVersion != 1 || value.AggregateSequence < 0 {
 		return Event{}, ErrInvalidRecord
@@ -152,7 +155,45 @@ func (c *Content) PrepareEvent(ctx context.Context, organization tracker.Organiz
 	if value.Type == "scheduler.decision" && (value.Data.Decision == nil || value.Data.Decision.Outcome == "") {
 		return Event{}, ErrInvalidRecord
 	}
-	ref, err := c.prepare(ctx, organization, value)
+	if len(usage) > 1 {
+		return Event{}, ErrInvalidRecord
+	}
+	var payload any = value
+	if len(usage) == 1 && usage[0] != nil {
+		snapshot := usage[0]
+		run := value.Data.Run
+		if run == nil || snapshot.OrganizationID != organization || snapshot.ProjectID != value.ProjectID || snapshot.WorkItemID != value.AggregateID || snapshot.AttemptID != run.AttemptID || snapshot.LeaseID != string(run.LeaseID) || snapshot.FencingToken != int64(run.FencingToken) || snapshot.Sequence != run.Sequence || !snapshot.ReceivedAt.Equal(value.RecordedAt) || len(snapshot.Historical) != 0 || snapshot.ReplayEventID != "" || snapshot.ReplayEventSHA256 != "" || snapshot.EventSequence != 0 || snapshot.PricingUnavailable || len(snapshot.Totals) > 32 {
+			return Event{}, ErrInvalidRecord
+		}
+		if snapshot.Termination && (value.Type != "run.finished" || run.Outcome != "cancelled" || len(snapshot.Totals) != 0) {
+			return Event{}, ErrInvalidRecord
+		}
+		index := 0
+		for _, entry := range run.Usage {
+			if snapshot.Termination {
+				break
+			}
+			if entry.UsageKind == "incremental" {
+				continue
+			}
+			if index >= len(snapshot.Totals) {
+				return Event{}, ErrInvalidRecord
+			}
+			total := snapshot.Totals[index]
+			if total.Provider != tracker.UsageProviderID(entry.Provider) || total.Model != strings.TrimSpace(entry.Model) || total.Input != entry.Input || total.CachedInput != entry.CachedInput || total.Output != entry.Output {
+				return Event{}, ErrInvalidRecord
+			}
+			index++
+		}
+		if index != len(snapshot.Totals) {
+			return Event{}, ErrInvalidRecord
+		}
+		payload = struct {
+			tracker.CollaborationEvent
+			Usage *reportstore.AttemptUsage `json:"_hub_usage_v1,omitempty"`
+		}{CollaborationEvent: value, Usage: snapshot}
+	}
+	ref, err := c.prepare(ctx, organization, payload)
 	row := Event{OrganizationID: organization, ProjectID: value.ProjectID, WorkItemID: value.AggregateID, ID: value.ID, Sequence: value.AggregateSequence, Type: value.Type, SchemaVersion: int64(value.SchemaVersion), ActorKind: value.Actor.Kind, ActorPrincipalID: value.Actor.PrincipalID, RecordedAt: value.RecordedAt, EventRevision: int64(value.Data.Revision), FromState: value.Data.FromState, ToState: value.Data.ToState}
 	if value.Data.Change != nil {
 		row.ChangeID = value.Data.Change.ChangeID
@@ -183,6 +224,62 @@ func (c *Content) PrepareEvent(ctx context.Context, organization tracker.Organiz
 func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEvent, error) {
 	var value tracker.CollaborationEvent
 	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
+	return validateEventRecord(row, value, err)
+}
+
+func (c *Content) AnalyticsEvent(ctx context.Context, row Event) (tracker.CollaborationEvent, bool, error) {
+	var raw json.RawMessage
+	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &raw)
+	if err != nil {
+		return tracker.CollaborationEvent{}, false, err
+	}
+	var envelope, data, run, runtime map[string]json.RawMessage
+	if json.Unmarshal(raw, &envelope) != nil || json.Unmarshal(envelope["data"], &data) != nil {
+		return tracker.CollaborationEvent{}, false, artifact.ErrIntegrity
+	}
+	malformed := false
+	if len(data["run"]) > 0 && string(data["run"]) != "null" {
+		if json.Unmarshal(data["run"], &run) != nil {
+			return tracker.CollaborationEvent{}, false, artifact.ErrIntegrity
+		}
+		if len(run["runtime"]) > 0 && string(run["runtime"]) != "null" {
+			if json.Unmarshal(run["runtime"], &runtime) != nil {
+				return tracker.CollaborationEvent{}, false, artifact.ErrIntegrity
+			}
+			if phases, ok := runtime["phases"]; ok {
+				var value []tracker.NativePhase
+				if json.Unmarshal(phases, &value) != nil {
+					malformed = true
+					delete(runtime, "phases")
+					run["runtime"], err = json.Marshal(runtime)
+					if err != nil {
+						return tracker.CollaborationEvent{}, false, err
+					}
+					data["run"], err = json.Marshal(run)
+					if err != nil {
+						return tracker.CollaborationEvent{}, false, err
+					}
+					envelope["data"], err = json.Marshal(data)
+					if err != nil {
+						return tracker.CollaborationEvent{}, false, err
+					}
+					raw, err = json.Marshal(envelope)
+					if err != nil {
+						return tracker.CollaborationEvent{}, false, err
+					}
+				}
+			}
+		}
+	}
+	var value tracker.CollaborationEvent
+	if json.Unmarshal(raw, &value) != nil {
+		return value, false, artifact.ErrIntegrity
+	}
+	value, err = validateEventRecord(row, value, nil)
+	return value, malformed, err
+}
+
+func validateEventRecord(row Event, value tracker.CollaborationEvent, err error) (tracker.CollaborationEvent, error) {
 	if err == nil {
 		if value.ID != row.ID || value.OrganizationID != row.OrganizationID || value.ProjectID != row.ProjectID || value.AggregateID != row.WorkItemID || value.Type != row.Type || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID {
 			return value, fmt.Errorf("validate event identity: %w", artifact.ErrIntegrity)
@@ -190,6 +287,13 @@ func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEv
 
 		if row.ActorEnvelopeKnown && (value.Actor.ViaKey != row.ActorViaKey || value.Actor.DisplayName != row.ActorDisplayName || value.Actor.Agent != row.ActorAgent) {
 			return value, fmt.Errorf("validate event actor projection: %w", artifact.ErrIntegrity)
+		}
+		var runID, attemptID string
+		if value.Data.Run != nil {
+			runID, attemptID = value.Data.Run.RunID, value.Data.Run.AttemptID
+		}
+		if row.RunID != runID || row.AttemptID != attemptID {
+			return value, fmt.Errorf("validate event run projection: %w", artifact.ErrIntegrity)
 		}
 		if row.SchedulerOutcome != "" && (value.Data.Decision == nil || value.Data.Decision.Outcome != row.SchedulerOutcome) {
 			return value, fmt.Errorf("validate scheduler outcome: %w", artifact.ErrIntegrity)
@@ -214,6 +318,8 @@ func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEv
 		if row.LandingWaiting != landing.Waiting || row.LandingChangeID != landing.ChangeID || row.LandingVersionID != landing.VersionID || row.LandingHeadSHA != landing.HeadSHA {
 			return value, fmt.Errorf("validate event landing projection: %w", artifact.ErrIntegrity)
 		}
+		value.Data.Revision = tracker.Revision(row.EventRevision)
+		value.Data.FromState, value.Data.ToState = row.FromState, row.ToState
 	}
 	value.AggregateSequence, value.RecordedAt = row.Sequence, row.RecordedAt
 	return value, err
@@ -261,7 +367,7 @@ func (c *Content) PrepareVersion(ctx context.Context, organization tracker.Organ
 		return Version{}, ErrInvalidRecord
 	}
 	ref, err := c.prepare(ctx, organization, value)
-	row := Version{OrganizationID: organization, ID: value.ID, ChangeID: value.ChangeID, Number: value.Number, HeadSHA: value.HeadSHA, BaseSHA: value.BaseSHA, MergeBaseSHA: value.MergeBaseSHA, Repository: value.Repository, PolicyRevisionID: value.PolicyID, AttemptID: value.AttemptID, ActorKind: value.Actor.Kind, ActorPrincipalID: value.Actor.PrincipalID, CreatedAt: value.CreatedAt}
+	row := Version{LandingHistoryKnown: true, OrganizationID: organization, ID: value.ID, ChangeID: value.ChangeID, Number: value.Number, HeadSHA: value.HeadSHA, BaseSHA: value.BaseSHA, MergeBaseSHA: value.MergeBaseSHA, Repository: value.Repository, PolicyRevisionID: value.PolicyID, AttemptID: value.AttemptID, ActorKind: value.Actor.Kind, ActorPrincipalID: value.Actor.PrincipalID, CreatedAt: value.CreatedAt}
 	if value.External != nil {
 		row.ExternalProvider = value.External.Provider
 		row.ExternalID = value.External.ID
@@ -288,7 +394,7 @@ func (c *Content) SourceBundle(ctx context.Context, organization tracker.Organiz
 	}
 	bundle, err := c.store.ReadDetail(ctx, string(organization), ref)
 	if err != nil {
-		return nil, fmt.Errorf("read change source: %w", errors.Join(artifact.ErrIntegrity, err))
+		return nil, fmt.Errorf("read change source: %w", err)
 	}
 	if int64(len(bundle)) != ref.UncompressedSize || source.Validate(row.BaseSHA, row.HeadSHA, bundle) != nil {
 		return nil, artifact.ErrIntegrity
@@ -379,6 +485,11 @@ func (c *Content) Evidence(ctx context.Context, row Evidence) (json.RawMessage, 
 }
 
 func (c *Content) PrepareCollaborationVersion(ctx context.Context, row CollaborationVersion, raw []byte) (CollaborationVersion, error) {
+	var err error
+	row, err = ProjectScheduledSource(row, raw)
+	if err != nil {
+		return CollaborationVersion{}, err
+	}
 	var value json.RawMessage
 	if json.Unmarshal(raw, &value) != nil {
 		return CollaborationVersion{}, ErrInvalidRecord
@@ -391,6 +502,15 @@ func (c *Content) PrepareCollaborationVersion(ctx context.Context, row Collabora
 func (c *Content) CollaborationVersion(ctx context.Context, row CollaborationVersion) (json.RawMessage, error) {
 	var value json.RawMessage
 	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
+	if err == nil && row.SourceKnown {
+		projected, projectErr := ProjectScheduledSource(row, value)
+		if projectErr != nil {
+			return nil, projectErr
+		}
+		if !projected.SourceKnown || projected.SourceScheduled != row.SourceScheduled || !projected.SourceObservedAt.Equal(row.SourceObservedAt) {
+			return nil, artifact.ErrIntegrity
+		}
+	}
 	return value, err
 }
 
@@ -475,4 +595,136 @@ func ProjectChangePush(row Event, value tracker.CollaborationEvent) Event {
 		}
 	}
 	return row
+}
+
+func (c *Content) VersionLanding(ctx context.Context, row VersionLanding) (tracker.ChangeLanding, error) {
+	var landing tracker.ChangeLanding
+	switch row.PayloadFormatVersion {
+	case 1:
+		var change tracker.ChangeRequest
+		if err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &change); err != nil {
+			return landing, err
+		}
+		if change.ID != row.ChangeID || change.OrganizationID != row.OrganizationID || change.ProjectID != row.ProjectID || change.WorkItemID != row.WorkItemID || change.Landed == nil {
+			return landing, artifact.ErrIntegrity
+		}
+		landing = *change.Landed
+	case 2:
+		if err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &landing); err != nil {
+			return landing, err
+		}
+	default:
+		return landing, artifact.ErrIntegrity
+	}
+	if landing.VersionID != row.VersionID || landing.HeadSHA != row.HeadSHA || landing.MergeSHA != row.MergeSHA || landing.BaseRef != row.BaseRef || !landing.LandedAt.UTC().Truncate(time.Microsecond).Equal(row.At) {
+		return tracker.ChangeLanding{}, artifact.ErrIntegrity
+	}
+	landing.LandedAt = row.At.UTC()
+	return landing, nil
+}
+
+func (c *Content) PrepareVersionLanding(ctx context.Context, row VersionLanding, value tracker.ChangeLanding) (VersionLanding, error) {
+	if row.OrganizationID == "" || row.ProjectID == "" || row.WorkItemID == "" || row.ChangeID == "" || row.VersionID == "" || value.VersionID != row.VersionID || value.HeadSHA == "" || value.MergeSHA == "" || value.BaseRef == "" || value.LandedAt.IsZero() {
+		return VersionLanding{}, ErrInvalidRecord
+	}
+	ref, err := c.prepare(ctx, row.OrganizationID, value)
+	if err != nil {
+		return VersionLanding{}, err
+	}
+	row.At, row.HeadSHA, row.MergeSHA, row.BaseRef = value.LandedAt.UTC().Truncate(time.Microsecond), value.HeadSHA, value.MergeSHA, value.BaseRef
+	row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
+	row.PayloadFormatVersion = 2
+	return row, nil
+}
+
+func ProjectScheduledSource(row CollaborationVersion, raw []byte) (CollaborationVersion, error) {
+	if !json.Valid(raw) {
+		return CollaborationVersion{}, ErrInvalidRecord
+	}
+	var envelope struct {
+		Body string `json:"body"`
+	}
+	var body string
+	if json.Unmarshal(raw, &envelope) == nil {
+		body = envelope.Body
+	}
+	var at time.Time
+	var bound bool
+	if row.RecordID == string(row.WorkItemID) {
+		value, decodeErr := DecodeCollaborationIssue(row, raw)
+		at = value.UpdatedAt
+		bound = decodeErr == nil && value.OrganizationID == row.OrganizationID && value.ProjectID == row.ProjectID && value.WorkItemID == row.WorkItemID && int64(value.Revision) == row.Revision && !at.IsZero()
+	} else {
+		value, decodeErr := DecodeCollaborationComment(row, raw)
+		at = value.UpdatedAt
+		bound = decodeErr == nil && value.OrganizationID == row.OrganizationID && value.ProjectID == row.ProjectID && value.WorkItemID == row.WorkItemID && value.ID == row.RecordID && int64(value.Revision) == row.Revision && !at.IsZero()
+	}
+	if !bound {
+		if strings.Contains(body, "detent-checks") {
+			return CollaborationVersion{}, artifact.ErrIntegrity
+		}
+		row.SourceKnown, row.SourceScheduled, row.SourceObservedAt = false, false, time.Unix(0, 0).UTC()
+		return row, nil
+	}
+	row.SourceKnown, row.SourceScheduled, row.SourceObservedAt = true, strings.Contains(body, "detent-checks"), at.UTC().Truncate(time.Microsecond)
+	return row, nil
+}
+
+func collaborationRevision(raw json.RawMessage) (tracker.Revision, error) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return 0, ErrInvalidRecord
+	}
+	var value int64
+	if json.Unmarshal(raw, &value) == nil {
+		return tracker.Revision(value), nil
+	}
+	var quoted string
+	if json.Unmarshal(raw, &quoted) != nil {
+		return 0, ErrInvalidRecord
+	}
+	value, err := strconv.ParseInt(quoted, 10, 64)
+	if err != nil {
+		return 0, ErrInvalidRecord
+	}
+	return tracker.Revision(value), nil
+}
+
+func DecodeCollaborationIssue(row CollaborationVersion, raw []byte) (tracker.NativeIssue, error) {
+	var payload struct {
+		tracker.NativeIssue
+		Revision json.RawMessage `json:"revision"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return tracker.NativeIssue{}, ErrInvalidRecord
+	}
+	revision, err := collaborationRevision(payload.Revision)
+	value := payload.NativeIssue
+	value.Revision = revision
+	if err != nil {
+		return value, err
+	}
+	if value.OrganizationID != row.OrganizationID || value.ProjectID != row.ProjectID || value.WorkItemID != row.WorkItemID || row.RecordID != string(row.WorkItemID) || int64(value.Revision) != row.Revision {
+		return value, artifact.ErrIntegrity
+	}
+	return value, nil
+}
+
+func DecodeCollaborationComment(row CollaborationVersion, raw []byte) (tracker.NativeComment, error) {
+	var payload struct {
+		tracker.NativeComment
+		Revision json.RawMessage `json:"revision"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return tracker.NativeComment{}, ErrInvalidRecord
+	}
+	revision, err := collaborationRevision(payload.Revision)
+	value := payload.NativeComment
+	value.Revision = revision
+	if err != nil {
+		return value, err
+	}
+	if value.OrganizationID != row.OrganizationID || value.ProjectID != row.ProjectID || value.WorkItemID != row.WorkItemID || value.ID != row.RecordID || int64(value.Revision) != row.Revision {
+		return value, artifact.ErrIntegrity
+	}
+	return value, nil
 }

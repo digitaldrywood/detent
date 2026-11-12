@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
@@ -15,13 +14,10 @@ import (
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
-	"github.com/digitaldrywood/detent/internal/store/sqlc"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 type Backend string
-
-const BackendSQLite Backend = "sqlite"
 
 const (
 	SessionStateRunning               = "running"
@@ -34,19 +30,11 @@ const (
 	WorkerProcessOutcomeStaleIdentity = "stale_identity"
 )
 
-const defaultBusyTimeout = 5 * time.Second
-
 var (
 	ErrNotFound            = errors.New("store record not found")
 	ErrWorkAttemptTerminal = errors.New("work attempt is already terminal")
 	ErrProjectRequired     = errors.New("project_id is required")
 )
-
-type Config struct {
-	Backend     Backend
-	Path        string
-	BusyTimeout time.Duration
-}
 
 type Store interface {
 	LocalConfigurationStore
@@ -79,7 +67,6 @@ type Store interface {
 	efficiency.Reader
 	APIKeyStore
 	WorkerGenerationStore
-	Queries() *sqlc.Queries
 	Close() error
 }
 
@@ -165,10 +152,6 @@ type WorkflowMetricsStore interface {
 
 type ProvenanceStore interface {
 	ProvenanceAttributionTrustBoundary(context.Context) (time.Time, error)
-}
-
-type LocalAdmissionStore interface {
-	ListLocalAdmittedIssueIDs(context.Context, string) ([]string, error)
 }
 
 type WorkAttemptStore interface {
@@ -1169,25 +1152,4 @@ type ModelTokenSpend struct {
 	ReasoningOutputTokens int64
 	TotalTokens           int64
 	Sessions              int64
-}
-
-func Open(ctx context.Context, cfg Config) (Store, error) {
-	switch cfg.Backend {
-	case "", BackendSQLite:
-		return openSQLite(ctx, cfg)
-	default:
-		return nil, fmt.Errorf("unsupported store backend %q", cfg.Backend)
-	}
-}
-
-func busyTimeoutMillis(timeout time.Duration) int64 {
-	if timeout <= 0 {
-		return defaultBusyTimeout.Milliseconds()
-	}
-
-	millis := timeout.Milliseconds()
-	if millis < 1 {
-		return 1
-	}
-	return millis
 }

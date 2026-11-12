@@ -195,10 +195,18 @@ func (s *session) BillingPlanAudit(ctx context.Context, commandID string) (billi
 }
 
 func (s *session) BillingPlanAudits(ctx context.Context, after int64, limit int) ([]billingstore.PlanAudit, error) {
+	return s.billingPlanAudits(ctx, "", after, limit)
+}
+
+func (s *session) BillingPlanGrantAudits(ctx context.Context, after int64, limit int) ([]billingstore.PlanAudit, error) {
+	return s.billingPlanAudits(ctx, "grant", after, limit)
+}
+
+func (s *session) billingPlanAudits(ctx context.Context, action string, after int64, limit int) ([]billingstore.PlanAudit, error) {
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT id,command_id,request_hash,actor_id,action,recorded_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention FROM hosted_plan_audit WHERE organization_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.organization, after, limit)
+	rows, err := s.db.Query(ctx, `SELECT id,command_id,request_hash,actor_id,action,recorded_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention FROM hosted_plan_audit WHERE organization_id=$1 AND id>$2 AND ($4='' OR action=$4) ORDER BY id LIMIT $3`, s.organization, after, limit, action)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

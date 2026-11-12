@@ -44,9 +44,15 @@ func pilotHostedJourney(t *testing.T) (*browserHostedFixture, string, string) {
 
 func pilotExpireRunners(t *testing.T, f *browserHostedFixture) {
 	t.Helper()
-	for _, query := range []string{"UPDATE runner_identities SET last_heartbeat_at = '2000-01-01T00:00:00Z'", "UPDATE machines SET last_heartbeat_at = '2000-01-01T00:00:00Z'"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), query); err != nil {
+	admin := hostedPostgresAdmin(t, f.service)
+	expired := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for _, query := range []string{"UPDATE runner_identities SET last_heartbeat_at=$1 WHERE organization_id=$2", "UPDATE machines SET last_heartbeat_at=$1 WHERE organization_id=$2"} {
+		result, err := admin.ExecContext(t.Context(), query, expired, f.service.config.Hosted.OrganizationID)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if count, err := result.RowsAffected(); err != nil || count == 0 {
+			t.Fatalf("runner expiry fixture affected=%d error=%v", count, err)
 		}
 	}
 }

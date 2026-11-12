@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -24,18 +24,23 @@ func TestPilotIdleRunnerReconciliation(t *testing.T) {
 		t.Run(fmt.Sprintf("runners_%d", count), func(t *testing.T) {
 			t.Parallel()
 			f := newDefaultNativeFixture(t, Config{})
-			if err := f.service.stopGitHubReconciliation(); err != nil {
-				t.Fatal(err)
-			}
 			backend := &scriptedReconcileBackend{}
 			f.service.config.ReconcileBackend = backend
-			repository, _ := seedProjection(t, f.service.database.db)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id = NULL WHERE repository_id = ?", repository); err != nil {
-				t.Fatal(err)
+			setRepositoryEnabled := func(enabled bool) {
+				t.Helper()
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					record, err := w.ProjectRecord(t.Context(), f.project.ID)
+					if err != nil {
+						return err
+					}
+					record.Settings.Repository, record.Settings.RepositoryEnabled = "example-org/example-project", enabled
+					_, err = w.UpdateProjectRecord(t.Context(), record)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id = ?, github_repository_enabled = 1 WHERE id = ?", repository, f.project.ID); err != nil {
-				t.Fatal(err)
-			}
+			setRepositoryEnabled(true)
 			var runners []runnerFixture
 			for i := range count {
 				runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
@@ -43,36 +48,34 @@ func TestPilotIdleRunnerReconciliation(t *testing.T) {
 				runner.enroll(t)
 				runners = append(runners, runner)
 			}
-			for _, mode := range []ReconcileMode{ReconcileIncremental, ReconcileFullRepair} {
-				for range 3 {
-					for _, runner := range runners {
-						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity": 2, "version": "test"}), http.StatusOK)
-						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?state=Todo", runner.redemption.Credential, nil), http.StatusOK)
-					}
-					backend.steps = append(backend.steps, reconcileStep{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "digitaldrywood", Name: "detent", UpdatedAt: time.Now().UTC()}}})
-					targets, err := f.service.database.reconcileTargets(t.Context())
-					if err != nil || len(targets) != 1 {
-						t.Fatalf("reconciliation targets = %d: %v", len(targets), err)
-					}
-					if err := f.service.reconcileRepository(t.Context(), targets[0], mode); err != nil {
-						t.Fatal(err)
-					}
+			for range 6 {
+				for _, runner := range runners {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, "display_name": runner.redemption.DisplayName, "capacity": 2, "version": "test"}), http.StatusOK)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?state=Todo", runner.redemption.Credential, nil), http.StatusOK)
+				}
+				backend.steps = append(backend.steps, reconcileStep{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "example-org", Name: "example-project", UpdatedAt: time.Now().UTC()}}})
+				if err := f.service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
+					t.Fatal(err)
 				}
 			}
 			requests := backend.Requests()
-			if len(requests) != 6 || len(backend.steps) != 0 {
+			if len(requests) > 6 {
 				t.Fatalf("runner count multiplied reconciliation: %d calls", len(requests))
+			}
+			if len(requests) != 6 || len(backend.steps) != 0 {
+				t.Errorf("repository reconciliation made %d backend calls in 6 cycles, want 6", len(requests))
 			}
 			for _, request := range requests {
 				if request.Profile != "native" || !request.SkipIssues || request.SkipRepository {
-					t.Fatalf("incorrect native reconciliation scope: %+v", request)
+					t.Errorf("incorrect native reconciliation scope: %+v", request)
+					break
 				}
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET github_repository_enabled = 0 WHERE id = ?", f.project.ID); err != nil {
+			setRepositoryEnabled(false)
+			if err := f.service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			f.service.reconcileAllRepositories(t.Context(), ReconcileFullRepair)
-			if len(backend.Requests()) != 6 {
+			if len(backend.Requests()) != len(requests) {
 				t.Fatal("disabled integration polled GitHub")
 			}
 			t.Logf("PILOT fleet runners=%d heartbeat_requests=%d candidate_reads=%d reconciliation_cycles=6 backend_calls=6 disabled_calls=0", count, count*6, count*6)
@@ -128,12 +131,11 @@ func TestPilotHostedWorkloads(t *testing.T) {
 				runners = append(runners, pilotHostedRunner(t, f, index))
 			}
 			before := pilotUsage(t, f.service)
-			baseline := pilotBackupBytes(t, f.service)
 			started := time.Now()
 			for range 10 {
 				for _, runner := range runners {
 					path := base + "/machines/" + string(runner.MachineID) + "/heartbeat"
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, map[string]any{"backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity": 2, "version": "test", "os": "linux", "architecture": "amd64"}), http.StatusOK)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, map[string]any{"backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, "display_name": runner.DisplayName, "capacity": 2, "version": "test", "os": "linux", "architecture": "amd64"}), http.StatusOK)
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/work-items?state=Todo", runner.Credential, nil), http.StatusOK)
 				}
 				requireNativeStatus(t, f.page(t, "owner", "/organization/plan"), http.StatusOK)
@@ -174,7 +176,7 @@ func TestPilotHostedWorkloads(t *testing.T) {
 			if err != nil || usage.Usage["concurrent_work"] != 0 {
 				t.Fatalf("completed workload retained reservations: %v, %v", usage.Usage, err)
 			}
-			payload, err := json.Marshal(map[string]any{"workload": test.name, "runners": test.runners, "jobs": test.jobs, "rounds": 10, "elapsed_microseconds": elapsed.Microseconds(), "baseline_backup_bytes": baseline, "final_backup_bytes": pilotBackupBytes(t, f.service), "usage_delta": after})
+			payload, err := json.Marshal(map[string]any{"workload": test.name, "runners": test.runners, "jobs": test.jobs, "rounds": 10, "elapsed_microseconds": elapsed.Microseconds(), "usage_delta": after})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,7 +187,7 @@ func TestPilotHostedWorkloads(t *testing.T) {
 
 func pilotUsage(t *testing.T, service *Service) map[string]int64 {
 	t.Helper()
-	rows, err := service.database.db.QueryContext(t.Context(), "SELECT metric, SUM(amount) FROM hosted_usage_windows GROUP BY metric")
+	rows, err := hostedPostgresAdmin(t, service).QueryContext(t.Context(), "SELECT metric, SUM(amount)::bigint FROM hosted_usage_windows GROUP BY metric")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,17 +205,4 @@ func pilotUsage(t *testing.T, service *Service) map[string]int64 {
 		t.Fatal(err)
 	}
 	return values
-}
-
-func pilotBackupBytes(t *testing.T, service *Service) int64 {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "pilot-backup.db")
-	if err := service.Backup(t.Context(), path); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return info.Size()
 }

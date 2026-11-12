@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -39,7 +40,7 @@ import (
 func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *testing.T) {
 	repository, _ := projectRecordPostgresWithAdmin(t, 4)
 	details := &memoryRunDetails{}
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: details})
+	service := openPostgresHubTestService(t, repository, Config{RunDetails: details})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
 	if err != nil {
 		t.Fatal(err)
@@ -64,10 +65,10 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	}
 	now := service.config.now().UTC()
 	type runnerCredential struct{ token, runnerID string }
-	runners := []runnerCredential{{"example_runner_token_a", "runner_example_a"}, {"example_runner_token_b", "runner_example_b"}}
+	runners := []runnerCredential{{"example_runner_token_a", "runner_" + strings.Repeat("a", 32)}, {"example_runner_token_b", "runner_" + strings.Repeat("b", 32)}}
 	for index, runner := range runners {
 		tokenID := fmt.Sprintf("credential_example_%c", 'a'+index)
-		machineID := tracker.MachineID("machine_example_" + string(rune('a'+index)))
+		machineID := tracker.MachineID("machine_" + strings.Repeat(string(rune('a'+index)), 32))
 		enrollmentID := fmt.Sprintf("enrollment_example_%c", 'a'+index)
 		expires := now.Add(time.Hour)
 		err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -469,12 +470,8 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 }
 
 func TestSelectedPostgresPolicyApprovalFailsClosedWithoutAccessRepository(t *testing.T) {
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
-	service.config.TenantRepository = selectedPostgresWithoutAccess{}
-	service.config.AccessRepository = nil
-	if err := service.database.db.Close(); err != nil {
-		t.Fatal(err)
-	}
+	repository := projectRecordPostgres(t)
+	service := &Service{config: Config{TenantRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now, Logger: discardLogger()}}
 	scope := nativeScope{organization: "org_example", project: "prj_example", credential: apiCredential{ID: "credential_example", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
 	for name, operation := range map[string]func() error{
 		"route authorization": func() error { return service.authorizeProjectRecord(t.Context(), scope, true) },
@@ -498,11 +495,9 @@ func TestSelectedPostgresPolicyApprovalFailsClosedWithoutAccessRepository(t *tes
 	}
 }
 
-type selectedPostgresWithoutAccess struct{ tenantstore.Repository }
-
 func TestPostgresProjectPolicyApprovalRejectsDemotedHostedAdmin(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
 	if err != nil {
 		t.Fatal(err)
@@ -852,44 +847,49 @@ func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, rep
 	}
 }
 
-func TestCompatibilityPolicyUpgradeAndRevocation(t *testing.T) {
+func TestProjectPolicyApprovalAndRetiredRevocationPreservePinnedLease(t *testing.T) {
 	t.Parallel()
-	for _, state := range []string{"legacy", "approved", "revoked"} {
+	for _, state := range []string{"unapproved", "approved", "revoked"} {
 		t.Run(state, func(t *testing.T) {
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
-			_, issueID := seedProjection(t, service.database.db)
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v1/machines/register", testHubAdminToken, map[string]any{"id": "machine_abc", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
-			lease, err := service.database.Claim(t.Context(), tracker.ClaimRequest{WorkItemID: tracker.WorkItemID(issueID), MachineID: "machine_abc", SessionID: "session", TTL: time.Minute})
-			if err != nil {
-				t.Fatal(err)
+			f := newDefaultNativeFixture(t, Config{})
+			issue := f.create(t, "policy-subject")
+			worker := f.worker(t, "policy-runner")
+			clearNativeFixturePolicy(t, f)
+			descriptor := hubTestPolicy()
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", worker, policy.Observation{Descriptor: descriptor}), http.StatusNoContent)
+			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			lease := claimPolicyTestAttempt(t, f, worker, "policy-machine", "policy-session", issue.WorkItemID, descriptor.ID)
+			if state == "unapproved" {
+				clearNativeFixturePolicy(t, f)
 			}
-			if state != "legacy" {
-				descriptor := hubTestPolicy()
-				approveHubTestPolicy(t, service, "/api/v1/repositories/digitaldrywood/detent/policy", descriptor)
-				if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO lease_policies (lease_id, scope, policy_id) VALUES (?, ?, ?)", lease.ID, "repository:digitaldrywood/detent", descriptor.ID); err != nil {
-					t.Fatal(err)
-				}
-				if state == "revoked" {
-					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, "/api/v1/repositories/digitaldrywood/detent/policy", testHubAdminToken, map[string]string{"expected_policy_id": descriptor.ID}), http.StatusGone)
-				}
+			if state == "revoked" {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", testHubAdminToken, map[string]string{"expected_policy_id": descriptor.ID}), http.StatusGone)
 			}
-			response := performHubAPIRequest(t, service, http.MethodGet, "/api/v1/repositories/digitaldrywood/detent/policy", testHubAdminToken, nil)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var current struct {
 				Policy *policy.Descriptor `json:"policy"`
 			}
 			decodeHubResponse(t, response, &current)
-			if state != "legacy" {
-				if current.Policy == nil || !reflect.DeepEqual(*current.Policy, hubTestPolicy()) {
-					t.Fatalf("approved repository policy: %s", response.Body)
+			if state == "unapproved" {
+				if current.Policy != nil || !strings.Contains(response.Body.String(), `"policy":null`) {
+					t.Fatalf("absent project policy: %s", response.Body)
 				}
-			} else if current.Policy != nil || !strings.Contains(response.Body.String(), `"policy":null`) {
-				t.Fatalf("absent repository policy: %s", response.Body)
+			} else if current.Policy == nil || !reflect.DeepEqual(*current.Policy, descriptor) {
+				t.Fatalf("approved project policy: %s", response.Body)
 			}
-			wantRenew, wantEvent := http.StatusOK, http.StatusCreated
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v1/leases/"+string(lease.ID)+"/renew", testHubAdminToken, map[string]any{"fencing_token": lease.FencingToken, "ttl_seconds": 90}), wantRenew)
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, fmt.Sprintf("/api/v1/work-items/%d/events", issueID), testHubAdminToken, map[string]any{"fencing_token": lease.FencingToken, "kind": "progress", "payload": map[string]string{"step": "plan"}}), wantEvent)
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v1/leases/"+string(lease.ID)+"/release", testHubAdminToken, map[string]any{"fencing_token": lease.FencingToken, "reason": "cancelled"}), http.StatusNoContent)
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				pinned, err := r.LeasePolicy(t.Context(), lease.ID)
+				if err == nil && (pinned.ProjectID != f.project.ID || pinned.PolicyID != descriptor.ID) {
+					t.Fatalf("lease lost pinned policy: %+v", pinned)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
 		})
 	}
 }
@@ -920,8 +920,13 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	descriptor := hubTestPolicy()
 	descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Done"}})}
 	descriptor = descriptor.WithID()
-	claim := tracker.NativeClaim{WorkItemID: issue.WorkItemID, MachineID: "machine_abc", SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := tracker.NativeClaim{WorkItemID: issue.WorkItemID, MachineID: credential.Runner.MachineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": claim.MachineID, "hostname": "runner", "capacity": 2, "version": "test"}), http.StatusOK)
+	reportRunnerCapacity(t, f.service, f.base, worker, claim.MachineID, "runner", nil, 2)
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	runner.enroll(t)
 	for _, token := range []string{worker, f.token, runner.redemption.Credential} {
@@ -960,7 +965,7 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 			claim.PolicyID = test.id
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusUnprocessableEntity)
 			var leases int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&leases); err != nil || leases != 0 {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM leases WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&leases); err != nil || leases != 0 {
 				t.Fatalf("rejected claim allocated a lease: %d %v", leases, err)
 			}
 		})
@@ -1115,7 +1120,11 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				moveToMerging(change)
 				changes = append(changes, change)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 			var heldAttempts []tracker.NativeAttempt
 			for _, hold := range []struct {
 				name        string
@@ -1126,7 +1135,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			} {
 				held := createChange(hold.name, "In Progress", previous)
 				worker := f.worker(t, hold.name)
-				lease := claimNativeAttempt(t, f, worker, hold.name, hold.name, held.issue.WorkItemID, previous.ID)
+				lease := claimPolicyTestAttempt(t, f, worker, hold.name, hold.name, held.issue.WorkItemID, previous.ID)
 				event := nativeStartedEvent(lease)
 				path := f.base + "/work-items/" + string(held.issue.WorkItemID)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
@@ -1134,12 +1143,12 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				event.Data.Outcome, event.Data.Disposition = "succeeded", &hold.disposition
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
-				issue, _, err := readNativeIssue(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(held.issue.WorkItemID))
+				issue, err := f.service.readWorkItem(f.service.runDetailContext(t.Context()), scope, string(held.issue.WorkItemID))
 				if err != nil {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "hold"}, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "user_requested"}), http.StatusOK)
-				attempt, err := readNativeAttempt(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(held.issue.WorkItemID), event.Data.AttemptID, f.service.config.now())
+				attempt, err := f.service.readNativeAttemptTenant(f.service.runDetailContext(t.Context()), scope, string(held.issue.WorkItemID), event.Data.AttemptID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1153,12 +1162,12 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				active = f.create(t, "active execution")
 			}
 			worker := f.worker(t, "active-worker")
-			lease := claimNativeAttempt(t, f, worker, "active-machine", "active-session", active.WorkItemID, previous.ID)
+			lease := claimPolicyTestAttempt(t, f, worker, "active-machine", "active-session", active.WorkItemID, previous.ID)
 			before := make([]tracker.ChangeDetail, len(changes))
 			issuesBefore := make([]tracker.NativeIssue, len(changes))
 			for i, change := range changes {
 				before[i] = change.detail(t)
-				issue, _, err := readNativeIssue(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(change.issue.WorkItemID))
+				issue, err := f.service.readWorkItem(f.service.runDetailContext(t.Context()), scope, string(change.issue.WorkItemID))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1171,16 +1180,22 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			case "expected":
 				expected = "policy_stale"
 			case "write":
-				statement := fmt.Sprintf("CREATE TRIGGER refuse_later_transition BEFORE UPDATE OF workflow_state_id ON issues WHEN OLD.native_id = '%s' BEGIN SELECT RAISE(ABORT, 'fixture transition failure'); END", changes[2].issue.WorkItemID)
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), statement); err != nil {
+				statement := fmt.Sprintf(`CREATE FUNCTION refuse_policy_transition() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture transition failure'; END $$; CREATE TRIGGER refuse_later_transition BEFORE UPDATE OF workflow_state_name ON issues FOR EACH ROW WHEN (OLD.native_id='%s' AND OLD.workflow_state_name IS DISTINCT FROM NEW.workflow_state_name) EXECUTE FUNCTION refuse_policy_transition()`, changes[2].issue.WorkItemID)
+				admin := hostedPostgresAdmin(t, f.service)
+				t.Cleanup(func() {
+					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+					defer cancel()
+					if _, err := admin.ExecContext(cleanupCtx, `DROP TRIGGER IF EXISTS refuse_later_transition ON issues; DROP FUNCTION IF EXISTS refuse_policy_transition()`); err != nil {
+						t.Errorf("drop private policy transition fixture: %v", err)
+					}
+				})
+				if _, err := admin.ExecContext(t.Context(), statement); err != nil {
 					t.Fatal(err)
 				}
 			}
 			drainTestNativeBoard(t, f.service)
-			var sequenceBefore, floorBefore int64
-			if err := f.service.database.reader.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&sequenceBefore, &floorBefore); err != nil {
-				t.Fatal(err)
-			}
+			beforeSequence := readTestPolicyBoardSequence(t, f)
+			sequenceBefore, floorBefore := beforeSequence.Sequence, beforeSequence.ReplayFloor
 			succeeded := test.status >= 200 && test.status < 300
 			switch test.mutation {
 			case "review":
@@ -1191,10 +1206,8 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", token, policy.Change{ExpectedID: expected, Policy: next}), test.status)
 			}
 			if !succeeded {
-				var sequenceAfter, floorAfter int64
-				if err := f.service.database.reader.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&sequenceAfter, &floorAfter); err != nil {
-					t.Fatal(err)
-				}
+				afterSequence := readTestPolicyBoardSequence(t, f)
+				sequenceAfter, floorAfter := afterSequence.Sequence, afterSequence.ReplayFloor
 				if sequenceAfter != sequenceBefore || floorAfter != floorBefore {
 					t.Fatalf("failed approval reset board replay: (%d,%d) -> (%d,%d)", sequenceBefore, floorBefore, sequenceAfter, floorAfter)
 				}
@@ -1203,13 +1216,13 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			if succeeded && test.mutation == "" {
 				wantPolicy = next.ID
 			}
-			approval, _, err := readProjectPolicy(f.service.runDetailContext(t.Context()), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
+			approval, _, err := readTestTenantProjectPolicy(f.service.runDetailContext(t.Context()), f.service, string(scope.organization)+"/"+string(scope.project))
 			if err != nil || approval.Policy.ID != wantPolicy {
 				t.Fatalf("configuration = %+v, error = %v, want %s", approval, err, wantPolicy)
 			}
 
 			if test.mutation == "review" {
-				rules, err := readChangePolicy(f.service.runDetailContext(t.Context()), f.service.database.db, scope)
+				rules, err := f.service.changeReviewPolicyRecord(f.service.runDetailContext(t.Context()), scope)
 				wantRules := defaultChangeReviewPolicy(previous).ID
 				if succeeded {
 					wantRules = nextRules.ID
@@ -1219,25 +1232,13 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				}
 			}
 			if test.barrier {
-				tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback()
-				var id tracker.WorkItemID
-				if err := tx.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT id FROM issues WHERE native_id = ?", current.issue.WorkItemID).Scan(&id); err != nil {
-					t.Fatal(err)
-				}
-				ready, evaluated, _, err := nativeLandingCandidateReady(f.service.runDetailContext(t.Context()), tx, &scope, id, lease.MachineID, 0, f.service.config.now())
-				if err != nil || ready || !evaluated {
-					t.Fatalf("stale landing eligibility = %t, evaluated = %t, error = %v", ready, evaluated, err)
-				}
-				if err := tx.Commit(); err != nil {
-					t.Fatal(err)
+				plan, err := f.service.readNativeClaimPlan(t.Context(), scope, tracker.NativeClaim{WorkItemID: current.issue.WorkItemID, PolicyID: wantPolicy, MachineID: lease.MachineID, SessionID: "landing-evaluation", Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}, f.service.config.now())
+				if err != nil || plan.changeReady || plan.changeRecord.ID != current.change.ID {
+					t.Fatalf("stale landing eligibility ready=%t evaluated_change=%q error=%v", plan.changeReady, plan.changeRecord.ID, err)
 				}
 			}
 			for i, change := range changes {
-				issue, _, err := readNativeIssue(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(change.issue.WorkItemID))
+				issue, err := f.service.readWorkItem(f.service.runDetailContext(t.Context()), scope, string(change.issue.WorkItemID))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1255,7 +1256,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				}
 				if i > test.stale {
 					prior := heldAttempts[i-test.stale-1]
-					attempt, err := readNativeAttempt(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(issue.WorkItemID), prior.AttemptID, f.service.config.now())
+					attempt, err := f.service.readNativeAttemptTenant(f.service.runDetailContext(t.Context()), scope, string(issue.WorkItemID), prior.AttemptID)
 					if err != nil || !reflect.DeepEqual(attempt.Disposition, prior.Disposition) {
 						t.Errorf("%s hold changed: %+v, error = %v", issue.Title, attempt.Disposition, err)
 					}
@@ -1264,10 +1265,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				if !reflect.DeepEqual(after.Change, before[i].Change) || !reflect.DeepEqual(after.Versions, before[i].Versions) {
 					t.Errorf("%s immutable change or version changed", issue.Title)
 				}
-				var transitions int
-				if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT count(*) FROM collaboration_events WHERE work_item_id = ? AND type = 'workflow.transitioned' AND json_extract(data_json, '$.reason') = 'stale_policy'", issue.WorkItemID).Scan(&transitions); err != nil {
-					t.Fatal(err)
-				}
+				transitions := countTestStalePolicyTransitions(t, f, issue.WorkItemID)
 				wantTransitions := 0
 				if i <= test.stale && succeeded && test.mutation == "review" && i > 0 {
 					wantTransitions = 1
@@ -1288,8 +1286,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 
 func TestProjectPolicyIsolationAndRestart(t *testing.T) {
 	t.Parallel()
-	cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}
-	service := openTestService(t, cfg)
+	service := newPostgresNativeService(t, Config{})
 	a := newNativeFixture(t, service, "", "human")
 	b := newNativeFixture(t, service, a.project.OrganizationID, "automatic")
 	human := hubTestPolicy()
@@ -1306,7 +1303,7 @@ func TestProjectPolicyIsolationAndRestart(t *testing.T) {
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	service = openTestService(t, cfg)
+	service = reopenPostgresNativeService(t, service)
 	for _, test := range []struct {
 		name, path, token string
 		want              policy.Descriptor
@@ -1379,20 +1376,28 @@ func TestPolicyRequirementsNeverEnrollOrGrantCapabilities(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "requirements")
 			worker := f.worker(t, "worker")
+			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
 			f.create(t, "work")
 			descriptor := hubTestPolicy()
 			descriptor.Requirements = test.requirements
 			descriptor = descriptor.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_abc", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
-			claim := tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: "machine_abc", SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": credential.Runner.MachineID, "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
+			reportRunnerCapacity(t, f.service, f.base, worker, credential.Runner.MachineID, "runner", nil, 1)
+			if test.name == "forged matching machine" {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_abc", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusNotFound)
+			}
+			claim := tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: credential.Runner.MachineID, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim)
 			requireNativeStatus(t, response, http.StatusConflict)
 			if !strings.Contains(response.Body.String(), "selector_no_match") {
 				t.Fatal(response.Body.String())
 			}
 			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM machines").Scan(&count); err != nil || count != 1 {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM machines WHERE organization_id=$1", f.project.OrganizationID).Scan(&count); err != nil || count != 1 {
 				t.Fatalf("requirements enrolled a machine: %d %v", count, err)
 			}
 		})
@@ -1582,11 +1587,8 @@ func seedNativeFixturePolicyContext(ctx context.Context, t *testing.T, s *Servic
 
 func clearNativeFixturePolicy(t *testing.T, f nativeFixture) {
 	t.Helper()
-	scope := string(f.project.OrganizationID) + "/" + string(f.project.ID)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", scope); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM policy_revisions WHERE scope=? AND approved_by='fixture'", scope); err != nil {
+	admin := hostedPostgresAdmin(t, f.service)
+	if _, err := admin.ExecContext(t.Context(), "DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1620,33 +1622,86 @@ func TestApprovedPolicyClaimExposure(t *testing.T) {
 			}
 			descriptor.SourceRevision = strings.Repeat("b", 64)
 			descriptor = descriptor.WithID()
-			raw, err := json.Marshal(descriptor)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			policyScope := string(scope.organization) + "/" + string(scope.project)
+			clearNativeFixturePolicy(t, f)
+			revision, err := eventstore.NewContent(f.service.runDetailStore()).PrepareProjectPolicy(t.Context(), scope.organization, descriptor)
 			if err != nil {
 				t.Fatal(err)
 			}
-			db := f.service.database.db
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			policyScope := string(scope.organization) + "/" + string(scope.project)
-			if _, err := db.ExecContext(t.Context(), "INSERT INTO policy_revisions (scope,policy_id,metadata_json,approved_by,approved_at) VALUES (?,?,?,'fixture',?)", policyScope, descriptor.ID, string(raw), formatHubTime(f.service.config.now())); err != nil {
+			revision.ProjectID, revision.ApprovedBy, revision.ApprovedAt = scope.project, "fixture", f.service.config.now()
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.ImportProjectPolicyRevision(t.Context(), revision, true); err != nil {
+					return err
+				}
+				return w.ImportProjectPolicyCurrent(t.Context(), scope.project, descriptor.ID)
+			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.ExecContext(t.Context(), "UPDATE project_policies SET policy_id=? WHERE scope=?", descriptor.ID, policyScope); err != nil {
-				t.Fatal(err)
+			r := monthlyBudgetRunner(t, f, "local-runner", "local", false, 1, "test-model", "gpt-6.1-sol")
+
+			approved, found, err := readTestTenantProjectPolicy(t.Context(), f.service, policyScope)
+			if err != nil || !found {
+				t.Fatalf("read stored policy: %v", err)
 			}
-			r := placementFixtureRunner(t, f, "local-runner", "local", false, 1, "gpt-6.1-sol")
-			exposure, err := monthlyClaimExposure(t.Context(), db, scope, r.binding.MachineID, false)
-			if err != nil || exposure.SpriteInfrastructure || exposure.RunnerAPI != (mode == config.BillingModeMetered) {
-				t.Fatalf("claim exposure = %+v, error = %v", exposure, err)
-			}
-			contract, err := nativeIssueContractConfig(t.Context(), db, scope)
+			resolved, err := projectPolicyWorkflow(t.Context(), policyScope, approved.Policy)
+			contract := resolved.Config
 			if err != nil || contract.Budget.EffectiveBillingMode() != mode || contract.Plan.Enabled || contract.Gate.SecurityAudit.Enabled != descriptor.Gates.SecurityAudit || contract.Gate.Validator.Enabled != descriptor.Gates.Validator {
 				t.Fatalf("issue contract configuration = %+v, error = %v", contract, err)
 			}
-			snapshot, err := readPlacementSnapshotWithCapacity(t.Context(), db, scope, f.service.config.now(), nil, newPlacementCapacity(), make(map[string]bool))
-			if err != nil || snapshot.resolver == nil || !reflect.DeepEqual(snapshot.Requirements, policy.Requirements{RequiredTags: []string{"linux"}}) || strings.Contains(strings.ToLower(snapshot.Reason), "approval") {
-				t.Fatalf("placement = %+v, error = %v", snapshot, err)
+			subject := f.create(t, "approved-placement-subject")
+
+			request := providerClaim(r, subject, "approved-placement-selector")
+			request.PolicyID = descriptor.ID
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, request)
+			requireNativeCode(t, response, http.StatusConflict, "selector_no_match")
+			if strings.Contains(strings.ToLower(response.Body.String()), "approval") {
+				t.Fatalf("approved placement reported an approval refusal: %s", response.Body)
 			}
-			approved, found, err := readProjectPolicy(t.Context(), db, policyScope)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)
+				if err != nil {
+					return err
+				}
+				identity.Tags = []string{"linux"}
+				return w.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			setMonthlyBudgetFixture(t, f, false, budget.MonthlyPolicy{Enabled: true, RunnerMicros: new(int64), Mode: budget.HardStop})
+			request.SessionID = "approved-placement-budget"
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, request)
+			if mode == config.BillingModeMetered {
+				refusal := requireNativeCode(t, response, http.StatusConflict, "provider_capacity")
+				raw, err := json.Marshal(refusal.Details["monthly_budget"])
+				if err != nil {
+					t.Fatal(err)
+				}
+				var decision budget.MonthlyDecision
+				if err := json.Unmarshal(raw, &decision); err != nil || decision.Allowed || len(decision.Exhausted) != 1 || decision.Exhausted[0].Bucket != budget.RunnerAPI {
+					t.Fatalf("metered production monthly decision=%+v error=%v", decision, err)
+				}
+			} else {
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					exposure, err := r.BillingMonthlyLease(t.Context(), lease.ID)
+					if err != nil {
+						return err
+					}
+					if exposure.RunnerAPI || exposure.SpriteInfrastructure || exposure.LunaAPI {
+						t.Fatalf("subscription production claim exposure=%+v", exposure)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if strings.Contains(strings.ToLower(response.Body.String()), "approval") {
+				t.Fatalf("approved placement reported an approval refusal: %s", response.Body)
+			}
+			approved, found, err = readTestTenantProjectPolicy(t.Context(), f.service, policyScope)
 			if err != nil || !found || !reflect.DeepEqual(approved.Policy, descriptor) {
 				t.Fatalf("stored policy changed: %+v, error = %v", approved, err)
 			}
@@ -1671,7 +1726,7 @@ func TestNativePolicySubmissionConsistency(t *testing.T) {
 			t.Parallel()
 			f := newDefaultNativeFixture(t, Config{})
 			path := string(f.project.OrganizationID) + "/" + string(f.project.ID)
-			before, found, err := readProjectPolicy(t.Context(), f.service.database.db, path)
+			before, found, err := readTestTenantProjectPolicy(t.Context(), f.service, path)
 			if err != nil || !found {
 				t.Fatal(err)
 			}
@@ -1699,12 +1754,12 @@ func TestNativePolicySubmissionConsistency(t *testing.T) {
 					t.Fatalf("submission refused for unrelated reason: %s", response.Body.String())
 				}
 			}
-			after, found, err := readProjectPolicy(t.Context(), f.service.database.db, path)
+			after, found, err := readTestTenantProjectPolicy(t.Context(), f.service, path)
 			if err != nil || !found || !reflect.DeepEqual(before, after) {
 				t.Fatalf("inconsistent submission changed approval: %+v, error = %v", after, err)
 			}
 			var observations int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM project_observed_policies WHERE scope=?", path).Scan(&observations); err != nil {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM project_policy_observations WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&observations); err != nil {
 				t.Fatal(err)
 			}
 			if observations != 0 {
@@ -2079,7 +2134,7 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "policy-read")
 			scope := string(f.project.OrganizationID) + "/" + string(f.project.ID)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", scope); err != nil {
+			if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID); err != nil {
 				t.Fatal(err)
 			}
 			descriptor := hubTestPolicy()
@@ -2088,18 +2143,18 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			}
 			if test.warm {
-				if _, err := requireProjectPolicy(ctx, f.service.database.reader, scope); err != nil {
+				if _, err := requireTestTenantProjectPolicy(ctx, f.service, scope); err != nil {
 					t.Fatal(err)
 				}
 				if approved {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE policy_revisions SET approved_by='updated-approver', approved_at='2026-10-27T12:00:00Z' WHERE scope=? AND policy_id=?", scope, descriptor.ID); err != nil {
+					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE policy_revision_approvals SET approved_by='updated-approver',approved_at='2026-10-27T12:00:00Z' WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3", f.project.OrganizationID, f.project.ID, descriptor.ID); err != nil {
 						t.Fatal(err)
 					}
-					current, err := requireProjectPolicy(ctx, f.service.database.reader, scope)
+					current, err := requireTestTenantProjectPolicy(ctx, f.service, scope)
 					if err != nil || current.ApprovedBy != "updated-approver" || current.ApprovedAt != "2026-10-27T12:00:00Z" {
 						t.Fatalf("cached approval metadata: %+v, %v", current, err)
 					}
-				} else if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", scope); err != nil {
+				} else if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -2121,17 +2176,27 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 			}
 			candidate = candidate.WithID()
 			worker := f.worker(t, "policy-reader")
+			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", worker, policy.Observation{Descriptor: candidate}), http.StatusNoContent)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "policy_read_machine", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
-			_, err := monthlyClaimExposure(ctx, f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, "policy_read_machine", false)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": credential.Runner.MachineID, "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
+			readScope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			err = f.service.config.TenantRepository.ReadTenant(ctx, f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error { _, err := readCurrentChangePolicyRows(ctx, r, readScope); return err })
 			if approved && err != nil {
 				t.Fatal(err)
 			}
 			if !approved {
 				var refusal *nativeError
 				if !errors.As(err, &refusal) || refusal.Code != "policy_not_approved" {
-					t.Fatalf("unapproved claim exposure: %v", err)
+					t.Fatalf("unapproved production policy owner: %v", err)
 				}
+			}
+			setMonthlyBudgetFixture(t, f, false, budget.MonthlyPolicy{Enabled: true, RunnerMicros: new(int64), Mode: budget.HardStop})
+			decision, err := checkMonthlyBudget(ctx, nil, readScope, budget.CostExposure{RunnerAPI: true}, false, f.service.config.now(), f.service.config.TenantRepository)
+			if err != nil || decision.Allowed || len(decision.Exhausted) != 1 || decision.Exhausted[0].Bucket != budget.RunnerAPI {
+				t.Fatalf("production monthly evaluation approved=%t decision=%+v error=%v", approved, decision, err)
 			}
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -2195,7 +2260,7 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 
 func TestPostgresObservedPolicyPreservesHubTriageAndOccupiedWorkflow(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	descriptor := func(instructions, revision string, legacy bool) policy.Descriptor {
 		t.Helper()
 		configuration := "schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n  lanes:\n    - {name: Backlog, role: holding}\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\n"
@@ -2412,4 +2477,80 @@ func (s *Service) approveTestTenantPolicy(ctx context.Context, path, actor strin
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project), credential: credential, requireHostedAdmin: true}
 	return s.approveTenantProjectPolicy(ctx, scope, actor, change)
+}
+
+func readTestTenantProjectPolicy(ctx context.Context, s *Service, path string) (policy.Approval, bool, error) {
+	organization, project, ok := strings.Cut(path, "/")
+	if !ok {
+		return policy.Approval{}, false, nativeNotFound()
+	}
+	approval, revision, err := s.readTenantProjectPolicyRevision(ctx, tracker.OrganizationID(organization), tracker.ProjectID(project))
+	return approval, revision.PolicyID != "", err
+}
+
+func requireTestTenantProjectPolicy(ctx context.Context, s *Service, path string) (policy.Approval, error) {
+	approval, found, err := readTestTenantProjectPolicy(ctx, s, path)
+	if err == nil && !found {
+		err = errNoApprovedRepositoryPolicy
+	}
+	return approval, err
+}
+
+func readTestPolicyBoardSequence(t *testing.T, f nativeFixture) viewstore.BoardSequence {
+	t.Helper()
+	var sequence viewstore.BoardSequence
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		sequence, err = r.BoardSequence(t.Context(), f.project.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return sequence
+}
+func countTestStalePolicyTransitions(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID) int {
+	t.Helper()
+	count := 0
+	var after int64
+	for {
+		var rows []eventstore.Event
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			rows, err = r.Events(t.Context(), f.project.ID, item, after, 100)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range rows {
+			after = row.Sequence
+			if row.Type != "workflow.transitioned" {
+				continue
+			}
+			event, err := eventstore.NewContent(f.service.runDetailStore()).Event(t.Context(), row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if event.Data.Reason == "stale_policy" {
+				count++
+			}
+		}
+		if len(rows) < 100 {
+			return count
+		}
+	}
+}
+
+func claimPolicyTestAttempt(t *testing.T, f nativeFixture, worker, hostname, session string, item tracker.NativeWorkItemID, policyID string) tracker.NativeLease {
+	t.Helper()
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": credential.Runner.MachineID, "hostname": hostname, "version": "test", "capacity": 1}), http.StatusOK)
+	reportRunnerCapacity(t, f.service, f.base, worker, credential.Runner.MachineID, hostname, nil, 1)
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: policyID, WorkItemID: item, MachineID: credential.Runner.MachineID, SessionID: session, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	return lease
 }

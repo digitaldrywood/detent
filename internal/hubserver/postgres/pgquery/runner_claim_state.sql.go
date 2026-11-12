@@ -72,14 +72,17 @@ func (q *Queries) RunnerClaimSlots(ctx context.Context, arg RunnerClaimSlotsPara
 
 const runnerReleasedAttemptCandidates = `-- name: RunnerReleasedAttemptCandidates :many
 WITH page AS MATERIALIZED (
-SELECT n.id,n.issue_id,n.lease_id,n.status,n.cleanup_acknowledged_at FROM native_attempts n
-WHERE n.organization_id=$4 AND n.id>$5
+SELECT n.id,n.issue_id,n.lease_id,n.status,n.cleanup_acknowledged_at,n.worker_cleanup_required,n.runtime_summary_sequence,n.sequence,n.fencing_token FROM native_attempts n
+WHERE n.organization_id=$4 AND n.project_id=$1 AND n.id>$5
+AND n.cleanup_acknowledged_at IS NULL AND n.status IN ('running','interrupted','cancelled') AND (n.worker_cleanup_required IS DISTINCT FROM FALSE OR n.runtime_summary_sequence IS DISTINCT FROM n.sequence)
 ORDER BY n.id LIMIT $6
 )
 SELECT page.id AS scanned_id,
 CASE WHEN i.project_id=$1 AND a.runner_id=$2
-AND l.machine_id=$3 AND l.released_at IS NOT NULL AND page.cleanup_acknowledged_at IS NULL AND page.status IN ('running','interrupted','cancelled')
-THEN i.native_id ELSE '' END::text AS work_item_id
+AND l.machine_id=$3 AND l.issue_id=page.issue_id AND l.fencing_token=page.fencing_token
+AND (page.worker_cleanup_required IS DISTINCT FROM FALSE OR page.runtime_summary_sequence IS DISTINCT FROM page.sequence) AND l.released_at IS NOT NULL AND page.cleanup_acknowledged_at IS NULL AND page.status IN ('running','interrupted','cancelled')
+THEN i.native_id ELSE '' END::text AS work_item_id,
+COALESCE(page.worker_cleanup_required AND page.runtime_summary_sequence=page.sequence,false)::boolean AS cleanup_known
 FROM page
 JOIN leases l ON l.organization_id=$4 AND l.lease_id=page.lease_id
 JOIN issues i ON i.organization_id=$4 AND i.id=page.issue_id
@@ -97,8 +100,9 @@ type RunnerReleasedAttemptCandidatesParams struct {
 }
 
 type RunnerReleasedAttemptCandidatesRow struct {
-	ScannedID  string
-	WorkItemID string
+	ScannedID    string
+	WorkItemID   string
+	CleanupKnown bool
 }
 
 func (q *Queries) RunnerReleasedAttemptCandidates(ctx context.Context, arg RunnerReleasedAttemptCandidatesParams) ([]RunnerReleasedAttemptCandidatesRow, error) {
@@ -117,7 +121,7 @@ func (q *Queries) RunnerReleasedAttemptCandidates(ctx context.Context, arg Runne
 	items := []RunnerReleasedAttemptCandidatesRow{}
 	for rows.Next() {
 		var i RunnerReleasedAttemptCandidatesRow
-		if err := rows.Scan(&i.ScannedID, &i.WorkItemID); err != nil {
+		if err := rows.Scan(&i.ScannedID, &i.WorkItemID, &i.CleanupKnown); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

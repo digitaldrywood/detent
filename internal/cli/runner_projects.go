@@ -587,7 +587,7 @@ func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, cli
 			name = retainedName
 			cfg.Client.NativeProjects[name] = string(id)
 		}
-		selected := globalconfig.Project{ID: name, Workflow: filepath.Join(workdir, "WORKFLOW.md"), WorkflowRef: "origin/HEAD", Workdir: workdir, Weight: 1, GlobalCache: cfg.Global.Cache.Normalized()}
+		selected := globalconfig.Project{ID: name, Paused: true, Workflow: filepath.Join(workdir, "WORKFLOW.md"), WorkflowRef: "origin/HEAD", Workdir: workdir, Weight: 1, GlobalCache: cfg.Global.Cache.Normalized()}
 		if configured, ok := configuredRunnerWorkflow(locations, name, workdir); ok {
 			selected.Workflow, selected.WorkflowRef = configured.Workflow, configured.WorkflowRef
 		}
@@ -599,6 +599,15 @@ func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, cli
 			if err := prepareRunnerCheckout(ctx, selected, cloneURL); err != nil {
 				slog.Error("runner project setup failed", "runner_id", identity.RunnerID, "project_id", id, "attribution", "instance", "error", err)
 				continue
+			}
+		}
+		if client.Enrollment() != nil {
+			if desired := client.CurrentProjectConfiguration(id); desired != nil {
+				if !desired.Registered {
+					continue
+				}
+				selected.Paused = desired.Paused
+				selected.GlobalWorker.AllowLocalBinding = new(desired.AllowLocalBinding)
 			}
 		}
 		cfg.Projects = append(cfg.Projects, selected)

@@ -28,6 +28,49 @@ func (r *Repository) PinVerifiedNeutralImport(ctx context.Context, source *Verif
 	if err := r.PinCoreImportSource(ctx, identity.OrganizationID, identity.SourceSHA256, objects); err != nil {
 		return err
 	}
+	var archived bool
+	if err := r.ReadRecords(ctx, identity.OrganizationID, corestore.Background, func(reader eventstore.Reader) error {
+		receipt, err := reader.Receipt(ctx, "production-import", "neutral-source-archive", "source")
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if receipt.RequestHash != source.Digest() {
+			return mutation.ErrConflict
+		}
+		archived = true
+		return nil
+	}); err != nil {
+		return err
+	}
+	if archived {
+		return nil
+	}
+	content := eventstore.NewContent(objects)
+	for _, table := range source.manifest.Tables {
+		for _, page := range table.Pages {
+			raw, err := readNeutralImportFile(ctx, source.root, page.File, neutralImportPageBytes)
+			if err != nil {
+				return err
+			}
+			if artifact.Digest(raw) != page.SHA256 {
+				return mutation.ErrConflict
+			}
+			reference, err := content.PreparePayload(ctx, identity.OrganizationID, raw)
+			if err != nil {
+				return err
+			}
+			receipt := eventstore.Receipt{OrganizationID: identity.OrganizationID, ActorID: "production-import", Operation: "neutral-source-page", CommandKey: page.SHA256, RequestHash: page.SHA256, PayloadObjectKey: reference.Key, PayloadSHA256: reference.SHA256, PayloadBytes: reference.CompressedSize, PayloadContentBytes: reference.UncompressedSize}
+			if err := r.transaction(ctx, identity.OrganizationID, corestore.Background, false, func(s *session) error {
+				_, err := s.PutReceipt(ctx, receipt)
+				return err
+			}); err != nil {
+				return err
+			}
+		}
+	}
 	manifest, err := json.Marshal(source.manifest)
 	if err != nil {
 		return err
@@ -36,11 +79,16 @@ func (r *Repository) PinVerifiedNeutralImport(ctx context.Context, source *Verif
 	if err != nil {
 		return err
 	}
+	archiveReceipt := receipt
+	archiveReceipt.Operation = "neutral-source-archive"
 	err = r.transaction(ctx, identity.OrganizationID, corestore.Background, false, func(s *session) error {
 		if _, err := s.BindNeutralImportSource(ctx, BindNeutralImportSourceInput{OrganizationID: identity.OrganizationID, SourceID: identity.SourceID, SchemaVersion: int64(identity.SchemaVersion), Checksum: source.Digest(), SchemaDigest: artifact.Digest(schema), VerifiedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
-		_, err := s.PutReceipt(ctx, receipt)
+		if _, err := s.PutReceipt(ctx, receipt); err != nil {
+			return err
+		}
+		_, err := s.PutReceipt(ctx, archiveReceipt)
 		return err
 	})
 	if errors.Is(err, corestore.ErrRevisionConflict) {

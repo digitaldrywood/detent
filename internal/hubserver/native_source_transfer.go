@@ -2,9 +2,9 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -29,146 +30,200 @@ type sourceTransferRequest struct {
 type sourceRecoveryView = tracker.NativeSourceRecovery
 type sourceRecoveryRunner = tracker.NativeSourceRecoveryRunner
 
-func readSourceRecoveryView(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (sourceRecoveryView, tracker.WorkItemID, error) {
-	issue, id, err := readNativeIssue(ctx, q, scope, item)
-	view := sourceRecoveryView{Destinations: []sourceRecoveryRunner{}, WorkItemID: issue.WorkItemID, Revision: issue.Revision, Reason: "Capture the exact legacy source on its owning runner before transfer; unavailable copies cannot be recovered"}
-	if err != nil {
-		return view, id, err
-	}
-	var routedVersion string
-	if err := q.QueryRowContext(ctx, "SELECT recovery_runner_id,recovery_version_id FROM issues WHERE id=?", id).Scan(&view.DestinationRunnerID, &routedVersion); err != nil {
-		return view, id, err
-	}
-	source, err := readNativeSourceCheckpoint(ctx, q, scope, item)
-	if err != nil {
-		return view, id, err
-	}
-	view.AttemptID, view.SourceMachineID, view.SourceRunnerID, view.SourceRunnerName = source.AttemptID, source.MachineID, source.RunnerID, source.RunnerName
-	rawStatus, released := source.Status, source.Released
-	if source.Checkpoint != nil {
-		view.HeadSHA = source.Checkpoint.HeadSHA
-	}
-
-	change, found, err := readLatestNativeChangeRequest(ctx, q, scope, item)
-	if err != nil || !found || change.CurrentVersion == "" {
-		return view, id, err
-	}
-	version, err := readChangeVersion(ctx, q, change.ID, change.CurrentVersion)
-	if err != nil {
-		return view, id, err
-	}
-	view.VersionID, view.BaseSHA = version.ID, version.BaseSHA
-	if routedVersion != version.ID {
-		view.DestinationRunnerID = ""
-	}
-	if view.AttemptID == "" {
-		view.HeadSHA, view.AttemptID = version.HeadSHA, version.AttemptID
-		err = q.QueryRowContext(ctx, `SELECT l.machine_id, COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''), a.status, l.released_at,coalesce(a.failure_stage,'')='lease_release' AND a.cleanup_acknowledged_at IS NULL FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id LEFT JOIN machines m ON m.id=l.machine_id AND m.organization_id=a.organization_id WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, version.AttemptID, scope.organization, scope.project, item).Scan(&view.SourceMachineID, &view.SourceRunnerID, &view.SourceRunnerName, &rawStatus, &released, &source.UnacknowledgedRelease)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return view, id, err
-		}
-	}
-	view.Quiesced = released.Valid && !source.UnacknowledgedRelease && (rawStatus == "succeeded" || rawStatus == "failed" || rawStatus == "cancelled")
-	_, claimed, err := readUnreleasedLease(ctx, q, id)
-	if err != nil {
-		return view, id, err
-	}
-	view.Quiesced = view.Quiesced && !claimed && !issue.Archived && !issue.Terminal
-	allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, "", id)
-	if err != nil {
-		return view, id, err
-	}
-	view.Available = version.Source != nil && allowed
-	if view.Available {
-		view.HeadSHA = version.HeadSHA
-	}
-	if issue.Archived || issue.Terminal {
-		view.Reason = "Restore or explicitly reopen this work item before changing recovery ownership"
-	} else if !view.Available {
-		view.Reason = reason
-	} else if !view.Quiesced {
-		view.Reason = "Finish or cancel work on the source runner and release its lease before transfer; expiry or an unreachable owner does not prove quiescence"
-		if claimed {
-			view.Reason = "Finish or cancel the current execution and release its claim before transfer; expiry alone does not prove the writer stopped"
-		} else if released.Valid {
-			view.Reason = "The source attempt has no acknowledged terminal outcome; finish or cancel work on the source runner before transfer; lease release alone does not prove quiescence"
-		}
-	} else {
-		view.Reason = "Verified retained source can be restored before continuing; workflow, human and delivery holds remain in force"
-	}
-	return view, id, nil
-}
-
 func (s *Service) getNativeSourceRecovery(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
-	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, c.Param("item"), c.QueryParam("destinations_after"))
+	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, c.Param("item"))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	view.Destinations, view.DestinationsNext, err = s.nativeSourceRecoveryDestinationsTenant(ctx, scope, c.QueryParam("destinations_after"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, view)
 }
 
-func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nativeScope, item, after string) (sourceRecoveryView, error) {
-	recovery, err := s.readNativeRecoveryTenant(ctx, scope, item)
+type nativeSourceRecoverySnapshot struct {
+	item         corestore.WorkItem
+	itemVersion  eventstore.CollaborationVersion
+	version      *eventstore.Version
+	attempt      tenantAttemptSnapshot
+	attemptFound bool
+	runnerName   string
+}
+
+func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nativeScope, item string, supplied ...tracker.NativeIssue) (sourceRecoveryView, error) {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok || len(supplied) > 1 {
+		return sourceRecoveryView{}, nativeRunEventStorageUnavailable()
+	}
+	var snapshot nativeSourceRecoverySnapshot
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.Profile != "native" || project.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		snapshot.item, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		if err != nil {
+			return err
+		}
+		if !scope.reporterOwns(tracker.Actor{Kind: stringValue(snapshot.item.ActorKind), PrincipalID: stringValue(snapshot.item.ActorPrincipalID)}) {
+			return corestore.ErrNotFound
+		}
+		if len(supplied) == 0 {
+			snapshot.itemVersion, err = r.CollaborationVersion(ctx, item, snapshot.item.Revision)
+			if err != nil {
+				return err
+			}
+		} else if supplied[0].WorkItemID != snapshot.item.NativeID || supplied[0].OrganizationID != scope.organization || supplied[0].ProjectID != scope.project || int64(supplied[0].Revision) != snapshot.item.Revision || supplied[0].State != stringValue(snapshot.item.WorkflowStateName) || supplied[0].Archived != snapshot.item.Archived {
+			return corestore.ErrSerializationFailure
+		}
+		change, err := r.LatestChange(ctx, scope.project, snapshot.item.NativeID)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err == nil && change.CurrentVersionID != nil && *change.CurrentVersionID != "" {
+			version, err := r.Version(ctx, change.ID, *change.CurrentVersionID)
+			if err != nil {
+				return err
+			}
+			if change.OrganizationID != scope.organization || change.ProjectID != scope.project || change.WorkItemID != snapshot.item.NativeID || version.OrganizationID != scope.organization || version.ChangeID != change.ID {
+				return artifact.ErrIntegrity
+			}
+			snapshot.version = &version
+		}
+		reader, ok := r.(leasestore.CheckpointAttemptReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		attempt, err := reader.SourceCheckpointAttempt(ctx, snapshot.item.ID)
+		if err == nil && attempt.CheckpointPreservesSource == nil {
+			return nativeRunEventStorageUnavailable()
+		}
+		if err == nil && (attempt.CheckpointObjectKey == nil || !*attempt.CheckpointPreservesSource) {
+			return artifact.ErrIntegrity
+		}
+		if errors.Is(err, corestore.ErrNotFound) {
+			if snapshot.version != nil && snapshot.version.AttemptID != "" {
+				attempt, err = r.Attempt(ctx, snapshot.version.AttemptID)
+				if err != nil {
+					return err
+				}
+			} else {
+				attempt, err = r.LatestAttempt(ctx, snapshot.item.ID)
+			}
+		}
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if attempt.OrganizationID != scope.organization || attempt.IssueID != snapshot.item.ID {
+			return artifact.ErrIntegrity
+		}
+		snapshot.attemptFound, snapshot.attempt.attempt = true, attempt
+		snapshot.attempt.lease, err = r.Lease(ctx, attempt.LeaseID)
+		if err != nil {
+			return err
+		}
+		lease := snapshot.attempt.lease
+		if lease.OrganizationID != scope.organization || lease.IssueID != snapshot.item.ID || lease.FencingToken != attempt.FencingToken {
+			return artifact.ErrIntegrity
+		}
+		snapshot.attempt.event, err = r.LatestRunEvent(ctx, scope.project, attempt.ID)
+		if err != nil {
+			return err
+		}
+		if snapshot.attempt.event.OrganizationID != scope.organization || snapshot.attempt.event.ProjectID != scope.project || snapshot.attempt.event.WorkItemID != snapshot.item.NativeID || snapshot.attempt.event.AttemptID != attempt.ID {
+			return artifact.ErrIntegrity
+		}
+		if err := readTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
+			return err
+		}
+		identity, err := r.RunnerForLease(ctx, attempt.LeaseID)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err == nil {
+			snapshot.runnerName = identity.DisplayName
+		}
+		if snapshot.runnerName == "" {
+			machine, err := r.Machine(ctx, lease.MachineID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			snapshot.runnerName = lease.MachineID
+			if err == nil {
+				snapshot.runnerName = machine.Hostname
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		return sourceRecoveryView{}, err
+		return sourceRecoveryView{}, projectRecordError(err)
 	}
-	view := sourceRecoveryView{
-		Destinations: []sourceRecoveryRunner{}, WorkItemID: recovery.Issue.WorkItemID,
-		Revision: recovery.Issue.Revision,
-		Reason:   "Capture the exact legacy source on its owning runner before transfer; unavailable copies cannot be recovered",
-	}
-	view.Destinations, view.DestinationsNext, err = s.nativeSourceRecoveryDestinationsTenant(ctx, scope, after)
-	if err != nil {
-		return sourceRecoveryView{}, err
-	}
-	if attempt := recovery.SourceAttempt(); attempt != nil {
-		view.AttemptID = attempt.AttemptID
-		view.SourceMachineID = attempt.MachineID
-		view.SourceRunnerID = attempt.RunnerID
-		view.SourceRunnerName, err = s.nativeSourceRunnerNameTenant(ctx, scope, attempt)
+	var issue tracker.NativeIssue
+	if len(supplied) != 0 {
+		issue = supplied[0]
+	} else {
+		issue, err = s.hydrateCanonicalWorkItemRecord(ctx, snapshot.item, snapshot.itemVersion)
 		if err != nil {
 			return sourceRecoveryView{}, err
 		}
-		if attempt.Checkpoint != nil {
-			view.HeadSHA = attempt.Checkpoint.HeadSHA
+	}
+	view := sourceRecoveryView{Destinations: []sourceRecoveryRunner{}, WorkItemID: snapshot.item.NativeID, Revision: tracker.Revision(snapshot.item.Revision)}
+	if snapshot.attemptFound {
+		run, err := s.readNativeAttemptRunTenant(ctx, snapshot.attempt)
+		if err != nil {
+			return view, err
 		}
-		unacknowledgedRelease := attempt.TerminalFailure != nil && attempt.TerminalFailure.Stage == "lease_release" && attempt.CleanupAcknowledgedAt == nil
-		view.Quiesced = !attempt.Current && attempt.ClaimReleasedAt != nil && !unacknowledgedRelease &&
-			(attempt.Status == "succeeded" || attempt.Status == "failed" || attempt.Status == "cancelled")
+		if err := nativeAttemptRunMismatch(snapshot.attempt, run); err != nil {
+			return view, err
+		}
+		if run.MachineID != tracker.MachineID(snapshot.attempt.lease.MachineID) {
+			return view, artifact.ErrIntegrity
+		}
+		checkpoint, err := s.readNativeAttemptCheckpointTenant(ctx, snapshot.attempt)
+		if err != nil {
+			return view, err
+		}
+		view.AttemptID, view.SourceMachineID, view.SourceRunnerID, view.SourceRunnerName = run.AttemptID, run.MachineID, run.RunnerID, snapshot.runnerName
+		if checkpoint != nil {
+			view.HeadSHA = checkpoint.HeadSHA
+		}
+		attempt := snapshot.attempt.attempt
+		unacknowledged := run.TerminalFailure != nil && run.TerminalFailure.Stage == "lease_release" && attempt.CleanupAcknowledgedAt == nil
+		view.Quiesced = snapshot.attempt.lease.ReleasedAt != nil && !unacknowledged && (attempt.Status == "succeeded" || attempt.Status == "failed" || attempt.Status == "cancelled")
 	}
-	if detail := recovery.ChangeDetail; detail != nil {
-		for _, version := range detail.Versions {
-			if version.ID != detail.Change.CurrentVersion {
-				continue
-			}
-			view.VersionID, view.BaseSHA = version.ID, version.BaseSHA
-			if view.AttemptID == "" {
-				view.AttemptID = version.AttemptID
-			}
-			verified, err := s.verifiedNativeSourceTenant(ctx, scope, recovery.Issue.WorkItemID, detail.Change.ID, version)
-			if err != nil {
-				return sourceRecoveryView{}, err
-			}
-			view.Available = verified
-			if verified {
-				view.HeadSHA = version.HeadSHA
-			}
-			break
+	if snapshot.version != nil {
+		row := *snapshot.version
+		view.VersionID, view.BaseSHA = row.ID, row.BaseSHA
+		if view.AttemptID == "" {
+			view.AttemptID = row.AttemptID
+		}
+		view.Available, err = s.verifiedNativeSourceTenant(ctx, scope, row)
+		if err != nil {
+			return view, err
+		}
+		if view.Available {
+			view.HeadSHA = row.HeadSHA
 		}
 	}
-	row, _, err := s.readWorkItemRecord(ctx, scope, item)
-	if err != nil {
-		return view, err
+	if snapshot.item.RecoveryVersionID == view.VersionID {
+		view.DestinationRunnerID = snapshot.item.RecoveryRunnerID
 	}
-	if row.RecoveryVersionID == view.VersionID {
-		view.DestinationRunnerID = row.RecoveryRunnerID
-	}
-	view.Quiesced = view.Quiesced && !recovery.Issue.Archived && !recovery.Issue.Terminal
+	view.Quiesced = view.Quiesced && !issue.Archived && !issue.Terminal
 	switch {
-	case recovery.Issue.Archived || recovery.Issue.Terminal:
+	case issue.Archived || issue.Terminal:
 		view.Reason = "Restore or explicitly reopen this work item before changing recovery ownership"
 	case !view.Available:
 		view.Reason = "No verified Hub source is available for recovery"
@@ -177,7 +232,43 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 	default:
 		view.Reason = "Verified retained source can be restored before continuing; workflow, human and delivery holds remain in force"
 	}
+	if err := s.recheckChangeReadAuthority(ctx, scope); err != nil {
+		return view, err
+	}
 	return view, nil
+}
+
+func (s *Service) readRuntimeSourceRecoveryTenant(ctx context.Context, scope nativeScope, item string, evidence *tracker.NativeRuntimeEvidence) error {
+	if !explanationRead(ctx) {
+		return nil
+	}
+	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, item, evidence.Issue)
+	if err == nil && evidence.CurrentVersion != nil && evidence.CurrentVersion.VersionID != view.VersionID {
+		err = corestore.ErrSerializationFailure
+	}
+	if err != nil {
+		var failure *nativeError
+		if errors.As(err, &failure) && failure.status < http.StatusInternalServerError {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if authorityErr := s.recheckChangeReadAuthority(ctx, scope); authorityErr != nil {
+			return authorityErr
+		}
+		s.config.Logger.Warn("Source recovery projection unavailable", "error", err, "organization_id", scope.organization, "project_id", scope.project, "work_item_id", item)
+		evidence.SourceRecovery = nil
+		if !slices.Contains(evidence.Unavailable, "source_recovery_projection") {
+			evidence.Unavailable = append(evidence.Unavailable, "source_recovery_projection")
+		}
+		return nil
+	}
+	evidence.Unavailable = slices.DeleteFunc(evidence.Unavailable, func(value string) bool { return value == "source_recovery_projection" })
+	if view.AttemptID != "" || view.VersionID != "" {
+		evidence.SourceRecovery = &view
+	}
+	return nil
 }
 
 func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, scope nativeScope, after string) ([]sourceRecoveryRunner, string, error) {
@@ -236,84 +327,26 @@ func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, sc
 	return destinations, next, nil
 }
 
-func (s *Service) nativeSourceRunnerNameTenant(ctx context.Context, scope nativeScope, attempt *tracker.NativeAttempt) (string, error) {
-	var name string
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		identity, err := reader.RunnerForLease(ctx, string(attempt.LeaseID))
-		if err == nil && identity.DisplayName != "" {
-			name = identity.DisplayName
-			return nil
-		}
-		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-			return err
-		}
-		machine, machineErr := reader.Machine(ctx, string(attempt.MachineID))
-		if machineErr != nil {
-			if errors.Is(machineErr, corestore.ErrNotFound) {
-				name = string(attempt.MachineID)
-				return nil
-			}
-			return machineErr
-		}
-		name = machine.Hostname
-		return nil
-	})
-	if errors.Is(err, corestore.ErrNotFound) {
-		return string(attempt.MachineID), nil
-	}
-	return name, projectRecordError(err)
-}
-
-func (s *Service) verifiedNativeSourceTenant(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, changeID string, selected tracker.ChangeVersion) (bool, error) {
-	var current string
-	var row eventstore.Version
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
-			return err
-		}
-		change, err := reader.Change(ctx, changeID)
-		if err != nil {
-			return err
-		}
-		if item == "" || change.OrganizationID != scope.organization || change.ProjectID != scope.project || change.WorkItemID != item || selected.ChangeID != changeID {
-			return corestore.ErrNotFound
-		}
-		current = ""
-		if change.CurrentVersionID != nil {
-			current = *change.CurrentVersionID
-		}
-		if current != selected.ID {
-			return nil
-		}
-		row, err = reader.Version(ctx, changeID, selected.ID)
-		return err
-	})
-	if err != nil {
-		return false, projectRecordError(err)
-	}
-	if current != selected.ID || selected.Source == nil {
-		return false, nil
+func (s *Service) verifiedNativeSourceTenant(ctx context.Context, scope nativeScope, row eventstore.Version) (bool, error) {
+	if row.OrganizationID != scope.organization {
+		return false, artifact.ErrIntegrity
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	contentCtx := s.runDetailContext(s.contentContext(ctx))
-	version, err := content.Version(contentCtx, row)
+	version, err := content.Version(ctx, row)
 	if err != nil {
 		return false, err
 	}
 	if version.Source == nil {
 		return false, nil
 	}
-	bundle, err := content.SourceBundle(contentCtx, scope.organization, row, *version.Source)
-	if err != nil {
-		if contentCtx.Err() != nil {
-			return false, contentCtx.Err()
-		}
-		if errors.Is(err, artifact.ErrIntegrity) {
-			return false, nil
-		}
-		return false, err
+	_, err = content.SourceBundle(ctx, scope.organization, row, *version.Source)
+	if ctx.Err() != nil {
+		return false, ctx.Err()
 	}
-	return version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle) == nil, nil
+	if !explanationRead(ctx) && (errors.Is(err, artifact.ErrIntegrity) || errors.Is(err, artifact.ErrMissing)) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (s *Service) transferNativeSource(c echo.Context) error {
@@ -365,7 +398,7 @@ func (s *Service) selectNativeSourceTransferTenant(ctx context.Context, scope na
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return s.authorizeSourceTransferTenant(ctx, r, scope) }); err != nil {
 		return sourceRecoveryView{}, projectRecordError(err)
 	}
-	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, item, "")
+	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, item)
 	if err != nil {
 		return view, err
 	}

@@ -79,7 +79,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		name    string
 		command *exec.Cmd
 	}{
-		{"hub", exec.CommandContext(ctx, "go", "test", "-count=1", "-v", "-timeout=0", "./internal/hubserver", "-run", "^TestScaleSoak$")},
+		{"hub", exec.CommandContext(ctx, "go", "test", "-tags=detent_scalesoak", "-count=1", "-v", "-timeout=0", "./internal/hubserver", "-run", "^TestScaleSoak$")},
 	}
 	if !c.SeedOnly {
 		jobs = append(jobs, struct {

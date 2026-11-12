@@ -109,3 +109,74 @@ ON CONFLICT(organization_id,lease_id) DO NOTHING;
 -- name: AddBillingUsage :exec
 INSERT INTO hosted_usage_windows(organization_id,window_start,metric,amount) VALUES($1,$2,$3,$4)
 ON CONFLICT(organization_id,window_start,metric) DO UPDATE SET amount=hosted_usage_windows.amount+excluded.amount;
+
+-- name: BillingMonthlyAdmittedCandidate :one
+WITH admitted AS MATERIALIZED (
+ SELECT a.organization_id,a.issue_id FROM monthly_budget_admissions a
+ JOIN issues cohort_item ON cohort_item.organization_id=a.organization_id AND cohort_item.id=a.issue_id
+ WHERE a.organization_id=sqlc.arg(organization_id) AND cohort_item.project_id=sqlc.arg(project_id)
+)
+SELECT EXISTS (
+ SELECT 1 FROM admitted a
+ JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+ JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
+ JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
+ JOIN issue_claim_facts f ON f.organization_id=i.organization_id AND f.project_id=i.project_id AND f.work_item_id=i.native_id
+ WHERE a.organization_id=sqlc.arg(organization_id)
+ AND i.project_id=sqlc.arg(project_id)
+ AND p.profile='native' AND p.deleted_at IS NULL AND i.archived=false
+ AND w.dispatchable=true AND w.terminal=false
+ AND EXISTS (SELECT 1 FROM queue_entries q WHERE q.organization_id=i.organization_id AND q.project_id=i.project_id AND q.work_item_id=i.native_id AND q.scope=i.project_id)
+ AND NOT EXISTS (SELECT 1 FROM workspace_items wi WHERE wi.organization_id=i.organization_id AND wi.project_id=i.project_id AND wi.work_item_id=i.native_id)
+ AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id AND l.released_at IS NULL AND l.expires_at>sqlc.arg(available_at)::timestamptz)
+ AND (NOT p.require_dependencies OR NOT EXISTS (
+  SELECT 1 FROM issue_dependencies d
+  JOIN issues blocker ON blocker.organization_id=d.organization_id AND blocker.project_id=d.blocker_project_id AND blocker.id=d.blocker_issue_id
+  LEFT JOIN project_workflow_states blocker_state ON blocker_state.organization_id=blocker.organization_id AND blocker_state.project_id=blocker.project_id AND blocker_state.name=blocker.workflow_state_name
+  WHERE d.organization_id=i.organization_id AND d.dependent_project_id=i.project_id AND d.dependent_issue_id=i.id
+  AND (blocker_state.name IS NULL OR blocker_state.terminal=false)
+ ))
+);
+
+-- name: BillingMonthlyOrganizationAdmittedCandidate :one
+WITH admitted AS MATERIALIZED (
+ SELECT a.organization_id,a.issue_id FROM monthly_budget_admissions a
+ WHERE a.organization_id=sqlc.arg(organization_id)
+)
+SELECT EXISTS (
+ SELECT 1 FROM admitted a
+ JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+ JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
+ JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
+ JOIN issue_claim_facts f ON f.organization_id=i.organization_id AND f.project_id=i.project_id AND f.work_item_id=i.native_id
+ WHERE a.organization_id=sqlc.arg(organization_id)
+
+ AND p.profile='native' AND p.deleted_at IS NULL AND i.archived=false
+ AND w.dispatchable=true AND w.terminal=false
+ AND EXISTS (SELECT 1 FROM queue_entries q WHERE q.organization_id=i.organization_id AND q.project_id=i.project_id AND q.work_item_id=i.native_id AND q.scope=i.project_id)
+ AND NOT EXISTS (SELECT 1 FROM workspace_items wi WHERE wi.organization_id=i.organization_id AND wi.project_id=i.project_id AND wi.work_item_id=i.native_id)
+ AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id AND l.released_at IS NULL AND l.expires_at>sqlc.arg(available_at)::timestamptz)
+ AND (NOT p.require_dependencies OR NOT EXISTS (
+  SELECT 1 FROM issue_dependencies d
+  JOIN issues blocker ON blocker.organization_id=d.organization_id AND blocker.project_id=d.blocker_project_id AND blocker.id=d.blocker_issue_id
+  LEFT JOIN project_workflow_states blocker_state ON blocker_state.organization_id=blocker.organization_id AND blocker_state.project_id=blocker.project_id AND blocker_state.name=blocker.workflow_state_name
+  WHERE d.organization_id=i.organization_id AND d.dependent_project_id=i.project_id AND d.dependent_issue_id=i.id
+  AND (blocker_state.name IS NULL OR blocker_state.terminal=false)
+ ))
+);
+
+-- name: BillingMonthlyRetainsMachine :one
+WITH admitted AS MATERIALIZED (
+ SELECT a.organization_id,a.issue_id FROM monthly_budget_admissions a
+ JOIN issues cohort_item ON cohort_item.organization_id=a.organization_id AND cohort_item.id=a.issue_id
+ WHERE a.organization_id=sqlc.arg(organization_id) AND cohort_item.project_id=sqlc.arg(project_id)
+)
+SELECT EXISTS (
+ SELECT 1 FROM admitted a
+ JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+ JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
+ JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
+ WHERE a.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id)
+ AND (SELECT l.machine_id FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id ORDER BY l.fencing_token DESC LIMIT 1)=sqlc.arg(machine_id)::text
+ AND p.deleted_at IS NULL AND i.archived=false AND w.dispatchable=true AND w.terminal=false
+);

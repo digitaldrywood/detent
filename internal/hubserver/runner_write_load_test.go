@@ -1,18 +1,30 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -28,6 +40,7 @@ type writeLoadSession struct {
 type writeLoadFixture struct {
 	nativeFixture
 	worker   string
+	now      time.Time
 	runners  []runnerFixture
 	sessions []writeLoadSession
 }
@@ -36,8 +49,31 @@ type writeLoadFixture struct {
 // count and streaming sessions.
 func newWriteLoadFixture(t *testing.T, history, runners, sessions int) *writeLoadFixture {
 	t.Helper()
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}}
-	f := newNativeFixture(t, openTestService(t, config), "", "write-load")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	repository, _ := projectRecordPostgresWithClock(t, 4, func() time.Time { return now }, func(config *pgxpool.Config) {
+		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, writeLoadTrace{})
+	})
+	config := Config{Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: func() time.Time { return now }, SecretKeys: secretTestKeys(t, "1", "1")}
+	service := openLocalPostgresHubTestService(t, repository, config)
+	primary := tracker.OrganizationID("org_first")
+	for _, organization := range []tracker.OrganizationID{primary, primary + "_second"} {
+		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
+		key := bytes.Repeat([]byte{0x5a}, 32)
+		envelope, err := service.config.SecretKeys.Seal(key, accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: key}); err != nil {
+				return err
+			}
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service.database.hostedOrganization, service.localOrganization, service.requestMetrics.organization = primary, string(primary), primary
+	f := newNativeFixture(t, service, primary, "write-load")
 	policy := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", policy)
 	d := f.service.database
@@ -47,28 +83,31 @@ func newWriteLoadFixture(t *testing.T, history, runners, sessions int) *writeLoa
 	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
 	}
-	fixture := &writeLoadFixture{nativeFixture: f, worker: f.worker(t, "write-load-worker")}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", fixture.worker, map[string]any{"id": "write-load-machine", "hostname": "fixture", "display_name": "Fixture", "version": "test", "capacity": sessions}), http.StatusOK)
+	streamRunner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate, runnerauth.Events)
+	streamRunner.redemption.Capacity = max(sessions, 1)
+	streamRunner.redemption.BackendIsolation = isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}
+	streamRunner.enroll(t)
+	fixture := &writeLoadFixture{nativeFixture: f, worker: streamRunner.redemption.Credential, now: now}
+	capacity := max(sessions, 1)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(streamRunner.binding.MachineID)+"/heartbeat", fixture.worker,
+		map[string]any{"display_name": "stream runner", "capacity": capacity, "version": "test", "backend_isolation": streamRunner.redemption.BackendIsolation,
+			"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, Manageable: true, ObservedAt: now}}), http.StatusOK)
 	seedWriteLoadHistory(t, f, history)
 	for range runners {
 		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate, runnerauth.Events)
 		r.enroll(t)
 		fixture.runners = append(fixture.runners, r)
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "write-load-owner", "scope": "operator"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var owner tokenResponse
-	decodeHubResponse(t, response, &owner)
+	owner := conversationFixturePrincipal(t, f, "write-load-owner")
 	for index := range sessions {
 		issue := f.create(t, fmt.Sprintf("write-load-%d", index))
-		claim := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", fixture.worker, tracker.NativeClaim{PolicyID: policy.ID, WorkItemID: issue.WorkItemID, MachineID: "write-load-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+		claim := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", fixture.worker, tracker.NativeClaim{PolicyID: policy.ID, WorkItemID: issue.WorkItemID, MachineID: streamRunner.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 		requireNativeStatus(t, claim, http.StatusOK)
 		var lease tracker.NativeLease
 		decodeHubResponse(t, claim, &lease)
 		attempt, run := newNativeID("attempt"), newNativeID("run")
 		event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: run, AttemptID: attempt, PolicyID: policy.ID}}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", fixture.worker, event), http.StatusOK)
-		now := time.Now().UTC()
 		record := conversationRecord{
 			ID: conversation.NewConversationID(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID,
 			OwnerPrincipalID: owner.ID, OwnerSubject: "owner@example.test", Title: "load", Visibility: conversation.VisibilityShared, Status: conversation.StatusActive,
@@ -76,16 +115,12 @@ func newWriteLoadFixture(t *testing.T, history, runners, sessions int) *writeLoa
 			Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now},
 			CreatedAt: now, UpdatedAt: now,
 		}
-		ctx := prepareTestConversationRecord(t, f.service.conversations.store, record)
-		tx, err := d.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := f.service.conversations.store.createConversation(ctx, tx, &record); err != nil {
-			_ = tx.Rollback()
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
+		record.Origin, record.Revision, record.Preferences = conversationOriginUser, 1, conversation.DefaultPreferences()
+		if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			stored, err := w.CreateConversation(t.Context(), conversationRecordToStore(record))
+			record = conversationRecordFromStore(stored)
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		identity := map[string]any{"lease_id": lease.ID, "fencing_token": lease.FencingToken, "attempt_id": attempt}
@@ -106,37 +141,48 @@ func seedWriteLoadHistory(t *testing.T, f nativeFixture, history int) {
 		return
 	}
 	issue := f.create(t, "write-load-history")
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	var sequence int64
-	if err := tx.QueryRowContext(t.Context(), "SELECT coalesce(max(sequence), 0) FROM collaboration_events WHERE work_item_id = ?", issue.WorkItemID).Scan(&sequence); err != nil {
-		t.Fatal(err)
-	}
-	statement, err := tx.PrepareContext(t.Context(), `INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at)
-VALUES (?, ?, ?, ?, ?, 'issue.edited', 1, '{"kind":"human","principal_id":"history"}', ?, ?)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = statement.Close() }()
-	body := `{"revision":"1","body":"` + strings.Repeat("history ", 64) + `"}`
-	recorded := formatHubTime(time.Now().UTC())
-	for index := range history {
-		if _, err := statement.ExecContext(t.Context(), newNativeID("evt"), f.project.OrganizationID, f.project.ID, issue.WorkItemID, sequence+int64(index)+1, body, recorded); err != nil {
+	content := eventstore.NewContent(f.service.config.RunDetails)
+	now := f.service.config.now().UTC()
+	for first := 0; first < history; first += 200 {
+		batch := make([]eventstore.Event, 0, min(200, history-first))
+		for range min(200, history-first) {
+			value := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID,
+				AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, RecordedAt: now,
+				Actor: tracker.Actor{Kind: "human", PrincipalID: "history"}, Data: tracker.CollaborationData{Revision: 1, ReasonDetail: strings.Repeat("history ", 64)}}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch = append(batch, event)
+		}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, event := range batch {
+				if _, err := w.AppendEvent(t.Context(), event); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	var stored int
+	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='issue.edited'`, f.project.OrganizationID, f.project.ID, issue.WorkItemID).Scan(&stored); err != nil {
 		t.Fatal(err)
+	}
+	if stored != history {
+		t.Fatalf("history events=%d, want %d", stored, history)
 	}
 }
 
 func (f *writeLoadFixture) heartbeat(t *testing.T, runner runnerFixture) int {
 	t.Helper()
 	return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential,
-		map[string]any{"backend_isolation": runner.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "provider_reports": []any{capacityReport(time.Now().UTC())}}).Code
+		map[string]any{"backend_isolation": runner.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "provider_reports": []any{capacityReport(f.now)}}).Code
 }
 
 func (f *writeLoadFixture) turnEvents(t *testing.T, session writeLoadSession, events ...map[string]any) *responseRecorderCode {
@@ -195,9 +241,12 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 					failures = append(failures, failure)
 				}
 			}
-			var heartbeats, workers sync.WaitGroup
+			var heartbeats, workers, ready sync.WaitGroup
+			ready.Add(len(f.runners))
+			start := make(chan struct{})
 			for _, runner := range f.runners {
 				heartbeats.Go(func() {
+					first := true
 					for ctx.Err() == nil {
 						started := time.Now()
 						code := f.heartbeat(t, runner)
@@ -206,12 +255,18 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 							failure = fmt.Sprintf("heartbeat %d", code)
 						}
 						record("heartbeat", time.Since(started), failure)
-						time.Sleep(500 * time.Millisecond)
+						if first {
+							ready.Done()
+							<-start
+							first = false
+						}
 					}
 				})
 			}
+			ready.Wait()
 			for index, session := range f.sessions {
 				workers.Go(func() {
+					<-start
 					chunk := strings.Repeat("output ", 64)
 					for range turnBatches {
 						started := time.Now()
@@ -223,13 +278,16 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 							failure = fmt.Sprintf("turn-events %d %s", response.Code, response.Body)
 						}
 						record("turn-events", time.Since(started), failure)
-						time.Sleep(200 * time.Millisecond)
 					}
 				})
 			}
+			close(start)
 			workers.Wait()
 			stop()
 			heartbeats.Wait()
+			if len(latencies["turn-events"]) != test.sessions*turnBatches {
+				t.Fatalf("turn-event requests=%d, want %d", len(latencies["turn-events"]), test.sessions*turnBatches)
+			}
 			for _, route := range []string{"heartbeat", "turn-events"} {
 				values := latencies[route]
 				if len(values) == 0 {
@@ -253,43 +311,36 @@ func TestRunnerHostSummaryWriteCost(t *testing.T) {
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
-	for _, pragma := range []string{"PRAGMA synchronous=NORMAL", "PRAGMA wal_autocheckpoint=0"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), pragma); err != nil {
-			t.Fatal(err)
-		}
-	}
-	now := time.Now().UTC()
-	f.service.config.now = func() time.Time { return now }
+	now := f.now
 	for _, r := range f.runners {
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation}), http.StatusOK)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation}), http.StatusOK)
 	}
 	f.service.tokenUseWork.Wait()
-	changes := func() int64 {
-		t.Helper()
-		var count int64
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		return count
-	}
 	measure := func(name string, summary *hostmetrics.Summary) int64 {
 		t.Helper()
-		before := changes()
+		probe := new(writeLoadRowProbe)
+		ctx := context.WithValue(t.Context(), writeLoadProbeKey{}, probe)
 		var latencies []time.Duration
 		for round := range 120 {
 			for _, r := range f.runners {
-				body := map[string]any{"capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation}
+				body := map[string]any{"display_name": "runner", "capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation}
 				if summary != nil && round == 0 {
 					body["host_metrics"] = []hostmetrics.Summary{*summary}
 				}
 				started := time.Now()
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, body), http.StatusOK)
+				request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, body).WithContext(ctx)
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, request)
+				requireNativeStatus(t, response, http.StatusOK)
 				latencies = append(latencies, time.Since(started))
 			}
 		}
-		writes := changes() - before
+		writes, err := probe.snapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
 		slices.Sort(latencies)
-		t.Logf("runners=10 mode=%s requests=1200 sqlite_row_writes=%d heartbeat_p50=%s heartbeat_p95=%s", name, writes, latencies[len(latencies)/2], latencies[len(latencies)*95/100])
+		t.Logf("runners=10 mode=%s requests=1200 postgres_row_writes=%d heartbeat_p50=%s heartbeat_p95=%s", name, writes, latencies[len(latencies)/2], latencies[len(latencies)*95/100])
 		return writes
 	}
 	baseline := measure("before hourly summary", nil)
@@ -304,4 +355,53 @@ func TestRunnerHostSummaryWriteCost(t *testing.T) {
 	if hourly-baseline != 10 || restart-baseline != 10 || idle != baseline || retry != baseline {
 		t.Fatalf("writes baseline=%d hourly=%d idle=%d retry=%d restart=%d", baseline, hourly, idle, retry, restart)
 	}
+}
+
+type writeLoadProbeKey struct{}
+type writeLoadProbeReadingKey struct{}
+type writeLoadCommitCountKey struct{}
+type writeLoadRowProbe struct {
+	mu      sync.Mutex
+	rows    int64
+	commits int
+	err     error
+}
+
+func (p *writeLoadRowProbe) snapshot() (int64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.commits == 0 {
+		return 0, errors.Join(p.err, errors.New("no PostgreSQL transaction commits observed"))
+	}
+	return p.rows, p.err
+}
+
+type writeLoadTrace struct{}
+
+func (writeLoadTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	p, ok := ctx.Value(writeLoadProbeKey{}).(*writeLoadRowProbe)
+	if !ok || ctx.Value(writeLoadProbeReadingKey{}) == true || !strings.EqualFold(strings.TrimSpace(data.SQL), "COMMIT") || conn.PgConn().TxStatus() != 'T' {
+		return ctx
+	}
+	var rows int64
+	err := conn.QueryRow(context.WithValue(ctx, writeLoadProbeReadingKey{}, true), `SELECT COALESCE(sum(n_tup_ins+n_tup_upd+n_tup_del),0)::bigint FROM pg_stat_xact_user_tables WHERE schemaname='public'`).Scan(&rows)
+	if err != nil {
+		p.mu.Lock()
+		p.err = errors.Join(p.err, err)
+		p.mu.Unlock()
+		return ctx
+	}
+	return context.WithValue(ctx, writeLoadCommitCountKey{}, rows)
+}
+
+func (writeLoadTrace) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	rows, ok := ctx.Value(writeLoadCommitCountKey{}).(int64)
+	if !ok || data.Err != nil || data.CommandTag.String() != "COMMIT" {
+		return
+	}
+	p := ctx.Value(writeLoadProbeKey{}).(*writeLoadRowProbe)
+	p.mu.Lock()
+	p.rows += rows
+	p.commits++
+	p.mu.Unlock()
 }

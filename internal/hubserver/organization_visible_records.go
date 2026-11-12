@@ -64,7 +64,7 @@ func (s *Service) organizationVisibleMutation(ctx context.Context, scope nativeS
 		}
 		if scope.credential.Hosted != nil {
 			audit := projectRecordActor(scope).Audit
-			audit.Event, audit.Route, audit.Status = "action", operation, http.StatusOK
+			audit.Event, audit.Route, audit.Status = "action", strings.Replace(operation, "/organizations/"+string(scope.organization)+"/", "/organizations/:organization/", 1), http.StatusOK
 			audit.RecordedAt = s.config.now()
 			audit.RecordedAtNS = audit.RecordedAt.UnixNano()
 			if _, err := w.RecordAccessAudit(ctx, audit); err != nil {

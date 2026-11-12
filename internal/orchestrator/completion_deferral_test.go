@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -22,15 +21,26 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type completionLaneObservationConnector struct {
+	*completionDeferralConnector
+	laneErr error
+}
+
+func (c *completionLaneObservationConnector) CurrentLaneEntry(context.Context, connector.Issue) (connector.IssueStateTransition, bool, error) {
+	return connector.IssueStateTransition{}, false, c.laneErr
+}
+
 func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		fenceErr error
-		retired  bool
-		rejected bool
+		name          string
+		fenceErr      error
+		retired       bool
+		rejected      bool
+		canonicalRead bool
 	}{
+		{name: "canonical lane read unavailable", fenceErr: errors.New("canonical lane history unavailable"), canonicalRead: true},
 		{name: "503", fenceErr: completionDeferralAvailabilityError()},
 		{name: "403", fenceErr: &github.StatusError{StatusCode: 403, Err: github.ErrAuthenticationFailed}},
 		{name: "primary rate limit", fenceErr: &github.StatusError{StatusCode: 429, Err: github.ErrRateLimited}},
@@ -58,7 +68,12 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			}
 			runtimeStore := &completionAttemptRecorder{}
 			cfg := completionDeferralConfig()
-			orch := Orchestrator{cfg: cfg, connector: tracker, workAttempts: runtimeStore, now: func() time.Time { return now }}
+			var source connector.Connector = tracker
+			if tt.canonicalRead {
+				tracker.firstErr = nil
+				source = &completionLaneObservationConnector{completionDeferralConnector: tracker, laneErr: tt.fenceErr}
+			}
+			orch := Orchestrator{cfg: cfg, connector: source, workAttempts: runtimeStore, now: func() time.Time { return now }}
 			state := newState(cfg)
 			attemptID := startCompletionDeferralAttempt(t, runtimeStore, issue, now)
 			state.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
@@ -144,10 +159,6 @@ func (e completionDeferralRejection) NativeTerminalFailure() tracker.NativeTermi
 }
 
 func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -216,7 +227,6 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 8, 17, 19, 30, 0, 0, time.UTC)
-			dbPath := filepath.Join(t.TempDir(), "detent.db")
 			issue := completionDeferralIssue("issue-restart", "In Progress")
 			tracker := &completionDeferralConnector{
 				backendCapacityTestConnector: backendCapacityTestConnector{},
@@ -234,7 +244,7 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 				}}
 				trackerOwner = nativeTracker
 			}
-			initialStore := openCompletionDeferralStoreWithoutCleanup(t, dbPath)
+			initialStore := newRuntimeFixture()
 			attemptID := startCompletionDeferralAttempt(t, initialStore, issue, now)
 			initialOrch := Orchestrator{cfg: cfg, connector: trackerOwner, workAttempts: initialStore, now: func() time.Time { return now }}
 			var initialAuthority *completionRestartScheduling
@@ -289,11 +299,8 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			} else {
 				initialOrch.handleRunResult(t.Context(), &initialState, event)
 			}
-			if err := initialStore.Close(); err != nil {
-				t.Fatalf("Close(initial store) error = %v", err)
-			}
 
-			restartedStore := openCompletionDeferralStore(t, dbPath)
+			restartedStore := initialStore
 			recoveredIssue := cloneIssue(issue)
 			recoveredIssue.State = tt.recoveredState
 			tracker.setIssue(recoveredIssue)
@@ -497,8 +504,7 @@ func TestNativeCompletionHandoffSurvivesRestart(t *testing.T) {
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "In Review"}},
 				{Name: "In Review"}, {Name: "Done", Terminal: true},
 			}}
-			dbPath := filepath.Join(t.TempDir(), "detent.db")
-			initialStore := openCompletionDeferralStoreWithoutCleanup(t, dbPath)
+			initialStore := newRuntimeFixture()
 			attemptID := startCompletionDeferralAttempt(t, initialStore, issue, now)
 			other := connector.NewIssue()
 			other.ID = "unrelated-item"
@@ -545,10 +551,7 @@ func TestNativeCompletionHandoffSurvivesRestart(t *testing.T) {
 			if receipt.Status != store.WorkAttemptStatusActive || !receipt.CompletedAt.IsZero() || receipt.Phase != deferredCompletionPhase {
 				t.Fatalf("still-deferable receipt was terminalized: %+v", receipt)
 			}
-			if err := initialStore.Close(); err != nil {
-				t.Fatal(err)
-			}
-			restartedStore := openCompletionDeferralStore(t, dbPath)
+			restartedStore := initialStore
 			native.beforeStates, native.statesErr = nil, nil
 			restored := &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}}
 			restored.execution = &completionRestartExecution{owner: restored}
@@ -773,26 +776,6 @@ func startCompletionDeferralAttempt(t *testing.T, runtimeStore store.WorkAttempt
 	return attemptID
 }
 
-func openCompletionDeferralStore(t *testing.T, path string) store.Store {
-	t.Helper()
-	runtimeStore := openCompletionDeferralStoreWithoutCleanup(t, path)
-	t.Cleanup(func() {
-		if err := runtimeStore.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-	})
-	return runtimeStore
-}
-
-func openCompletionDeferralStoreWithoutCleanup(t *testing.T, path string) store.Store {
-	t.Helper()
-	runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: path})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	return runtimeStore
-}
-
 func TestCompletionFenceUnchangedOrUnknownLaneDefers(t *testing.T) {
 	t.Parallel()
 	for _, lane := range []string{""} {
@@ -814,10 +797,6 @@ func TestCompletionFenceUnchangedOrUnknownLaneDefers(t *testing.T) {
 }
 
 func TestCompletionFenceRateLimitDeadlineSurvivesRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name  string
@@ -834,7 +813,7 @@ func TestCompletionFenceRateLimitDeadlineSurvivesRestart(t *testing.T) {
 			issue := completionDeferralIssue("quota", "In Progress")
 			cfg := completionDeferralConfig()
 			tracker := &completionDeferralConnector{issue: issue, firstErr: &github.StatusError{Err: github.ErrRateLimited, StatusCode: 429, RetryAfter: tt.after, ResetAt: now.Add(tt.reset)}}
-			backend := openCompletionDeferralStore(t, filepath.Join(t.TempDir(), "detent.db"))
+			backend := newRuntimeFixture()
 			id := startCompletionDeferralAttempt(t, backend, issue, now)
 			orch := Orchestrator{cfg: cfg, connector: tracker, workAttempts: backend, now: func() time.Time { return now }}
 			state := newState(cfg)

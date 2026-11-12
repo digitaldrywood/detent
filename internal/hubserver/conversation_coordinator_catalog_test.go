@@ -23,9 +23,6 @@ import (
 )
 
 func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	counts := map[string]int{}
 	for _, role := range []struct{ name, role, grant string }{
 		{"owner", "owner", "write"}, {"admin", "admin", "write"}, {"member", "member", "write"}, {"viewer", "viewer", "read"},
@@ -98,10 +95,15 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 				t.Fatalf("stale confirmation did not name the conflict: %s", response.Body.String())
 			}
 			propose("1")
-			messages, err := f.service.conversations.store.listMessages(t.Context(), f.service.database.db, record.ID, 0, 100)
-			if err != nil {
-				t.Fatal(err)
+			response = f.request(t, user, http.MethodGet, f.base+"/conversations/"+record.ID+"/messages?limit=100", nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page struct {
+				Messages []struct {
+					Data json.RawMessage `json:"data"`
+				} `json:"messages"`
 			}
+			decodeHubResponse(t, response, &page)
+			messages := page.Messages
 			var action chat.Action
 			for _, message := range messages {
 				var data struct {

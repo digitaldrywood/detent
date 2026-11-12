@@ -123,10 +123,6 @@ func TestCompletionRebaseProgress(t *testing.T) {
 }
 
 func TestUnfinishedSessionsRetainConfiguredDispatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, lane := range []string{"In Progress", "Rework"} {
 		t.Run(lane, func(t *testing.T) {

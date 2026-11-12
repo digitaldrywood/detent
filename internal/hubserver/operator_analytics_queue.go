@@ -2,9 +2,14 @@ package hubserver
 
 import (
 	"context"
-	"strings"
+	"sort"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -19,65 +24,155 @@ type nativeAnalyticsCapacityWait struct {
 	Partial              bool      `json:"partial"`
 }
 
-func projectNativeAnalyticsCapacityWait(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
-	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_events")
-	if prepareErr != nil {
-		return prepareErr
-	}
-	if _, projected := q.(analyticsRollupReader); projected {
-		return projectAnalyticsCapacityRollups(ctx, q, scope, out)
-	}
-	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
-	statement := `SELECT c.data_json,c.recorded_at,
-coalesce((SELECT p.data_json FROM report_events p
- WHERE p.organization_id=c.organization_id AND p.project_id=c.project_id AND p.work_item_id=c.work_item_id AND p.sequence<c.sequence
- ORDER BY p.sequence DESC LIMIT 1),'null'),
-coalesce((SELECT p.type FROM report_events p
- WHERE p.organization_id=c.organization_id AND p.project_id=c.project_id AND p.work_item_id=c.work_item_id AND p.sequence<c.sequence
- ORDER BY p.sequence DESC LIMIT 1),''),
-coalesce((SELECT p.recorded_at FROM report_events p
- WHERE p.organization_id=c.organization_id AND p.project_id=c.project_id AND p.work_item_id=c.work_item_id AND p.sequence<c.sequence
- ORDER BY p.sequence DESC LIMIT 1),'')
-FROM report_events c WHERE c.organization_id=? AND c.project_id=? AND c.type='scheduler.decision'
-AND c.scheduler_source='native_claim' AND c.scheduler_outcome='claimed'
-AND julianday(c.recorded_at)>=julianday(?) AND julianday(c.recorded_at)<julianday(?)
-ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
+func nativeAnalyticsCapacityInterval(prior, claim *tracker.NativeSchedulerDecision, start, finish time.Time) bool {
+	return prior != nil && claim != nil && prior.Source == "native_provider_capacity" && prior.Outcome == "skipped" && claim.Source == "native_claim" && claim.Outcome == "claimed" && prior.RunnerID == claim.RunnerID && prior.WorkItemRevision > 0 && prior.WorkItemRevision == claim.WorkItemRevision && prior.At.Equal(start) && claim.At.Equal(finish) && finish.After(start)
+}
 
-	visibility, visibilityArgs := reportsIssueClause(ctx, "c.work_item_id")
-	statement = strings.Replace(statement, "ORDER BY c.recorded_at,c.id", visibility+" ORDER BY c.recorded_at,c.id", 1)
-	args := append([]any{scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To)}, visibilityArgs...)
-	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", statement, args...)
+type nativeAnalyticsSchedulerPopulation struct {
+	Events                  []tracker.CollaborationEvent
+	Prior                   map[string]tracker.CollaborationEvent
+	Partial                 bool
+	ContinuationUnavailable bool
+}
+
+func (s *Service) readAnalyticsSchedulerPopulationTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, name string) (nativeAnalyticsSchedulerPopulation, error) {
+	out := nativeAnalyticsSchedulerPopulation{Events: []tracker.CollaborationEvent{}, Prior: map[string]tracker.CollaborationEvent{}}
+	after, cursor, key, err := s.analyticsSchedulerCursor(ctx, scope, w, name)
+	if err != nil {
+		return out, err
+	}
+	defer clear(key)
+	outcome := "skipped"
+	if name == "capacity" {
+		outcome = "claimed"
+	}
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return out, workItemStorageUnavailable()
+	}
+	var page eventstore.AnalyticsSchedulerPage
+	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
+		if err != nil {
+			return err
+		}
+		owner, ok := r.(eventstore.AnalyticsSchedulerReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		page, err = owner.ReadAnalyticsSchedulerPage(ctx, eventstore.AnalyticsSchedulerQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, Outcome: outcome, After: after, Limit: maxAnalyticsPopulation})
+		return err
+	})
+	if err != nil {
+		return out, err
+	}
+	out.Partial = page.Partial
+	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	for _, row := range page.Events {
+		if row.OrganizationID != scope.organization || row.ProjectID != scope.project || row.Type != "scheduler.decision" || row.SchedulerOutcome != outcome {
+			return out, artifact.ErrIntegrity
+		}
+		if !analyticsCohortAllows(ctx, row.WorkItemID) {
+			continue
+		}
+		event, err := content.Event(ctx, row)
+		if err != nil {
+			return out, err
+		}
+		out.Events = append(out.Events, event)
+		if prior, ok := page.Prior[row.ID]; ok && prior.Type == "scheduler.decision" {
+			if prior.OrganizationID != scope.organization || prior.ProjectID != scope.project || prior.WorkItemID != row.WorkItemID || prior.Sequence >= row.Sequence {
+				return out, artifact.ErrIntegrity
+			}
+			value, err := content.Event(ctx, prior)
+			if err != nil {
+				return out, err
+			}
+			out.Prior[row.ID] = value
+		}
+	}
+	if page.Next.ID != "" {
+		if len(key) == 0 {
+			out.Partial = true
+			out.ContinuationUnavailable = true
+		} else {
+			token, err := s.encodeAnalyticsSchedulerCursor(cursor, key, page.Next, name)
+			if err != nil {
+				return out, err
+			}
+			if paging := analyticsPagingFromContext(ctx); paging != nil {
+				paging.next[name] = token
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) projectNativeAnalyticsSkipsTenant(ctx context.Context, scope nativeScope, out *nativeAnalyticsProject) error {
+	population, err := s.readAnalyticsSchedulerPopulationTenant(ctx, scope, out.Window, "decisions")
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	type interval struct{ claimRaw, claimAt, priorRaw, priorType, priorAt string }
-	var intervals []interval
-	for rows.Next() {
-		var sample interval
-		if err := rows.Scan(&sample.claimRaw, &sample.claimAt, &sample.priorRaw, &sample.priorType, &sample.priorAt); err != nil {
-			return err
-		}
-		intervals = append(intervals, sample)
+	out.Partial = out.Partial || population.Partial
+	if population.ContinuationUnavailable {
+		out.Unavailable = append(out.Unavailable, "decisions_continuation_requires_secret_keys")
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	skips := map[string]nativeAnalyticsSkip{}
+	for _, event := range population.Events {
+		decision := event.Data.Decision
+		if decision == nil {
+			return artifact.ErrIntegrity
+		}
+		key := decision.Source + "\x00" + decision.Reason
+		value := skips[key]
+		value.Source = decision.Source
+		value.Reason = decision.Reason
+		value.Count++
+		skips[key] = value
+		out.DecisionsObserved++
+		if event.RecordedAt.After(out.SourceAt) {
+			out.SourceAt = event.RecordedAt
+		}
+	}
+	for _, value := range skips {
+		out.SkipReasons = append(out.SkipReasons, value)
+	}
+	sort.Slice(out.SkipReasons, func(i, j int) bool {
+		a, b := out.SkipReasons[i], out.SkipReasons[j]
+		if a.Source != b.Source {
+			return a.Source < b.Source
+		}
+		return a.Reason < b.Reason
+	})
+	return nil
+}
+
+func (s *Service) projectNativeAnalyticsCapacityWaitTenant(ctx context.Context, scope nativeScope, out *nativeAnalyticsProject) error {
+	population, err := s.readAnalyticsSchedulerPopulationTenant(ctx, scope, out.Window, "capacity")
+	if err != nil {
 		return err
 	}
-	for _, sample := range intervals {
-		if queue.ClaimsObserved == maxAnalyticsPopulation {
-			out.Partial = true
-			break
+	out.Partial = out.Partial || population.Partial
+	if population.ContinuationUnavailable {
+		out.Unavailable = append(out.Unavailable, "capacity_continuation_requires_secret_keys")
+	}
+	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
+	for _, event := range population.Events {
+		claim := event.Data.Decision
+		if claim == nil {
+			return artifact.ErrIntegrity
 		}
-		claimRaw, claimAt, priorRaw, priorType, priorAt := sample.claimRaw, sample.claimAt, sample.priorRaw, sample.priorType, sample.priorAt
+		if claim.Source != "native_claim" {
+			continue
+		}
 		queue.ClaimsObserved++
-		var claim, prior tracker.CollaborationData
-		finish, finishErr := parseTimeValue(claimAt)
-		start, startErr := parseTimeValue(priorAt)
-		if finishErr == nil && finish.After(queue.SourceAt) {
+		finish := event.RecordedAt
+		if finish.After(queue.SourceAt) {
 			queue.SourceAt = finish
 		}
-		if priorType != "scheduler.decision" || finishErr != nil || startErr != nil || decodeRunHistory(ctx, q, claimRaw, &claim) != nil || decodeRunHistory(ctx, q, priorRaw, &prior) != nil || !nativeAnalyticsCapacityInterval(prior.Decision, claim.Decision, start, finish) {
+		prior, ok := population.Prior[event.ID]
+		start := prior.RecordedAt
+		if !ok || !nativeAnalyticsCapacityInterval(prior.Data.Decision, claim, start, finish) {
 			queue.IntervalsUnavailable++
 			continue
 		}
@@ -85,15 +180,12 @@ ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
 		queue.IntervalsObserved++
 		queue.Seconds += finish.Sub(start).Seconds()
 		for i := range out.Digest {
-			b := &out.Digest[i]
-			from, to := maxTime(start, b.From), minTime(finish, b.To)
+			bucket := &out.Digest[i]
+			from, to := maxTime(start, bucket.From), minTime(finish, bucket.To)
 			if to.After(from) {
-				b.ProviderCapacityWaitSeconds += to.Sub(from).Seconds()
+				bucket.ProviderCapacityWaitSeconds += to.Sub(from).Seconds()
 			}
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
 	}
 	out.ProviderCapacityWait = queue
 	if queue.SourceAt.After(out.SourceAt) {
@@ -103,8 +195,4 @@ ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
 		out.Unavailable = append(out.Unavailable, "provider_capacity_wait")
 	}
 	return nil
-}
-
-func nativeAnalyticsCapacityInterval(prior, claim *tracker.NativeSchedulerDecision, start, finish time.Time) bool {
-	return prior != nil && claim != nil && prior.Source == "native_provider_capacity" && prior.Outcome == "skipped" && claim.Source == "native_claim" && claim.Outcome == "claimed" && prior.RunnerID == claim.RunnerID && prior.WorkItemRevision > 0 && prior.WorkItemRevision == claim.WorkItemRevision && prior.At.Equal(start) && claim.At.Equal(finish) && finish.After(start)
 }

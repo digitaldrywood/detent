@@ -18,16 +18,20 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -184,6 +188,183 @@ func seedHistory(t *testing.T, r *postgres.Repository, org tracker.OrganizationI
 }
 
 func TestEventChangeTenantRoundTrip(t *testing.T) {
+	t.Run("frozen version landing survives later current source and replay", func(t *testing.T) {
+		admin := template.Database(t)
+		repository, _ := repositoryFor(t, admin, smallPool())
+		for _, org := range []tracker.OrganizationID{"org_frozen_first", "org_frozen_second"} {
+			seedRepository(t, repository, org)
+			f := seedHistory(t, repository, org, "first")
+			value, err := f.content.Change(t.Context(), f.change)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value.CurrentVersion = f.version.ID
+			value.Landed = &tracker.ChangeLanding{VersionID: f.version.ID, HeadSHA: f.version.HeadSHA, MergeSHA: strings.Repeat("a", 40), BaseRef: "main", Method: "merge", Actor: historyActor(), LandedAt: historyAt().Add(time.Minute), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 1, IssueBody: "Original frozen contract", Criteria: []string{"Original criterion"}}}
+			prepared, err := f.content.PrepareChange(t.Context(), org, historyJSON(t, value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			frozen, err := eventstore.VersionLandingFromChange(prepared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error {
+				if _, err := w.UpdateChange(t.Context(), prepared); err != nil {
+					return err
+				}
+				return w.RecordVersionLanding(t.Context(), frozen)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			later, err := f.content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: "version_later", ChangeID: f.change.ID, Number: 2, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "later-head", BaseSHA: "base", Repository: "owner/repository", PolicyID: f.version.PolicyRevisionID}, Actor: historyActor(), CreatedAt: historyAt().Add(2 * time.Minute)}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			laterLanding := tracker.ChangeLanding{VersionID: later.ID, HeadSHA: later.HeadSHA, MergeSHA: strings.Repeat("b", 40), BaseRef: "main", Method: "merge", Actor: historyActor(), LandedAt: historyAt().Add(3 * time.Minute), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 2, IssueBody: "Later frozen contract", Criteria: []string{"Later criterion"}}}
+			laterFrozen, err := f.content.PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", ChangeID: f.change.ID, VersionID: later.ID}, laterLanding)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value.CurrentVersion = later.ID
+			value.Landed = &laterLanding
+			value.Revision = 2
+			value.UpdatedAt = historyAt().Add(3 * time.Minute)
+			next, err := f.content.PrepareChange(t.Context(), org, historyJSON(t, value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error {
+				if _, err := w.CreateVersion(t.Context(), later); err != nil {
+					return err
+				}
+				if _, err := w.UpdateChange(t.Context(), next); err != nil {
+					return err
+				}
+				return w.RecordVersionLanding(t.Context(), laterFrozen)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var firstRow, lastRow eventstore.VersionLanding
+			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
+				owner := r.(eventstore.VersionLandingReader)
+				var err error
+				firstRow, err = owner.VersionLanding(t.Context(), f.change.ID, f.version.ID)
+				if err != nil {
+					return err
+				}
+				lastRow, err = owner.VersionLanding(t.Context(), f.change.ID, later.ID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			probe := reportObjectReadProbe{DetailStore: f.objects, check: func() {
+				if held := repository.Stats().AcquiredConns(); held != 0 {
+					t.Fatalf("frozen landing object read held %d database connections", held)
+				}
+			}}
+			content := eventstore.NewContent(probe)
+			original, err := content.VersionLanding(t.Context(), firstRow)
+			if err != nil || original.VersionID != f.version.ID || original.Quality == nil || original.Quality.IssueBody != "Original frozen contract" || len(original.Quality.Criteria) != 1 || original.Quality.Criteria[0] != "Original criterion" {
+				t.Fatalf("original version landing=%+v error=%v", original, err)
+			}
+			newer, err := content.VersionLanding(t.Context(), lastRow)
+			if err != nil || newer.VersionID != later.ID || newer.Quality == nil || newer.Quality.IssueBody != "Later frozen contract" {
+				t.Fatalf("later version landing=%+v error=%v", newer, err)
+			}
+			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error {
+				replayed, err := w.CreateVersion(t.Context(), f.version)
+				if err != nil {
+					return err
+				}
+				if replayed.FrozenLanding == nil || replayed.FrozenLanding.PayloadObjectKey != firstRow.PayloadObjectKey {
+					t.Fatalf("version replay discarded frozen metadata: %+v", replayed)
+				}
+				return w.RecordVersionLanding(t.Context(), firstRow)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			unlanded, err := f.content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: "version_unlanded", ChangeID: f.change.ID, Number: 3, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "unlanded-head", BaseSHA: "base", Repository: "owner/repository", PolicyID: f.version.PolicyRevisionID}, Actor: historyActor(), CreatedAt: historyAt().Add(4 * time.Minute)}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			unlanded.LandingHistoryKnown = false
+			if err := repository.WriteRecords(t.Context(), org, corestore.Background, func(w eventstore.Writer) error {
+				if _, err := w.CreateVersion(t.Context(), unlanded); err != nil {
+					return err
+				}
+				for range 2 {
+					if err := w.ConfirmVersionUnlanded(t.Context(), unlanded.ChangeID, unlanded.ID, unlanded.HeadSHA); err != nil {
+						return err
+					}
+				}
+				stored, err := w.Version(t.Context(), unlanded.ChangeID, unlanded.ID)
+				if err != nil {
+					return err
+				}
+				if !stored.LandingHistoryKnown || stored.FrozenLanding != nil {
+					t.Fatalf("confirmed unlanded history=%+v", stored)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var historicalHead, historicalTail, currentPage eventstore.AnalyticsLandingPage
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				owner := r.(eventstore.AnalyticsLandingReader)
+				query := eventstore.AnalyticsLandingQuery{ProjectID: "prj_first", Principal: "example", From: historyAt(), To: historyAt().Add(time.Hour), Limit: 1, AllVersions: true}
+				var err error
+				historicalHead, err = owner.ReadAnalyticsLandingPage(t.Context(), query)
+				if err != nil {
+					return err
+				}
+				query.After = historicalHead.Next
+				historicalTail, err = owner.ReadAnalyticsLandingPage(t.Context(), query)
+				if err != nil {
+					return err
+				}
+				query.AllVersions = false
+				query.After = eventstore.AnalyticsLandingCursor{}
+				currentPage, err = owner.ReadAnalyticsLandingPage(t.Context(), query)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(historicalHead.Items) != 1 || historicalHead.Items[0].VersionID != f.version.ID || historicalHead.Next.VersionID != f.version.ID || !historicalHead.Partial || historicalHead.HistoryUnknown || len(historicalTail.Items) != 1 || historicalTail.Items[0].VersionID != later.ID || historicalTail.Next.ChangeID != "" || !historicalTail.Partial {
+				t.Fatalf("historical landed population head=%+v tail=%+v", historicalHead, historicalTail)
+			}
+			if len(currentPage.Items) != 1 || currentPage.Items[0].VersionID != later.ID || currentPage.Partial || currentPage.Next.ChangeID != "" {
+				t.Fatalf("current landing population=%+v", currentPage)
+			}
+			changed := firstRow
+			changed.MergeSHA = strings.Repeat("c", 40)
+			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { return w.RecordVersionLanding(t.Context(), changed) }); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Fatalf("frozen landing replacement=%v", err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_versions(organization_id,id,change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id) SELECT organization_id,'version_wrong_project',change_id,9999,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,'prj_second' FROM change_versions WHERE organization_id=$1 AND id=$2`, org, f.version.ID); err == nil {
+				t.Fatal("version accepted mismatched project")
+			} else {
+				var failure *pgconn.PgError
+				if !errors.As(err, &failure) || failure.Code != "23503" || failure.ConstraintName != "change_versions_project_identity" {
+					t.Fatalf("version project identity=%v", err)
+				}
+			}
+			for _, statement := range []string{`UPDATE change_versions SET landed_merge_sha=repeat('c',40) WHERE organization_id=$1 AND id=$2`, `UPDATE change_versions SET landing_history_known=false WHERE organization_id=$1 AND id=$2`, `UPDATE change_versions SET project_id='prj_second' WHERE organization_id=$1 AND id=$2`} {
+				if _, err := admin.ExecContext(t.Context(), statement, org, f.version.ID); err == nil {
+					t.Fatal("frozen landing projection accepted mutation")
+				} else {
+					var failure *pgconn.PgError
+					if !errors.As(err, &failure) || failure.Code != "23514" {
+						t.Fatalf("frozen landing mutation=%v", err)
+					}
+				}
+			}
+			tampered := firstRow
+			tampered.VersionID = later.ID
+			if _, err := content.VersionLanding(t.Context(), tampered); !errors.Is(err, artifact.ErrIntegrity) {
+				t.Fatalf("frozen landing identity mismatch=%v", err)
+			}
+		}
+	})
 	r, _ := repositoryFor(t, template.Database(t), smallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedRepository(t, r, org)
@@ -335,6 +516,401 @@ func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
 }
 
 func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
+	t.Run("analytics workflow and evidence seek before residuals", func(t *testing.T) {
+		admin := template.Database(t)
+		original, pool := repositoryFor(t, admin, smallPool())
+		if err := original.Close(); err != nil {
+			t.Fatal(err)
+		}
+		capture := &analyticsQualityQueryCapture{}
+		observed := tracedFeaturePool(t, pool, capture)
+		repository, err := postgres.NewRepository(t.Context(), observed, smallPool())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := repository.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		runtime, err := postgres.NewRuntime(t.Context(), observed, observed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, org := range []tracker.OrganizationID{"org_quality_first", "org_quality_second"} {
+			seedRepository(t, repository, org)
+			f := seedHistory(t, repository, org, "analytics_quality")
+			base := historyAt()
+			for _, statement := range []string{
+				`INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,from_state,to_state,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_first','wi_first_1','workflow-'||lpad(n::text,4,'0'),n+2,'workflow.transitioned',1,'human','example','Todo','In Progress',$2,'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1 FROM generate_series(0,1000)n`,
+				`INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_first','wi_first_1','run-noise-'||lpad(n::text,5,'0'),n+1003,'run.observed',1,'runner','example',$2,'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1 FROM generate_series(0,9999)n`,
+			} {
+				if _, err := admin.ExecContext(t.Context(), statement, org, base); err != nil {
+					t.Fatal(err)
+				}
+			}
+			review := tracker.ChangeReview{ID: "review", VersionID: f.version.ID, Actor: historyActor(), Decision: "changes_requested", CreatedAt: base.Add(time.Minute)}
+			evidence, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "review"}, historyJSON(t, review))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(quality_at,organization_id,project_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known) SELECT $4::timestamptz,$1,'prj_first',$2,n+2,$3,'review','human','example','changes_requested',$4,$5,$6,$7,$8,'human',true FROM generate_series(0,1000)n`, org, f.change.ID, f.version.ID, review.CreatedAt, evidence.PayloadObjectKey, evidence.PayloadSHA256, evidence.PayloadBytes, evidence.PayloadContentBytes); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(organization_id,project_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_first',$2,n+1003,$3,'check','human','example',$4,$5,$6,$7,$8 FROM generate_series(0,9999)n`, org, f.change.ID, f.version.ID, base, evidence.PayloadObjectKey, evidence.PayloadSHA256, evidence.PayloadBytes, evidence.PayloadContentBytes); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(quality_at,organization_id,project_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known) SELECT $4::timestamptz-interval '1 day',$1,'prj_first',$2,n+20000,$3,'review','human','example','changes_requested',$4::timestamptz-interval '1 day',$5,$6,$7,$8,'human',true FROM generate_series(0,9999)n`, org, f.change.ID, f.version.ID, base, evidence.PayloadObjectKey, evidence.PayloadSHA256, evidence.PayloadBytes, evidence.PayloadContentBytes); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,project_id,native_id,number,title) SELECT $1,'prj_second','quality-noise-'||n,n+1000,'Unrelated item' FROM generate_series(1,10000)n`, org); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_requests(organization_id,project_id,work_item_id,id,title,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_second','wi_second_1','quality-noise-change-'||n,'Unrelated change',$2,$3,$4,$5 FROM generate_series(1,10000)n`, org, f.change.PayloadObjectKey, f.change.PayloadSHA256, f.change.PayloadBytes, f.change.PayloadContentBytes); err != nil {
+				t.Fatal(err)
+			}
+			for _, table := range []string{"collaboration_events", "change_evidence", "issues", "change_requests"} {
+				if _, err := admin.ExecContext(t.Context(), "ANALYZE "+table); err != nil {
+					t.Fatal(err)
+				}
+			}
+			plan := func(family, relation string, budget float64) {
+				t.Helper()
+				capture.mu.Lock()
+				statement, args := capture.sql[family], append([]any(nil), capture.args[family]...)
+				capture.mu.Unlock()
+				if statement == "" {
+					t.Fatalf("missing %s source query", family)
+				}
+				tx, err := runtime.Begin(t.Context(), org, pgtransport.Options{ReadOnly: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(t.Context())
+				var raw []byte
+				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var plans []struct{ Plan searchPlanNode }
+				if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+					t.Fatalf("%s plan error=%v", family, err)
+				}
+				visits := float64(0)
+				indexed := false
+				var servedIndex func(searchPlanNode) bool
+				servedIndex = func(node searchPlanNode) bool {
+					if node.Index != "" && node.Loops > 0 {
+						return true
+					}
+					for _, child := range node.Plans {
+						if servedIndex(child) {
+							return true
+						}
+					}
+					return false
+				}
+				metadata := map[string]float64{}
+				var inspect func(searchPlanNode)
+				inspect = func(node searchPlanNode) {
+					if node.Relation == relation {
+						visits += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+						indexed = indexed || servedIndex(node)
+					}
+					if node.Relation == "issues" || node.Relation == "change_requests" || node.Relation == "change_versions" {
+						metadata[node.Relation] += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+					}
+					for _, child := range node.Plans {
+						inspect(child)
+					}
+				}
+				inspect(plans[0].Plan)
+				if metadata["issues"] > 1 || metadata["change_requests"] > 1 || metadata["change_versions"] > 3 {
+					t.Fatalf("%s metadata point visits=%v plan=%s", family, metadata, raw)
+				}
+				if visits > budget || !indexed {
+					t.Fatalf("%s source visits=%.0f budget=%.0f plan=%s", family, visits, budget, raw)
+				}
+			}
+			workflow := eventstore.AnalyticsWorkflowQuery{ProjectID: "prj_first", Principal: "example", From: base, To: base.Add(time.Hour), Limit: 1000}
+			readWorkflow := func() eventstore.AnalyticsWorkflowPage {
+				t.Helper()
+				var page eventstore.AnalyticsWorkflowPage
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					page, err = r.(eventstore.AnalyticsWorkflowReader).ReadAnalyticsWorkflowPage(t.Context(), workflow)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return page
+			}
+			head := readWorkflow()
+			plan("workflow", "collaboration_events", 1001)
+			if len(head.Items) != 1000 || head.Items[0].Event.ID != "workflow-0000" || head.Next.ID != "workflow-0999" || !head.Partial {
+				t.Fatalf("workflow head=%+v", head)
+			}
+			workflow.After = head.Next
+			tail := readWorkflow()
+			plan("workflow", "collaboration_events", 1001)
+			if len(tail.Items) != 1 || tail.Items[0].Event.ID != "workflow-1000" || tail.Next.ID != "" || !tail.Partial {
+				t.Fatalf("workflow tail=%+v", tail)
+			}
+			workflow.After = eventstore.AnalyticsWorkflowCursor{}
+			workflow.Principal = "unrelated"
+			hidden := readWorkflow()
+			plan("workflow", "collaboration_events", 1001)
+			if len(hidden.Items) != 0 || hidden.Next.ID != "workflow-0999" || !hidden.Partial {
+				t.Fatalf("workflow visibility residual=%+v", hidden)
+			}
+			query := eventstore.AnalyticsEvidenceQuery{ProjectID: "prj_first", Principal: "example", From: base, To: base.Add(time.Hour), Limit: 1000}
+			readEvidence := func() eventstore.AnalyticsEvidencePage {
+				t.Helper()
+				var page eventstore.AnalyticsEvidencePage
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					page, err = r.(eventstore.AnalyticsEvidenceReader).ReadAnalyticsEvidencePage(t.Context(), query)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return page
+			}
+			first := readEvidence()
+			plan("evidence", "change_evidence", 1001)
+			if len(first.Items) != 1000 || first.Items[0].Evidence.Sequence != 2 || first.Next.Sequence != 1001 || !first.Partial {
+				t.Fatalf("evidence head rows=%d next=%+v partial=%v", len(first.Items), first.Next, first.Partial)
+			}
+			query.After = first.Next
+			last := readEvidence()
+			plan("evidence", "change_evidence", 1001)
+			if len(last.Items) != 1 || last.Items[0].Evidence.Sequence != 1002 || last.Next.ChangeID != "" || !last.Partial {
+				t.Fatalf("evidence tail=%+v", last)
+			}
+			query.After = eventstore.AnalyticsEvidenceCursor{}
+			query.Principal = "unrelated"
+			invisible := readEvidence()
+			plan("evidence", "change_evidence", 1001)
+			if len(invisible.Items) != 0 || invisible.Next.Sequence != 1001 || !invisible.Partial {
+				t.Fatalf("evidence visibility residual=%+v", invisible)
+			}
+			query.Principal = "example"
+			query.After = eventstore.AnalyticsEvidenceCursor{}
+			query.From = base.Add(2 * time.Minute)
+			quiet := readEvidence()
+			plan("evidence", "change_evidence", 1001)
+			if len(quiet.Items) != 0 || quiet.Partial || quiet.Next.ChangeID != "" {
+				t.Fatalf("old evidence poisoned quiet window=%+v", quiet)
+			}
+			query.From = base
+			versions := make([]eventstore.Version, 0, 1002)
+			for number := int64(2); number <= 1003; number++ {
+				created := base.Add(30 * time.Minute)
+				if number == 1003 {
+					created = base.Add(10 * time.Second)
+				}
+				version, err := f.content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: fmt.Sprintf("asof-%04d", number), ChangeID: f.change.ID, Number: number, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: fmt.Sprintf("head-%d", number), PolicyID: f.version.PolicyRevisionID}, Actor: historyActor(), CreatedAt: created}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				versions = append(versions, version)
+			}
+			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error {
+				for _, version := range versions {
+					if _, err := w.CreateVersion(t.Context(), version); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			pendingReview := review
+			pendingReview.ID = "nonmonotonic-asof"
+			pendingEvidence, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "review", Sequence: 11003}, historyJSON(t, pendingReview))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvidence(t.Context(), pendingEvidence); return err }); err != nil {
+				t.Fatal(err)
+			}
+			query.Principal = "example"
+			query.After = eventstore.AnalyticsEvidenceCursor{At: review.CreatedAt, Sequence: 11002, ChangeID: f.change.ID}
+			pending := readEvidence()
+			if len(pending.Items) != 0 || !pending.Partial || pending.Next.Sequence != 11003 || pending.Next.VersionAfter != 1002 || pending.Next.VersionThrough != 1003 {
+				t.Fatalf("as-of version frontier=%+v", pending)
+			}
+			query.After = pending.Next
+			resolved := readEvidence()
+			if len(resolved.Items) != 0 || !resolved.Partial || resolved.Next.ChangeID != "" {
+				t.Fatalf("later-number earlier-time version was included=%+v", resolved)
+			}
+			drift, err := f.content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: "asof-drift", ChangeID: f.change.ID, Number: 1004, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "drift", PolicyID: f.version.PolicyRevisionID}, Actor: historyActor(), CreatedAt: base.Add(40 * time.Minute)}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.CreateVersion(t.Context(), drift); return err }); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.(eventstore.AnalyticsEvidenceReader).ReadAnalyticsEvidencePage(t.Context(), query)
+				return err
+			}); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Fatalf("changed version frontier error=%v", err)
+			}
+
+			discussion := tracker.ChangeDiscussion{ID: "observed-time", VersionID: f.version.ID, Actor: historyActor(), CreatedAt: base.Add(4 * time.Minute), Escape: &tracker.QualityEscape{OccurrenceID: strings.Repeat("d", 40), Kind: "revert", Cause: "missing_criterion", ObservedAt: base.Add(3 * time.Minute), EvidenceReference: "record", EvidenceQuote: "failure", BasisQuote: "contract"}}
+			escapeRow, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "discussion", Sequence: 30001}, historyJSON(t, discussion))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvidence(t.Context(), escapeRow); return err }); err != nil {
+				t.Fatal(err)
+			}
+			query.After = eventstore.AnalyticsEvidenceCursor{}
+			query.From = base.Add(2 * time.Minute)
+			for _, test := range []struct {
+				to   time.Time
+				want int
+			}{{base.Add(3 * time.Minute), 0}, {base.Add(210 * time.Second), 0}, {base.Add(5 * time.Minute), 1}} {
+				query.To = test.to
+				page := readEvidence()
+				plan("evidence", "change_evidence", 1001)
+				if len(page.Items) != test.want || page.Partial || page.Next.ChangeID != "" {
+					t.Fatalf("observed/as-of window to=%s page=%+v", test.to, page)
+				}
+				if test.want == 1 && (page.Items[0].Escape == nil || !page.Items[0].Escape.ObservedAt.Equal(base.Add(3*time.Minute))) {
+					t.Fatalf("escape used creation time=%+v", page)
+				}
+			}
+
+		}
+	})
+	t.Run("scheduler seek bounds outcomes and batches immediate predecessors", func(t *testing.T) {
+		admin := template.Database(t)
+		original, pool := repositoryFor(t, admin, smallPool())
+		if err := original.Close(); err != nil {
+			t.Fatal(err)
+		}
+		capture := &diagnosticsQueryCapture{}
+		observedPool := tracedFeaturePool(t, pool, capture)
+		repository, err := postgres.NewRepository(t.Context(), observedPool, smallPool())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := repository.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		runtime, err := postgres.NewRuntime(t.Context(), observedPool, observedPool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+		for _, org := range []tracker.OrganizationID{"org_scheduler_first", "org_scheduler_second"} {
+			seedRepository(t, repository, org)
+			for _, source := range []struct {
+				project, item, prefix, outcome string
+				count, sequence, step          int
+				at                             time.Time
+			}{{"prj_first", "wi_first_1", "skip", "skipped", 1001, 1, 2, base}, {"prj_first", "wi_first_1", "claim", "claimed", 1001, 2, 2, base.Add(time.Minute)}, {"prj_second", "wi_second_1", "other", "skipped", 10000, 1, 1, base}} {
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,scheduler_outcome,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,$2,$3,$4||'-'||lpad(n::text,4,'0'),$7::integer+n*$8::integer,'scheduler.decision',1,$5,$6,'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1 FROM generate_series(0,$9::integer-1)n`, org, source.project, source.item, source.prefix, source.outcome, source.at, source.sequence, source.step, source.count); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_first','wi_first_2','aa-workflow-'||lpad(n::text,5,'0'),n+1,'workflow.transitioned',1,$2,'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1 FROM generate_series(0,9999)n`, org, base); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), "ANALYZE collaboration_events"); err != nil {
+				t.Fatal(err)
+			}
+			read := func(query eventstore.AnalyticsSchedulerQuery) eventstore.AnalyticsSchedulerPage {
+				t.Helper()
+				var page eventstore.AnalyticsSchedulerPage
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					page, err = r.(eventstore.AnalyticsSchedulerReader).ReadAnalyticsSchedulerPage(t.Context(), query)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return page
+			}
+			plan := func(predecessor bool) {
+				t.Helper()
+				capture.mu.Lock()
+				statement, args := capture.scheduler, append([]any(nil), capture.schedulerArgs...)
+				if predecessor {
+					statement, args = capture.predecessor, append([]any(nil), capture.predecessorArgs...)
+				}
+				capture.mu.Unlock()
+				tx, err := runtime.Begin(t.Context(), org, pgtransport.Options{ReadOnly: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(t.Context())
+				var raw []byte
+				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var nodes []struct{ Plan searchPlanNode }
+				if err := json.Unmarshal(raw, &nodes); err != nil || len(nodes) != 1 {
+					t.Fatalf("scheduler plan error=%v", err)
+				}
+				visits, indexed := float64(0), false
+				var inspect func(searchPlanNode)
+				inspect = func(node searchPlanNode) {
+					if node.Relation == "collaboration_events" {
+						visits += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+						indexed = indexed || node.Index != "" && node.Loops > 0
+					}
+					for _, child := range node.Plans {
+						inspect(child)
+					}
+				}
+				inspect(nodes[0].Plan)
+				if predecessor {
+					if !indexed || visits > 1000 {
+						t.Fatalf("scheduler predecessor history visits=%.0f plan=%s", visits, raw)
+					}
+				} else if !nodes[0].Plan.usesIndex("collaboration_events_analytics_scheduler_seek") || visits > 1001 {
+					t.Fatalf("scheduler source visits=%.0f plan=%s", visits, raw)
+				}
+			}
+			query := eventstore.AnalyticsSchedulerQuery{ProjectID: "prj_first", Principal: "example", From: base, To: base.Add(time.Hour), Outcome: "skipped", Limit: 1000}
+			head := read(query)
+			plan(false)
+			if len(head.Events) != 1000 || head.Events[0].ID != "skip-0000" || head.Next.ID != "skip-0999" || head.Examined != 1001 || !head.Partial || len(head.Prior) != 0 {
+				t.Fatalf("scheduler head rows=%d examined=%d next=%+v", len(head.Events), head.Examined, head.Next)
+			}
+			query.After = head.Next
+			tail := read(query)
+			plan(false)
+			if len(tail.Events) != 1 || tail.Events[0].ID != "skip-1000" || tail.Examined != 1 || !tail.Partial || tail.Next.ID != "" {
+				t.Fatalf("scheduler tail=%+v", tail)
+			}
+			query.After = eventstore.AnalyticsSchedulerCursor{}
+			query.Principal = "unrelated"
+			hidden := read(query)
+			if len(hidden.Events) != 0 || hidden.Examined != 1001 || hidden.Next.ID != "skip-0999" || !hidden.Partial {
+				t.Fatalf("scheduler visibility residual=%+v", hidden)
+			}
+			query.Principal = "example"
+			query.Outcome = "claimed"
+			claims := read(query)
+			plan(false)
+			plan(true)
+			if len(claims.Events) != 1000 || claims.Examined != 1001 || len(claims.Prior) != 1000 || claims.Next.ID != "claim-0999" || !claims.Partial {
+				t.Fatalf("claimed population rows=%d prior=%d examined=%d next=%+v", len(claims.Events), len(claims.Prior), claims.Examined, claims.Next)
+			}
+			for _, event := range claims.Events {
+				prior, ok := claims.Prior[event.ID]
+				if !ok || prior.OrganizationID != org || prior.ProjectID != "prj_first" || prior.WorkItemID != event.WorkItemID || prior.Sequence != event.Sequence-1 || prior.ID != "skip-"+strings.TrimPrefix(event.ID, "claim-") {
+					t.Fatalf("immediate predecessor claim=%+v prior=%+v", event, prior)
+				}
+			}
+		}
+	})
 	admin := template.Database(t)
 	r, _ := repositoryFor(t, admin, smallPool())
 	attempts := make([]string, 17)
@@ -344,12 +920,40 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedRepository(t, r, org)
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events
-			(organization_id,project_id,work_item_id,id,sequence,schema_version,attempt_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+			(organization_id,project_id,work_item_id,id,sequence,schema_version,actor_kind,actor_principal_id,actor_envelope_known,actor_via_key,actor_display_name,actor_agent,run_id,landing_waiting,landing_change_id,landing_version_id,landing_head_sha,attempt_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
 			SELECT $1,'prj_first','wi_first_1','event_'||n,n,1,
+            CASE WHEN n BETWEEN 1684 AND 1700 THEN 'runner' ELSE '' END,
+            CASE WHEN n BETWEEN 1684 AND 1700 THEN 'example-runner' ELSE '' END,
+            n BETWEEN 1684 AND 1700,
+            CASE WHEN n BETWEEN 1684 AND 1700 THEN 'example-key' ELSE '' END,
+            CASE WHEN n BETWEEN 1684 AND 1700 THEN 'Example actor' ELSE '' END,
+            CASE WHEN n BETWEEN 1684 AND 1700 THEN 'example-agent' ELSE '' END,
+            CASE WHEN n BETWEEN 1684 AND 1700 THEN 'run_target' ELSE '' END,
+            n BETWEEN 1684 AND 1700,
+            CASE WHEN n BETWEEN 1684 AND 1700 THEN 'change_target' ELSE '' END,
+            CASE WHEN n BETWEEN 1684 AND 1700 THEN 'version_target' ELSE '' END,
+            CASE WHEN n BETWEEN 1684 AND 1700 THEN 'head_target' ELSE '' END,
 			CASE WHEN n<=1700 THEN 'attempt_'||((n-1)%17+1) ELSE 'unrelated_'||n END,
 			$2::timestamptz-n*interval '1 second',
 			'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1
 			FROM generate_series(1,30000) n`, org, historyAt()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET event_sequence=30000 WHERE organization_id=$1 AND project_id='prj_first' AND native_id='wi_first_1'`, org); err != nil {
+			t.Fatal(err)
+		}
+
+		f := seedHistory(t, r, org, "diagnostics-wait")
+		event, err := f.content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: "diagnostics-merge-entry", OrganizationID: org, ProjectID: "prj_first", AggregateID: "wi_first_1", Type: "workflow.transitioned", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt().Add(-2 * time.Hour), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Merging"}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET landed_version_id=$2,landed_at=$3,landed_head_sha=$4,landed_merge_sha=$5,landed_base_ref='main' WHERE organization_id=$1 AND id=$6`, org, f.version.ID, historyAt().Add(time.Hour), f.version.HeadSHA, strings.Repeat("a", 40), f.change.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -359,6 +963,41 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
+			if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+				owner, ok := reader.(eventstore.RunEventBatchReader)
+				if !ok {
+					return errors.New("batched run-event owner unavailable")
+				}
+				events, err := owner.LatestRunEvents(t.Context(), "prj_first", attempts)
+				if err != nil {
+					return err
+				}
+				if len(events) != 17 {
+					t.Fatalf("typed latest event population=%d", len(events))
+				}
+				for _, event := range events {
+					var number int
+					if _, err := fmt.Sscanf(event.AttemptID, "attempt_%d", &number); err != nil {
+						return err
+					}
+					if event.OrganizationID != org || event.ProjectID != "prj_first" || event.Sequence != int64(1683+number) || event.RunID != "run_target" || event.ActorPrincipalID != "example-runner" || event.LandingHeadSHA != "head_target" {
+						t.Fatalf("typed batch event lost source facts: %+v", event)
+					}
+				}
+				if _, err := owner.LatestRunEvents(t.Context(), "prj_first", []string{attempts[0], attempts[0]}); !errors.Is(err, corestore.ErrInvalidPage) {
+					t.Fatalf("duplicate batch identity=%v", err)
+				}
+				hidden, err := owner.LatestRunEvents(t.Context(), "prj_second", attempts)
+				if err != nil {
+					return err
+				}
+				if len(hidden) != 0 {
+					t.Fatalf("typed batch crossed project: %+v", hidden)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
 			tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
 			if err != nil {
 				t.Fatal(err)
@@ -387,6 +1026,9 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				if number < 1 || number > len(attempts) || seen[row.AttemptID] || row.OrganizationID != org || row.ProjectID != "prj_first" || row.Sequence != want || row.ID != fmt.Sprintf("event_%d", want) {
 					t.Fatalf("latest event lost sequence or scope: %+v", row)
 				}
+				if row.RunID != "run_target" || !row.ActorEnvelopeKnown || row.ActorKind != "runner" || row.ActorPrincipalID != "example-runner" || row.ActorViaKey != "example-key" || row.ActorDisplayName != "Example actor" || row.ActorAgent != "example-agent" || !row.LandingWaiting || row.LandingChangeID != "change_target" || row.LandingVersionID != "version_target" || row.LandingHeadSHA != "head_target" {
+					t.Fatalf("bounded diagnostics event lost full identity projection: %+v", row)
+				}
 				seen[row.AttemptID] = true
 			}
 			var raw []byte
@@ -412,6 +1054,63 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			t.Logf("requested=%d actual event rows visited=%.0f plan=%s", len(attempts), visited, raw)
 			if visited > float64(4*len(attempts)) {
 				t.Errorf("latest batch visited %.0f event rows for %d attempts", visited, len(attempts))
+			}
+			config := pool.Config()
+			config.MaxConns = 3
+			capture := &diagnosticsQueryCapture{QueryTracer: config.ConnConfig.Tracer}
+			config.ConnConfig.Tracer = capture
+			observedPool, err := pgxpool.NewWithConfig(t.Context(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observed, err := postgres.NewRepository(t.Context(), observedPool, smallPool())
+			if err != nil {
+				observedPool.Close()
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := observed.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			var snapshot diagnosticstore.Snapshot
+			if err := observed.ReadTenantSnapshot(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+				var err error
+				snapshot, err = reader.(diagnosticstore.Reader).DiagnosticsSnapshot(t.Context(), []tracker.ProjectID{"prj_first"}, historyAt().Add(-time.Hour), historyAt().Add(2*time.Hour), historyAt().Add(2*time.Hour), "")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.Landings) != 1 || snapshot.Landings[0].EnteredAt == nil || !snapshot.Landings[0].EnteredAt.Equal(historyAt().Add(-2*time.Hour)) || !snapshot.Landings[0].At.Equal(historyAt().Add(time.Hour)) {
+				t.Fatalf("diagnostics lost exact pre-window merge entry or landing receipt: %+v", snapshot.Landings)
+			}
+			capture.mu.Lock()
+			statement, args := capture.landing, append([]any(nil), capture.args...)
+			capture.mu.Unlock()
+			if statement == "" {
+				t.Fatal("diagnostics did not execute its landing owner query")
+			}
+			var landingPlan []byte
+			if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, args...).Scan(&landingPlan); err != nil {
+				t.Fatal(err)
+			}
+			var landingNodes []struct{ Plan searchPlanNode }
+			if err := json.Unmarshal(landingPlan, &landingNodes); err != nil || len(landingNodes) != 1 {
+				t.Fatalf("decode diagnostic landing plan: %v", err)
+			}
+			indexed := false
+			var inspect func(searchPlanNode)
+			inspect = func(node searchPlanNode) {
+				if node.Index == "collaboration_events_diagnostics_merge_entry_idx" {
+					indexed = true
+				}
+				for _, child := range node.Plans {
+					inspect(child)
+				}
+			}
+			inspect(landingNodes[0].Plan)
+			if !indexed || visits(landingNodes[0].Plan) > 4 {
+				t.Fatalf("diagnostics merge entry walks event history: %s", landingPlan)
 			}
 			params.OrganizationID = "org_foreign"
 			foreign, err := queries.RecordLatestRunEventsByAttempts(t.Context(), params)
@@ -688,6 +1387,95 @@ func TestLatestChangeUsesLinkCreationChronology(t *testing.T) {
 		if latest.ID != "a_newest" || !latest.CreatedAt.Equal(newerAt) {
 			t.Fatalf("latest change = %+v, want newest timestamp despite lexically smaller ID and over 200 links", latest)
 		}
+		t.Run(string(organization)+"/retained PR versions", func(t *testing.T) {
+			makeVersion := func(change string, number int64, external string) eventstore.Version {
+				t.Helper()
+				value := tracker.ChangeVersion{ID: fmt.Sprintf("version_%s_%d", change, number), ChangeID: change, Number: number, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: fmt.Sprintf("head_%s_%d", change, number), BaseSHA: "base", MergeBaseSHA: "merge", Repository: "https://github.com/example/repo", PolicyID: "policy"}, Actor: historyActor(), CreatedAt: newerAt.Add(time.Duration(number) * time.Second)}
+				if external != "" {
+					value.External = &tracker.ChangeExternalReference{Provider: "github", ID: external, URL: "https://github.com/example/repo/pull/" + external}
+				}
+				record, err := content.PrepareVersion(t.Context(), organization, historyJSON(t, value))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return record
+			}
+			read := func(item tracker.NativeWorkItemID, want eventstore.Version) {
+				t.Helper()
+				if err := r.ReadRecords(t.Context(), organization, corestore.Serving, func(reader eventstore.Reader) error {
+					retained, err := reader.WorkItemPullRequestVersion(t.Context(), "prj_first", item)
+					if err != nil {
+						return err
+					}
+					if retained.OrganizationID != organization || retained.ProjectID != "prj_first" || retained.WorkItemID != item || retained.ChangeID != want.ChangeID || retained.VersionID != want.ID || retained.Number != want.Number || retained.HeadSHA != want.HeadSHA || retained.Repository != want.Repository || retained.PolicyID != want.PolicyRevisionID || retained.AttemptID != want.AttemptID || retained.External != (tracker.ChangeExternalReference{Provider: want.ExternalProvider, ID: want.ExternalID, URL: want.ExternalURL}) {
+						t.Fatalf("retained PR source=%+v, want immutable version %+v", retained, want)
+					}
+					canonical, err := reader.LatestChange(t.Context(), "prj_first", item)
+					if err != nil {
+						return err
+					}
+					if item == "wi_first_1" && canonical.ID != "a_newest" {
+						t.Fatalf("retained PR changed canonical Change: %+v", canonical)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write := func(rows ...eventstore.Version) {
+				t.Helper()
+				if err := r.WriteRecords(t.Context(), organization, corestore.Serving, func(w eventstore.Writer) error {
+					for _, row := range rows {
+						if _, err := w.CreateVersion(t.Context(), row); err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			older := makeVersion("z_oldest", 303, "303")
+			write(older, makeVersion("z_oldest", 1, "1"), makeVersion("z_oldest", 304, ""), makeVersion("a_newest", 1, ""), older)
+			read("wi_first_1", older)
+			if err := r.WriteRecords(t.Context(), organization, corestore.Serving, func(w eventstore.Writer) error {
+				return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: organization, ProjectID: "prj_first", WorkItemID: "wi_first_2", ChangeID: "z_oldest"})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			read("wi_first_2", older)
+			newer := makeVersion("a_newest", 2, "21")
+			write(newer)
+			laterOlder := makeVersion("z_oldest", 305, "13")
+			write(laterOlder, makeVersion("a_newest", 3, ""))
+			read("wi_first_1", newer)
+			read("wi_first_2", laterOlder)
+			refused := makeVersion("z_oldest", 306, "99")
+			errRollback := errors.New("Example rollback")
+			if err := r.WriteRecords(t.Context(), organization, corestore.Serving, func(w eventstore.Writer) error {
+				if _, err := w.CreateVersion(t.Context(), refused); err != nil {
+					return err
+				}
+				return errRollback
+			}); !errors.Is(err, errRollback) {
+				t.Fatalf("rollback=%v", err)
+			}
+			read("wi_first_1", newer)
+			read("wi_first_2", laterOlder)
+			if err := r.ReadRecords(t.Context(), organization, corestore.Serving, func(reader eventstore.Reader) error {
+				_, err := reader.Version(t.Context(), refused.ChangeID, refused.ID)
+				if !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("rolled back version=%v", err)
+				}
+				_, err = reader.WorkItemPullRequestVersion(t.Context(), "prj_second", "wi_first_1")
+				if !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("foreign project retained PR=%v", err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -893,6 +1681,33 @@ func TestProjectEventCursorSerializesDifferentIssuesWithoutReplayGaps(t *testing
 	if highwater != 3 || len(changes) != 2 || changes[0].WorkItemID != "wi_first_1" || changes[1].WorkItemID != "wi_first_2" {
 		t.Fatalf("project change page highwater=%d changes=%+v", highwater, changes)
 	}
+	seedAccessTarget(t, admin, r, "org_second")
+	seedHistory(t, r, "org_second", "project_cursor_other")
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := r.ReadRecords(t.Context(), org, corestore.Serving, func(reader eventstore.Reader) error {
+			owner := reader.(eventstore.ProjectEventPageReader)
+			rows, err := owner.ProjectEvents(t.Context(), "prj_first", 1, 1)
+			if err != nil {
+				return err
+			}
+			if org == "org_second" {
+				if len(rows) != 0 {
+					t.Fatalf("project event page crossed tenant: %+v", rows)
+				}
+				return nil
+			}
+			if len(rows) != 1 || rows[0].ID != firstEvent.ID || rows[0].ProjectSequence != 2 || rows[0].PayloadObjectKey != firstEvent.PayloadObjectKey {
+				t.Fatalf("raw project event first page = %+v", rows)
+			}
+			rows, err = owner.ProjectEvents(t.Context(), "prj_first", 2, 1)
+			if err == nil && (len(rows) != 1 || rows[0].ID != secondEvent.ID || rows[0].ProjectSequence != 3) {
+				t.Fatalf("raw project event continuation = %+v", rows)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var replay eventstore.Event
 	if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
 		var err error
@@ -1096,8 +1911,8 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 			key := fmt.Sprintf("current_%d", actors)
 			fixture := seedHistory(t, repository, org, key)
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence
-    (organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known)
-    SELECT $1,$2,n+1,$3,'review','human','actor_'||lpad(((n-1)%$7)::text,5,'0'),
+    (quality_at,project_id,organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known)
+    SELECT $4::timestamptz,(SELECT project_id FROM change_requests WHERE organization_id=$1 AND id=$2),$1,$2,n+1,$3,'review','human','actor_'||lpad(((n-1)%$7)::text,5,'0'),
     CASE WHEN n%37=0 THEN 'commented' WHEN ((n-1)%$7)%2=0 THEN 'changes_requested' ELSE 'approved' END,
     $4::timestamptz,$5,$6,1,1,'human',true FROM generate_series(1,30000) n`, org, fixture.change.ID, fixture.version.ID, historyAt(), fixture.evidence.PayloadObjectKey, fixture.evidence.PayloadSHA256, actors); err != nil {
 				t.Fatal(err)
@@ -1198,6 +2013,136 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 			}
 		}
 	}
+	t.Run("recovery sparse evidence seeks", func(t *testing.T) {
+		ctx := t.Context()
+		const org tracker.OrganizationID = "org_first"
+		fixture := seedHistory(t, repository, org, "recovery_seek")
+		current, err := fixture.content.Version(ctx, fixture.version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current.ID, current.Number = "version_recovery_seek_current", 2
+		currentRow, err := fixture.content.PrepareVersion(ctx, org, historyJSON(t, current))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteRecords(ctx, org, corestore.Serving, func(w eventstore.Writer) error {
+			_, err := w.CreateVersion(ctx, currentRow)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `
+WITH seeded(sequence,version_id,kind,review_kind,review_landing,decision) AS (
+ SELECT 2*n,$3::text,'discussion','',false,'' FROM generate_series(1,32) n
+ UNION ALL SELECT 2*n+1,NULL::text,'discussion','',false,'' FROM generate_series(1,32) n
+ UNION ALL SELECT 66,$3,'review','security_audit',true,'approved'
+ UNION ALL SELECT 67,$4::text,'review','',false,'approved'
+ UNION ALL SELECT 67+n,$3,'review','',false,'approved' FROM generate_series(1,200) n
+ UNION ALL SELECT 1000+n,$3,'review','security_audit',false,'commented' FROM generate_series(1,1000) n
+ UNION ALL SELECT 2000+n,$4,'review','',false,'changes_requested' FROM generate_series(1,1000) n
+ UNION ALL SELECT 3000+n,$4,'discussion','',false,'' FROM generate_series(1,1000) n
+ UNION ALL SELECT 4000+n,$3,'check','',false,'' FROM generate_series(1,10000) n
+)
+INSERT INTO change_evidence (quality_at,project_id,organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,
+ payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_landing)
+SELECT CASE WHEN kind='review' THEN $5::timestamptz END,(SELECT project_id FROM change_requests WHERE organization_id=$1 AND id=$2),$1,$2,sequence,version_id,kind,'human','example',decision,$5,$6,$7,1,1,review_kind,review_landing FROM seeded`,
+			org, fixture.change.ID, currentRow.ID, fixture.version.ID, historyAt(), fixture.evidence.PayloadObjectKey, fixture.evidence.PayloadSHA256); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, "ANALYZE change_evidence"); err != nil {
+			t.Fatal(err)
+		}
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, "SELECT set_config('detent.organization_id', $1, true)", string(org)); err != nil {
+			t.Fatal(err)
+		}
+		checkVisits := func(statement string, args []any, subplan string, bound float64) {
+			t.Helper()
+			var raw []byte
+			if err := tx.QueryRow(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var plans []struct{ Plan json.RawMessage }
+			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+				t.Fatalf("decode recovery lookup plan: %v", err)
+			}
+			plan := plans[0].Plan
+			if subplan != "" {
+				var root struct {
+					Plans []json.RawMessage
+				}
+				if err := json.Unmarshal(plan, &root); err != nil {
+					t.Fatal(err)
+				}
+				plan = nil
+				for _, child := range root.Plans {
+					var node struct {
+						Name string `json:"Subplan Name"`
+					}
+					if err := json.Unmarshal(child, &node); err != nil {
+						t.Fatal(err)
+					}
+					if node.Name == subplan {
+						plan = child
+						break
+					}
+				}
+				if plan == nil {
+					t.Fatalf("missing bounded subplan %q: %s", subplan, raw)
+				}
+			}
+			var node searchPlanNode
+			if err := json.Unmarshal(plan, &node); err != nil {
+				t.Fatal(err)
+			}
+			visited := currentReviewLookupVisits(node)
+			if visited == 0 || visited > bound {
+				t.Fatalf("recovery evidence visited %.0f rows, want at most %.0f: %s", visited, bound, raw)
+			}
+		}
+		const through = 14000
+		priorProbe := &searchPublicationProbe{Tx: tx}
+		prior, err := pgquery.New(priorProbe).RecordChangePriorApproval(ctx, pgquery.RecordChangePriorApprovalParams{
+			OrganizationID: org, ChangeID: fixture.change.ID, VersionID: new(currentRow.ID), Through: through,
+		})
+		if err != nil || prior.Approved || !prior.Unprojected {
+			t.Fatalf("prior approval classification: %+v, %v", prior, err)
+		}
+		checkVisits(priorProbe.statement, priorProbe.args, "CTE unknown_approvals", 201)
+
+		probe := &searchPlanProbe{DBTX: tx}
+		rows, err := pgquery.New(probe).RecordRecoveryChangeEvidence(ctx, pgquery.RecordRecoveryChangeEvidenceParams{
+			OrganizationID: org, ChangeID: fixture.change.ID, VersionID: new(currentRow.ID), Through: through, IncludePriorUnprojected: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var discussions []int64
+		var landing, unknownPrior int64
+		for _, row := range rows {
+			switch {
+			case row.Kind == "discussion":
+				discussions = append(discussions, row.Sequence)
+			case row.ReviewLanding:
+				landing = row.Sequence
+			case row.ReviewKind == "" && row.VersionID != nil && *row.VersionID == fixture.version.ID:
+				unknownPrior = row.Sequence
+			}
+		}
+		var want []int64
+		for i := range 32 {
+			want = append(want, int64(i+34))
+		}
+		if !slices.Equal(discussions, want) || landing != 66 || unknownPrior != 67 {
+			t.Fatalf("recovery seek lost older matching evidence: discussions=%v landing=%d prior=%d", discussions, landing, unknownPrior)
+		}
+		checkVisits(probe.statement, probe.args, "", 32+1+64+201)
+	})
 }
 
 func currentReviewLookupVisits(node searchPlanNode) float64 {
@@ -1219,8 +2164,8 @@ func TestMachineReviewLookupsSeekPastHistoryAndLandingRows(t *testing.T) {
 		f := seedHistory(t, repository, org, "machine_plan")
 		for index, kind := range []string{"validator", "implementation", "security_audit"} {
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence
-(organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_landing,review_session_known)
-SELECT $1,$2,$4+n+1,$3,'review','worker',$5||'_'||n::text,CASE WHEN n%2=0 THEN 'commented' ELSE 'approved' END,
+(quality_at,project_id,organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_landing,review_session_known)
+SELECT $6::timestamptz,(SELECT project_id FROM change_requests WHERE organization_id=$1 AND id=$2),$1,$2,$4+n+1,$3,'review','worker',$5||'_'||n::text,CASE WHEN n%2=0 THEN 'commented' ELSE 'approved' END,
 $6::timestamptz,$7,$8,1,1,$5,($5='security_audit' AND n>20000),true FROM generate_series(1,30000)n`, org, f.change.ID, f.version.ID, index*30000, kind, historyAt(), f.evidence.PayloadObjectKey, f.evidence.PayloadSHA256); err != nil {
 				t.Fatal(err)
 			}
@@ -1712,15 +2657,15 @@ func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
 	check := func(phase int) {
 		t.Helper()
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			_, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
-    SELECT organization_id,change_id,$3,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=1`, org, "change_migration", int64(1000+phase*10))
+			_, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id,quality_at)
+    SELECT organization_id,change_id,$3,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id,quality_at FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=1`, org, "change_migration", int64(1000+phase*10))
 			var duplicate *pgconn.PgError
 			if !errors.As(err, &duplicate) || duplicate.Code != "23505" {
 				t.Fatalf("nonnull source identity phase=%d org=%s error=%v", phase, org, err)
 			}
 			for i := range 2 {
-				if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
-     SELECT organization_id,change_id,$3,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=1`, org, "change_migration", int64(1001+phase*10+i)); err != nil {
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id,quality_at)
+     SELECT organization_id,change_id,$3,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id,quality_at FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=1`, org, "change_migration", int64(1001+phase*10+i)); err != nil {
 					t.Fatalf("null source identity phase=%d org=%s error=%v", phase, org, err)
 				}
 			}
@@ -1754,4 +2699,88 @@ func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(3)
+}
+
+type diagnosticsQueryCapture struct {
+	pgx.QueryTracer
+	mu              sync.Mutex
+	landing         string
+	args            []any
+	scheduler       string
+	schedulerArgs   []any
+	predecessor     string
+	predecessorArgs []any
+}
+
+func (p *diagnosticsQueryCapture) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.HasPrefix(data.SQL, "WITH candidates AS MATERIALIZED (") && strings.Contains(data.SQL, "scheduler_outcome") {
+		p.mu.Lock()
+		p.scheduler, p.schedulerArgs = data.SQL, append([]any(nil), data.Args...)
+		p.mu.Unlock()
+	}
+	if strings.HasPrefix(data.SQL, "SELECT requested.claim_id,prior.*") {
+		p.mu.Lock()
+		p.predecessor, p.predecessorArgs = data.SQL, append([]any(nil), data.Args...)
+		p.mu.Unlock()
+	}
+	if strings.Contains(data.SQL, "FROM selected c LEFT JOIN LATERAL") && strings.Contains(data.SQL, "landed_at") {
+		p.mu.Lock()
+		p.landing, p.args = data.SQL, append([]any(nil), data.Args...)
+		p.mu.Unlock()
+	}
+	if p.QueryTracer != nil {
+		return p.QueryTracer.TraceQueryStart(ctx, conn, data)
+	}
+	return ctx
+}
+func (p *diagnosticsQueryCapture) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	if p.QueryTracer != nil {
+		p.QueryTracer.TraceQueryEnd(ctx, conn, data)
+	}
+}
+
+func (p *diagnosticsQueryCapture) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	if tracer, ok := p.QueryTracer.(pgx.BatchTracer); ok {
+		return tracer.TraceBatchStart(ctx, conn, data)
+	}
+	return ctx
+}
+func (p *diagnosticsQueryCapture) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
+	if tracer, ok := p.QueryTracer.(pgx.BatchTracer); ok {
+		tracer.TraceBatchQuery(ctx, conn, data)
+	}
+}
+func (p *diagnosticsQueryCapture) TraceBatchEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchEndData) {
+	if tracer, ok := p.QueryTracer.(pgx.BatchTracer); ok {
+		tracer.TraceBatchEnd(ctx, conn, data)
+	}
+}
+
+type analyticsQualityQueryCapture struct {
+	mu   sync.Mutex
+	sql  map[string]string
+	args map[string][]any
+}
+
+func (c *analyticsQualityQueryCapture) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	family := ""
+	if strings.Contains(data.SQL, "SELECT e.* FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=$2 AND e.type='workflow.transitioned'") {
+		family = "workflow"
+	}
+	if strings.Contains(data.SQL, "SELECT e.* FROM change_evidence e WHERE e.organization_id=$1 AND e.project_id=$2 AND e.quality_at IS NOT NULL") {
+		family = "evidence"
+	}
+	if family != "" {
+		c.mu.Lock()
+		if c.sql == nil {
+			c.sql = map[string]string{}
+			c.args = map[string][]any{}
+		}
+		c.sql[family] = data.SQL
+		c.args[family] = append([]any(nil), data.Args...)
+		c.mu.Unlock()
+	}
+	return ctx
+}
+func (*analyticsQualityQueryCapture) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {
 }

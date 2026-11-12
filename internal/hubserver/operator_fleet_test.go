@@ -18,6 +18,8 @@ import (
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -359,11 +361,9 @@ Run focused diagnostics with an explicit timeout.
 							t.Fatal("policy approval owner lost complete descriptor")
 						}
 						if policyCase.revokePin {
-							if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
-								t.Fatal(err)
-							}
+							coordinatorFixtureClearPolicyPin(t, f.service, f.project.OrganizationID, f.project.ID)
 						}
-						full, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+						full, err := readPostgresTestRunner(t.Context(), f.service, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -472,7 +472,7 @@ Run focused diagnostics with an explicit timeout.
 						if err := json.Unmarshal(stored, &committed); err != nil {
 							t.Fatal(err)
 						}
-						current, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+						current, err := readPostgresTestRunner(t.Context(), f.service, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
 						if err != nil || committed.ProjectCapacityLimits[f.project.ID] != 8 || committed.Availability.WindowSlots["Mon-Sun 00:00-24:00"] != 2 || committed.Revision != full.Revision+1 || committed.State != "draining" || committed.Used != 8 || committed.HostUsed != 8 || len(committed.Leases) != 8 || !reflect.DeepEqual(current, committed) {
 							t.Fatalf("routing mutation receipt did not describe the committed revision: %v", err)
 						}
@@ -548,7 +548,7 @@ Run focused diagnostics with an explicit timeout.
 								t.Logf("bounded receipt=%d bytes, revision=%d, leases=%d", len(result.Content), got.Receipt.Revision, len(got.Receipt.Leases))
 							})
 						}
-						current, err = readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+						current, err = readPostgresTestRunner(t.Context(), f.service, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
 						if err != nil || current.Revision != committed.Revision+1 || current.State != "active" {
 							t.Fatalf("replay repeated the routing mutation: %v", err)
 						}
@@ -615,7 +615,15 @@ Run focused diagnostics with an explicit timeout.
 					t.Fatalf("revocation error=%v", err)
 				}
 				var removed, revoked bool
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT r.removed_at IS NOT NULL, t.revoked_at IS NOT NULL FROM api_tokens t JOIN runner_identities r ON r.token_id=t.id WHERE r.id=?", target.binding.RunnerID).Scan(&removed, &revoked); err != nil {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					identity, err := r.RunnerIdentity(t.Context(), target.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					credential, err := r.AccessCredential(t.Context(), identity.TokenID)
+					removed, revoked = identity.RemovedAt != nil, credential.RevokedAt != nil
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 				if removed != tt.authorized || revoked != tt.authorized {

@@ -17,6 +17,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/platformusers"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -150,11 +153,15 @@ func (f hostedSharedFixture) serve(t *testing.T, r hostedSharedRequest) *httptes
 	return response
 }
 
-func (f hostedSharedFixture) member(t *testing.T, name, role, grant string) hostedSecurityUser {
+func (f hostedSharedFixture) member(t *testing.T, name, role, grant string, subjects ...string) hostedSecurityUser {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
-	identity := auth.Identity{Subject: "user_" + name, Email: name + "@example.test", EmailVerified: true, Hosted: &auth.HostedIdentity{
-		Subject: "user_" + name, OrganizationID: "org_provider", SessionID: "session_" + name, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	subject := "user_" + name
+	if len(subjects) > 0 {
+		subject = subjects[0]
+	}
+	identity := auth.Identity{Subject: subject, Email: name + "@example.test", EmailVerified: true, Hosted: &auth.HostedIdentity{
+		Subject: subject, OrganizationID: "org_provider", SessionID: "session_" + name, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}}
 	f.provider.mu.Lock()
 	f.provider.sessions[identity.Hosted.SessionID] = *identity.Hosted
@@ -431,7 +438,10 @@ func TestHostedSharedEntryInvitationAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?)", invitation.ID, "invitee@example.test", "org_security", "member", formatHubTime(time.Now())); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		now := f.service.config.now()
+		return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: "org_security", ID: invitation.ID, Email: "invitee@example.test", Role: "member", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	wrong := hostedSecurityUser{identity: auth.Identity{Subject: "user_wrong", Email: "wrong@example.test", Hosted: &auth.HostedIdentity{Subject: "user_wrong", SessionID: "session_wrong"}}}
@@ -454,7 +464,13 @@ func TestHostedSharedEntryInvitationAcceptance(t *testing.T) {
 		})
 	}
 	var members int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members WHERE user_id = 'user_invitee' AND active = 1").Scan(&members); err != nil || members != 1 {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+		member, err := r.AccessMember(t.Context(), "user_invitee")
+		if err == nil && member.Active {
+			members = 1
+		}
+		return err
+	}); err != nil || members != 1 {
 		t.Fatalf("invitee members = %d, %v", members, err)
 	}
 }
@@ -466,21 +482,30 @@ func TestHostedSharedBindingRequiresExplicitMigration(t *testing.T) {
 	originPath := hostedTestDatabasePath(t)
 	origin := Config{DatabasePath: originPath, Hosted: &HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner", PublicURL: "https://hub.example.test", Provider: provider}}
 	service := openTestService(t, origin)
+	originConfig := service.config
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(t.Context(), hostedSharedTestConfig(originPath, provider, key, 1)); !errors.Is(err, ErrHostedDatabaseBinding) {
+	if _, err := Open(t.Context(), reopenHostedSharedPostgres(originConfig, hostedSharedTestConfig(originPath, provider, key, 1))); !errors.Is(err, ErrHostedDatabaseBinding) {
 		t.Fatalf("origin database opened in shared mode: %v", err)
 	}
 	sharedPath := hostedTestDatabasePath(t)
 	shared := openTestService(t, hostedSharedTestConfig(sharedPath, provider, key, 1))
-	if _, err := shared.database.db.ExecContext(t.Context(), "UPDATE hosted_tenant SET allocation_generation = 2"); err == nil {
+	if _, err := hostedPostgresAdmin(t, shared).ExecContext(t.Context(), "UPDATE hosted_tenant SET allocation_generation=2 WHERE organization_id=$1", "org_security"); err == nil {
 		t.Fatal("generation changed without a migration record")
 	}
-	if _, err := shared.database.db.ExecContext(t.Context(), "UPDATE hosted_tenant SET deployment = 'origin'"); err == nil {
+	if _, err := hostedPostgresAdmin(t, shared).ExecContext(t.Context(), "UPDATE hosted_tenant SET deployment='origin' WHERE organization_id=$1", "org_security"); err == nil {
 		t.Fatal("deployment changed without a migration record")
 	}
+	sharedConfig := shared.config
 	if err := shared.Close(); err != nil {
+		t.Fatal(err)
+	}
+	matching, err := Open(t.Context(), reopenHostedSharedPostgres(sharedConfig, hostedSharedTestConfig(sharedPath, provider, key, 1)))
+	if err != nil {
+		t.Fatalf("matching PostgreSQL binding failed to reopen: %v", err)
+	}
+	if err := matching.Close(); err != nil {
 		t.Fatal(err)
 	}
 	for name, cfg := range map[string]Config{
@@ -494,7 +519,7 @@ func TestHostedSharedBindingRequiresExplicitMigration(t *testing.T) {
 		}(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			service, err := Open(t.Context(), cfg)
+			service, err := Open(t.Context(), reopenHostedSharedPostgres(sharedConfig, cfg))
 			if err == nil {
 				_ = service.Close()
 				t.Fatal("database opened with a mismatched binding")
@@ -565,7 +590,7 @@ func TestHostedSharedSupportSessionAudit(t *testing.T) {
 	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/sessions/revoke", body: `{"bindings":["` + binding + `"]}`}); response.Code != http.StatusNoContent {
 		t.Fatalf("revoke status = %d", response.Code)
 	}
-	rows, err := f.service.database.db.QueryContext(t.Context(), "SELECT event, actual_actor, effective_user, reason FROM hosted_audit WHERE event LIKE 'session_%' ORDER BY id")
+	rows, err := hostedPostgresAdmin(t, f.service).QueryContext(t.Context(), "SELECT event, actual_actor, effective_user, reason FROM hosted_audit WHERE organization_id=$1 AND event LIKE 'session_%' ORDER BY id", "org_security")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +645,15 @@ func TestHostedSharedOwnerBootstrap(t *testing.T) {
 		})
 	}
 	var name, role string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT o.name, m.role FROM organizations o, hosted_members m WHERE m.user_id = 'user_creator'").Scan(&name, &role); err != nil || name != "Created organization" || role != "owner" {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+		organization, err := r.AccessOrganization(t.Context())
+		if err != nil {
+			return err
+		}
+		member, err := r.AccessMember(t.Context(), "user_creator")
+		name, role = organization.Name, member.Role
+		return err
+	}); err != nil || name != "Created organization" || role != "owner" {
 		t.Fatalf("bootstrap result = %q %q %v", name, role, err)
 	}
 	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/health", body: `{}`}); response.Code != http.StatusOK {
@@ -634,31 +667,42 @@ func TestHostedPlatformUsers(t *testing.T) {
 	f.member(t, "match", "owner", "")
 	f.member(t, "match-extra", "viewer", "")
 	f.member(t, "inactive-match", "member", "")
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active=0 WHERE user_id='user_inactive-match'"); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(t.Context(), "user_inactive-match")
+		if err != nil {
+			return err
+		}
+		member.Active, member.UpdatedAt = false, f.service.config.now()
+		return w.UpdateAccessMember(t.Context(), member)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	now := f.service.config.now()
-	for _, item := range []struct{ id, email, accepted, expires string }{
-		{"pending", "match@example.test", "", formatHubTime(now.Add(time.Hour))},
-		{"invitation-only", "match-invited@example.test", "", formatHubTime(now.Add(time.Hour))},
-		{"expired", "match-expired@example.test", "", formatHubTime(now.Add(-time.Hour))},
-		{"accepted", "match-accepted@example.test", "user_accepted", formatHubTime(now.Add(time.Hour))},
+	for _, item := range []struct {
+		id, email, accepted string
+		expires             time.Time
+	}{
+		{"pending", "match@example.test", "", now.Add(time.Hour)},
+		{"invitation-only", "match-invited@example.test", "", now.Add(time.Hour)},
+		{"expired", "match-expired@example.test", "", now.Add(-time.Hour)},
+		{"accepted", "match-accepted@example.test", "user_accepted", now.Add(time.Hour)},
 	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,accepted_user_id,created_at,expires_at) VALUES(?,?,'org_security','member',?,?,?)", item.id, item.email, item.accepted, formatHubTime(now), item.expires); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: "org_security", ID: item.id, Email: item.email, Role: "member", AcceptedUserID: item.accepted, CreatedAt: now, ExpiresAt: item.expires})
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for i := range 55 {
 		email := fmt.Sprintf("cap%02d@example.test", i)
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at) VALUES(?,?,'org_security','member',?,?)", email, email, formatHubTime(now), formatHubTime(now.Add(time.Hour))); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: "org_security", ID: email, Email: email, Role: "member", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for i := range 55 {
-		f.member(t, fmt.Sprintf("large%02d", i), "member", "")
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET user_id=user_id || ? WHERE email LIKE 'large%'", strings.Repeat("s", 2000)); err != nil {
-		t.Fatal(err)
+		f.member(t, fmt.Sprintf("large%02d", i), "member", "", fmt.Sprintf("user_large%02d%s", i, strings.Repeat("s", 2000)))
 	}
 	for _, test := range []struct {
 		query                        string
@@ -718,4 +762,12 @@ func TestHostedPlatformUsers(t *testing.T) {
 			}
 		})
 	}
+}
+
+func reopenHostedSharedPostgres(source, target Config) Config {
+	target.DatabaseBackend, target.DatabasePath, target.Postgres = source.DatabaseBackend, "", source.Postgres
+	target.SecretKeys, target.Content, target.RunDetails = source.SecretKeys, source.Content, source.RunDetails
+	target.TenantRepository, target.AccessRepository, target.BillingRepository = nil, nil, nil
+	target.NativeRunEvents, target.ProjectParticipants, target.ConversationDispatch, target.ChangeVersionAuthority = nil, nil, nil, nil
+	return target
 }

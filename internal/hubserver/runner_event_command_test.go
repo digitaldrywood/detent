@@ -95,6 +95,25 @@ func TestRunnerEventSubmissionWireBudget(t *testing.T) {
 				wire.Unlock()
 				t.Logf("tenant=%s runner=%d history=%d command statements=%d exchanges=%d transactions=%d", org, index, size, statements, exchanges, transactions)
 				check(fmt.Sprintf("%s/%d/event", org, index), statements, exchanges, transactions)
+				var references, missingArchives, unchargedArchives int
+				if err := fixture.admin.QueryRowContext(t.Context(), `WITH refs AS (
+ SELECT payload_object_key,NULL::text AS payload_sha256 FROM native_attempts WHERE organization_id=$1 AND id=$4
+ UNION ALL
+ SELECT payload_object_key,payload_sha256 FROM (
+  SELECT payload_object_key,payload_sha256 FROM collaboration_events
+  WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND attempt_id=$4 AND type='run.observed'
+  ORDER BY sequence DESC LIMIT 1
+ ) history
+ UNION ALL
+ SELECT payload_object_key,payload_sha256 FROM native_commands WHERE organization_id=$1 AND command_key=$5
+)
+SELECT count(*),count(*) FILTER (WHERE a.id IS NULL),count(*) FILTER (WHERE a.collaboration_bytes<>a.compressed_size)
+FROM refs r LEFT JOIN archive_objects a ON a.organization_id=$1 AND a.object_key=r.payload_object_key AND (r.payload_sha256 IS NULL OR a.sha256=r.payload_sha256)`, org, scope.project, fixture.leases[index].WorkItemID, data.AttemptID, request.IdempotencyKey).Scan(&references, &missingArchives, &unchargedArchives); err != nil {
+					t.Fatal(err)
+				}
+				if references != 3 || missingArchives != 0 || unchargedArchives != 0 {
+					t.Fatalf("runner publication archives: references=%d missing=%d uncharged=%d, want 3/0/0", references, missingArchives, unchargedArchives)
+				}
 				wire.Lock()
 				wire.statements, wire.exchanges, wire.transactions = 0, 0, 0
 				wire.Unlock()

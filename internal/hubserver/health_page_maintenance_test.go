@@ -3,12 +3,23 @@ package hubserver
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -167,4 +178,376 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 
 		})
 	}
+	t.Run("maintenance produces and clears scheduled health for both tenants", func(t *testing.T) {
+		clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+		service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, Clock: clock.Now})
+		organizations := []tracker.OrganizationID{"org_first", "org_first_second"}
+		fixtures := map[tracker.OrganizationID]nativeFixture{}
+		for _, organization := range organizations {
+			fixtures[organization] = newNativeFixture(t, service, organization, "Example scheduled health source")
+		}
+		slices.SortFunc(organizations, func(a, b tracker.OrganizationID) int {
+			return strings.Compare(string(fixtures[b].project.ID), string(fixtures[a].project.ID))
+		})
+		feature := service.HealthPageMaintenanceFeature()
+		for _, organization := range organizations {
+			fixture := fixtures[organization]
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+				project, err := writer.ProjectRecord(t.Context(), fixture.project.ID)
+				if err != nil {
+					return err
+				}
+				project.Settings.RepositoryEnabled = true
+				project.Settings.Repository = "example-org/example-project"
+				project.Settings.CheckoutRepository = project.Settings.Repository
+				if _, err := writer.UpdateProjectRecord(t.Context(), project); err != nil {
+					return err
+				}
+				_, err = writer.(healthstore.ScheduledWriter).RecordHealthScheduledReport(t.Context(), healthstore.ScheduledReport{OrganizationID: organization, ProjectID: fixture.project.ID, RecordedAt: clock.Now().Add(-7 * time.Hour), ScheduledValidationReport: gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1001", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1001/attempts/1", HeadSHA: strings.Repeat("a", 40), Conclusion: "success"}})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			scheduler, err := hubmaintenance.New(maintenanceTenantRegistry{{Organization: string(organization), Generation: 1}}, []hubmaintenance.Feature{feature})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := scheduler.Tick(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			read := func() healthFindingsPage {
+				t.Helper()
+				response := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/health/findings?state=all", testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page healthFindingsPage
+				decodeHubResponse(t, response, &page)
+				return page
+			}
+			before := read()
+			if len(before.Items) != 1 || before.Items[0].Signal != "dead_man" || before.Items[0].ResolvedAt != nil || before.Items[0].Evidence.ScheduledValidation == nil || before.Items[0].Evidence.ScheduledValidation.LastRunURL != "https://github.com/example-org/example-project/actions/runs/1001/attempts/1" {
+				t.Fatalf("live health producer did not publish scoped scheduled evidence: %+v", before)
+			}
+			clock.Advance(time.Second)
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+				_, err := writer.(healthstore.ScheduledWriter).RecordHealthScheduledReport(t.Context(), healthstore.ScheduledReport{OrganizationID: organization, ProjectID: fixture.project.ID, RecordedAt: clock.Now(), ScheduledValidationReport: gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1002", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1002/attempts/1", HeadSHA: strings.Repeat("b", 40), Conclusion: "success"}})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if err := scheduler.Tick(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			after := read()
+			if len(after.Items) != 1 || after.Items[0].ID != before.Items[0].ID || after.Items[0].ResolvedAt == nil {
+				t.Fatalf("live health producer did not resolve recovered subject: %+v", after)
+			}
+		}
+		failures := make(chan error, 2*len(organizations))
+		for _, organization := range organizations {
+			for range 2 {
+				go func() {
+					tenant := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
+					budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}
+					failures <- feature.Step(budget.Context(t.Context(), tenant), tenant, budget)
+				}()
+			}
+		}
+		for range 2 * len(organizations) {
+			if err := <-failures; err != nil {
+				t.Error(err)
+			}
+		}
+		for _, organization := range organizations {
+			response := performHubAPIRequest(t, service, http.MethodGet, fixtures[organization].base+"/health/findings?state=all", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page healthFindingsPage
+			decodeHubResponse(t, response, &page)
+			if len(page.Items) != 1 || page.Items[0].ResolvedAt == nil {
+				t.Fatalf("concurrent shared feature changed tenant findings: organization=%s page=%+v", organization, page)
+			}
+		}
+
+	})
+
+	t.Run("completed clipped cycle advances freshness while storage failure withholds it", func(t *testing.T) {
+		clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+		details := &memoryRunDetails{}
+		service := newPostgresNativeService(t, Config{RunDetails: details, Clock: clock.Now})
+		organization := tracker.OrganizationID("org_first")
+		clipped := newNativeFixture(t, service, organization, "Example clipped health source")
+		healthy := newNativeFixture(t, service, organization, "Example healthy health source")
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			project, err := writer.ProjectRecord(t.Context(), clipped.project.ID)
+			if err != nil {
+				return err
+			}
+			project.Core.RequireDependencies = true
+			if _, err = writer.UpdateProjectRecord(t.Context(), project); err != nil {
+				return err
+			}
+			for number := int64(1); number <= 201; number++ {
+				if _, err := writer.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: clipped.project.ID, NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_clipped_%03d", number)), Number: number, Title: "Example completed item", WorkflowStateName: new("Done")}); err != nil {
+					return err
+				}
+			}
+			project, err = writer.ProjectRecord(t.Context(), healthy.project.ID)
+			if err != nil {
+				return err
+			}
+			project.Settings.RepositoryEnabled = true
+			project.Settings.Repository = "example-org/example-project"
+			project.Settings.CheckoutRepository = project.Settings.Repository
+			if _, err = writer.UpdateProjectRecord(t.Context(), project); err != nil {
+				return err
+			}
+			_, err = writer.(healthstore.ScheduledWriter).RecordHealthScheduledReport(t.Context(), healthstore.ScheduledReport{OrganizationID: organization, ProjectID: healthy.project.ID, RecordedAt: clock.Now().Add(-7 * time.Hour), ScheduledValidationReport: gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1001", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1001/attempts/1", HeadSHA: strings.Repeat("a", 40), Conclusion: "success"}})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tenant := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
+		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}
+		ctx := budget.Context(t.Context(), tenant)
+		old := newHealthFinding("dependency_hold", "flow", "project", string(clipped.project.ID), "Example previous observed hold", "Inspect", []string{string(clipped.project.ID)}, healthEvidence{Reason: "previous_observation"})
+		if err := service.publishHealthEvaluationScope(ctx, organization, clock.Now(), []healthFinding{old}, healthEvaluationScope{projects: map[tracker.ProjectID]bool{clipped.project.ID: true}, fingerprints: map[string]bool{old.Fingerprint: true}}); err != nil {
+			t.Fatal(err)
+		}
+		feature := service.HealthPageMaintenanceFeature()
+		read := func(fixture nativeFixture) healthFindingsPage {
+			t.Helper()
+			response := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/health/findings?state=all", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page healthFindingsPage
+			decodeHubResponse(t, response, &page)
+			return page
+		}
+		clock.Advance(time.Second)
+		for range 20 {
+			if err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
+				t.Fatal(err)
+			}
+		}
+		clippedPage, healthyPage := read(clipped), read(healthy)
+		if clippedPage.LastTickAt == nil || !clippedPage.LastTickAt.Equal(clock.Now()) || healthyPage.LastTickAt == nil || !healthyPage.LastTickAt.Equal(clock.Now()) {
+			t.Fatalf("unequal phase lengths or clipping withheld completed cycle: clipped=%+v healthy=%+v", clippedPage, healthyPage)
+		}
+		if !slices.ContainsFunc(clippedPage.BaselineUnavailable, func(gap healthBaselineUnavailable) bool { return gap.Signal == "dependency_hold" }) || !slices.ContainsFunc(clippedPage.Items, func(finding healthFinding) bool {
+			return finding.Fingerprint == old.Fingerprint && finding.ResolvedAt == nil
+		}) {
+			t.Fatalf("clipped dependency lost unavailable truth or resolved unexamined finding: %+v", clippedPage)
+		}
+		if !slices.ContainsFunc(healthyPage.Items, func(finding healthFinding) bool { return finding.Signal == "dead_man" && finding.ResolvedAt == nil }) {
+			t.Fatalf("healthy project did not publish beside clipped input: %+v", healthyPage)
+		}
+
+		issue := healthy.create(t, "Example running health source")
+		var item corestore.WorkItem
+		var lease leasestore.Lease
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			var err error
+			item, err = writer.WorkItem(t.Context(), healthy.project.ID, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if err := writer.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "health_machine", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+				return err
+			}
+			lease, err = writer.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: "health_machine", SessionID: "health_session", LeaseID: "health_lease", TTL: time.Hour})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(tracker.CollaborationEvent{ID: "health_run_started", OrganizationID: organization, ProjectID: healthy.project.ID, AggregateID: issue.WorkItemID, AggregateSequence: item.EventSequence + 1, Type: "run.started", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "health_machine"}, RecordedAt: clock.Now(), Data: tracker.CollaborationData{Revision: issue.Revision, Run: &tracker.NativeRunData{AttemptID: "health_attempt", RunID: "health_run", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "health_machine", SessionID: lease.SessionID, PolicyID: hubTestPolicy().ID, Sequence: 1}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, err := eventstore.NewContent(details).PrepareEvent(t.Context(), organization, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reference := eventstore.Reference(event.PayloadObjectKey, event.PayloadSHA256, event.PayloadBytes, event.PayloadContentBytes)
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			_, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "health_attempt", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "health_run", Sequence: 1, Status: "running", StartedAt: clock.Now(), PayloadObjectKey: reference.Key, PayloadReference: reference})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		retained := newHealthFinding("retry_storm", "flow", "work_item", string(issue.WorkItemID), "Example previously observed retry condition", "Inspect", []string{string(healthy.project.ID)}, healthEvidence{Reason: "previous_observation"})
+		if err := service.publishHealthEvaluationScope(budget.Context(t.Context(), tenant), organization, clock.Now(), []healthFinding{retained}, healthEvaluationScope{projects: map[tracker.ProjectID]bool{healthy.project.ID: true}, fingerprints: map[string]bool{retained.Fingerprint: true}}); err != nil {
+			t.Fatal(err)
+		}
+		for _, kind := range []string{"attempt before first event", "missing immutable object"} {
+			if kind == "missing immutable object" {
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error { _, err := writer.AppendEvent(t.Context(), event); return err }); err != nil {
+					t.Fatal(err)
+				}
+				details.mu.Lock()
+				delete(details.data, event.PayloadObjectKey)
+				details.keyReads = map[string]int{}
+				details.mu.Unlock()
+			}
+			clock.Advance(time.Second)
+			source, err := service.readHealthProjectSource(budget.Context(t.Context(), tenant), organization, healthy.project.ID, "", clock.Now())
+			if err != nil {
+				t.Fatalf("%s failed an otherwise healthy project: %v", kind, err)
+			}
+			if source.attemptsKnown || len(source.diagnostics.AttemptRecords) != 1 || (source.diagnostics.AttemptRecords[0].Event.ID == "") != (kind == "attempt before first event") {
+				t.Fatalf("%s lost current unknown attempt metadata: %+v", kind, source)
+			}
+			for range 20 {
+				if err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
+					t.Fatalf("%s failed observation cycle: %v", kind, err)
+				}
+			}
+			healthyPage = read(healthy)
+			if healthyPage.LastTickAt == nil || !healthyPage.LastTickAt.Equal(clock.Now()) || !slices.ContainsFunc(healthyPage.BaselineUnavailable, func(gap healthBaselineUnavailable) bool { return gap.Signal == "runner_setup_failures" }) || !slices.ContainsFunc(healthyPage.Items, func(finding healthFinding) bool {
+				return finding.Fingerprint == retained.Fingerprint && finding.ResolvedAt == nil
+			}) || !slices.ContainsFunc(healthyPage.Items, func(finding healthFinding) bool { return finding.Signal == "dead_man" && finding.ResolvedAt == nil }) {
+				t.Fatalf("%s froze tick, discarded healthy output, or lost unavailable truth: %+v", kind, healthyPage)
+			}
+			if kind == "missing immutable object" {
+				details.mu.Lock()
+				reads := details.keyReads[event.PayloadObjectKey]
+				details.mu.Unlock()
+				if reads == 0 {
+					t.Fatal("missing-object case never read its actual selected immutable object")
+				}
+			}
+		}
+		clippedPage = read(clipped)
+		completed := *clippedPage.LastTickAt
+		clock.Advance(time.Second)
+		details.mu.Lock()
+		details.fail = true
+		details.mu.Unlock()
+		failures := 0
+		for range 20 {
+			if err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget); err != nil {
+				failures++
+			}
+		}
+		after := read(clipped)
+		if failures == 0 || after.LastTickAt == nil || !after.LastTickAt.Equal(completed) {
+			t.Fatalf("storage error falsely advanced completed cycle: failures=%d page=%+v", failures, after)
+		}
+	})
+	t.Run("conversation-only wait retires beyond unresolved prefix", func(t *testing.T) {
+		clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+		service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, Clock: clock.Now})
+		organizations := []tracker.OrganizationID{"org_first", "org_first_second"}
+		fixtures := map[tracker.OrganizationID]nativeFixture{}
+		for _, organization := range organizations {
+			fixtures[organization] = newNativeFixture(t, service, organization, "Example conversation health")
+			filler := newNativeFixture(t, service, organization, "Example other question project")
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+				if err := writer.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "health_wait_owner", Name: "Example owner", Hash: "health_wait_hash_" + string(organization), Fingerprint: "health_wait_fingerprint_" + string(organization), Scope: "operator", Kind: "service", ProjectAccess: "selected", CreatedAt: clock.Now(), UpdatedAt: clock.Now()}); err != nil {
+					return err
+				}
+				row, err := writer.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: organization, ProjectID: filler.project.ID, ID: "conv_00000000000000000000000000000001", OwnerPrincipalID: "health_wait_owner", Origin: "user", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, ExecutionContinuation: true, CreatedAt: clock.Now().Add(-time.Hour), UpdatedAt: clock.Now()})
+				if err != nil {
+					return err
+				}
+				for number := 1; number <= 201; number++ {
+					q := conversation.Question{ID: fmt.Sprintf("q_%032x", number), ConversationID: row.ID, Status: conversation.QuestionUnknown, Prompts: []conversation.Prompt{{ID: "example", Question: "Example question", FreeText: true}}, CreatedAt: clock.Now().Add(-time.Hour), UpdatedAt: clock.Now()}
+					if err := writer.UpsertQuestion(t.Context(), conversationstore.Question{OrganizationID: organization, ConversationID: row.ID, Question: q}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}
+		read := func(organization tracker.OrganizationID) healthFindingsPage {
+			t.Helper()
+			response := performHubAPIRequest(t, service, http.MethodGet, fixtures[organization].base+"/health/findings?state=all", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page healthFindingsPage
+			decodeHubResponse(t, response, &page)
+			return page
+		}
+		for index, kind := range []string{"answered", "settled", "archived", "deleted", "expired"} {
+			conversationID := fmt.Sprintf("conv_%032x", 1000+index)
+			questionID := fmt.Sprintf("q_%032x", 1000+index)
+			for _, organization := range organizations {
+				fixture := fixtures[organization]
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+					if _, err := writer.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: organization, ProjectID: fixture.project.ID, ID: conversationID, OwnerPrincipalID: "health_wait_owner", Origin: "user", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, ExecutionContinuation: true, CreatedAt: clock.Now().Add(-time.Hour), UpdatedAt: clock.Now()}); err != nil {
+						return err
+					}
+					return writer.UpsertQuestion(t.Context(), conversationstore.Question{OrganizationID: organization, ConversationID: conversationID, Question: conversation.Question{ID: questionID, ConversationID: conversationID, Status: conversation.QuestionUnknown, Prompts: []conversation.Prompt{{ID: "example", Question: "Example question", FreeText: true}}, CreatedAt: clock.Now().Add(-time.Hour), UpdatedAt: clock.Now()}})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				tenant := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
+				ctx := budget.Context(t.Context(), tenant)
+				var afterConversation, afterQuestion string
+				for range 5 {
+					if err := service.maintainHealthQuestions(ctx, organization, &afterConversation, &afterQuestion, hubmaintenance.ItemLimit); err != nil {
+						t.Fatal(err)
+					}
+				}
+				page := read(organization)
+				if len(page.Items) != 1 || page.Items[0].Subject.Kind != "project" || page.Items[0].Subject.ID != string(fixture.project.ID) || page.Items[0].ResolvedAt != nil {
+					t.Fatalf("unknown conversation-only question did not publish project wait: kind=%s organization=%s page=%+v", kind, organization, page)
+				}
+			}
+			for position, organization := range organizations {
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+					row, err := writer.Conversation(t.Context(), fixtures[organization].project.ID, conversationID)
+					if err != nil {
+						return err
+					}
+					switch kind {
+					case "answered", "expired":
+						question, err := writer.Question(t.Context(), conversationID, questionID)
+						if err != nil {
+							return err
+						}
+						question.UpdatedAt = clock.Now()
+						if kind == "answered" {
+							question.Status = conversation.QuestionAnswered
+						} else {
+							question.ExpiresAt = new(clock.Now().Add(-time.Microsecond))
+						}
+						return writer.UpsertQuestion(t.Context(), question)
+					case "settled":
+						row.Status = conversation.StatusSettled
+					case "archived":
+						row.Archived = true
+					case "deleted":
+						return writer.(conversationstore.RemovalWriter).DeleteConversation(t.Context(), fixtures[organization].project.ID, conversationID, clock.Now())
+					}
+					row.UpdatedAt = clock.Now()
+					_, err = writer.UpdateConversation(t.Context(), row, row.Revision)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				tenant := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
+				ctx := budget.Context(t.Context(), tenant)
+				var after string
+				var proof healthProjectWaitCursor
+				for range 12 {
+					if err := service.maintainRetiredHealthSubjects(ctx, organization, &after, &proof, hubmaintenance.ItemLimit); err != nil {
+						t.Fatal(err)
+					}
+				}
+				page := read(organization)
+				if len(page.Items) != 1 || page.Items[0].ResolvedAt == nil {
+					t.Fatalf("conversation-only wait remained after current question retired: kind=%s organization=%s page=%+v", kind, organization, page)
+				}
+				if position == 0 {
+					untouched := read(organizations[1])
+					if len(untouched.Items) != 1 || untouched.Items[0].ResolvedAt != nil {
+						t.Fatalf("one tenant retired another tenant wait: kind=%s page=%+v", kind, untouched)
+					}
+				}
+			}
+		}
+	})
+
 }

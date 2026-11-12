@@ -25,7 +25,7 @@ var accessFixtureTables = []string{
 	"organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_release_preferences", "daily_summary_preferences", "daily_summary_receipts", "hosted_project_grants", "token_grants",
 	"hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations",
 	"hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets",
-	"project_secret_audit", "hosted_audit", "hosted_audit_times",
+	"project_secret_audit", "hosted_audit", "hosted_audit_times", "hosted_work_view_preferences",
 }
 
 func accessImportSourceFor(t *testing.T, db *sql.DB, schema string, organization tracker.OrganizationID, malformedInvitation bool) (postgres.AccessImportSource, *historyObjects) {
@@ -104,26 +104,27 @@ func accessImportSourceFor(t *testing.T, db *sql.DB, schema string, organization
 	}
 	stamp := "2026-10-31T12:00:00Z"
 	rows := map[string]map[string]any{
-		"organizations":              {"id": string(organization), "name": "Example organization", "slug": "example", "local": "0", "created_at": stamp},
-		"hosted_tenant":              {"organization_id": string(organization), "singleton": "1", "provider_id": "provider_first", "bootstrap_subject": "bootstrap_first", "deployment": "example-deployment", "public_url": "https://example.test", "allocation_generation": "1"},
-		"api_tokens":                 {"id": "token_first", "name": "Example credential", "token_hash": "hash_first", "token_fingerprint": "fingerprint_first", "scope": "operator", "native_only": "0", "created_at": stamp, "updated_at": stamp, "hosted_user_id": "user_first", "hosted_organization_id": string(organization), "hosted_membership_id": "membership_first", "operator_key_scope": "project", "operator_project_access": "selected", "key_kind": "personal"},
-		"hosted_members":             {"user_id": "user_first", "email": "user@example.test", "membership_id": "membership_first", "role": "member", "active": "1", "principal_id": "token_first", "notify_issues": "1", "created_at": stamp, "updated_at": stamp},
-		"hosted_release_preferences": {"organization_id": string(organization), "user_id": "user_first", "version": "v1.2.3", "build_time": stamp},
-		"daily_summary_preferences":  {"organization_id": string(organization), "user_id": "user_first", "enabled": "1", "send_minute": "390", "time_zone": "America/Chicago", "weekdays": "1", "token": "unsub_" + string(organization), "window_end": "1790000000", "due_at": "1790000300"},
-		"daily_summary_receipts":     {"organization_id": string(organization), "user_id": "user_first", "window_end": "1790000000", "status": "sent", "attempts": "2", "recorded_at": "1790000001"},
-		"hosted_project_grants":      {"organization_id": string(organization), "user_id": "user_first", "project_id": "prj_first", "can_write": "1", "manage_runner": "0"},
-		"token_grants":               {"organization_id": string(organization), "token_id": "token_first", "project_id": "prj_first"},
-		"hosted_sessions":            {"token_hash": "session_hash_first", "email": "user@example.test", "identity_json": identity, "identity_subject": "user_first", "created_at": stamp, "expires_at": "2026-11-02T12:00:00Z"},
-		"hosted_transactions":        {"token_hash": "transaction_hash_first", "state": "state_first", "verifier": "verifier_first", "organization_id": "provider_first", "support_actor": "", "support_session": "", "invitation_token": "", "expires_at": "2026-11-01T12:00:00Z"},
-		"hosted_invitations":         {"id": "invitation_first", "organization_id": string(organization), "email": "invite@example.test", "role": "viewer", "accepted_user_id": "", "created_at": stamp, "expires_at": "2026-11-07T12:00:00Z", "grants_json": grants},
-		"hosted_member_reservations": {"email": "reserve@example.test", "expires_at": "1790000000"},
-		"hosted_binding_migrations":  {"organization_id": string(organization), "id": "1", "from_public_url": "https://old.example.test", "to_public_url": "https://new.example.test", "from_deployment": "old", "from_generation": "1", "to_generation": "2", "migrated_at": stamp, "applied": "1"},
-		"organization_secrets":       {"organization_id": string(organization), "kind": "github", "organization_slug": "example", "ciphertext": []byte{0, 1, 2, 255}, "nonce": []byte{4, 5, 6}, "wrapped_data_key": []byte{7, 8, 9}, "master_key_version": "2", "updated_at": stamp},
-		"organization_secret_audit":  {"organization_id": string(organization), "id": "1", "actor": "user_first", "kind": "github", "key_version": "2", "event": "updated", "recorded_at": stamp},
-		"project_secrets":            {"organization_id": string(organization), "project_id": "prj_first", "kind": "github", "organization_slug": "example", "ciphertext": []byte{10, 11, 12}, "nonce": []byte{13, 14}, "wrapped_data_key": []byte{15, 16}, "master_key_version": "2", "updated_at": stamp},
-		"project_secret_audit":       {"organization_id": string(organization), "id": "1", "project_id": "prj_first", "actor": "user_first", "kind": "github", "key_version": "2", "event": "updated", "recorded_at": stamp},
-		"hosted_audit":               {"organization_id": string(organization), "id": "1", "session_id": "token_first", "actual_actor": "user_first", "effective_user": "user_first", "reason": "", "event": "credential_created", "route": "mcp credential_create", "project_id": "prj_first", "status": "200", "started_at": stamp, "expires_at": "2026-11-01T12:00:00Z", "recorded_at": stamp, "recorded_at_ns": "1790000000000000000", "mutation_json": `{"action":"example","changed":true}`, "account_kind": "", "account_retry": ""},
-		"hosted_audit_times":         {"audit_id": "1", "recorded_at_ns": "1790000000000000000"},
+		"organizations":                {"id": string(organization), "name": "Example organization", "slug": "example", "local": "0", "created_at": stamp},
+		"hosted_tenant":                {"organization_id": string(organization), "singleton": "1", "provider_id": "provider_first", "bootstrap_subject": "bootstrap_first", "deployment": "example-deployment", "public_url": "https://example.test", "allocation_generation": "1"},
+		"api_tokens":                   {"id": "token_first", "name": "Example credential", "token_hash": "hash_first", "token_fingerprint": "fingerprint_first", "scope": "operator", "native_only": "0", "created_at": stamp, "updated_at": stamp, "hosted_user_id": "user_first", "hosted_organization_id": string(organization), "hosted_membership_id": "membership_first", "operator_key_scope": "project", "operator_project_access": "selected", "key_kind": "personal"},
+		"hosted_members":               {"user_id": "user_first", "email": "user@example.test", "membership_id": "membership_first", "role": "member", "active": "1", "principal_id": "token_first", "notify_issues": "1", "created_at": stamp, "updated_at": stamp},
+		"hosted_release_preferences":   {"organization_id": string(organization), "user_id": "user_first", "version": "v1.2.3", "build_time": stamp},
+		"daily_summary_preferences":    {"organization_id": string(organization), "user_id": "user_first", "enabled": "1", "send_minute": "390", "time_zone": "America/Chicago", "weekdays": "1", "token": "unsub_" + string(organization), "window_end": "1790000000", "due_at": "1790000300"},
+		"daily_summary_receipts":       {"organization_id": string(organization), "user_id": "user_first", "window_end": "1790000000", "status": "sent", "attempts": "2", "recorded_at": "1790000001"},
+		"hosted_work_view_preferences": {"organization_id": string(organization), "user_id": "user_first", "scope": "project:prj_first", "view_query": "state:Todo"},
+		"hosted_project_grants":        {"organization_id": string(organization), "user_id": "user_first", "project_id": "prj_first", "can_write": "1", "manage_runner": "0"},
+		"token_grants":                 {"organization_id": string(organization), "token_id": "token_first", "project_id": "prj_first"},
+		"hosted_sessions":              {"token_hash": "session_hash_first", "email": "user@example.test", "identity_json": identity, "identity_subject": "user_first", "created_at": stamp, "expires_at": "2026-11-02T12:00:00Z"},
+		"hosted_transactions":          {"token_hash": "transaction_hash_first", "state": "state_first", "verifier": "verifier_first", "organization_id": "provider_first", "support_actor": "", "support_session": "", "invitation_token": "", "expires_at": "2026-11-01T12:00:00Z"},
+		"hosted_invitations":           {"id": "invitation_first", "organization_id": string(organization), "email": "invite@example.test", "role": "viewer", "accepted_user_id": "", "created_at": stamp, "expires_at": "2026-11-07T12:00:00Z", "grants_json": grants},
+		"hosted_member_reservations":   {"email": "reserve@example.test", "expires_at": "1790000000"},
+		"hosted_binding_migrations":    {"organization_id": string(organization), "id": "1", "from_public_url": "https://old.example.test", "to_public_url": "https://new.example.test", "from_deployment": "old", "from_generation": "1", "to_generation": "2", "migrated_at": stamp, "applied": "1"},
+		"organization_secrets":         {"organization_id": string(organization), "kind": "github", "organization_slug": "example", "ciphertext": []byte{0, 1, 2, 255}, "nonce": []byte{4, 5, 6}, "wrapped_data_key": []byte{7, 8, 9}, "master_key_version": "2", "updated_at": stamp},
+		"organization_secret_audit":    {"organization_id": string(organization), "id": "1", "actor": "user_first", "kind": "github", "key_version": "2", "event": "updated", "recorded_at": stamp},
+		"project_secrets":              {"organization_id": string(organization), "project_id": "prj_first", "kind": "github", "organization_slug": "example", "ciphertext": []byte{10, 11, 12}, "nonce": []byte{13, 14}, "wrapped_data_key": []byte{15, 16}, "master_key_version": "2", "updated_at": stamp},
+		"project_secret_audit":         {"organization_id": string(organization), "id": "1", "project_id": "prj_first", "actor": "user_first", "kind": "github", "key_version": "2", "event": "updated", "recorded_at": stamp},
+		"hosted_audit":                 {"organization_id": string(organization), "id": "1", "session_id": "token_first", "actual_actor": "user_first", "effective_user": "user_first", "reason": "", "event": "credential_created", "route": "mcp credential_create", "project_id": "prj_first", "status": "200", "started_at": stamp, "expires_at": "2026-11-01T12:00:00Z", "recorded_at": stamp, "recorded_at_ns": "1790000000000000000", "mutation_json": `{"action":"example","changed":true}`, "account_kind": "", "account_retry": ""},
+		"hosted_audit_times":           {"audit_id": "1", "recorded_at_ns": "1790000000000000000"},
 	}
 	for _, name := range accessFixtureTables {
 		insertAccessSourceRow(t, db, schema, name, source.Schema[name], rows[name])
@@ -207,6 +208,12 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 			t.Fatalf("tenant %s import = %d, %v", organizations[n], processed, err)
 		}
 		if err := r.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			for _, suffix := range []string{"first", "second"} {
+				query, err := reader.WorkViewPreference(t.Context(), "user_"+suffix, "prj_"+suffix)
+				if err != nil || query != "state:Todo" {
+					return fmt.Errorf("historical preference subject/scope %s changed: %q: %v", suffix, query, err)
+				}
+			}
 			_, err := reader.CollaborationBytes(t.Context())
 			if !errors.Is(err, corestore.ErrNotFound) {
 				return errors.Join(err, errors.New("import initialized unaccounted history to zero"))

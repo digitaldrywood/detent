@@ -36,13 +36,16 @@ func (s *session) AttemptMetadata(ctx context.Context, project tracker.ProjectID
 		if attempt.CheckpointObjectKey != nil {
 			keys = append(keys, *attempt.CheckpointObjectKey)
 		}
+		if attempt.ArtifactsObjectKey != nil {
+			keys = append(keys, *attempt.ArtifactsObjectKey)
+		}
 		attachments = append(attachments, "att_"+artifact.Digest([]byte(string(s.organization) + "\n" + attempt.PayloadObjectKey))[:32])
 	}
 	if len(attempts) == 0 {
 		return metadata, nil
 	}
 	batch := &pgx.Batch{}
-	batch.Queue(`SELECT * FROM leases WHERE organization_id=$1 AND lease_id=ANY($2::text[])`, s.organization, leases).Query(func(rows pgx.Rows) error {
+	batch.Queue(`SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason,project_id,runner_id FROM leases WHERE organization_id=$1 AND lease_id=ANY($2::text[])`, s.organization, leases).Query(func(rows pgx.Rows) error {
 		values, err := pgx.CollectRows(rows, pgx.RowToStructByName[pgquery.Lease])
 		for _, value := range values {
 			metadata.Leases[value.LeaseID] = leasestore.Lease(value)

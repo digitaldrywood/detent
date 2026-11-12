@@ -9,6 +9,7 @@ import (
 )
 
 const PopulationLimit = 10000
+const IssuePopulationLimit = 1000
 const HistoryLimit = 50
 const ObjectLimit = 32
 
@@ -18,7 +19,7 @@ type Issue struct {
 	WorkItemID                tracker.NativeWorkItemID
 	Number                    int64
 	Title, ProjectName, State string
-	CreatedAt                 time.Time
+	CreatedAt, UpdatedAt      time.Time
 	Partial                   bool
 	WorkspaceIDs              []string
 	ChangeID, PublicationURL  string
@@ -43,14 +44,26 @@ type Transition struct {
 	At       time.Time
 }
 
+type Duration struct {
+	ProjectID tracker.ProjectID
+	AttemptID string
+	Role      string
+	Status    string
+	Seconds   float64
+	Partial   bool
+}
+
 type Snapshot struct {
-	Issues      []Issue
-	Attempts    []Attempt
-	Transitions []Transition
-	States      map[tracker.ProjectID][]tracker.NativeState
-	Sequences   map[string]int64
-	Created     map[int64]bool
-	Partial     bool
+	Durations        []Duration
+	DurationsPartial bool
+	IssuesPartial    bool
+	Issues           []Issue
+	Attempts         []Attempt
+	Transitions      []Transition
+	States           map[tracker.ProjectID][]tracker.NativeState
+	Sequences        map[string]int64
+	Created          map[int64]bool
+	Partial          bool
 }
 
 type Filter struct {

@@ -26,6 +26,7 @@ func (s *session) CreateComment(ctx context.Context, record corestore.Comment) (
 		return corestore.Comment{}, err
 	}
 	row, err := s.queries.CreateComment(ctx, pgquery.CreateCommentParams{
+		SourceRevision: record.SourceRevision, SourceScheduled: record.SourceScheduled, SourceObservedAt: record.SourceObservedAt,
 		ImportedID:           record.RecordID,
 		CreatedAt:            optionalTime(record.CreatedAt),
 		UpdatedAt:            optionalTime(record.UpdatedAt),
@@ -56,6 +57,7 @@ func (s *session) UpdateComment(ctx context.Context, record corestore.Comment) (
 		return corestore.Comment{}, err
 	}
 	row, err := s.queries.UpdateComment(ctx, pgquery.UpdateCommentParams{
+		SourceRevision: record.SourceRevision, SourceScheduled: record.SourceScheduled, SourceObservedAt: record.SourceObservedAt,
 		Sequence:             record.Sequence,
 		BodyObjectKey:        record.BodyObjectKey,
 		ActorKind:            record.ActorKind,

@@ -28,7 +28,7 @@ func TestTenantVersionRoutesWithoutLegacyDatabase(t *testing.T) {
 	service.registerNativeRoutes(service.echo)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), Local: true, CreatedAt: now}); err != nil {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org)}); err != nil {

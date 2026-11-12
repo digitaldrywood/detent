@@ -41,7 +41,6 @@ BEGIN {
     weight[module "/tools/invariantcheck"] = 1.023
     weight[module "/internal/scheduleowner"] = 1.022
     weight[module "/internal/operations"] = 1.018
-    weight[module "/internal/web/ui/primitives"] = 1.016
     weight[module "/internal/serviceapi"] = 1.015
     weight[module "/internal/isolation"] = 1.014
     weight[module "/internal/mutation"] = 1.014

@@ -3,7 +3,13 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -122,6 +128,143 @@ ORDER BY e.project_id,e.work_item_id,e.sequence LIMIT $4`, s.organization, ids, 
 	}
 	if count > eventLimit {
 		return nil, reportstore.ErrPopulationExceeded
+	}
+	return out, nil
+}
+
+func (s *session) ReadHistoryIssueEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor reportstore.HistoryEventCursor, limit int) (reportstore.HistoryEventPage, error) {
+	if err := checkPage(limit); err != nil {
+		return reportstore.HistoryEventPage{}, err
+	}
+	if project == "" || item == "" || cursor.After < 0 || cursor.Through < 0 || cursor.After > cursor.Through {
+		return reportstore.HistoryEventPage{}, corestore.ErrInvalidCursor
+	}
+	if _, err := s.WorkItem(ctx, project, item); err != nil {
+		return reportstore.HistoryEventPage{}, err
+	}
+	rows, err := s.db.Query(ctx, `WITH examined AS MATERIALIZED (
+ SELECT sequence,id,version_id,recorded_at,type,from_state,to_state FROM collaboration_events
+ WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence>$4 AND sequence<=$5
+ ORDER BY sequence LIMIT $6
+)
+SELECT e.sequence,e.id,e.version_id,e.recorded_at,e.type,e.from_state,e.to_state,
+ coalesce(f.rework_class,''),coalesce(f.rework_kind,'')
+FROM examined e LEFT JOIN report_event_facts f ON f.organization_id=$1 AND f.event_id=e.id
+ORDER BY e.sequence`, s.organization, project, item, cursor.After, cursor.Through, limit)
+	if err != nil {
+		return reportstore.HistoryEventPage{}, mapError(ctx, err)
+	}
+	defer rows.Close()
+	page := reportstore.HistoryEventPage{After: cursor.After}
+	for rows.Next() {
+		var event reportstore.WorkflowEvent
+		if err := rows.Scan(&page.After, &event.ID, &event.VersionID, &event.At, &event.Type, &event.FromState, &event.ToState, &event.Class.Name, &event.Class.Kind); err != nil {
+			return reportstore.HistoryEventPage{}, mapError(ctx, err)
+		}
+		page.Examined++
+		if event.Type == "workflow.transitioned" || event.Type == "scheduler.decision" {
+			page.Events = append(page.Events, event)
+		}
+	}
+	if err := mapError(ctx, rows.Err()); err != nil {
+		return reportstore.HistoryEventPage{}, err
+	}
+	page.Exhausted = page.Examined < limit || page.After == cursor.Through
+	return page, nil
+}
+
+func (s *session) ReadAnalyticsResidencePage(ctx context.Context, query eventstore.AnalyticsResidenceQuery) (eventstore.AnalyticsResidencePage, error) {
+	out := eventstore.AnalyticsResidencePage{States: []tracker.NativeState{}, Issues: []eventstore.AnalyticsResidenceIssue{}, Events: []eventstore.Event{}}
+	if query.ProjectID == "" || query.Limit < 1 || query.Limit > 1000 || !query.From.Before(query.To) || query.EventsAfterSequence < 0 || (query.EventsAfterItem == "") != (query.EventsAfterSequence == 0) {
+		return out, corestore.ErrInvalidPage
+	}
+	rows, err := s.db.Query(ctx, `SELECT name,terminal,dispatchable FROM project_workflow_states WHERE organization_id=$1 AND project_id=$2 ORDER BY board_rank LIMIT 51`, s.organization, query.ProjectID)
+	if err != nil {
+		return out, mapError(ctx, err)
+	}
+	for rows.Next() {
+		var state tracker.NativeState
+		if err := rows.Scan(&state.Name, &state.Terminal, &state.Dispatchable); err != nil {
+			rows.Close()
+			return out, mapError(ctx, err)
+		}
+		out.States = append(out.States, state)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return out, mapError(ctx, err)
+	}
+	rows.Close()
+	if len(out.States) > 50 {
+		return out, reportstore.ErrPopulationExceeded
+	}
+	rows, err = s.db.Query(ctx, `WITH candidates AS MATERIALIZED (
+ SELECT i.native_id,i.created_at,i.native_updated_at,i.workflow_state_name,i.archived,i.actor_principal_id
+ FROM issues i WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id>$3 ORDER BY i.native_id LIMIT $4
+ ) SELECT c.native_id,c.created_at,c.native_updated_at,c.archived,coalesce(c.actor_principal_id,''),coalesce(ws.terminal,false),coalesce(first_event.from_state,CASE WHEN creation.present THEN c.workflow_state_name END,'')
+ FROM candidates c LEFT JOIN project_workflow_states ws ON ws.organization_id=$1 AND ws.project_id=$2 AND ws.name=c.workflow_state_name
+ LEFT JOIN LATERAL(SELECT e.from_state FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=$2 AND e.work_item_id=c.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence LIMIT 1) first_event ON true
+ LEFT JOIN LATERAL(SELECT true AS present FROM collaboration_events e WHERE e.organization_id=$1 AND e.project_id=$2 AND e.work_item_id=c.native_id AND e.type='issue.created' ORDER BY e.sequence LIMIT 1) creation ON true
+ ORDER BY c.native_id`, s.organization, query.ProjectID, query.IssuesAfter, query.Limit+1)
+	if err != nil {
+		return out, mapError(ctx, err)
+	}
+	type candidate struct {
+		issue              eventstore.AnalyticsResidenceIssue
+		updated            time.Time
+		archived, terminal bool
+		principal          string
+	}
+	candidates := []candidate{}
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.issue.WorkItemID, &c.issue.CreatedAt, &c.updated, &c.archived, &c.principal, &c.terminal, &c.issue.InitialState); err != nil {
+			rows.Close()
+			return out, mapError(ctx, err)
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return out, mapError(ctx, err)
+	}
+	rows.Close()
+	out.IssuesMore = len(candidates) > query.Limit
+	candidates = candidates[:min(len(candidates), query.Limit)]
+	visible := map[tracker.NativeWorkItemID]bool{}
+	for _, c := range candidates {
+		out.IssuesAfter = c.issue.WorkItemID
+		if !c.issue.CreatedAt.Before(query.To) || c.terminal && c.updated.Before(query.From) || query.Live && c.archived && !c.terminal || query.Principal != "" && c.principal != query.Principal {
+			continue
+		}
+		visible[c.issue.WorkItemID] = true
+		out.Issues = append(out.Issues, c.issue)
+	}
+	if len(candidates) == 0 {
+		return out, nil
+	}
+	afterItem, afterSequence := query.EventsAfterItem, query.EventsAfterSequence
+	if afterItem == "" {
+		afterItem = candidates[0].issue.WorkItemID
+	}
+	rows, err = s.db.Query(ctx, `SELECT e.* FROM collaboration_events e
+ WHERE e.organization_id=$1 AND e.project_id=$2 AND (e.work_item_id,e.sequence)>($3,$4) AND e.work_item_id<=$5
+ AND (e.type='workflow.transitioned' OR e.type='scheduler.decision' AND e.scheduler_outcome='claimed')
+ ORDER BY e.work_item_id,e.sequence LIMIT $6`, s.organization, query.ProjectID, afterItem, afterSequence, candidates[len(candidates)-1].issue.WorkItemID, query.Limit+1)
+	if err != nil {
+		return out, mapError(ctx, err)
+	}
+	events, err := pgx.CollectRows(rows, pgx.RowToStructByName[pgquery.CollaborationEvent])
+	if err != nil {
+		return out, mapError(ctx, err)
+	}
+	out.EventsMore = len(events) > query.Limit
+	events = events[:min(len(events), query.Limit)]
+	for _, e := range events {
+		out.EventsAfterItem, out.EventsAfterSequence = e.WorkItemID, e.Sequence
+		if visible[e.WorkItemID] && e.RecordedAt.Before(query.To) {
+			out.Events = append(out.Events, eventRecord(e))
+		}
 	}
 	return out, nil
 }

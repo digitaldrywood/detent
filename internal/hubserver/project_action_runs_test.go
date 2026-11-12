@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -142,8 +144,17 @@ func TestProjectActionRunRefusals(t *testing.T) {
 		// A read-only workspace is one whose attempt is still running, and a
 		// command writes into the worktree the model is editing.
 		workspace := f.execWorkspace(t)
-		if _, err := f.service.database.db.ExecContext(t.Context(),
-			"UPDATE workspace_sessions SET read_only = 1 WHERE id = ?", workspace); err != nil {
+		if err := f.service.accessWrite(t.Context(), f.project.OrganizationID, func(writer tenantstore.Writer) error {
+			owner := writer.(postgres.WorkspaceWriter)
+			row, err := owner.WorkspaceSession(t.Context(), f.project.ID, workspace)
+			if err != nil {
+				return err
+			}
+			expected := row
+			row.ReadOnly = true
+			_, err = updateWorkspaceState(t.Context(), owner, row, expected, row.State, row.Reason, f.at(t))
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		requireNativeCode(t, f.postRun(t, action.ID, map[string]any{"workspace_id": workspace}),
@@ -185,11 +196,15 @@ func TestProjectActionRunOutputEndpoint(t *testing.T) {
 	})
 
 	t.Run("the stored bytes come back as text and the receipt names this path", func(t *testing.T) {
-		if _, err := f.service.database.db.ExecContext(t.Context(),
-			`UPDATE project_action_runs SET output = ?, output_bytes = ?, output_artifact = ? WHERE id = ?`,
-			"ok\nPASS\n", len("ok\nPASS\n"), path, run); err != nil {
+		var workspaceRow postgres.WorkspaceSession
+		if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
+			var err error
+			workspaceRow, err = reader.(postgres.WorkspaceReader).WorkspaceSession(t.Context(), f.project.ID, workspace)
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
+		requireNativeStatus(t, f.workerPost(t, workspace, "action-runs", workspaceActionRunReport{WorkspaceIdentity: workspaceWorkerIdentity{LeaseID: tracker.LeaseID(workspaceRow.LeaseID), FencingToken: tracker.FencingToken(workspaceRow.FencingToken)}, ActionID: action.ID, RunID: run, Status: workspacesession.RunRunning, Output: "ok\nPASS\n"}), http.StatusOK)
 		response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		if got := response.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
@@ -374,8 +389,12 @@ func TestWorkspaceWorkerActionRunReport(t *testing.T) {
 		// But it is claimed, by the runner that started it. A run that is not
 		// queued and names no executor would read as one the hub's own dispatch
 		// could still hand out.
-		row, err := readProjectActionRunByID(t.Context(), f.service.database.db, run.ID)
-		if err != nil {
+		var row postgres.ActionRun
+		if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
+			var err error
+			row, err = reader.(postgres.RelayActionReader).ActionRun(t.Context(), postgres.ActionRunInput{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: run.ID})
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.HasPrefix(row.ClaimedBy, "runner:") {

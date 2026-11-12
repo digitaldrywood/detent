@@ -2,8 +2,6 @@
 
 @source "../../internal/web/templates/**/*.templ";
 @source "../../internal/web/templates/**/*.go";
-@source "../../internal/web/ui/**/*.templ";
-@source "../../internal/web/ui/**/*.go";
 
 @font-face {
   font-family: "Geist";

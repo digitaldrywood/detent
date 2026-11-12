@@ -24,7 +24,7 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 	defer cancel()
 	now := s.config.now().UTC()
 	out := operatortool.ActivityReport{OrganizationID: s.appOrganizationID(), ObservedAt: now, Window: window, PopulationLimit: activitystore.PopulationLimit, Running: []operatortool.ActivityAttempt{}, Finished: []operatortool.ActivityAttempt{}, RunningIssues: []operatortool.ActivityIssue{}, FinishedIssues: []operatortool.ActivityIssue{}, TypicalDurations: []operatortool.ActivityTypicalDuration{}, IssueTypicalDurations: []operatortool.ActivityIssueTypical{}}
-	filter := activitystore.Filter{RunnerID: request.RunnerID, From: window.From, To: window.To, Now: now, Limit: request.Limit}
+	filter := activitystore.Filter{RunnerID: request.RunnerID, From: window.From, To: window.To, Now: now, Limit: activitystore.IssuePopulationLimit}
 	if credential.HostedRole == "reporter" {
 		filter.Principal = (nativeScope{credential: credential}).actor().PrincipalID
 		if filter.Principal == "" {
@@ -43,6 +43,7 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 		}
 		if len(projects) > 100 {
 			out.Partial = true
+			out.IssuesPartial = true
 			projects = projects[:100]
 		}
 		for _, project := range projects {
@@ -79,7 +80,8 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 	if err != nil {
 		return out, err
 	}
-	out.Partial = out.Partial || snapshot.Partial
+	out.Partial = out.Partial || snapshot.Partial || snapshot.DurationsPartial
+	out.IssuesPartial = out.IssuesPartial || snapshot.Partial || snapshot.IssuesPartial
 	out.ChangeSequences = snapshot.Sequences
 	events := []eventstore.Event{}
 	for _, attempt := range snapshot.Attempts {
@@ -94,7 +96,7 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 	for index, value := range values {
 		if err := failures[index]; err != nil {
 			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, artifact.ErrMissing) {
-				out.Partial = true
+				out.IssuesPartial = true
 				continue
 			}
 			return out, fmt.Errorf("read activity run: %w", err)
@@ -104,27 +106,45 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 		}
 	}
 	factsByIssue := map[int64]activitystore.Issue{}
+	factsByIssueByReference := map[[3]string]activitystore.Issue{}
 	for _, fact := range snapshot.Issues {
 		factsByIssue[fact.ID] = fact
+		factsByIssueByReference[[3]string{out.OrganizationID, string(fact.ProjectID), string(fact.WorkItemID)}] = fact
 	}
 	attemptsByIssue := map[int64][]activityIssueAttempt{}
+	missingAttemptTiming := map[int64]bool{}
 	typical := map[string][]activityDurationSample{}
+	timingPartial := map[string]bool{}
+	for _, fact := range snapshot.Durations {
+		project := string(fact.ProjectID)
+		typical[project] = append(typical[project], activityDurationSample{ID: fact.AttemptID, Status: fact.Status, Role: fact.Role, Seconds: fact.Seconds, Partial: fact.Partial})
+		timingPartial[project] = timingPartial[project] || fact.Partial
+		out.Partial = out.Partial || fact.Partial
+	}
 	for _, fact := range snapshot.Attempts {
 		run, hydrated := runs[fact.ID]
+		missingAttemptTiming[fact.IssueID] = missingAttemptTiming[fact.IssueID] || !hydrated
 		role := fact.Role
 		if role == "" {
 			role = activityRunRole(run)
+		}
+		runner, session := fact.RunnerID, fact.SessionID
+		if runner == "" {
+			runner = run.RunnerID
+		}
+		if run.SessionID != "" {
+			session = run.SessionID
 		}
 		end := fact.FinishedAt
 		if fact.Live {
 			end = now
 		}
-		attempt := activityIssueAttempt{run: run, started: fact.StartedAt, ended: end, role: role, runner: fact.RunnerID, session: fact.SessionID, live: fact.Live}
+		attempt := activityIssueAttempt{run: run, started: fact.StartedAt, ended: end, role: role, runner: runner, session: session, live: fact.Live}
 		attemptsByIssue[fact.IssueID] = append(attemptsByIssue[fact.IssueID], attempt)
 		if !fact.Selected {
 			continue
 		}
-		row := operatortool.ActivityAttempt{WorkItemID: string(fact.WorkItemID), Number: fact.Number, Title: fact.Title, ProjectID: string(fact.ProjectID), ProjectName: fact.ProjectName, RunnerID: fact.RunnerID, AttemptID: fact.ID, Stage: role, StartedAt: fact.StartedAt, SessionID: fact.SessionID, WorkspaceIDs: append([]string{}, factsByIssue[fact.IssueID].WorkspaceIDs...), Partial: !hydrated}
+		row := operatortool.ActivityAttempt{WorkItemID: string(fact.WorkItemID), Number: fact.Number, Title: fact.Title, ProjectID: string(fact.ProjectID), ProjectName: fact.ProjectName, RunnerID: runner, AttemptID: fact.ID, Stage: role, StartedAt: fact.StartedAt, SessionID: session, WorkspaceIDs: append([]string{}, factsByIssue[fact.IssueID].WorkspaceIDs...), Partial: !hydrated}
 		if run.Runtime != nil {
 			row.Phase = run.Runtime.Phase
 		}
@@ -133,6 +153,16 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 			if run.Finalization.Publication != nil {
 				row.PullRequestURL = run.Finalization.Publication.External.URL
 			}
+		}
+		if row.ChangeID == "" && run.Handoff != nil && run.Handoff.Change != nil {
+			row.ChangeID = run.Handoff.Change.ChangeID
+		}
+		issue := factsByIssue[fact.IssueID]
+		if row.ChangeID == "" {
+			row.ChangeID = issue.ChangeID
+		}
+		if row.PullRequestURL == "" && row.ChangeID == issue.ChangeID {
+			row.PullRequestURL = issue.PublicationURL
 		}
 		phases, dropped := activityRunPhases(run)
 		row.Partial = row.Partial || dropped > 0
@@ -148,7 +178,6 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 				finished := fact.FinishedAt
 				row.FinishedAt = &finished
 				out.Finished = append(out.Finished, row)
-				typical[row.ProjectID] = append(typical[row.ProjectID], activityDurationSample{ID: fact.ID, Status: row.Outcome, Role: role, Seconds: closedAttemptSeconds(phases), Partial: row.Partial})
 			}
 		}
 		out.Partial = out.Partial || row.Partial
@@ -176,6 +205,7 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 			issue.Partial = true
 		}
 		live := activityIssueWork(&issue, attemptsByIssue[fact.ID], now)
+		issue.Partial = issue.Partial || missingAttemptTiming[fact.ID]
 		if request.RunnerID != "" && !slices.Contains(issue.RunnerIDs, request.RunnerID) {
 			continue
 		}
@@ -201,7 +231,7 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 		}
 	}
 	for project, samples := range typical {
-		out.TypicalDurations = append(out.TypicalDurations, activityTypicalDurations(project, samples, out.Partial)...)
+		out.TypicalDurations = append(out.TypicalDurations, activityTypicalDurations(project, samples, snapshot.DurationsPartial || timingPartial[project])...)
 	}
 	for project, values := range totals {
 		item := operatortool.ActivityIssueTypical{ProjectID: project, Total: analyticsDuration(values), Lanes: map[string]operatortool.AnalyticsDuration{}, Partial: out.IssuesPartial || snapshot.Partial}
@@ -217,7 +247,7 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 		return cmp.Or(b.FinishedAt.Compare(*a.FinishedAt), cmp.Compare(a.AttemptID, b.AttemptID))
 	})
 	slices.SortFunc(out.RunningIssues, func(a, b operatortool.ActivityIssue) int {
-		return cmp.Or(cmp.Compare(a.ProjectID, b.ProjectID), cmp.Compare(a.WorkItemID, b.WorkItemID))
+		return cmp.Or(factsByIssueByReference[[3]string{out.OrganizationID, b.ProjectID, b.WorkItemID}].UpdatedAt.Compare(factsByIssueByReference[[3]string{out.OrganizationID, a.ProjectID, a.WorkItemID}].UpdatedAt), cmp.Compare(a.WorkItemID, b.WorkItemID))
 	})
 	slices.SortFunc(out.FinishedIssues, func(a, b operatortool.ActivityIssue) int {
 		return cmp.Or(b.FinishedAt.Compare(*a.FinishedAt), cmp.Compare(a.WorkItemID, b.WorkItemID))
@@ -234,8 +264,6 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 		out.FinishedIssues = out.FinishedIssues[:request.Limit]
 		out.IssuesPartial = true
 	}
-	out.IssuesPartial = out.IssuesPartial || snapshot.Partial
-	out.Partial = out.Partial || out.IssuesPartial
 	for {
 		raw, err := json.Marshal(out)
 		if err != nil {
@@ -244,20 +272,24 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 		if len(raw) <= operatortool.MaxResultBytes {
 			return out, nil
 		}
-		out.Partial = true
-		out.IssuesPartial = true
 		switch {
 		case len(out.FinishedIssues) > 0:
+			out.IssuesPartial = true
 			out.FinishedIssues = out.FinishedIssues[:len(out.FinishedIssues)/2]
 		case len(out.Finished) > 0:
+			out.Partial = true
 			out.Finished = out.Finished[:len(out.Finished)/2]
 		case len(out.RunningIssues) > 0:
+			out.IssuesPartial = true
 			out.RunningIssues = out.RunningIssues[:len(out.RunningIssues)/2]
 		case len(out.Running) > 0:
+			out.Partial = true
 			out.Running = out.Running[:len(out.Running)/2]
 		case len(out.IssueTypicalDurations) > 0:
+			out.IssuesPartial = true
 			out.IssueTypicalDurations = out.IssueTypicalDurations[:len(out.IssueTypicalDurations)/2]
 		case len(out.TypicalDurations) > 0:
+			out.Partial = true
 			out.TypicalDurations = out.TypicalDurations[:len(out.TypicalDurations)/2]
 		default:
 			return out, errHubOperatorUnavailable

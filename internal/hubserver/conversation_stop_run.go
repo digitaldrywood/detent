@@ -2,13 +2,11 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -118,62 +116,13 @@ func (s *Service) stopNativeRunCommand(ctx context.Context, scope nativeScope, r
 	if request.ProjectID != string(scope.project) || request.LeaseID == "" || !slices.Contains([]string{"Blocked", "Backlog", "Cancelled", "Todo"}, request.Destination) || len(request.Reason) > 280 || request.Priority != nil && (*request.Priority < 1 || *request.Priority > 4) {
 		return nil, operatortool.ErrInvalidArguments
 	}
-	if s.config.TenantRepository != nil {
-		raw, err := s.transitionNativeIssueTenantWithStop(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: tracker.MutationForContext(ctx, requestID).IdempotencyKey, LeaseID: request.LeaseID, FencingToken: request.FencingToken}, ExpectedRevision: request.ExpectedRevision, State: request.Destination, Reason: "user_requested", ReasonDetail: strings.TrimSpace(request.Reason)}, &request)
-		if err != nil {
-			return nil, err
-		}
-		var issue tracker.NativeIssue
-		if err := json.Unmarshal(raw, &issue); err != nil {
-			return nil, err
-		}
-		return json.Marshal(nativeStopRunReceipt{LeaseID: request.LeaseID, FencingToken: request.FencingToken, Destination: request.Destination, WorkItemID: issue.WorkItemID, Revision: issue.Revision, State: issue.State})
-	}
-	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+request.Identifier+"/stop-run"), Item: request.Identifier, Feature: "collaboration"}
-	raw, err := s.executeNativeMutation(ctx, scope, options, tracker.MutationForContext(ctx, requestID), request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		issue, internalID, err := readNativeIssue(ctx, tx, scope, request.Identifier)
-		if err != nil {
-			return nil, err
-		}
-		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
-			return nil, err
-		}
-		project, err := readNativeProject(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateNativeWorkflowTransition(project.States, issue.State, request.Destination, scope.credential.Scope); err != nil {
-			return nil, err
-		}
-		lease, found, err := readLeaseByID(ctx, tx, request.LeaseID)
-		if err != nil {
-			return nil, err
-		}
-		if !found || lease.issueID != internalID {
-			return nil, tracker.ErrLeaseNotFound
-		}
-		if err := requireCurrentLease(lease, request.FencingToken, now); err != nil {
-			return nil, err
-		}
-		if err := releaseLeaseRow(ctx, tx, lease, "cancelled", now); err != nil {
-			return nil, err
-		}
-		from := issue.State
-		issue.State = request.Destination
-		if request.Priority != nil {
-			issue.Priority = new(*request.Priority - 1)
-		}
-		updated, err := persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State, Reason: "user_requested", ReasonDetail: strings.TrimSpace(request.Reason)}, now)
-		if err != nil {
-			return nil, err
-		}
-		return nativeStopRunReceipt{LeaseID: request.LeaseID, FencingToken: request.FencingToken, Destination: request.Destination, WorkItemID: updated.WorkItemID, Revision: updated.Revision, State: updated.State}, nil
-	})
+	raw, err := s.transitionNativeIssueTenantWithStop(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: tracker.MutationForContext(ctx, requestID).IdempotencyKey, LeaseID: request.LeaseID, FencingToken: request.FencingToken}, ExpectedRevision: request.ExpectedRevision, State: request.Destination, Reason: "user_requested", ReasonDetail: strings.TrimSpace(request.Reason)}, &request)
 	if err != nil {
 		return nil, err
 	}
-	if s.conversations != nil {
-		s.conversations.leaseReleased(ctx, request.LeaseID)
+	var issue tracker.NativeIssue
+	if err := json.Unmarshal(raw, &issue); err != nil {
+		return nil, err
 	}
-	return raw, nil
+	return json.Marshal(nativeStopRunReceipt{LeaseID: request.LeaseID, FencingToken: request.FencingToken, Destination: request.Destination, WorkItemID: issue.WorkItemID, Revision: issue.Revision, State: issue.State})
 }

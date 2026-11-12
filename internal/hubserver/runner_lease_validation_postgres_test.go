@@ -38,7 +38,7 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedStartupOrganization(t, store.postgres, "org_startup")
+	seedStartupOrganization(t, store.postgres, "org_startup", cfg.Hosted)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -51,8 +51,8 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if service.database.db != nil || service.database.reader != nil {
-		t.Fatal("PostgreSQL Hub retained a SQLite reader")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 
 	const projectID tracker.ProjectID = "project_example"

@@ -1,53 +1,45 @@
 package hubserver
 
 import (
-	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestAnalyticsQualityEvidencePopulationOrder(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}})
+	scope := analyticsTestScope(t, f)
 	now := f.service.config.now().UTC().Truncate(time.Hour)
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
+	content := eventstore.NewContent(f.service.runDetailStore())
 	for index, name := range []string{"first", "second"} {
-		issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: name, Body: nativeContractTestBody, State: "Todo"}, now.Add(-time.Hour))
-		if err != nil {
-			t.Fatal(err)
-		}
-		change, version := "change-"+string(issue.WorkItemID), "version-"+string(issue.WorkItemID)
-		if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,'{}')", change, scope.organization, scope.project, issue.WorkItemID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,'{}')", version, change); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?)
-INSERT INTO change_evidence(change_id,sequence,kind,version_id,record_json)
-SELECT ?,x*2-?,'review',?,json_object('review_id',?||x,'version_id',?,'decision','changes_requested','created_at',strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||x||' seconds')) FROM n`, maxAnalyticsPopulation+2, change, 1-index, version, name+"-", version, formatHubTime(now)); err != nil {
-			t.Fatal(err)
+		issue := seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, "quality-"+name, index+1, name, "Todo", now.Add(-time.Hour))
+		change, version := seedAnalyticsTestChange(t, f.service, scope, issue.WorkItemID, "change-"+name, now.Add(-time.Hour), nil)
+		for number := 1; number <= maxAnalyticsPopulation+2; number++ {
+			review := tracker.ChangeReview{ID: fmt.Sprintf("%s-%d", name, number), VersionID: version.ID, Decision: "changes_requested", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now.Add(-time.Duration(number) * time.Second)}
+			row, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.organization, ChangeID: change.ID, Kind: "review", Sequence: int64(number*2 - 1 + index)}, historyTestJSON(t, review))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), row); return err }); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	projectTestChangeColumns(t, f.service)
 	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now, Bucket: time.Hour}
+	token := ""
 	for _, test := range []struct {
 		offset, count int
 		first, last   string
@@ -58,11 +50,11 @@ SELECT ?,x*2-?,'review',?,json_object('review_id',?||x,'version_id',?,'decision'
 		{2000, 4, "first-1001", "second-1002", true},
 	} {
 		t.Run(fmt.Sprintf("offset-%d", test.offset), func(t *testing.T) {
-			ctx, paging, err := analyticsPagingContext(t.Context(), fmt.Sprintf("quality_evidence:%d:0", test.offset))
+			ctx, paging, err := analyticsPagingContext(t.Context(), token)
 			if err != nil {
 				t.Fatal(err)
 			}
-			inputs, err := loadAnalyticsQualityInputs(ctx, f.service.database.reader, scope, w)
+			inputs, err := f.service.readAnalyticsQualityInputsTenant(ctx, scope, w)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,7 +70,8 @@ SELECT ?,x*2-?,'review',?,json_object('review_id',?||x,'version_id',?,'decision'
 			if ids[0] != test.first || ids[len(ids)-1] != test.last {
 				t.Fatalf("evidence page begins %s and ends %s", ids[0], ids[len(ids)-1])
 			}
-			if test.offset < 2000 && paging.next["quality_evidence"] != fmt.Sprintf("quality_evidence:%d:0", test.offset+maxAnalyticsPopulation) {
+			token = paging.next["quality_evidence"]
+			if (token != "") != (test.offset < 2000) {
 				t.Fatalf("evidence continuation=%v", paging.next)
 			}
 		})
@@ -176,14 +169,16 @@ func TestQualityCauseEvidence(t *testing.T) {
 
 func TestQualityEscapeApplicationAndRead(t *testing.T) {
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	f := newChangeFixture(t, newPostgresNativeService(t, Config{now: func() time.Time { return now }}))
+	details := &memoryRunDetails{}
+	f := newChangeFixture(t, newPostgresNativeService(t, Config{now: func() time.Time { return now }, RunDetails: details}))
+	scope := analyticsTestScope(t, f.nativeFixture)
 	version := f.publish(t, "v1", "")
-	landing := tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: strings.Repeat("d", 40), LandedAt: now.Add(-time.Hour), Quality: &tracker.LandingQualitySnapshot{IssueBody: "Must accept valid input", Criteria: []string{"Accept valid input"}, Evidence: []gate.CriterionEvidence{}}}
-	encoded, err := json.Marshal(landing)
+	landing := tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: strings.Repeat("d", 40), BaseRef: "develop", LandedAt: now.Add(-time.Hour), Quality: &tracker.LandingQualitySnapshot{IssueBody: "Must accept valid input", Criteria: []string{"Accept valid input"}, Evidence: []gate.CriterionEvidence{}}}
+	frozenRow, err := eventstore.NewContent(details).PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: f.issue.WorkItemID, ChangeID: f.change.ID, VersionID: version.ID}, landing)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO quality_landings (version_id,record_json) VALUES (?,?)", version.ID, encoded); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.RecordVersionLanding(t.Context(), frozenRow) }); err != nil {
 		t.Fatal(err)
 	}
 	assessment := tracker.QualityEscape{OccurrenceID: strings.Repeat("e", 40), Kind: "revert", ObservedAt: now.Add(-30 * time.Minute), Cause: "missing_criterion", EvidenceReference: "revert_commit", EvidenceQuote: "This reverts commit " + landing.MergeSHA, BasisQuote: "Must accept valid input"}
@@ -214,36 +209,90 @@ func TestQualityEscapeApplicationAndRead(t *testing.T) {
 	request := tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "unrecorded-scheduled"}, VersionID: version.ID, Body: "Infrastructure assessment", Escape: &suiteEscape}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/discussion", f.token, request), http.StatusUnprocessableEntity)
 	body := issueorigin.Stamp("Backend startup failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: strings.TrimSuffix(scheduled.RunURL, "/attempts/1"), Fingerprint: strings.Repeat("a", 64)})
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, f.issue.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
+	replaceAnalyticsTestIssueBody(t, f.service, scope, f.issue.WorkItemID, body)
 	request.IdempotencyKey = "recorded-scheduled"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/discussion", f.token, request), http.StatusOK)
 	request.IdempotencyKey = "changed-scheduled-source"
 	injected := false
-	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-		if injected || !strings.Contains(query, "FROM change_requests c JOIN issues i") {
+	request.Body = "Source edit race"
+	details.afterStore = func(ref attachment.ArchiveReference) {
+		details.mu.Lock()
+		raw := append([]byte(nil), details.data[ref.Key]...)
+		details.mu.Unlock()
+		var discussion tracker.ChangeDiscussion
+		if json.Unmarshal(raw, &discussion) != nil || discussion.Body != request.Body || discussion.Escape == nil {
 			return
 		}
-		injected = true
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='Evidence withdrawn' WHERE native_id=?", f.issue.WorkItemID); err != nil {
-			t.Fatal(err)
+		if held := f.service.config.TenantRepository.(*postgres.Repository).Stats().AcquiredConns(); held != 0 {
+			t.Fatalf("quality preparation retained %d PostgreSQL connections", held)
 		}
-	}})
-	response := httptest.NewRecorder()
-	f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, f.path+"/discussion", f.token, request).WithContext(ctx))
+		injected = true
+		details.afterStore = nil
+		replaceAnalyticsTestIssueBody(t, f.service, scope, f.issue.WorkItemID, "Evidence withdrawn")
+	}
+	defer func() { details.afterStore = nil }()
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/discussion", f.token, request)
 	requireNativeStatus(t, response, http.StatusConflict)
 	if !injected {
 		t.Fatal("scheduled evidence edit was not injected")
 	}
-	frozen, err := readChangeVersion(f.service.contentContext(t.Context()), f.service.database.db, f.change.ID, version.ID)
+	row, err := f.service.readChangeVersionRecord(t.Context(), scope.organization, f.change.ID, version.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := f.service.hydrateChangeVersion(t.Context(), scope, f.issue.WorkItemID, row)
 	if err != nil || frozen.LandingQuality == nil || frozen.LandingQuality.IssueBody != landing.Quality.IssueBody {
 		t.Fatalf("later issue edits changed landing classification context: %+v, %v", frozen.LandingQuality, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	w := operatortool.AnalyticsWindow{From: now.Add(-2 * time.Hour), To: now.Add(time.Second), Bucket: time.Hour}
-	got, err := readAnalyticsQuality(f.service.contentContext(t.Context()), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 10}, w)
+	got, err := f.service.readAnalyticsQualityTenant(t.Context(), scope, operatortool.AnalyticsRequest{Limit: 10}, w)
 	if err != nil || got.Escapes != 2 || got.LandedVersions != 1 || got.Causes["infrastructure"] != 1 || got.Causes["missing_criterion"] != 1 || got.EscapePercent == nil || *got.EscapePercent != 100 {
 		t.Fatalf("quality read = %+v, error = %v", got, err)
+	}
+}
+
+func replaceAnalyticsTestIssueBody(t *testing.T, service *Service, scope nativeScope, item tracker.NativeWorkItemID, body string) {
+	t.Helper()
+	var row corestore.WorkItem
+	var version eventstore.CollaborationVersion
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		row, err = r.WorkItem(t.Context(), scope.project, item)
+		if err != nil {
+			return err
+		}
+		version, err = r.CollaborationVersion(t.Context(), string(item), row.Revision)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := service.hydrateCanonicalWorkItemRecord(t.Context(), row, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.Body = body
+	issue.Revision++
+	issue.UpdatedAt = service.config.now().UTC().Truncate(time.Microsecond)
+	fields, err := service.prepareWorkItemFields(t.Context(), scope.organization, workItemRecordPlan{issue: issue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := eventstore.NewContent(service.runDetailStore())
+	version, err = content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, RecordID: string(item), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockWorkItemProject(t.Context(), scope.project); err != nil {
+			return err
+		}
+		row.BodyObjectKey = &fields.Body
+		if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
+			return err
+		}
+		_, err := w.CreateCollaborationVersion(t.Context(), version)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

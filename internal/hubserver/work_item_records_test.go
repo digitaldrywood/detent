@@ -1328,7 +1328,7 @@ func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := errors.Join(service.stopGitHubWebhookMaintenance(), service.stopGitHubReconciliation()); err != nil {
+	if err := service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
 	service.stopHostedBilling()
@@ -1339,9 +1339,6 @@ func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 	if service.dashboard != nil {
 		service.dashboard.stop()
 	}
-	legacyReader := service.database.reader
-	service.database.reader = nil
-	t.Cleanup(func() { service.database.reader = legacyReader })
 	fixed := nativeContractTestBody
 	response = performHubAPIRequest(t, service, http.MethodPatch, path+"/"+string(issue.WorkItemID), testHubAdminToken, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "complete-contract"}, ExpectedRevision: issue.Revision, Body: &fixed})
 	requireNativeStatus(t, response, http.StatusOK)

@@ -50,6 +50,12 @@ func (s *session) RunnerProjectSkills(ctx context.Context, project tracker.Proje
 	return reports, nil
 }
 
+func (s *session) RunnerCheckoutReport(ctx context.Context, runner string, project tracker.ProjectID) (runnerstore.CheckoutReport, error) {
+	row := runnerstore.CheckoutReport{OrganizationID: s.organization, RunnerID: runner, ProjectID: project}
+	err := s.db.QueryRow(ctx, `SELECT repository,reported_at FROM runner_checkout_repositories WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runner, project).Scan(&row.Repository, &row.ReportedAt)
+	return row, mapError(ctx, err)
+}
+
 func (s *session) RunnerCheckoutVerified(ctx context.Context, project tracker.ProjectID, repository string, now time.Time) (bool, error) {
 	if project == "" || repository == "" || now.IsZero() {
 		return false, runnerstore.ErrInvalidRecord
@@ -109,7 +115,8 @@ func (s *session) ReplaceRunnerCheckoutReport(ctx context.Context, report runner
 	}
 	_, err := s.db.Exec(ctx, `INSERT INTO runner_checkout_repositories (organization_id,runner_id,project_id,repository,reported_at)
 		VALUES ($1,$2,$3,$4,$5)
-		ON CONFLICT (organization_id,runner_id,project_id) DO UPDATE SET repository=EXCLUDED.repository,reported_at=EXCLUDED.reported_at`,
+		ON CONFLICT (organization_id,runner_id,project_id) DO UPDATE SET repository=EXCLUDED.repository,reported_at=EXCLUDED.reported_at
+		WHERE (runner_checkout_repositories.repository,runner_checkout_repositories.reported_at) IS DISTINCT FROM (EXCLUDED.repository,EXCLUDED.reported_at)`,
 		s.organization, report.RunnerID, report.ProjectID, report.Repository, report.ReportedAt)
 	return mapError(ctx, err)
 }

@@ -2,7 +2,9 @@ package postgres_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -77,6 +79,26 @@ func TestCutoverContractAtomicallyPinsSourcesAndDestinationMappings(t *testing.T
 			}
 		}
 	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, id := range []string{"first", "second"} {
+			for _, candidate := range []struct {
+				checkpoint string
+				createdAt  time.Time
+			}{
+				{strings.Repeat("f", 64), now.Add(-time.Second)},
+				{strings.Repeat("a", 64), now.Add(time.Second)},
+				{strings.Repeat("e", 64), now.Add(time.Second)},
+			} {
+				ref, err := objects.StoreDetail(t.Context(), string(org), []byte("historical receipt "+candidate.checkpoint))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO github_cutovers(organization_id,project_id,checkpoint,source_profile,expected_revision,receipt_object_key,receipt_sha256,receipt_bytes,receipt_content_bytes,actor_id,created_at) VALUES($1,$2,$3,'github_compatible',1,$4,$5,$6,$7,'example-history',$8)`, org, tracker.ProjectID("prj_"+id), candidate.checkpoint, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, candidate.createdAt); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
 	for _, test := range []struct {
 		name  string
 		input postgres.BindNeutralImportSourceInput
@@ -114,8 +136,15 @@ func TestCutoverContractAtomicallyPinsSourcesAndDestinationMappings(t *testing.T
 				if err != nil {
 					return err
 				}
-				if receipt.OrganizationID != org || receipt.SourceProfile != "github_compatible" {
+				if receipt.OrganizationID != org || receipt.ProjectID != project || receipt.Checkpoint != artifact.Digest([]byte(id)) || receipt.SourceProfile != "github_compatible" {
 					t.Fatalf("receipt=%+v", receipt)
+				}
+				latest, err := r.LatestProjectCutoverReceipt(t.Context(), postgres.LatestProjectCutoverReceiptInput{OrganizationID: org, ProjectID: project})
+				if err != nil {
+					return err
+				}
+				if latest.OrganizationID != org || latest.ProjectID != project || latest.Checkpoint != strings.Repeat("e", 64) || !latest.CreatedAt.Equal(now.Add(time.Second)) {
+					t.Fatalf("latest project receipt ignored time, checkpoint tie or scope: %+v", latest)
 				}
 				mapping, err := r.LocalImportMapping(t.Context(), postgres.LocalImportMappingInput{OrganizationID: org, ProjectID: project, SourceKey: id})
 				if err != nil {
@@ -137,4 +166,23 @@ func TestCutoverContractAtomicallyPinsSourcesAndDestinationMappings(t *testing.T
 			t.Fatal(err)
 		}
 	}
+	for _, test := range []struct {
+		name  string
+		input postgres.LatestProjectCutoverReceiptInput
+		want  error
+	}{
+		{"missing receipt", postgres.LatestProjectCutoverReceiptInput{OrganizationID: "org_first", ProjectID: "prj_absent"}, corestore.ErrNotFound},
+		{"foreign organization", postgres.LatestProjectCutoverReceiptInput{OrganizationID: "org_second", ProjectID: "prj_first"}, corestore.ErrTenantMismatch},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := repository.ReadCutover(t.Context(), "org_first", corestore.Serving, func(r postgres.CutoverReader) error {
+				_, err := r.LatestProjectCutoverReceipt(t.Context(), test.input)
+				return err
+			})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("latest receipt error=%v want=%v", err, test.want)
+			}
+		})
+	}
+
 }

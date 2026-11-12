@@ -1,0 +1,76 @@
+{
+  "packages": {
+    "internal/cli": {
+      "source_files": 140,
+      "source_lines": 39556,
+      "test_files": 151,
+      "test_lines": 47713
+    },
+    "internal/cloudentry": {
+      "source_files": 64,
+      "source_lines": 13737,
+      "test_files": 53,
+      "test_lines": 19963
+    },
+    "internal/codex": {
+      "source_files": 17,
+      "source_lines": 6264,
+      "test_files": 19,
+      "test_lines": 9350
+    },
+    "internal/config": {
+      "source_files": 24,
+      "source_lines": 8661,
+      "test_files": 27,
+      "test_lines": 7808
+    },
+    "internal/connector/github": {
+      "source_files": 33,
+      "source_lines": 9734,
+      "test_files": 24,
+      "test_lines": 10899
+    },
+    "internal/hubclient/dispatch": {
+      "source_files": 21,
+      "source_lines": 2844,
+      "test_files": 38,
+      "test_lines": 12214
+    },
+    "internal/hubclient/internal/scenariotest": {
+      "source_files": 44,
+      "source_lines": 17881,
+      "test_files": 1,
+      "test_lines": 72
+    },
+    "internal/hubserver": {
+      "source_files": 584,
+      "source_lines": 152209,
+      "test_files": 548,
+      "test_lines": 237740
+    },
+    "internal/hubserver/postgres": {
+      "source_files": 259,
+      "source_lines": 49242,
+      "test_files": 174,
+      "test_lines": 56313
+    },
+    "internal/orchestrator": {
+      "source_files": 111,
+      "source_lines": 48543,
+      "test_files": 166,
+      "test_lines": 81105
+    },
+    "internal/runner": {
+      "source_files": 66,
+      "source_lines": 23619,
+      "test_files": 80,
+      "test_lines": 35131
+    },
+    "internal/workspace": {
+      "source_files": 47,
+      "source_lines": 14947,
+      "test_files": 41,
+      "test_lines": 19536
+    }
+  }
+}

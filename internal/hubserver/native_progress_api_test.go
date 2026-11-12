@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -14,12 +13,16 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -30,57 +33,42 @@ import (
 
 type progressPublicationContextKey struct{}
 
-type progressPublicationConnector struct {
-	timedConnector
+type progressPublicationRepository struct {
+	*postgres.Repository
 	before  bool
+	fired   bool
 	observe func() error
 }
 
-func (c progressPublicationConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := c.timedConnector.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &progressPublicationConn{timedConn: conn.(*timedConn), probe: c}, nil
-}
-
-type progressPublicationConn struct {
-	*timedConn
-	probe progressPublicationConnector
-}
-
-func (c *progressPublicationConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	count, marked := ctx.Value(progressPublicationContextKey{}).(*int)
-	if !marked || !strings.HasPrefix(query, "SELECT progress_evidence_revision FROM issues") && !strings.HasPrefix(query, "SELECT event_sequence + progress_evidence_revision FROM issues") {
-		return c.timedConn.QueryContext(ctx, query, args)
-	}
-	*count++
-	if *count != 2 {
-		return c.timedConn.QueryContext(ctx, query, args)
-	}
-	if c.probe.before {
-		if err := c.probe.observe(); err != nil {
-			return nil, err
-		}
-		return c.timedConn.QueryContext(ctx, query, args)
-	}
-	rows, err := c.timedConn.QueryContext(ctx, query, args)
-	if err != nil {
-		return nil, err
-	}
-	return &progressPublicationRows{Rows: rows, observe: c.probe.observe}, nil
-}
-
-type progressPublicationRows struct {
-	driver.Rows
-	observe func() error
-}
-
-func (r *progressPublicationRows) Close() error {
-	if err := r.Rows.Close(); err != nil {
+func (r *progressPublicationRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, use func(tenantstore.Reader) error) error {
+	if err := r.Repository.ReadTenantSnapshot(ctx, organization, workload, use); err != nil {
 		return err
 	}
+	reads, marked := ctx.Value(progressPublicationContextKey{}).(*int)
+	if !marked {
+		return nil
+	}
+	(*reads)++
+	if !r.before || r.fired {
+		return nil
+	}
+	r.fired = true
 	return r.observe()
+}
+
+func (r *progressPublicationRepository) beforeWrite(ctx context.Context) error {
+	reads, marked := ctx.Value(progressPublicationContextKey{}).(*int)
+	if !marked || r.before || r.fired || *reads < 1 {
+		return nil
+	}
+	r.fired = true
+	return r.observe()
+}
+func (r *progressPublicationRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, use func(tenantstore.Writer) error) error {
+	if err := r.beforeWrite(ctx); err != nil {
+		return err
+	}
+	return r.Repository.WriteTenant(ctx, organization, workload, use)
 }
 
 type progressPublicationTransport func(*http.Request) (*http.Response, error)
@@ -190,6 +178,9 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			boundary := test.name
 			overlap := strings.HasSuffix(boundary, "guard")
 			f := newDispatchGuardFixture(t)
+			installReportsBudgetTrace(t, f.service)
+			admin := hostedPostgresAdmin(t, f.service)
+			scope := analyticsTestScope(t, f.nativeFixture)
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes", testHubAdminToken, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "progress-source"}, Title: "Retained progress source"})
 			requireNativeStatus(t, response, http.StatusOK)
@@ -215,12 +206,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				}
 				f.release(t)
 			}
-			if test.staleRunning > 0 {
-				plan := explainQueryPlan(t, f.service.database.reader, nativeProgressAttemptsSQL, []any{f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, progresscheck.MaxAttempts})
-				if joined := strings.Join(plan, "\n"); !strings.Contains(joined, "USING INDEX native_attempts_progress_terminal") || strings.Contains(joined, "TEMP B-TREE") {
-					t.Fatalf("terminal history lookup is not indexed and bounded: %v", plan)
-				}
-			}
+
 			citation := f.attempt
 			retrieve := strings.HasPrefix(test.name, "retrieved")
 			if test.name == "retrieved older attempt" {
@@ -303,9 +289,39 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			execution := scheduler.RunExecution(claim.Issue.ID)
-			beforeTransition, _, err := f.service.nativeProgressRequest(t.Context(), f.scope(), string(f.issue.WorkItemID), f.policy, "conversation-machine")
+			var sourceMu sync.Mutex
+			var sourceStatements []tracedStatement
+			sourceTiming := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+				values := make([]any, len(args))
+				for i, arg := range args {
+					values[i] = arg.Value
+				}
+				sourceMu.Lock()
+				sourceStatements = append(sourceStatements, tracedStatement{query, values})
+				sourceMu.Unlock()
+			}}
+			beforeTransition, _, err := f.service.nativeProgressRequest(withRequestTiming(t.Context(), sourceTiming), scope, string(f.issue.WorkItemID), f.policy, "conversation-machine")
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.staleRunning > 0 {
+				sourceMu.Lock()
+				captured := append([]tracedStatement(nil), sourceStatements...)
+				sourceMu.Unlock()
+				found := false
+				for _, statement := range captured {
+					if !strings.Contains(statement.query, "FROM native_attempts") || !strings.Contains(statement.query, "fencing_token DESC") || !strings.HasPrefix(statement.query, "-- name: PageIssueAttempts :many") {
+						continue
+					}
+					found = true
+					plan, raw := reportsExplainPostgresPlan(t, admin, scope.organization, statement)
+					if violations := reportsBudgetPlanViolations(statement, plan); len(violations) > 0 {
+						t.Fatalf("terminal history lookup is not indexed and bounded: %v plan=%s", violations, raw)
+					}
+				}
+				if !found {
+					t.Fatal("progress request did not execute the actual bounded attempt-page owner")
+				}
 			}
 			current := f.reload(t)
 			native, err := client.Native(f.project.OrganizationID, f.project.ID)
@@ -324,7 +340,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				t.Fatalf("workflow transition changed progress evidence: before=%+v after=%+v", beforeTransition, request)
 			}
 			var attempts int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE work_item_id=?", f.issue.WorkItemID).Scan(&attempts); err != nil || attempts != test.attempts {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3", scope.organization, scope.project, f.issue.WorkItemID).Scan(&attempts); err != nil || attempts != test.attempts {
 				t.Fatalf("evidence fetch started the check execution: attempts=%d err=%v", attempts, err)
 			}
 			if len(request.Attempts) != min(test.attempts-test.staleRunning, progresscheck.MaxAttempts) {
@@ -366,19 +382,20 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			}
 			observed := 0
 			if overlap {
-				original := f.service.database.reader
-				f.service.database.reader = sql.OpenDB(progressPublicationConnector{timedConnector: timedConnector{dsn: sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout), driver: original.Driver()}, before: boundary == "construction guard", observe: func() error {
+				original, ok := f.service.config.TenantRepository.(*postgres.Repository)
+				if !ok {
+					t.Fatal("progress publication requires the PostgreSQL owner")
+				}
+				f.service.config.TenantRepository = &progressPublicationRepository{Repository: original, before: boundary == "construction guard", observe: func() error {
 					observed++
-					if observed == 1 {
-						response := httptest.NewRecorder()
-						f.service.Handler().ServeHTTP(response, deferred)
-						if response.Code != http.StatusOK {
-							return fmt.Errorf("deliver deferred usage: status %d", response.Code)
-						}
+					response := httptest.NewRecorder()
+					f.service.Handler().ServeHTTP(response, deferred)
+					if response.Code != http.StatusOK {
+						return fmt.Errorf("deliver deferred usage: status %d", response.Code)
 					}
 					return nil
-				}})
-				t.Cleanup(func() { _ = original.Close() })
+				}}
+				t.Cleanup(func() { f.service.config.TenantRepository = original })
 			}
 			id, err := request.ID()
 			if err != nil {
@@ -400,7 +417,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 					candidate.Evidence = []string{invalid.citation}
 					candidate.Diagnosis = invalid.citation + ": assertion still returns the old value"
 					candidate.RetrievedEvidence = []progresscheck.EvidenceReference{{ID: invalid.citation, AttemptID: recordID}}
-					direct := nativeProgressOwner{service: f.service, scope: f.scope(), request: candidateRequest}
+					direct := nativeProgressOwner{service: f.service, scope: scope, request: candidateRequest}
 					if _, err := direct.Publish(t.Context(), progresscheck.Record{RequestID: candidateID, ProjectID: candidateRequest.ProjectID, IssueID: candidateRequest.IssueID, EvidenceRevision: candidateRequest.EvidenceRevision, Decision: candidate}); err == nil {
 						t.Fatalf("%s was published", invalid.name)
 					}
@@ -435,10 +452,14 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				t.Fatalf("publication observed %d boundary events", observed)
 			}
 			var attemptID string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM native_attempts WHERE work_item_id=? AND status='running' ORDER BY fencing_token DESC LIMIT 1", f.issue.WorkItemID).Scan(&attemptID); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT a.id FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3 AND a.status='running' ORDER BY a.fencing_token DESC LIMIT 1", scope.organization, scope.project, f.issue.WorkItemID).Scan(&attemptID); err != nil {
 				t.Fatal(err)
 			}
-			attempt, err := readNativeAttemptRecord(f.service.runDetailContext(t.Context()), f.service.database.reader, f.scope(), string(f.issue.WorkItemID), attemptID, f.now)
+			snapshot, err := f.service.readNativeAttemptSnapshotTenant(t.Context(), scope, string(f.issue.WorkItemID), attemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := f.service.readNativeAttemptRunTenant(t.Context(), snapshot)
 			if err != nil || len(attempt.Usage) != 1 || attempt.Usage[0].Input != 10 || attempt.Usage[0].Output != 1 {
 				t.Fatalf("real check did not publish its usage: attempt=%+v err=%v", attempt, err)
 			}
@@ -482,6 +503,8 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDispatchGuardFixture(t)
+			scope := analyticsTestScope(t, f.nativeFixture)
+			admin := hostedPostgresAdmin(t, f.service)
 			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{
 				Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed",
 				TerminalFailure: &tracker.NativeTerminalFailure{Error: "422: landing requires security audit evidence for its exact base and head", ErrorClass: "publication", Stage: "publication", ObservedAt: f.now},
@@ -607,7 +630,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 					t.Fatal("stale evidence or released authority published decision")
 				}
 				var count int
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_progress_decisions WHERE work_item_id=?", f.issue.WorkItemID).Scan(&count); err != nil {
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE organization_id=$1 AND actor_id=$2 AND operation=$3", scope.organization, nativeProgressReceiptActor, nativeProgressReceiptOperation(scope, string(f.issue.WorkItemID))).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				if count != 0 {
@@ -622,8 +645,12 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			if err != nil || replayID != id || replay.Record == nil {
 				t.Fatalf("decision self-invalidated: id=%s want=%s record=%+v err=%v", replayID, id, replay.Record, err)
 			}
-			var comments int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", f.issue.WorkItemID).Scan(&comments); err != nil {
+			comments := 0
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				rows, err := reader.SelectComments(t.Context(), scope.project, f.issue.WorkItemID, int64(1<<63-1), true, corestore.MaxPageSize)
+				comments = len(rows)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 			wantComments := 1

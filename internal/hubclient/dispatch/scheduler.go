@@ -7,10 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"net/http"
-	"net/url"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,8 +108,6 @@ type Scheduler struct {
 	sessionID             func() (string, error)
 	mu                    sync.Mutex
 	nativeHeartbeatMu     map[tracker.ProjectID]*sync.Mutex
-	registered            bool
-	lastHeartbeat         time.Time
 	claims                map[string]tracker.Lease
 	leaseHold             func(context.Context) (func(), error)
 	leaseHoldRelease      func()
@@ -215,65 +210,14 @@ func (s *Scheduler) WorkspaceStorageConstraint(ctx context.Context) string {
 }
 
 func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	source := s.nativeProject(request.ProjectID)
+	if source == nil {
+		return nil, fmt.Errorf("project %q is not mapped to a Hub-native project; generic Hub tracker mode was removed", request.ProjectID)
+	}
 	if err := s.CheckProjectPolicy(ctx, request.ProjectID, request.Repository, request.Policy); err != nil {
 		return nil, schedulingError(err)
 	}
-	if source := s.nativeProject(request.ProjectID); source != nil {
-		return s.fetchNativeCandidate(ctx, request, source)
-	}
-	if err := s.ensureMachine(ctx); err != nil {
-		return nil, schedulingError(err)
-	}
-	sessionID, err := s.sessionID()
-	if err != nil {
-		return nil, fmt.Errorf("create Hub claim session: %w", err)
-	}
-	claimRequest := ClaimRequest{
-		PolicyID:  request.Policy.ID,
-		MachineID: s.machine.ID, SessionID: sessionID, TTLSeconds: int64(s.leaseTTL / time.Second),
-		WorkflowState: append([]string(nil), request.WorkflowStates...),
-		Authors:       append([]string(nil), request.Filter.Authors...),
-		Assignees:     append([]string(nil), request.Filter.Assignees...),
-		LabelInclude:  append([]string(nil), request.Filter.LabelInclude...),
-		LabelExclude:  append([]string(nil), request.Filter.LabelExclude...),
-	}
-	if repository := strings.TrimSpace(request.Repository); repository != "" {
-		claimRequest.Repositories = []string{repository}
-	}
-	var releaseAdmission func()
-	if request.CandidateAdmission != nil {
-		var allowed bool
-		releaseAdmission, allowed = request.CandidateAdmission(connector.Issue{})
-		if !allowed {
-			return s.fetchLegacyContinuation(ctx, request, claimRequest)
-		}
-	}
-	lease, err := s.client.Claim(ctx, claimRequest)
-	if releaseAdmission != nil {
-		releaseAdmission()
-	}
-	if errors.Is(err, ErrNoClaimableWork) {
-		return []connector.Issue{}, nil
-	}
-	if err != nil {
-		return nil, schedulingError(err)
-	}
-	item, err := s.client.WorkItem(ctx, lease.WorkItemID)
-	if err != nil {
-		return nil, s.releaseAfterCandidateFailure(ctx, lease, "work_item_hydration_failed", schedulingError(err))
-	}
-	issue := issueFromWorkItem(item)
-	if issue.ID == "" {
-		return nil, s.releaseAfterCandidateFailure(ctx, lease, "work_item_identity_missing", errors.New("hub work item has no GitHub node ID"))
-	}
-	s.mu.Lock()
-	s.claims[issue.ID] = lease
-	s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
-	s.mu.Unlock()
-	if request.CandidateAdmitted != nil {
-		request.CandidateAdmitted(issue)
-	}
-	return []connector.Issue{issue}, nil
+	return s.fetchNativeCandidate(ctx, request, source)
 }
 
 func (s *Scheduler) PrepareProject(ctx context.Context, project string) error {
@@ -331,13 +275,6 @@ func (s *Scheduler) AdoptClaim(ctx context.Context, issue connector.Issue, _ tim
 	return claimedIssue(issue, lease), nil
 }
 
-func (s *Scheduler) releaseAfterCandidateFailure(ctx context.Context, lease tracker.Lease, reason string, cause error) error {
-	if err := s.client.Release(context.WithoutCancel(ctx), lease, reason); err != nil {
-		return errors.Join(cause, fmt.Errorf("release Hub claim after %s: %w", reason, err))
-	}
-	return cause
-}
-
 func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time) (orchestrator.Claimed, error) {
 	s.mu.Lock()
 	native, isNative := s.nativeClaims[issueID]
@@ -356,36 +293,7 @@ func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time)
 		}
 		return s.renewNativeClaim(ctx, issueID, native, 0)
 	}
-	if strings.HasPrefix(issueID, "wi_") {
-		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
-	}
-	if err := s.ensureMachine(ctx); err != nil {
-		return orchestrator.Claimed{}, err
-	}
-	s.mu.Lock()
-	lease, ok := s.claims[strings.TrimSpace(issueID)]
-	s.mu.Unlock()
-	if !ok {
-		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
-	}
-	if err := s.checkClaimPolicy(ctx, issueID, lease.PolicyID); err != nil {
-		return orchestrator.Claimed{}, errors.Join(orchestrator.ErrSchedulingClaimLost, err)
-	}
-	renewed, err := s.client.Renew(ctx, lease, s.leaseTTL)
-	if err != nil {
-		if claimLost(err) {
-			s.mu.Lock()
-			delete(s.claims, strings.TrimSpace(issueID))
-			s.mu.Unlock()
-			return orchestrator.Claimed{}, errors.Join(orchestrator.ErrSchedulingClaimLost, err)
-		}
-		return orchestrator.Claimed{}, err
-	}
-	s.mu.Lock()
-	s.claims[strings.TrimSpace(issueID)] = renewed
-	s.mu.Unlock()
-	issue := connector.Issue{ID: strings.TrimSpace(issueID)}
-	return claimedIssue(issue, renewed), nil
+	return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
 }
 
 func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now time.Time) (orchestrator.Claimed, error) {
@@ -455,27 +363,19 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		native.execution.RetainCompletion()
 	}
 	s.mu.Unlock()
-	if !ok {
-		// A missing native publisher cannot prove prepared Finish settled.
-		if strings.HasPrefix(issueID, "wi_") {
-			return runner.ErrExecutionAuthorityUnavailable
-		}
-		return nil
+	if !ok || !isNative {
+		return runner.ErrExecutionAuthorityUnavailable
 	}
 	var err error
-	if isNative {
-		if native.execution != nil {
-			err = native.execution.FinishPrepared(ctx, reason)
-			var rejection interface{ CompletionRejected() }
-			if err != nil && !errors.As(err, &rejection) {
-				return err
-			}
+	if native.execution != nil {
+		err = native.execution.FinishPrepared(ctx, reason)
+		var rejection interface{ CompletionRejected() }
+		if err != nil && !errors.As(err, &rejection) {
+			return err
 		}
-		if native.execution == nil {
-			err = native.source.NativeClient().Release(ctx, native.lease, "released")
-		}
-	} else {
-		err = s.client.Release(ctx, lease, reason)
+	}
+	if native.execution == nil {
+		err = native.source.NativeClient().Release(ctx, native.lease, "released")
 	}
 	var rejection interface{ CompletionRejected() }
 	if err != nil && !claimLost(err) && !errors.As(err, &rejection) {
@@ -494,110 +394,6 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		return err
 	}
 	return nil
-}
-
-func (s *Scheduler) ensureMachine(ctx context.Context) error {
-	s.controlMu.RLock()
-	defer s.controlMu.RUnlock()
-	if s.controlPaused.Load() {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := s.now().UTC()
-	if !s.registered {
-		registered, err := s.client.RegisterMachine(ctx, s.machine)
-		if err != nil {
-			return err
-		}
-		s.machine = registered
-		s.registered = true
-		s.lastHeartbeat = now
-		return nil
-	}
-	if now.Before(s.lastHeartbeat.Add(s.heartbeatInterval)) {
-		return nil
-	}
-	displayName := s.machine.DisplayName
-	capabilities := s.machine.Capabilities
-	capacity := s.machine.Capacity
-	version := s.machine.Version
-	updated, err := s.client.HeartbeatMachine(ctx, s.machine.ID, MachineHeartbeat{
-		DisplayName: &displayName, Capabilities: &capabilities, Capacity: &capacity, Version: &version,
-	})
-	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound && apiErr.Code == "machine_not_found" {
-			s.registered = false
-			registered, registerErr := s.client.RegisterMachine(ctx, s.machine)
-			if registerErr != nil {
-				return registerErr
-			}
-			s.machine = registered
-			s.registered = true
-			s.lastHeartbeat = now
-			return nil
-		}
-		return err
-	}
-	s.machine = updated
-	s.lastHeartbeat = now
-	return nil
-}
-
-func issueFromWorkItem(item WorkItem) connector.Issue {
-	issue := connector.NewIssue()
-	issue.ID = strings.TrimSpace(item.GitHub.NodeID)
-	issue.Identifier = strings.TrimSpace(item.Repository.Owner) + "/" + strings.TrimSpace(item.Repository.Name) + "#" + strconv.Itoa(item.GitHub.Number)
-	issue.Number = item.GitHub.Number
-	issue.Title = item.Title
-	issue.Description = strings.TrimSpace(item.Body)
-	if issue.Description == "" {
-		issue.Description = item.BodyExcerpt
-	}
-	issue.URL = item.URL
-	issue.Closed = item.SourceState == tracker.SourceStateClosed
-	issue.AuthorID = item.AuthorID
-	issue.Labels = append([]string(nil), item.Labels...)
-	issue.Assignees = append([]string(nil), item.Assignees...)
-	issue.CreatedAt = cloneTime(item.CreatedAt)
-	issue.UpdatedAt = cloneTime(item.UpdatedAt)
-	issue.AssignedToWorker = true
-	issue.Fields[hubWorkItemField] = strconv.FormatInt(int64(item.ID), 10)
-	issue.Metadata[hubWorkItemField] = strconv.FormatInt(int64(item.ID), 10)
-	issue.Metadata["hub_sync_status"] = string(item.SyncStatus)
-	if item.SourceSyncedAt != nil {
-		issue.Metadata["hub_source_synced_at"] = item.SourceSyncedAt.UTC().Format(time.RFC3339)
-	}
-	if item.WorkflowState != nil {
-		issue.State = item.WorkflowState.Name
-	}
-	if item.Queue != nil && item.Queue.PriorityRank != nil {
-		priority := *item.Queue.PriorityRank + 1
-		issue.Priority = &priority
-		issue.PriorityName = queuePriorityName(*item.Queue.PriorityRank)
-	}
-	for _, blocker := range item.Blockers {
-		state := ""
-		if blocker.WorkflowState != nil {
-			state = blocker.WorkflowState.Name
-		}
-		issue.BlockedBy = append(issue.BlockedBy, connector.BlockedRef{
-			ID: strconv.FormatInt(int64(blocker.ID), 10), Identifier: blocker.Repository + "#" + strconv.Itoa(blocker.IssueNumber),
-			State: state, TrackerState: string(blocker.SourceState), Source: connector.BlockedRefSourceNative,
-		})
-	}
-	if len(item.PullRequests) > 0 {
-		pull := item.PullRequests[0]
-		issue.PRNumber = intPointer(pull.Number)
-		issue.PRRepository = strings.TrimSpace(item.Repository.Owner) + "/" + strings.TrimSpace(item.Repository.Name)
-		issue.PullRequest = &connector.PullRequest{
-			NodeID: pull.GitHubNodeID, Number: pull.Number, URL: pull.URL, BranchName: pull.HeadRef,
-			BaseRef: pull.BaseRef, State: pull.State, Draft: pull.Draft, HeadSHA: pull.HeadSHA, BaseSHA: pull.BaseSHA,
-			CIStatus: pull.Checks.Status, CheckRunCount: pull.Checks.Total, CodexReviewState: pull.Reviews.Decision,
-		}
-	}
-	return issue
 }
 
 func schedulingError(err error) error { return claim.SchedulingError(err) }
@@ -630,67 +426,6 @@ func (s *Scheduler) SetProjectConfigurationOwner(owner func(context.Context, str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.projectConfiguration = owner
-}
-
-func (s *Scheduler) fetchLegacyContinuation(ctx context.Context, request orchestrator.SchedulingRequest, claim ClaimRequest) ([]connector.Issue, error) {
-	query := url.Values{"limit": {"200"}}
-	if request.Repository != "" {
-		query.Set("repository", request.Repository)
-	}
-	for _, state := range request.WorkflowStates {
-		query.Add("workflow_state", state)
-	}
-	for {
-		var page struct {
-			Items      []tracker.WorkItem `json:"items"`
-			NextCursor string             `json:"next_cursor"`
-		}
-		if err := s.client.Request(ctx, http.MethodGet, "/api/v1/work-items?"+query.Encode(), nil, &page); err != nil {
-			return nil, schedulingError(err)
-		}
-		for _, item := range page.Items {
-			issue := issueFromWorkItem(WorkItem{WorkItem: item})
-			if request.CandidateKnownWait != nil && request.CandidateKnownWait(issue) {
-				continue
-			}
-			if request.CandidateReady != nil && !request.CandidateReady(ctx, issue) {
-				continue
-			}
-			release, allowed := request.CandidateAdmission(issue)
-			if !allowed {
-				continue
-			}
-			claim.WorkItemID = item.ID
-			lease, err := s.client.Claim(ctx, claim)
-			release()
-			if errors.Is(err, ErrNoClaimableWork) {
-				continue
-			}
-			if err != nil {
-				return nil, schedulingError(err)
-			}
-			current, err := s.client.WorkItem(ctx, lease.WorkItemID)
-			if err != nil {
-				return nil, s.releaseAfterCandidateFailure(ctx, lease, "work_item_hydration_failed", schedulingError(err))
-			}
-			issue = issueFromWorkItem(current)
-			if issue.ID == "" {
-				return nil, s.releaseAfterCandidateFailure(ctx, lease, "work_item_identity_missing", errors.New("hub work item has no GitHub node ID"))
-			}
-			s.mu.Lock()
-			s.claims[issue.ID] = lease
-			s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
-			s.mu.Unlock()
-			if request.CandidateAdmitted != nil {
-				request.CandidateAdmitted(issue)
-			}
-			return []connector.Issue{issue}, nil
-		}
-		if page.NextCursor == "" || page.NextCursor == query.Get("cursor") {
-			return []connector.Issue{}, nil
-		}
-		query.Set("cursor", page.NextCursor)
-	}
 }
 
 func (s *Scheduler) nativeProject(project string) *NativeConnector {

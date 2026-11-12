@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -17,7 +17,7 @@ import (
 func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credential apiCredential, view *hostedFleetRunner, runner runnerauth.Runner, visible map[tracker.ProjectID]bool) error {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	facts, err := readMachineSpriteFacts(readCtx, s.database.reader, runner.OrganizationID, runner.MachineID)
+	facts, err := s.readSpriteMachineFacts(readCtx, runner.OrganizationID, runner.MachineID)
 	if err != nil {
 		return err
 	}
@@ -35,8 +35,8 @@ func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credenti
 				continue
 			}
 			scope := nativeScope{organization: runner.OrganizationID, project: project, credential: credential}
-			scope, organization, envelope, err := resolveSpritesSecret(ctx, s.database.reader, scope)
-			if errors.Is(err, sql.ErrNoRows) {
+			scope, organization, envelope, err := s.resolveSpritesSecret(ctx, nil, scope)
+			if errors.Is(err, corestore.ErrNotFound) {
 				continue
 			}
 			if err != nil {

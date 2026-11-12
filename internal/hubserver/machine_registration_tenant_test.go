@@ -25,6 +25,7 @@ import (
 
 func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
 	repository := projectRecordPostgres(t)
+	runnerID, machineID := "runner_"+strings.Repeat("a", 32), "machine_"+strings.Repeat("b", 32)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.Default(), now: func() time.Time { return now }}}
 	e := echo.New()
@@ -47,14 +48,14 @@ func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
 					return err
 				}
 			}
-			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: "machine", Hostname: "example", DisplayName: "Original", Capacity: 5, Version: "old"}); err != nil {
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: machineID, Hostname: "example", DisplayName: "Original", Capacity: 5, Version: "old"}); err != nil {
 				return err
 			}
 			operations := []string{runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim}
-			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "enrollment", RunnerID: "runner", MachineID: "machine", TokenHash: apikey.HashToken(string(org) + "_enrollment"), Scope: "organization", Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example"}); err != nil {
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "enrollment", RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenHash: apikey.HashToken(string(org) + "_enrollment"), Scope: "organization", Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example"}); err != nil {
 				return err
 			}
-			return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: "runner", MachineID: "machine", TokenID: "runner", EnrollmentID: "enrollment", Scope: "organization", Operations: operations, DisplayName: "Example runner", CapacityLimit: 4, ReportedCapacity: 1, OS: "linux", Architecture: "amd64", CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
+			return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenID: "runner", EnrollmentID: "enrollment", Scope: "organization", Operations: operations, DisplayName: "Example runner", CapacityLimit: 4, ReportedCapacity: 1, OS: "linux", Architecture: "amd64", CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -70,7 +71,7 @@ func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
 				e.ServeHTTP(rec, req)
 				return rec
 			}
-			body := `{"id":"machine","hostname":"ignored","display_name":"ignored","capacity":3,"version":"0.177.4","os":"linux","architecture":"amd64","backend_isolation":{"example":["sandbox"]},"workspace_capabilities":{"terminal":true,"files":true},"workspace_isolation":"sandbox","checkout_repository":"owner/repository","skills":[{"name":"example","scope":"project","invocation":"$example"}],"provider_reports":[{"backend":"example","provider":"example","account_alias":"example","billing":"api_key","availability":"available","models":["example"],"observed_at":"` + now.Format(time.RFC3339Nano) + `"}]}`
+			body := `{"id":"` + machineID + `","hostname":"ignored","display_name":"ignored","capacity":3,"version":"0.177.4","os":"linux","architecture":"amd64","backend_isolation":{"example":["sandbox"]},"workspace_capabilities":{"terminal":true,"files":true},"workspace_isolation":"sandbox","checkout_repository":"owner/repository","skills":[{"name":"example","scope":"project","invocation":"$example"}],"provider_reports":[{"backend":"example","provider":"example","account_alias":"example","billing":"api_key","availability":"available","models":["example"],"observed_at":"` + now.Format(time.RFC3339Nano) + `"}]}`
 			for range 2 {
 				rec := call(org+"_runner", body)
 				if rec.Code != http.StatusOK {
@@ -80,7 +81,7 @@ func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
 				if err := json.Unmarshal(rec.Body.Bytes(), &snapshot); err != nil {
 					t.Fatal(err)
 				}
-				if snapshot.RunnerID != "runner" || snapshot.ClaimState == nil || snapshot.ClaimState.HostCapacity != 5 || snapshot.ClaimState.RunnerCapacity != 3 {
+				if snapshot.RunnerID != runnerID || snapshot.ClaimState == nil || snapshot.ClaimState.HostCapacity != 5 || snapshot.ClaimState.RunnerCapacity != 3 {
 					t.Fatalf("routing=%+v", snapshot)
 				}
 			}
@@ -92,7 +93,7 @@ func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
 				token, body string
 				status      int
 			}{
-				{org + "_runner", strings.Replace(body, `"id":"machine"`, `"id":"different"`, 1), http.StatusNotFound},
+				{org + "_runner", strings.Replace(body, `"id":"`+machineID+`"`, `"id":"different"`, 1), http.StatusNotFound},
 				{"invalid", body, http.StatusUnauthorized},
 				{otherToken, body, http.StatusUnauthorized},
 				{org + "_worker", body, http.StatusUnprocessableEntity},
@@ -105,35 +106,35 @@ func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
 				}
 			}
 			if err := repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
-				machine, err := r.Machine(t.Context(), "machine")
+				machine, err := r.Machine(t.Context(), machineID)
 				if err != nil {
 					return err
 				}
 				if machine.DisplayName != "Original" || machine.Capacity != 5 || machine.Version != "0.177.4" {
 					t.Errorf("machine=%+v", machine)
 				}
-				reports, err := r.RunnerProviderReports(t.Context(), "runner")
+				reports, err := r.RunnerProviderReports(t.Context(), runnerID)
 				if err != nil {
 					return err
 				}
 				if len(reports) != 1 {
 					t.Errorf("reports=%+v", reports)
 				}
-				skills, err := r.RunnerProjectSkills(t.Context(), "project", "runner", now, 100)
+				skills, err := r.RunnerProjectSkills(t.Context(), "project", runnerID, now, 100)
 				if err != nil {
 					return err
 				}
 				if len(skills) != 1 {
 					t.Errorf("skills=%+v", skills)
 				}
-				capabilities, isolation, err := r.RunnerWorkspaceReport(t.Context(), "runner")
+				capabilities, isolation, err := r.RunnerWorkspaceReport(t.Context(), runnerID)
 				if err != nil {
 					return err
 				}
 				if !capabilities.Terminal || !capabilities.Files || isolation != "sandbox" {
 					t.Errorf("workspace=%+v isolation=%s", capabilities, isolation)
 				}
-				backends, err := r.RunnerBackendIsolation(t.Context(), "runner")
+				backends, err := r.RunnerBackendIsolation(t.Context(), runnerID)
 				if err != nil {
 					return err
 				}

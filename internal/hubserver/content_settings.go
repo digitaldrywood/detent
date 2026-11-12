@@ -2,10 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"net/http"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -22,18 +19,14 @@ func (s *Service) getCloudContentSettings(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
-	if s.config.TenantRepository != nil {
-		record, err := s.readProjectRecord(ctx, scope)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, projectsettings.Content{Revision: tracker.Revision(record.Core.ContentSettingsRevision), RequireVisualAttachments: record.Settings.RequireVisualAttachments})
+	if s.config.TenantRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
 	}
-	value, err := projectsettings.ReadContent(ctx, s.database.reader, scope.organization, scope.project)
+	record, err := s.readProjectRecord(ctx, scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, value)
+	return c.JSON(http.StatusOK, projectsettings.Content{Revision: tracker.Revision(record.Core.ContentSettingsRevision), RequireVisualAttachments: record.Settings.RequireVisualAttachments})
 }
 
 func (s *Service) updateCloudContentSettings(c echo.Context) error {
@@ -44,11 +37,13 @@ func (s *Service) updateCloudContentSettings(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
-		value, err := projectsettings.UpdateContent(ctx, tx, scope.organization, scope.project, request.ContentChange)
-		if errors.Is(err, projectsettings.ErrConflict) {
-			return nil, nativeConflict(value.Revision)
-		}
-		return value, err
-	})
+	if s.config.TenantRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
+	options := nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Feature: hostedMutationFeature(c)}
+	raw, err := s.executeProjectRecordMutation(c.Request().Context(), scope, options, request.Mutation, request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, raw)
 }

@@ -14,7 +14,9 @@ import (
 const createGitHubImportRecord = `-- name: CreateGitHubImportRecord :exec
 INSERT INTO github_import_records (organization_id,project_id,import_id,source_key,kind,current_dependency,dependency_id,provenance_external_id,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-ON CONFLICT (organization_id,project_id,import_id,source_key) DO NOTHING
+ON CONFLICT (organization_id,project_id,import_id,source_key) DO UPDATE
+SET current_dependency=EXCLUDED.current_dependency
+WHERE github_import_records.kind='dependency' AND EXCLUDED.kind='dependency'
 `
 
 type CreateGitHubImportRecordParams struct {
@@ -137,4 +139,20 @@ func (q *Queries) ReadGitHubImportEditSource(ctx context.Context, arg ReadGitHub
 		&i.PayloadContentBytes,
 	)
 	return i, err
+}
+
+const resetCurrentGitHubImportDependencies = `-- name: ResetCurrentGitHubImportDependencies :exec
+UPDATE github_import_records SET current_dependency=false
+WHERE organization_id=$1 AND project_id=$2 AND import_id=$3 AND kind='dependency' AND current_dependency
+`
+
+type ResetCurrentGitHubImportDependenciesParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ImportID       string
+}
+
+func (q *Queries) ResetCurrentGitHubImportDependencies(ctx context.Context, arg ResetCurrentGitHubImportDependenciesParams) error {
+	_, err := q.db.Exec(ctx, resetCurrentGitHubImportDependencies, arg.OrganizationID, arg.ProjectID, arg.ImportID)
+	return err
 }

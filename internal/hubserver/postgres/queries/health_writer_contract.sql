@@ -13,14 +13,14 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *;
 UPDATE health_findings SET last_seen_at=sqlc.arg(last_seen_at),resolved_at=sqlc.narg(resolved_at),severity=sqlc.arg(severity),summary=sqlc.arg(summary),next_action=sqlc.arg(next_action),evidence_object_key=sqlc.arg(evidence_object_key),evidence_sha256=sqlc.arg(evidence_sha256),evidence_bytes=sqlc.arg(evidence_bytes),evidence_content_bytes=sqlc.arg(evidence_content_bytes),revision=revision+1,page_generation=page_generation+1,page_source_at=sqlc.arg(last_seen_at)
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND revision=sqlc.arg(expected_revision) AND last_seen_at<=sqlc.arg(last_seen_at) RETURNING *;
 
--- name: LinkHealthProject :exec
+-- name: LinkHealthProject :execrows
 INSERT INTO health_finding_projects(organization_id,finding_id,project_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING;
 
 -- name: LinkHealthIssue :exec
 INSERT INTO health_finding_issues(organization_id,finding_id,project_id,work_item_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING;
 
 -- name: HealthRecordProjects :many
-SELECT * FROM health_finding_projects WHERE organization_id=$1 AND finding_id=$2 ORDER BY project_id LIMIT $3;
+SELECT * FROM health_finding_projects WHERE organization_id=sqlc.arg(organization_id) AND finding_id=sqlc.arg(finding_id) AND project_id>sqlc.arg(after_project_id) ORDER BY project_id LIMIT sqlc.arg('limit');
 
 -- name: HealthRecordIssues :many
 SELECT * FROM health_finding_issues WHERE organization_id=$1 AND finding_id=$2 AND work_item_id>$3 ORDER BY work_item_id,project_id LIMIT $4;
@@ -36,3 +36,10 @@ INSERT INTO health_detector_ticks(organization_id,last_tick_at) VALUES($1,$2) ON
 
 -- name: HealthTick :one
 SELECT last_tick_at FROM health_detector_ticks WHERE organization_id=$1;
+
+-- name: HealthEvaluationRecords :many
+SELECT * FROM health_findings WHERE organization_id=$1 AND id>$2 AND resolved_at IS NULL ORDER BY id LIMIT $3;
+
+-- name: UnlinkHealthProject :execrows
+DELETE FROM health_finding_projects AS p WHERE p.organization_id=$1 AND p.finding_id=$2 AND p.project_id=$3
+AND NOT EXISTS(SELECT 1 FROM health_finding_issues i WHERE i.organization_id=p.organization_id AND i.finding_id=p.finding_id AND i.project_id=p.project_id);

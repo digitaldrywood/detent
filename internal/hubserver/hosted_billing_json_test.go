@@ -3,12 +3,19 @@ package hubserver
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (f *browserHostedFixture) billingAPI(t *testing.T, account, method, path, body string) *httptest.ResponseRecorder {
@@ -182,11 +189,9 @@ func TestHostedBillingJSONSubscriptionRestrictions(t *testing.T) {
 					state.Snapshot.CancelAt = state.Snapshot.PeriodEnd.Add(-time.Minute)
 				}
 			}
-			raw, err := json.Marshal(state)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_billing_accounts(organization_id,account_id,customer_id,mode,state_json) VALUES ('org_browser_preview','acct_fixture','cus_fixture','test',?)", string(raw)); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+				return w.SetBillingAccount(t.Context(), billingstore.Account{OrganizationID: f.service.accessOrganization(), Binding: billing.Binding{OrganizationID: string(f.service.accessOrganization()), AccountID: "acct_fixture", CustomerID: "cus_fixture"}, Mode: billing.ModeTest, Status: state.Status, Snapshot: state.Snapshot, Plan: billingstore.PlanReference(state.Plan), PaidThrough: state.PaidThrough, AccessUntil: state.AccessUntil, GraceUntil: state.GraceUntil})
+			}); err != nil {
 				t.Fatal(err)
 			}
 			report := f.billingAPI(t, "owner", http.MethodGet, "/billing", "")
@@ -216,24 +221,23 @@ func TestHostedBillingJSONSubscriptionRestrictions(t *testing.T) {
 func TestHostedBillingUsageJSON(t *testing.T) {
 	t.Parallel()
 	f, provider := newHostedBillingFixture(t)
-	configureTestCredits(t, f, provider)
+	configureTestCredits(t, f, provider, billingstore.CreditAccount{Mode: billing.ModeLive})
 	cfg := f.service.config.Hosted
 	cfg.Plans.Plans = append(cfg.Plans.Plans, capacityHostedPlans().Plans...)
-	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_growth", Plan: PlanReference{ID: "growth", Version: 2}})
+	for index := range cfg.Plans.Plans {
+		plan := &cfg.Plans.Plans[index]
+		if plan.ID == "growth" && plan.Version == 2 {
+			plan.Allowances = maps.Clone(plan.Allowances)
+			plan.Allowances["history_records"] = 31
+		}
+	}
+	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_growth", Label: "Growth", Plan: PlanReference{ID: "growth", Version: 2}})
 	if err := f.service.database.configureHostedPlans(t.Context(), cfg); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plans SET record_json=json_set(record_json,'$.allowances.history_records',31) WHERE id='growth' AND version=2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'live',0)", cfg.OrganizationID); err != nil {
 		t.Fatal(err)
 	}
 	window := chatBillingWindow(f.service.config.now(), hostedBillingState{}.Snapshot)
 	for index := range 60 {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test',?,-1500,'usage',?)", cfg.OrganizationID, fmt.Sprintf("period-%d", index), window.From.Add(time.Duration(index)*time.Minute).UnixMicro()); err != nil {
-			t.Fatal(err)
-		}
+		postAICreditFixture(t, f.service.database, billingstore.CreditTransaction{Mode: billing.ModeTest, Source: fmt.Sprintf("period-%d", index), AmountMicros: -1500, Kind: "usage", RecordedAt: window.From.Add(time.Duration(index) * time.Minute)})
 	}
 	for index, entry := range []struct {
 		organization, mode, kind string
@@ -245,9 +249,7 @@ func TestHostedBillingUsageJSON(t *testing.T) {
 		{cfg.OrganizationID, "test", "usage", window.To, -8000000},
 		{cfg.OrganizationID, "live", "usage", window.From, -9000000},
 	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,?,?,?,?,?)", entry.organization, entry.mode, fmt.Sprintf("excluded-%d", index), entry.amount, entry.kind, entry.at.UnixMicro()); err != nil {
-			t.Fatal(err)
-		}
+		postAICreditFixture(t, f.service.database, billingstore.CreditTransaction{OrganizationID: tracker.OrganizationID(entry.organization), Mode: entry.mode, Source: fmt.Sprintf("excluded-%d", index), AmountMicros: entry.amount, Kind: entry.kind, RecordedAt: entry.at})
 	}
 	for _, role := range []string{"owner", "admin", "member"} {
 		t.Run(role, func(t *testing.T) {
@@ -324,11 +326,9 @@ func TestHostedBillingUsageComplimentaryPlan(t *testing.T) {
 			if test.future {
 				grant.StartsAt = now.Add(time.Hour)
 			}
-			raw, err := json.Marshal(grant)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_complimentary_grants(id,record_json) VALUES(?,?)", grant.ID, string(raw)); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+				return w.CreateBillingGrant(t.Context(), billingstore.Grant{OrganizationID: f.service.accessOrganization(), ID: grant.ID, Plan: billingstore.PlanReference(grant.Plan), Scope: grant.Scope, StartsAt: grant.StartsAt, ExpiresAt: grant.ExpiresAt, RevokedAt: grant.RevokedAt})
+			}); err != nil {
 				t.Fatal(err)
 			}
 			response := f.billingAPI(t, "owner", http.MethodGet, "/billing?view=usage", "")

@@ -26,7 +26,7 @@ const (
 // it is independent of JSON-RPC request IDs and is never an approval token.
 func CommandCatalog() []Definition {
 	return append(append(append([]Definition{
-		commandDefinition(MoveItem, "Request an item's configured workflow transition through the application owner. Read get_native_project for native states and allowed transitions; native requests require expected_revision. Optional reason_detail is plain text recorded on the transition, for example why an item moved to Blocked and what a human must do. Authorized transitions execute directly, including terminal states.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},"reason_detail":{"type":"string","maxLength":`+strconv.Itoa(workpad.MaxFinalSummaryBytes)+`},`+workRevisionProperty, `"identifier","target_state"`, true),
+		commandDefinition(MoveItem, "Request an item's configured workflow transition through the application owner. Read get_native_project for native states and allowed transitions; native requests require expected_revision. GitHub-compatible requests also supply workflow_label matching the approved target-state mapping. Optional reason_detail is plain text recorded on the transition, for example why an item moved to Blocked and what a human must do. Authorized transitions execute directly, including terminal states.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},"workflow_label":{"type":"string","minLength":1,"maxLength":200},"reason_detail":{"type":"string","maxLength":`+strconv.Itoa(workpad.MaxFinalSummaryBytes)+`},`+workRevisionProperty, `"identifier","target_state"`, true),
 		commandDefinition(SetPriority, "Set an item's configured priority directly through the dashboard command.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"priority":{"type":"string","minLength":1,"maxLength":256},`+workRevisionProperty, `"identifier","priority"`, false),
 		stopRunDefinition(),
 		fileIssueDefinition(),
@@ -117,6 +117,7 @@ type MoveItemArguments struct {
 	TargetState      string `json:"target_state"`
 	ReasonDetail     string `json:"reason_detail,omitempty"`
 	ExpectedRevision int64  `json:"expected_revision,string"`
+	WorkflowLabel    string `json:"workflow_label,omitempty"`
 }
 
 type SetPriorityArguments struct {

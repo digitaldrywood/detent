@@ -28,6 +28,8 @@ func TestHealthRules(t *testing.T) {
 		{"all refused", "every_candidate_refused", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"policy_mismatch", "policy_mismatch"}}}}, healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"policy_mismatch", "capacity_full"}}}}},
 		{"unavailable runner", "every_candidate_refused", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"runner_heartbeat_stale", "runner_heartbeat_stale"}}}}, healthSnapshot{}},
 		{"human question", "unanswered_human_wait", healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Since: now.Add(-30*time.Minute - time.Nanosecond), Active: true}}}, healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Since: now.Add(-time.Hour)}}}},
+		{"unlinked project question", "unanswered_human_wait", healthSnapshot{Waits: []healthWait{{Project: "project", Since: now.Add(-time.Hour), Active: true}}}, healthSnapshot{Waits: []healthWait{{Project: "project", Since: now.Add(-time.Hour)}}}},
+		{"current contract wait", "unanswered_human_wait", healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Since: now, Active: true, Reason: "Complete required issue sections"}}}, healthSnapshot{}},
 		{"permission wait", "unanswered_human_wait", healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Attempt: "attempt", Since: now.Add(-time.Hour), Active: true}}}, healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Attempt: "attempt", Since: now, Active: true}}}},
 		{"dependency hold", "dependency_hold", healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 3, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Hour), LastLanding: now.Add(-30 * time.Minute)}}}, healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 3, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Hour), LastLanding: now}}}},
 		{"dependency hold without landing history", "dependency_hold", healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-30 * time.Minute)}}}, healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 1, HoldSince: now.Add(-30 * time.Minute)}}}},
@@ -37,6 +39,15 @@ func TestHealthRules(t *testing.T) {
 			got := evaluateHealth(now, test.snapshot)
 			if len(got) != 1 || got[0].Signal != test.signal || got[0].Severity != "attention" || got[0].Subject.ID == "" || got[0].NextAction == "" {
 				t.Fatalf("findings = %+v", got)
+			}
+			if len(test.snapshot.Waits) == 1 {
+				wait := test.snapshot.Waits[0]
+				if !got[0].ConditionSince.Equal(wait.Since) {
+					t.Fatalf("wait condition start=%s want=%s", got[0].ConditionSince, wait.Since)
+				}
+				if wait.Item == "" && (got[0].Subject.Kind != "project" || got[0].Subject.ID != wait.Project) {
+					t.Fatalf("unlinked question subject=%+v", got[0].Subject)
+				}
 			}
 			if test.name == "all refused" {
 				if got[0].Evidence.Reason != "policy_mismatch" || got[0].Summary != "Candidates cannot start work because runners refused every claim." || got[0].NextAction != "The runner operator checks the claim refusal in the runner's logs." {

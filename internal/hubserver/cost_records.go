@@ -151,7 +151,7 @@ func (s *Service) importSpriteUsageRecords(ctx context.Context, scope nativeScop
 	}
 }
 
-func (s *Service) prepareRunnerCostRecords(ctx context.Context, scope nativeScope, request tracker.NativeRunEvent, facts runnerUsageFacts, now time.Time) ([]billingstore.CostObservation, error) {
+func (s *Service) prepareRunnerCostRecords(ctx context.Context, scope nativeScope, request tracker.NativeRunEvent, facts runnerUsageFacts, now time.Time, historical ...billingstore.CostObservation) ([]billingstore.CostObservation, error) {
 	if request.Type != "run.finished" || len(request.Data.Usage) == 0 {
 		return nil, nil
 	}
@@ -162,6 +162,13 @@ func (s *Service) prepareRunnerCostRecords(ctx context.Context, scope nativeScop
 	records := make([]billingstore.CostObservation, 0, len(observations))
 	for i := range observations {
 		observation := &observations[i].observation
+		for _, record := range historical {
+			old := record.Observation
+			if record.OrganizationID == scope.organization && record.ProjectID == scope.project && old.Provider == observation.Provider && old.ProviderAccount == observation.ProviderAccount && old.SourceID == observation.SourceID && old.From.Equal(observation.From) && old.To.Equal(observation.To) && old.AttemptID == request.Data.AttemptID && old.WorkItemID == facts.WorkItemID && old.RunnerID == facts.RunnerID && old.MachineID == facts.MachineID {
+				observation.Placement = old.Placement
+				break
+			}
+		}
 		if err := normalizeCostObservation(observation, now); err != nil {
 			return nil, err
 		}

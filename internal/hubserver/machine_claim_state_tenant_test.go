@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -75,7 +76,71 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 				t.Fatal("invalid cleanup cursor was accepted")
 			}
 		})
-		if err := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot); err != nil {
+		admin := hostedPostgresAdmin(t, f.service)
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			current, err := r.Attempt(t.Context(), data.AttemptID)
+			if err == nil && (current.WorkerCleanupRequired == nil || *current.WorkerCleanupRequired != (index == 0) || current.RuntimeSummarySequence != current.Sequence) {
+				t.Fatalf("producer cleanup fact = %+v", current)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL,runtime_summary_sequence=NULL WHERE organization_id=$1 AND id=$2", scope.organization, data.AttemptID); err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			for i := range 100 {
+				id := fmt.Sprintf("a_invalid_%03d", i)
+				if id >= data.AttemptID {
+					t.Fatalf("invalid-prefix fixture sorts after worker: %q >= %q", id, data.AttemptID)
+				}
+				var fence int64
+				if err := admin.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,expires_at,acquired_at,renewed_at,released_at,project_id,runner_id) SELECT organization_id,$3,issue_id,machine_id,$3,work_item_revision,expires_at,acquired_at,renewed_at,released_at,project_id,runner_id FROM leases WHERE organization_id=$1 AND lease_id=$2 RETURNING fencing_token`, scope.organization, lease.ID, id).Scan(&fence); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), "INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) SELECT organization_id,$3,runner_id,assigned_at FROM runner_lease_assignments WHERE organization_id=$1 AND lease_id=$2", scope.organization, lease.ID, id); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) SELECT organization_id,$3,issue_id FROM native_attempt_runs WHERE organization_id=$1 AND run_id=$2", scope.organization, data.RunID, id); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at) SELECT organization_id,project_id,$3,issue_id,$3,$4,$3,1,'cancelled',work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at FROM native_attempts WHERE organization_id=$1 AND id=$2`, scope.organization, data.AttemptID, id, fence); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
+				t.Fatalf("unverified prefix offered cleanup: %+v", snapshot.ClaimState)
+			}
+			key := releasedExecutionCursorKey{organization: scope.organization, project: scope.project, runner: snapshot.RunnerID}
+			if cursor, ok := f.service.cleanupPollCursors.Load(key); !ok || cursor != "a_invalid_099" {
+				t.Fatalf("unknown prefix did not advance bounded cursor: %v", cursor)
+			}
+		}
+		readSnapshot := func() error {
+			for range 2 {
+				if err := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot); err != nil {
+					return err
+				}
+				if snapshot.ClaimState != nil && len(snapshot.ClaimState.ReleasedExecutions) != 0 {
+					break
+				}
+			}
+			return nil
+		}
+		if err := readSnapshot(); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			current, err := r.Attempt(t.Context(), data.AttemptID)
+			if err == nil && (current.WorkerCleanupRequired == nil || *current.WorkerCleanupRequired != (index == 0) || current.RuntimeSummarySequence != current.Sequence) {
+				t.Fatalf("fallback cleanup fact = %+v", current)
+			}
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		want := 1 - index
@@ -101,24 +166,48 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			}
 			original := f.service.config.RunDetails
 			f.service.config.RunDetails = nil
-			missingErr := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot)
+			missingErr := readSnapshot()
 			_, cleanupErr := f.service.readNativeCleanupAttempt(t.Context(), scope, string(lease.WorkItemID), data.AttemptID)
 			f.service.config.RunDetails = original
-			if missingErr == nil || cleanupErr == nil {
-				t.Fatal("missing archive store was accepted")
+			if missingErr != nil || cleanupErr == nil || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 1 {
+				t.Fatalf("known cleanup depended on archive: registration=%v cleanup=%v claims=%+v", missingErr, cleanupErr, snapshot.ClaimState)
 			}
 			f.service.config.RunDetails = invalidRegistrationArchive{DetailStore: original}
-			err := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot)
+			err := readSnapshot()
 			_, cleanupErr = f.service.readNativeCleanupAttempt(t.Context(), scope, string(lease.WorkItemID), data.AttemptID)
 			f.service.config.RunDetails = original
-			if !errors.Is(err, artifact.ErrIntegrity) || !errors.Is(cleanupErr, artifact.ErrIntegrity) {
+			if err != nil || !errors.Is(cleanupErr, artifact.ErrIntegrity) || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 1 {
 				t.Fatalf("corrupt archive errors: registration=%v cleanup=%v", err, cleanupErr)
+			}
+			if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL WHERE organization_id=$1 AND id=$2", scope.organization, data.AttemptID); err != nil {
+				t.Fatal(err)
+			}
+			f.service.config.RunDetails = invalidRegistrationArchive{DetailStore: original}
+			err = readSnapshot()
+			f.service.config.RunDetails = original
+			if err != nil || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
+				t.Fatalf("unverified unknown cleanup was offered: error=%v claims=%+v", err, snapshot.ClaimState)
+			}
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				current, err := r.Attempt(t.Context(), data.AttemptID)
+				if err == nil && current.WorkerCleanupRequired != nil {
+					t.Fatalf("invalid proof became known: %+v", current)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := readSnapshot(); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 1 {
+				t.Fatalf("verified unknown cleanup was not recovered: %+v", snapshot.ClaimState)
 			}
 			var cleanup tracker.NativeAttempt
 			decodeHubResponse(t, response, &cleanup)
 			finished := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "cleanup_finished_" + data.AttemptID}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: data.AttemptID, RunID: data.RunID, Sequence: cleanup.Sequence + 1, LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: cleanup.PolicyID, Identity: cleanup.Identity, Outcome: "cancelled"}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], finished), http.StatusOK)
-			if err := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot); err != nil {
+			if err := readSnapshot(); err != nil {
 				t.Fatal(err)
 			}
 			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
@@ -133,7 +222,14 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, cleanupPath, f.tokens[index], nil), http.StatusNotFound)
+			acknowledged := performHubAPIRequest(t, f.service, http.MethodGet, cleanupPath, f.tokens[index], nil)
+			requireNativeStatus(t, acknowledged, http.StatusOK)
+			var receipt tracker.NativeAttempt
+			decodeHubResponse(t, acknowledged, &receipt)
+			if receipt.CleanupAcknowledgedAt == nil || receipt.CleanupAcknowledgedAt.IsZero() || receipt.AttemptID != cleanup.AttemptID || receipt.LeaseID != cleanup.LeaseID || receipt.FencingToken != cleanup.FencingToken || receipt.Runtime == nil || receipt.Runtime.WorkerLaunch == nil || *receipt.Runtime.WorkerLaunch != *cleanup.Runtime.WorkerLaunch {
+				t.Fatalf("acknowledged cleanup receipt = %+v", receipt)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, cleanupPath, f.tokens[1-index], nil), http.StatusNotFound)
 		}
 	}
 }

@@ -24,13 +24,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerupdate"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projecticon"
-	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -98,95 +97,7 @@ func (s *Service) registerReadableRoutes(e *echo.Echo) {
 // /login, which renders the shell so the React login card can start the
 // sign-in exchange.
 func (s *Service) appShell(c echo.Context) error {
-	path := c.Request().URL.Path
-	if !hostedReadRequest(c) {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if appReserved(path) {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if s.config.Hosted == nil {
-		if _, status, err := s.localAppCredential(c); err != nil {
-			return s.localAppUnauthorized(c, status)
-		}
-	} else if path != "/login" {
-		// The shell itself carries no customer data; every screen reads the
-		// JSON API, which enforces membership. A session is enough here, so
-		// a staff account can still reach the support screen.
-		if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
-			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
-				return s.nativeAPIError(c, classified)
-			}
-			if first := strings.Split(strings.Trim(path, "/"), "/")[0]; readableurl.Validate(first) == nil && strings.Contains(strings.Trim(path, "/"), "/") {
-				return s.nativeAPIError(c, nativeNotFound())
-			}
-			return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
-		}
-		parts := strings.Split(strings.Trim(path, "/"), "/")
-		if len(parts) >= 2 && parts[0] == "projects" {
-			credential, _, err := s.hostedCredential(c.Request().Context(), c)
-			if err != nil {
-				if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
-					return s.nativeAPIError(c, classified)
-				}
-				return s.nativeAPIError(c, nativeNotFound())
-			}
-			var project tracker.ProjectID
-			if err := s.database.reader.QueryRowContext(c.Request().Context(), `SELECT p.id FROM projects p WHERE p.organization_id=? AND (p.id=? OR EXISTS(SELECT 1 FROM project_slugs a WHERE a.organization_id=p.organization_id AND a.project_id=p.id AND a.slug=?)) ORDER BY p.id=? DESC LIMIT 1`, s.config.Hosted.OrganizationID, parts[1], parts[1], parts[1]).Scan(&project); err != nil {
-				if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
-					return s.nativeAPIError(c, classified)
-				}
-				return s.nativeAPIError(c, nativeNotFound())
-			}
-			scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: project, credential: credential}
-			if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
-				if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
-					return s.nativeAPIError(c, classified)
-				}
-				return s.nativeAPIError(c, err)
-			}
-		}
-	}
-	if path != "/login" {
-		target, handled, err := s.readableShellPath(c)
-		if err != nil {
-			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
-				return s.nativeAPIError(c, classified)
-			}
-			return s.nativeAPIError(c, nativeNotFound())
-		}
-		original := c.Request().URL.Path
-		if org, ok := c.Get("readable_organization_slug").(string); ok {
-			original = "/" + org + original
-		}
-		if handled && target != original {
-			if query := c.Request().URL.RawQuery; query != "" {
-				target += "?" + query
-			}
-			return c.Redirect(http.StatusPermanentRedirect, target)
-		}
-	}
-	content, err := fs.ReadFile(s.config.staticFiles(), conversationClientShell)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			s.config.Logger.Error("application client shell could not be read", "error", err)
-		}
-		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "client_unavailable", Message: "The application client is not built on this hub"})
-	}
-	c.Response().Header().Set("Cache-Control", "no-cache")
-	shell := conversationClientShellFor(content, s.hostedBase(), s.hostedSignInPath())
-	firstSegment := strings.Split(strings.Trim(path, "/"), "/")[0]
-	_, readableShared := c.Get("readable_organization_slug").(string)
-	if path != "/login" && (readableShared || readableurl.Validate(firstSegment) == nil) {
-		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-		defer cancelRead()
-		var slug string
-		if err := s.database.reader.QueryRowContext(readCtx, "SELECT slug FROM organizations WHERE id=?", s.appOrganizationID()).Scan(&slug); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		shell = []byte(strings.Replace(string(shell), "<head>", `<head><meta name="detent-router-base" content="/`+html.EscapeString(slug)+`">`, 1))
-	}
-	return c.HTMLBlob(http.StatusOK, shell)
+	return s.postgresAppShell(c)
 }
 
 const conversationClientAssets = "/static/app/conversation/"
@@ -295,8 +206,7 @@ func detentVersion(version string) string {
 // rather than "behind": an unversioned development build must never light up
 // an update badge on somebody's fleet.
 func runnerBehind(current string, reported string) bool {
-	order, err := update.CompareVersions(reported, current)
-	return err == nil && order < 0
+	return runnerupdate.Behind(current, reported)
 }
 
 // appUpdates implements GET /app/updates for the footer's pill: which enrolled
@@ -354,73 +264,44 @@ func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) 
 	minimum := minimumRunnerVersion(current)
 	payload := appUpdates{MinimumRunnerVersion: minimum, Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
 	now := s.config.now()
-	if s.database.db == nil && s.config.TenantRepository != nil {
-		const pageSize = 200
-		organization := tracker.OrganizationID(s.appOrganizationID())
-		cursor := runnerstore.UpdateProjectionCursor{}
-		for {
-			var page []runnerstore.UpdateProjection
-			err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
-				pageReader, ok := reader.(runnerstore.UpdateProjectionPageReader)
-				if !ok {
-					return ErrProjectParticipants
-				}
-				var err error
-				page, err = pageReader.RunnerUpdateProjectionPage(ctx, cursor, pageSize)
-				return err
-			})
-			if err != nil {
-				return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
-			}
-			for _, row := range page {
-				if len(payload.Runners) >= operatortool.MaxItemLimit {
-					return appUpdates{}, errHostedContextUnavailable
-				}
-				runner := appUpdateRunner{RunnerID: row.RunnerID, DisplayName: row.DisplayName, Version: row.Version}
-				runner.Online = !now.Before(row.LastHeartbeat) && now.Before(row.LastHeartbeat.Add(runnerauth.HeartbeatTimeout))
-				runner.ClaimRefusalReason = runnerClaimRefusal(minimum, runner.Version)
-				runner.Behind = runner.ClaimRefusalReason != ""
-				if runner.Behind {
-					payload.BehindCount++
-				}
-				payload.Runners = append(payload.Runners, runner)
-			}
-			if len(page) < pageSize {
-				break
-			}
-			last := page[len(page)-1]
-			cursor = runnerstore.UpdateProjectionCursor{DisplayName: last.DisplayName, RunnerID: last.RunnerID}
-		}
-		return payload, nil
+	if s.config.TenantRepository == nil {
+		return appUpdates{}, workItemStorageUnavailable()
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, r.display_name, m.version, r.last_heartbeat_at
-FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id
-WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.id`, s.appOrganizationID())
-	if err != nil {
-		return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var runner appUpdateRunner
-		var heartbeat string
-		if err := rows.Scan(&runner.RunnerID, &runner.DisplayName, &runner.Version, &heartbeat); err != nil {
-			return appUpdates{}, fmt.Errorf("scan runner version: %w", err)
-		}
-		at, err := parseTimeValue(heartbeat)
+	const pageSize = 200
+	organization := tracker.OrganizationID(s.appOrganizationID())
+	cursor := runnerstore.UpdateProjectionCursor{}
+	for {
+		var page []runnerstore.UpdateProjection
+		err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			pageReader, ok := reader.(runnerstore.UpdateProjectionPageReader)
+			if !ok {
+				return ErrProjectParticipants
+			}
+			var err error
+			page, err = pageReader.RunnerUpdateProjectionPage(ctx, cursor, pageSize)
+			return err
+		})
 		if err != nil {
-			return appUpdates{}, fmt.Errorf("read runner heartbeat: %w", err)
+			return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
 		}
-		// The same window readRunner calls "offline".
-		runner.Online = !now.Before(at) && now.Before(at.Add(runnerauth.HeartbeatTimeout))
-		runner.ClaimRefusalReason = runnerClaimRefusal(minimum, runner.Version)
-		runner.Behind = runner.ClaimRefusalReason != ""
-		if runner.Behind {
-			payload.BehindCount++
+		for _, row := range page {
+			if len(payload.Runners) >= operatortool.MaxItemLimit {
+				return appUpdates{}, errHostedContextUnavailable
+			}
+			runner := appUpdateRunner{RunnerID: row.RunnerID, DisplayName: row.DisplayName, Version: row.Version}
+			runner.Online = !now.Before(row.LastHeartbeat) && now.Before(row.LastHeartbeat.Add(runnerauth.HeartbeatTimeout))
+			runner.ClaimRefusalReason = runnerClaimRefusal(minimum, runner.Version)
+			runner.Behind = runner.ClaimRefusalReason != ""
+			if runner.Behind {
+				payload.BehindCount++
+			}
+			payload.Runners = append(payload.Runners, runner)
 		}
-		payload.Runners = append(payload.Runners, runner)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
+		if len(page) < pageSize {
+			break
+		}
+		last := page[len(page)-1]
+		cursor = runnerstore.UpdateProjectionCursor{DisplayName: last.DisplayName, RunnerID: last.RunnerID}
 	}
 	return payload, nil
 }
@@ -563,128 +444,14 @@ type appBootstrapRefusalDetails struct {
 }
 
 func (s *Service) appBootstrapPayload(c echo.Context) error {
-	if s.config.Hosted == nil {
-		return s.localAppBootstrap(c)
-	}
-	credential, status, err := s.hostedCredential(c.Request().Context(), c)
-	if err != nil {
-		if status >= http.StatusInternalServerError {
-			return s.nativeAPIError(c, operatorAuthorizationError(err))
-		}
-		if status == http.StatusForbidden {
-			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
-		}
-		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
-	}
-	session, ok := c.Get("hosted_session").(auth.Session)
-	if !ok {
-		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
-	}
-	csrf := s.hostedPageCSRF(c)
-	if csrf == "" {
-		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
-	}
-	payload, err := s.readAppBootstrap(c.Request().Context(), credential, session)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	payload.CSRFToken = csrf
-	payload.Actor.PlatformRole = sharedPlatformRole(c)
-	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, payload)
+	return s.postgresAppBootstrapPayload(c)
 }
 
 func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential, session auth.Session) (appBootstrap, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	organization := s.config.Hosted.OrganizationID
-	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
-	manageRunners := false
-	if credential.HostedRole != "viewer" {
-		var err error
-		manageRunners, err = s.appAllRunnerGrants(ctx, credential)
-		if err != nil {
-			return appBootstrap{}, err
-		}
+	if s.config.Hosted == nil || s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+		return appBootstrap{}, workItemStorageUnavailable()
 	}
-	payload := appBootstrap{
-		Organization:  appBootstrapOrganization{ID: organization, Name: organization, PublicURL: s.config.Hosted.PublicURL, Current: true},
-		Organizations: []appBootstrapOrganization{},
-		Actor: appBootstrapActor{
-			PrincipalID: operatorIdentity(credential, organization).PrincipalID, Subject: credential.Hosted.Subject, Email: session.Email, Role: credential.HostedRole,
-			CanManage:        manage,
-			CanManageRunners: manageRunners,
-		},
-		Projects:   []appBootstrapProject{},
-		APIBase:    "/api/v2/organizations/" + organization,
-		BasePath:   s.hostedBase(),
-		SignInPath: s.hostedSignInPath(),
-		Version:    s.config.Version,
-	}
-	if session.Identity != nil {
-		if user, err := auth.LookupHostedUser(ctx, s.config.Hosted.Provider, session.Identity.Subject); err == nil {
-			session.Identity.FirstName = user.FirstName
-			session.Identity.LastName = user.LastName
-			session.Identity.ProfilePictureURL = user.ProfilePictureURL
-			payload.Actor.Email = user.Email
-		}
-		payload.Actor.FirstName = session.Identity.FirstName
-		payload.Actor.LastName = session.Identity.LastName
-		payload.Actor.ProfilePictureURL = session.Identity.ProfilePictureURL
-	}
-	if err := s.accessRead(ctx, tracker.OrganizationID(organization), func(r tenantstore.Reader) error {
-		row, err := r.AccessOrganization(ctx)
-		if err != nil {
-			return err
-		}
-		payload.Organization.Name, payload.Organization.Slug = row.Name, row.Slug
-		return nil
-	}); err != nil {
-		return appBootstrap{}, fmt.Errorf("read organization name: %w", err)
-	}
-
-	logo, err := s.readOrganizationLogoRecord(ctx, tracker.OrganizationID(organization))
-	if err != nil {
-		return appBootstrap{}, err
-	}
-	payload.Organization.Logo = &logo
-	payload.Organization.PublicURL = strings.TrimRight(s.config.Hosted.PublicURL, "/") + "/" + payload.Organization.Slug + "/work"
-	if identity := credential.Hosted; identity.SupportActor != "" {
-		payload.Support = &appBootstrapSupport{Actor: identity.SupportActor, Reason: identity.SupportReason, ExpiresAt: identity.ExpiresAt.UTC().Format(time.RFC3339)}
-	}
-	payload.Projects, err = s.hostedReadableProjects(ctx, credential)
-	if err != nil {
-		return appBootstrap{}, err
-	}
-	if credential.HostedKeyScope == "" {
-		payload.Organizations, err = s.hostedOrganizationChoices(ctx, session)
-	}
-	if err != nil {
-		return appBootstrap{}, err
-	}
-	for index := range payload.Organizations {
-		if payload.Organizations[index].Current {
-			payload.Organizations[index].Logo = payload.Organization.Logo
-			payload.Organizations[index].Name = payload.Organization.Name
-			payload.Organizations[index].Slug = payload.Organization.Slug
-			payload.Organizations[index].PublicURL = payload.Organization.PublicURL
-		}
-	}
-	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator != nil && s.conversations.coordinator.Available()
-	payload.Feature = s.appBootstrapFeature()
-	payload.Preferences, err = s.appBootstrapPreferences(ctx, organization, payload.Projects)
-	if err != nil {
-		return appBootstrap{}, err
-	}
-	seen, err := s.releaseSeenTime(ctx, credential)
-	if err != nil {
-		return appBootstrap{}, err
-	}
-	payload.HasUnread = s.releasesUnread(seen)
-	payload.Plan = s.appBootstrapPlan(ctx)
-	return payload, nil
+	return s.readPostgresAppBootstrap(ctx, credential, session)
 }
 
 // appBootstrapPreferences publishes the turn preference choices: every model
@@ -701,15 +468,26 @@ func (s *Service) appBootstrapPreferences(ctx context.Context, organization stri
 	if s.conversations == nil {
 		return preferences, nil
 	}
-	projects := make([]string, 0, len(readable))
+	projects := make([]tracker.ProjectID, 0, len(readable))
 	for _, project := range readable {
-		projects = append(projects, project.ID)
+		projects = append(projects, tracker.ProjectID(project.ID))
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
 		return preferences, err
 	}
-	models, err := s.conversationModelChoices(ctx, s.database.reader, tracker.OrganizationID(organization), projects, now)
+	var models []conversationModel
+	read := func(reader tenantstore.Reader) error {
+		models, err = s.conversationModelChoices(ctx, reader, projects, now)
+		return err
+	}
+	if len(projects) == 0 {
+		err = read(nil)
+	} else if s.config.TenantRepository == nil {
+		err = conversationContentUnavailable()
+	} else {
+		err = s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(organization), corestore.Serving, read)
+	}
 	if err != nil {
 		return preferences, err
 	}
@@ -866,48 +644,33 @@ func (s *Service) hostedWorkspaceCapabilities(ctx context.Context, credential ap
 	if s.workspaces == nil || !project.CanWrite || credential.Hosted == nil || credential.HostedRole == "viewer" {
 		return result, nil
 	}
-	if s.config.TenantRepository != nil {
-		return result, nil
+	if s.config.Hosted == nil || s.config.TenantRepository == nil {
+		return result, workItemStorageUnavailable()
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id FROM runner_identities r
-JOIN token_grants g ON g.token_id = r.token_id AND g.organization_id = r.organization_id
-WHERE r.organization_id = ? AND r.removed_at IS NULL AND g.project_id = ?`, s.config.Hosted.OrganizationID, project.ID)
+	var rows []runnerstore.ProjectWorkspaceAvailability
+	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project.ID), credential: credential}
+		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+			return err
+		}
+		workspaceReader, ok := reader.(runnerstore.ProjectWorkspaceReader)
+		if !ok {
+			return errors.New("project workspace reader is unavailable")
+		}
+		var err error
+		rows, err = workspaceReader.ProjectWorkspaceAvailability(ctx, []tracker.ProjectID{scope.project}, s.config.now())
+		return err
+	})
 	if err != nil {
 		return result, fmt.Errorf("list workspace runners: %w", err)
 	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return result, errors.Join(err, rows.Close())
-		}
-		ids = append(ids, id)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return result, err
-	}
-	now := s.config.now()
-	for _, id := range ids {
-		runner, err := readRunnerWithClock(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now)
-		if err != nil {
-			return result, err
-		}
-		if runner.Health != "online" || runner.State != "active" || !slices.Contains(runner.Operations, "claim") {
+	for _, row := range rows {
+		if string(row.ProjectID) != project.ID {
 			continue
 		}
-		capabilities, isolation, fresh, err := runnerWorkspaceCapabilities(ctx, s.database.reader, id, now)
-		if err != nil {
-			return result, err
-		}
-		if !fresh {
-			continue
-		}
-		files := capabilities.Satisfies([]string{workspacesession.CapabilityFiles, workspacesession.CapabilityExec})
-		result.Files = result.Files || files
-		result.Exec = result.Exec || files
-		terminal := files && capabilities.Terminal && project.CanManageRunners && s.workspaces.config.Terminal.Enabled &&
-			terminalIsolationAllowed([]string{workspacesession.CapabilityTerminal}, s.workspaces.config.Terminal.Isolation, isolation)
+		result.Files, result.Exec = true, true
+		terminal := row.Terminal && project.CanManageRunners && s.workspaces.config.Terminal.Enabled &&
+			terminalIsolationAllowed([]string{workspacesession.CapabilityTerminal}, s.workspaces.config.Terminal.Isolation, row.Isolation)
 		if s.workspaces.config.Terminal.Isolation == workspacesession.IsolationUser && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 			terminal = false
 		}

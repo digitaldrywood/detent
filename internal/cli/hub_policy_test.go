@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/activehours"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -30,23 +29,8 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 	}
 
 	t.Parallel()
-	root := t.TempDir()
-	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  repository: example-org/orders\n---\nWork the issue.\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(root, "global.yaml")
-	cfg, err := globalconfig.DefaultAt(configPath, globalconfig.WithHome(root))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: root, Weight: 1}}
-	cfg.Global.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}
-	cfg.Global.RateWindowPacing = workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingOff}
-	cfg.Global.Identity.Name = "repository-operator"
-	if err := writeLocalConfigurationFile(configPath, cfg); err != nil {
-		t.Fatal(err)
-	}
+	fixture := newEnrolledPolicyProject(t, "---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  repository: example-org/orders\n---\nWork the issue.\n")
+	configPath, root := fixture.configPath, filepath.Dir(fixture.configPath)
 	_, _, descriptor, err := resolveHubPolicy(t.Context(), configPath, "orders")
 	if err != nil {
 		t.Fatal(err)
@@ -58,28 +42,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 			t.Fatalf("canceled policy read = %v, want context canceled", err)
 		}
 	})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/repositories/example-org/orders/policy" || r.Header.Get("Authorization") != "Bearer fixture-admin" {
-			t.Errorf("unexpected request %s", r.URL.Path)
-		}
-		if r.Method == http.MethodPut {
-			var change policy.Change
-			if err := json.NewDecoder(r.Body).Decode(&change); err != nil {
-				t.Error(err)
-			}
-			if err := change.Policy.Match(descriptor); err != nil {
-				t.Error(err)
-			}
-		}
-		if err := json.NewEncoder(w).Encode(policy.Approval{Policy: descriptor, ApprovedBy: "administrator", ApprovedAt: "2026-09-05T12:00:00Z"}); err != nil {
-			t.Error(err)
-		}
-	}))
-	t.Cleanup(server.Close)
-	cfg.Client.URL = server.URL
-	if err := globalconfig.Write(configPath, cfg); err != nil {
-		t.Fatal(err)
-	}
+	var approval policy.Approval
 	for _, test := range []struct {
 		name, subcommand, project string
 		valid                     bool
@@ -87,7 +50,12 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 		{"inspect", "inspect", "orders", true}, {"approve", "approve", "orders", true}, {"unknown project", "inspect", "missing", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			cmd := newHubPolicyCommand(func(string) string { return "fixture-admin" })
+			cmd := newHubPolicyCommand(func(name string) string {
+				if name == "DETENT_HUB_ADMIN_TOKEN" {
+					return fixture.adminToken
+				}
+				return ""
+			})
 			var output bytes.Buffer
 			cmd.SetOut(&output)
 			cmd.SetErr(&output)
@@ -98,6 +66,14 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 			}
 			if test.valid && !strings.Contains(output.String(), descriptor.ID) {
 				t.Fatalf("missing policy output: %s", output.String())
+			}
+			if test.subcommand == "approve" {
+				if err := json.Unmarshal(output.Bytes(), &approval); err != nil {
+					t.Fatal(err)
+				}
+				if err := approval.Policy.Match(descriptor); err != nil || approval.ApprovedBy == "" {
+					t.Fatalf("stored approval = %+v, match error = %v", approval, err)
+				}
 			}
 			for _, private := range []string{"fixture-token", "fixture-admin", root} {
 				if test.valid && strings.Contains(output.String(), private) {
@@ -132,7 +108,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 		t.Fatalf("approval did not resolve runtime host settings: %v", err)
 	}
 	check := checkDoctorHubPolicy(t.Context(), loaded, loaded.Projects[0], doctorDeps{lookupEnv: func(string) string { return "fixture-admin" }})
-	if check.Status != doctorOK || !strings.Contains(check.Detail, "administrator") || !strings.Contains(check.Detail, descriptor.ID) {
+	if check.Status != doctorOK || !strings.Contains(check.Detail, approval.ApprovedBy) || !strings.Contains(check.Detail, descriptor.ID) {
 		t.Fatalf("doctor policy = %#v", check)
 	}
 	t.Run("enrolled runner credentials", func(t *testing.T) {
@@ -174,9 +150,11 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 			t.Fatalf("enrolled doctor policy = %#v", check)
 		}
 	})
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  repository: example-org/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(fixture.origin, "WORKFLOW.md"), []byte("---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  repository: example-org/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	runDoctorWorkflowSourceGit(t, fixture.origin, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-am", "change workflow")
+	runDoctorWorkflowSourceGit(t, fixture.checkout, "fetch", "origin")
 	check = checkDoctorHubPolicy(t.Context(), loaded, loaded.Projects[0], doctorDeps{lookupEnv: func(string) string { return "fixture-admin" }})
 	if check.Status != doctorOK || !strings.Contains(check.Detail, descriptor.ID) || !strings.Contains(check.Detail, "gate=command") {
 		t.Fatalf("doctor did not preserve approved native policy = %#v", check)
@@ -191,7 +169,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 		}))
 		t.Cleanup(hub.Close)
 		configured := loaded
-		configured.Client.URL = hub.URL
+		configured.Client = globalconfig.HubClient{URL: hub.URL, OrganizationID: loaded.Client.OrganizationID, NativeProjects: loaded.Client.NativeProjects}
 		check := checkDoctorHubPolicy(t.Context(), configured, configured.Projects[0], doctorDeps{lookupEnv: func(string) string { return "fixture-admin" }})
 		if check.Status != doctorFail || !strings.Contains(check.Detail, "policy_mismatch") || !strings.Contains(check.Hint, "hub policy inspect") {
 			t.Fatalf("doctor accepted invalid policy = %#v", check)
@@ -208,28 +186,14 @@ func TestHubPolicyInspectRejectsMappedNativeUnsupportedWork(t *testing.T) {
 		{"routines", "schedule_ownership:\n  enabled: true\n  key: example-org/orders\n  repository: example-org/orders\nroutines:\n  - name: audit\n    schedule: '0 * * * *'\n    prompt: Inspect.\n", "routines"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
-			workflowPath := filepath.Join(root, "WORKFLOW.md")
 			raw := "---\ntracker:\n  kind: hub_native\n  repository: example-org/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"
-			if err := os.WriteFile(workflowPath, []byte(raw), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			configPath := filepath.Join(root, "global.yaml")
-			cfg, err := globalconfig.DefaultAt(configPath, globalconfig.WithHome(root))
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: root, Weight: 1}}
-			if err := writeLocalConfigurationFile(configPath, cfg); err != nil {
-				t.Fatal(err)
-			}
-			cfg.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", OrganizationID: "org_test", NativeProjects: map[string]string{"orders": "prj_test"}}
-			if err := globalconfig.Write(configPath, cfg); err != nil {
-				t.Fatal(err)
-			}
-			_, _, _, err = resolveHubPolicy(t.Context(), configPath, "orders")
+			fixture := newEnrolledPolicyProject(t, raw)
+			cfg, _, _, err := resolveHubPolicy(t.Context(), fixture.configPath, "orders")
 			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "retired configuration key") {
 				t.Fatalf("mapped policy inspection error = %v, want %s retired-key guidance", err, test.want)
+			}
+			if len(cfg.Projects) != 1 || cfg.Client.NativeProjects["orders"] != "prj_org_example" {
+				t.Fatalf("enrolled projects = %+v native = %v, want the Hub project mapped to its checkout", cfg.Projects, cfg.Client.NativeProjects)
 			}
 			check := checkDoctorHubPolicy(t.Context(), cfg, cfg.Projects[0], doctorDeps{})
 			if check.Status != doctorFail || !strings.Contains(check.Detail, test.want) || !strings.Contains(check.Detail, "retired configuration key") {
@@ -241,25 +205,9 @@ func TestHubPolicyInspectRejectsMappedNativeUnsupportedWork(t *testing.T) {
 
 func TestHubPolicyInspectUsesNativeStartupTracker(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  repository: example-org/orders\n  api_key: test-token\n---\nPrompt\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(root, "global.yaml")
-	cfg, err := globalconfig.DefaultAt(configPath, globalconfig.WithHome(root))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: root, Weight: 1}}
-	if err := writeLocalConfigurationFile(configPath, cfg); err != nil {
-		t.Fatal(err)
-	}
-	cfg.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", OrganizationID: "org_test", NativeProjects: map[string]string{"orders": "prj_test"}}
-	if err := globalconfig.Write(configPath, cfg); err != nil {
-		t.Fatal(err)
-	}
-	_, inspected, descriptor, err := resolveHubPolicy(t.Context(), configPath, "orders")
+	fixture := newEnrolledPolicyProject(t, "---\ntracker:\n  kind: hub_native\n  repository: example-org/orders\n  api_key: test-token\n---\nPrompt\n")
+	configPath := fixture.configPath
+	cfg, inspected, descriptor, err := resolveHubPolicy(t.Context(), configPath, "orders")
 	if err != nil {
 		t.Fatal(err)
 	}

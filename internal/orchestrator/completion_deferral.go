@@ -21,12 +21,11 @@ import (
 )
 
 const (
-	deferredCompletionSchema       = 1
-	deferredCompletionMetadataKey  = "deferred_completion"
-	deferredCompletionPhase        = "completion_deferred"
-	deferredCompletionStatus       = "completion waiting on tracker lane fence"
-	deferredCompletionNextAction   = "retry completion fence"
-	deferredCompletionInvalidClass = "completion_deferral_invalid"
+	deferredCompletionSchema      = 1
+	deferredCompletionMetadataKey = "deferred_completion"
+	deferredCompletionPhase       = "completion_deferred"
+	deferredCompletionStatus      = "completion waiting on tracker lane fence"
+	deferredCompletionNextAction  = "retry completion fence"
 )
 
 type deferredCompletion struct {
@@ -509,7 +508,9 @@ func (o *Orchestrator) recoverDeferredCompletions(ctx context.Context, state *St
 		}
 		record, err := decodeDeferredCompletion(attempt)
 		if err != nil {
-			o.invalidateDeferredCompletion(ctx, state, attempt, now, err)
+			if o.logger != nil {
+				o.logger.Error("invalid deferred completion cannot be recovered", "attempt_id", attempt.ID, "issue_id", attempt.IssueID, "error", err)
+			}
 			continue
 		}
 		issueID := record.Running.Issue.ID
@@ -560,41 +561,6 @@ func recoveredDeferredCompletionClaim(o *Orchestrator, issue connector.Issue, no
 		}
 	}
 	return Claimed{Issue: cloneIssue(issue), ClaimedAt: now}
-}
-
-func (o *Orchestrator) invalidateDeferredCompletion(ctx context.Context, state *State, attempt store.WorkAttempt, now time.Time, cause error) {
-	completion := store.WorkAttemptCompletion{
-		AttemptID:          attempt.ID,
-		CompletedAt:        now,
-		Status:             store.WorkAttemptStatusTerminal,
-		TerminalState:      store.WorkAttemptTerminalAbandoned,
-		ErrorClass:         deferredCompletionInvalidClass,
-		ErrorMessage:       cause.Error(),
-		Phase:              "recovered",
-		StatusMessage:      "invalid deferred completion was abandoned",
-		WorkerMetadataJSON: attempt.WorkerMetadataJSON,
-		MetricsJSON:        attempt.MetricsJSON,
-		NextAction:         "inspect work attempt",
-	}
-	if err := o.workAttempts.CompleteWorkAttempt(ctx, completion); err != nil {
-		if o.logger != nil {
-			o.logger.Error("invalid deferred completion abandonment failed", "attempt_id", attempt.ID, "issue_id", attempt.IssueID, "error", err)
-		}
-		return
-	}
-	if o.logger != nil {
-		o.logger.Error("invalid deferred completion abandoned", "attempt_id", attempt.ID, "issue_id", attempt.IssueID, "error", cause)
-	}
-	o.applyWorkAttemptCompletionSnapshot(state, Running{Issue: recoveryIssueFromStoreAttempt(attempt), WorkAttemptID: attempt.ID, Attempt: attempt.AttemptNumber, StartedAt: attempt.StartedAt}, completion)
-}
-
-func recoveryIssueFromStoreAttempt(attempt store.WorkAttempt) connector.Issue {
-	issue := connector.NewIssue()
-	issue.ID = attempt.IssueID
-	issue.Identifier = attempt.Identifier
-	issue.URL = attempt.IssueURL
-	issue.State = attempt.Lane
-	return issue
 }
 
 func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *State, now time.Time) bool {

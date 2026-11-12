@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
@@ -157,11 +158,18 @@ func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, 
 	if review, ok := value.(tracker.ReviewChange); ok && (review.Decision != "commented" || review.Validator != nil || review.ImplementationReview != nil || review.SecurityAudit != nil) {
 		return s.changeReviewRecordMutation(c, review)
 	}
-	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
-	scope := nativeRequestScope(c)
-	item, changeID := c.Param("item"), c.Param("change")
+	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
+	response, err := s.changeRecordEvidenceCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("change"), operation, kind, versionID, sourceKey, value)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, response)
+}
+
+func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope nativeScope, item, changeID, operation, kind, versionID, sourceKey string, value any) (json.RawMessage, error) {
+	ctx = isolateContentContext(s.runDetailContext(ctx))
 	if scope.credential.Scope == apiScopeWorker {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return nil, workItemStorageUnavailable()
 	}
 	var command tracker.Mutation
 	switch record := value.(type) {
@@ -170,76 +178,90 @@ func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, 
 	case tracker.ReviewChange:
 		command = record.Mutation
 	default:
-		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key is required"))
+		return nil, nativePublicInvalid("An idempotency key is required")
 	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	hash, err := nativeCommandHash(value)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
 	replay, found, err := s.changeRecordReceipt(ctx, scope, operation, command.IdempotencyKey, hash)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if found {
-		return c.JSONBlob(http.StatusOK, replay)
+		return replay, nil
 	}
 	change, err := s.readChangeRecord(ctx, scope, item, changeID)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if versionID != "" {
 		if _, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, versionID); err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
+			return nil, projectRecordError(err)
 		}
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	evidence := eventstore.Evidence{OrganizationID: scope.organization, ChangeID: change.ID, Kind: kind, CreatedAt: payloadTimestamp(ctx, now)}
 	var raw []byte
+	var quality *preparedTenantQualityEscape
+	var contentFields []cloudContentField
 	switch record := value.(type) {
 	case tracker.DiscussChange:
-		if strings.TrimSpace(record.Body) == "" || len(record.Body) > 64<<10 || record.Escape != nil {
-			return s.nativeAPIError(c, nativePublicInvalid("Discussion requires 1 byte to 64 KiB and cannot include a quality escape"))
+		if strings.TrimSpace(record.Body) == "" || len(record.Body) > 64<<10 {
+			return nil, nativePublicInvalid("Discussion requires 1 byte to 64 KiB")
+		}
+		contentFields = []cloudContentField{{name: "body", value: record.Body}}
+		if record.Escape != nil {
+			quality, err = s.prepareQualityEscapeTenant(ctx, scope, change, record, now)
+			if err != nil {
+				return nil, projectRecordError(err)
+			}
 		}
 		if record.VersionID != "" {
 			evidence.VersionID = new(record.VersionID)
 		}
 		if record.Provenance != nil {
 			if err := validateNativeProvenance(scope, record.Provenance); err != nil {
-				return s.nativeAPIError(c, err)
+				return nil, err
 			}
 			sourceKey = record.Provenance.Provider + ":" + record.Provenance.ExternalID
 		}
-		discussion := tracker.ChangeDiscussion{ID: payloadNativeID(ctx, "cmt"), VersionID: record.VersionID, Body: record.Body, Actor: scope.actor(), Provenance: record.Provenance, CreatedAt: evidence.CreatedAt}
+		discussion := tracker.ChangeDiscussion{ID: payloadNativeID(ctx, "cmt"), VersionID: record.VersionID, Body: record.Body, Actor: scope.actor(), Provenance: record.Provenance, CreatedAt: evidence.CreatedAt, Escape: record.Escape}
 		raw, err = json.Marshal(discussion)
 	case tracker.ReviewChange:
 		if record.Decision != "commented" || record.ExpectedRevision != 0 && record.ExpectedRevision != change.Revision || record.ExpectedVersionID != "" && record.ExpectedVersionID != versionID || len(record.Body) > 64<<10 {
-			return s.nativeAPIError(c, workItemStorageUnavailable())
+			return nil, workItemStorageUnavailable()
 		}
 		if record.Validator != nil || record.ImplementationReview != nil || record.SecurityAudit != nil || record.Bundle != nil {
-			return s.nativeAPIError(c, workItemStorageUnavailable())
+			return nil, workItemStorageUnavailable()
 		}
 		evidence.VersionID = new(versionID)
+		contentFields = changeReviewContentFields(record)
 		review := tracker.ChangeReview{ID: payloadNativeID(ctx, "review"), VersionID: versionID, Decision: record.Decision, Body: record.Body, Actor: scope.actor(), CreatedAt: evidence.CreatedAt}
 		raw, err = json.Marshal(review)
 	default:
-		return s.nativeAPIError(c, nativePublicInvalid("Unsupported change evidence"))
+		return nil, nativePublicInvalid("Unsupported change evidence")
 	}
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if sourceKey != "" {
 		evidence.SourceKey = new(sourceKey)
+	} else if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := validateChangeRecordContent(ctx, r, scope, contentFields, nil, "", false)
+		return err
+	}); err != nil {
+		return nil, projectRecordError(err)
 	}
 	evidence, err = eventstore.NewContent(s.runDetailStore()).PrepareEvidence(ctx, evidence, raw)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	var response []byte
 	existingSource := false
@@ -255,7 +277,7 @@ func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, 
 			existingSource = true
 		}
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-			return s.nativeAPIError(c, projectRecordError(err))
+			return nil, projectRecordError(err)
 		}
 	}
 	if response == nil {
@@ -264,18 +286,18 @@ func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, 
 	createdEvidence := !existingSource
 	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	var event eventstore.Event
 	if createdEvidence {
 		eventValue := tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change." + kind, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: evidence.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: versionID}}}
 		eventRaw, err := json.Marshal(eventValue)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		event, err = eventstore.NewContent(s.runDetailStore()).PrepareEvent(ctx, scope.organization, eventRaw)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
 	for {
@@ -301,7 +323,15 @@ func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, 
 			if current.Revision != int64(change.Revision) || current.CurrentVersionID != nil && *current.CurrentVersionID != change.CurrentVersion {
 				return corestore.ErrRevisionConflict
 			}
+			if quality != nil {
+				if err := recheckTenantQualityEscape(ctx, w, scope, change, *value.(tracker.DiscussChange).Escape, quality); err != nil {
+					return err
+				}
+			}
 			if createdEvidence {
+				if err := bindChangeRecordContent(ctx, w, scope, string(change.WorkItemID), contentFields, nil, ""); err != nil {
+					return err
+				}
 				if _, err := w.AppendEvidence(ctx, evidence); err != nil {
 					return err
 				}
@@ -315,10 +345,10 @@ func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, 
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
 			replay, found, readErr := s.changeRecordReceipt(ctx, scope, operation, command.IdempotencyKey, hash)
 			if readErr != nil {
-				return s.nativeAPIError(c, readErr)
+				return nil, readErr
 			}
 			if found {
-				return c.JSONBlob(http.StatusOK, replay)
+				return replay, nil
 			}
 			if sourceKey != "" {
 				var old eventstore.Evidence
@@ -330,27 +360,27 @@ func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, 
 				if oldErr == nil {
 					response, err = eventstore.NewContent(s.runDetailStore()).Evidence(ctx, old)
 					if err != nil {
-						return s.nativeAPIError(c, err)
+						return nil, err
 					}
 					receipt, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
 					if err != nil {
-						return s.nativeAPIError(c, err)
+						return nil, err
 					}
 					createdEvidence = false
 					continue
 				}
 				if !errors.Is(oldErr, corestore.ErrNotFound) {
-					return s.nativeAPIError(c, projectRecordError(oldErr))
+					return nil, projectRecordError(oldErr)
 				}
 			}
 			continue
 		}
 		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
+			return nil, projectRecordError(err)
 		}
 		break
 	}
-	return c.JSONBlob(http.StatusOK, response)
+	return response, nil
 }
 
 func (s *Service) readChangeVersionRecord(ctx context.Context, organization tracker.OrganizationID, changeID, versionID string) (eventstore.Version, error) {
@@ -434,6 +464,12 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 		return s.nativeAPIError(c, err)
 	}
 	if err := changerequest.ValidateResult(version, request.ChangeCheckResult, scope.credential.ID, scope.credential.Scope == apiScopeWorker); err != nil {
+		if visualErr := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := validateChangeRecordContent(ctx, r, scope, nil, request.Evidence, "evidence", false)
+			return err
+		}); visualErr != nil {
+			return s.nativeAPIError(c, projectRecordError(visualErr))
+		}
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
 	now := s.config.now().UTC()
@@ -522,6 +558,9 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 				return err
 			}
 			if createdEvidence {
+				if err := bindChangeRecordContent(ctx, w, scope, string(change.WorkItemID), nil, request.Evidence, "evidence"); err != nil {
+					return err
+				}
 				if _, err := w.AppendEvidence(ctx, evidence); err != nil {
 					return err
 				}
@@ -718,6 +757,13 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeSco
 			return nil, err
 		}
 	}
+	contentFields := []cloudContentField{{name: "title", value: request.Title}, {name: "body", value: request.Body}}
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := validateChangeRecordContent(ctx, r, scope, contentFields, nil, "", false)
+		return err
+	}); err != nil {
+		return nil, projectRecordError(err)
+	}
 	now, err := s.database.currentTime()
 	if err != nil {
 		return nil, err
@@ -782,6 +828,9 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeSco
 				if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", currentTime); err != nil {
 					return err
 				}
+			}
+			if err := bindChangeRecordContent(ctx, w, scope, string(item), contentFields, nil, ""); err != nil {
+				return err
 			}
 			if _, err := w.CreateChange(ctx, changeRecord); err != nil {
 				return err
@@ -914,6 +963,23 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	result := tracker.ChangeDetail{Change: change}
+	seenSources := make(map[string]bool)
+	for _, linked := range change.LinkedIssues {
+		row, snapshot, err := s.readWorkItemRecord(ctx, scope, string(linked))
+		if err != nil {
+			return tracker.ChangeDetail{}, err
+		}
+		issue, err := s.hydrateWorkItemRecord(ctx, row, snapshot)
+		if err != nil {
+			return tracker.ChangeDetail{}, err
+		}
+		for _, reference := range issue.ExternalReferences {
+			if reference.Provider == "github" && reference.URL != "" && !seenSources[reference.URL] {
+				result.SourceIssues = append(result.SourceIssues, reference)
+				seenSources[reference.URL] = true
+			}
+		}
+	}
 	for _, row := range versions {
 		version, err := s.hydrateChangeVersion(ctx, scope, tracker.NativeWorkItemID(item), row)
 		if err != nil {
@@ -963,6 +1029,9 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 	}
 	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(current, currentApproval.Policy, currentApproval.ReviewPolicy)
 	result.Summary, err = s.summarizeChangeWithAuditDispositions(ctx, scope, result, policyID, reviewPolicyID, now, false)
+	if err == nil {
+		err = s.loadChangeExternalRecord(ctx, scope, tracker.NativeWorkItemID(item), &result)
+	}
 	return result, err
 }
 
@@ -1003,6 +1072,9 @@ func (s *Service) selectedCurrentChangeSummary(ctx context.Context, scope native
 		return tracker.ChangeSummary{}, projectRecordError(err)
 	}
 	detail, err := s.hydrateCurrentChangeDetail(ctx, scope, item, change, version, policyRows, now)
+	if err == nil {
+		err = s.loadChangeExternalRecord(ctx, scope, item, &detail)
+	}
 	return detail.Summary, err
 }
 
@@ -1011,6 +1083,10 @@ func (s *Service) hydrateCurrentChangeDetail(ctx context.Context, scope nativeSc
 }
 
 func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows currentChangePolicyRows, now time.Time, facts *tenantstore.BoardChangeRows, approval *ChangeVersionApproval, workload corestore.Workload) (tracker.ChangeDetail, error) {
+	return s.hydrateCurrentChangeDetailSelection(ctx, scope, item, changeRecord, versionRecord, policyRows, now, facts, approval, workload, false)
+}
+
+func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows currentChangePolicyRows, now time.Time, facts *tenantstore.BoardChangeRows, approval *ChangeVersionApproval, workload corestore.Workload, recovery bool) (tracker.ChangeDetail, error) {
 	if changeRecord.CurrentVersionID == nil && versionRecord != nil || changeRecord.CurrentVersionID != nil && (versionRecord == nil || *changeRecord.CurrentVersionID != versionRecord.ID || versionRecord.ChangeID != changeRecord.ID) {
 		return tracker.ChangeDetail{}, corestore.ErrRevisionConflict
 	}
@@ -1053,8 +1129,37 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 		version.LandingQuality = landed.Quality
 	}
 	var evidence []eventstore.Evidence
+	var priorApproval bool
 	if facts != nil {
 		evidence = facts.Evidence
+	} else if recovery {
+		repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+		if !ok {
+			return tracker.ChangeDetail{}, corestore.ErrInvalidPage
+		}
+		checks := make([]string, 0, len(version.Checks))
+		for _, check := range version.Checks {
+			checks = append(checks, check.CheckRunID)
+		}
+		err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			reader, ok := r.(eventstore.ChangeRecoveryReader)
+			if !ok {
+				return corestore.ErrInvalidPage
+			}
+			var err error
+			evidence, priorApproval, err = reader.RecoveryChangeEvidence(ctx, change.ID, version.ID, changeRecord.EvidenceSequence, checks)
+			return err
+		})
+	} else if explanationRead(ctx) {
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, workload, func(r tenantstore.Reader) error {
+			reader, ok := r.(eventstore.ChangeGateEvidenceReader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			var err error
+			evidence, err = reader.CurrentVersionGateEvidence(ctx, change.ID, version.ID, changeRecord.EvidenceSequence)
+			return err
+		})
 	} else {
 		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
@@ -1073,16 +1178,15 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 			}
 			return nil
 		})
-		if err != nil {
-			return tracker.ChangeDetail{}, projectRecordError(err)
-		}
+	}
+	if err != nil {
+		return tracker.ChangeDetail{}, projectRecordError(err)
 	}
 
-	if len(evidence) > corestore.MaxPageSize {
+	if !recovery && len(evidence) > corestore.MaxPageSize {
 		return tracker.ChangeDetail{}, corestore.ErrInvalidPage
 	}
 	detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{changeVersionResponse(version)}}
-	priorApproval := false
 	for _, row := range evidence {
 		if row.OrganizationID != scope.organization || row.ChangeID != changeRecord.ID {
 			return tracker.ChangeDetail{}, corestore.ErrTenantMismatch
@@ -1138,6 +1242,19 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 	}
 	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(&detail.Versions[0], currentApproval.Policy, currentApproval.ReviewPolicy)
 	detail.Summary, err = s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, workload, facts)
+	if err == nil && explanationRead(ctx) && facts == nil && !recovery && (len(detail.Checks) > 64 || len(detail.Reviews) > 64) {
+		detail.Summary.Status = "evidence_incomplete"
+		if len(detail.Checks) > 64 {
+			detail.Summary.Checks = "unknown"
+		}
+		if len(detail.Reviews) > 64 {
+			detail.Summary.NativeReview, detail.Summary.ExternalReview = "unknown", "unknown"
+		}
+		detail.Summary.Messages = []string{"Current-version check or review history is truncated"}
+	}
+	if err == nil && recovery {
+		detail.PublicationPushes, err = s.readBoundedChangePushes(ctx, scope, string(item), detail.Versions)
+	}
 	return detail, err
 }
 
@@ -1266,4 +1383,91 @@ func (s *Service) changeOperationRecordReceipt(ctx context.Context, scope native
 		return nil, false, projectRecordError(err)
 	}
 	return raw, true, nil
+}
+
+func (s *Service) loadChangeExternalRecord(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, detail *tracker.ChangeDetail) error {
+	var selected *tracker.ChangeVersion
+	for index := range detail.Versions {
+		version := &detail.Versions[index]
+		if version.ID == detail.Change.CurrentVersion && version.External != nil && version.External.Provider == "github" {
+			selected = version
+			break
+		}
+	}
+	if selected == nil {
+		return nil
+	}
+	number := externalPullRequestNumber(*selected.External)
+	owner, repository, valid := splitRepositoryFullName(strings.TrimPrefix(strings.TrimSuffix(selected.Repository, ".git"), "https://github.com/"))
+	if !valid || number <= 0 || selected.External.URL != "https://github.com/"+owner+"/"+repository+"/pull/"+selected.External.ID {
+		return nil
+	}
+	name := strings.ToLower(owner + "/" + repository)
+	var observed *projectstore.GitHubPullRequestObservation
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		itemRecord, err := r.WorkItem(ctx, scope.project, item)
+		if err != nil {
+			return err
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(itemRecord.ActorPrincipalID)}) {
+			return corestore.ErrNotFound
+		}
+		project, err := r.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.Core.DeletedAt != nil || project.Core.Profile != "native" || !project.Settings.RepositoryEnabled || !strings.EqualFold(project.Settings.CheckoutRepository, name) {
+			return nil
+		}
+		change, err := r.Change(ctx, detail.Change.ID)
+		if err != nil {
+			return err
+		}
+		if change.ProjectID != scope.project || change.Revision != int64(detail.Change.Revision) || valueOrEmpty(change.CurrentVersionID) != selected.ID {
+			return corestore.ErrRevisionConflict
+		}
+		version, err := r.Version(ctx, change.ID, selected.ID)
+		if err != nil {
+			return err
+		}
+		if version.HeadSHA != selected.HeadSHA {
+			return corestore.ErrRevisionConflict
+		}
+		if version.ExternalProvider != selected.External.Provider || version.ExternalID != selected.External.ID || version.ExternalURL != selected.External.URL {
+			publication, err := r.PRPublication(ctx, selected.ID)
+			if err != nil {
+				return err
+			}
+			binding := tracker.NativePRPublication{ChangeID: publication.ChangeID, VersionID: publication.VersionID, Repository: publication.Repository, BaseRef: publication.BaseRef, Branch: publication.Branch, HeadSHA: publication.HeadSHA, PolicyID: publication.PolicyID, SourceVersion: tracker.NativeChangeReference{ChangeID: publication.ChangeID, VersionID: publication.VersionID, HeadSHA: publication.HeadSHA}, SourceAttemptID: publication.SourceAttemptID, External: publication.External}
+			if !binding.Matches(detail.Change.ID, *selected) || publication.External != *selected.External {
+				return corestore.ErrRevisionConflict
+			}
+		}
+		reader, ok := r.(projectstore.GitHubPullRequestRefreshReader)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		row, err := reader.GitHubPullRequestRefresh(ctx, projectstore.GitHubPullRequestRefreshKey{ProjectID: scope.project, ChangeID: change.ID, Repository: name, Number: number})
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if row.RequestedVersion != selected.ID || row.RequestedHeadSHA != selected.HeadSHA || row.ObservedRequestCount != row.RequestCount || row.Observation == nil || row.Observation.Repository != name || row.Observation.Number != number || row.Observation.ObservedAt.Before(row.RequestedAt) {
+			return nil
+		}
+		observed = row.Observation
+		return nil
+	})
+	if err != nil || observed == nil {
+		return err
+	}
+	detail.External = &tracker.PullRequestSummary{Number: number, URL: selected.External.URL, State: observed.State, Draft: observed.Draft, HeadSHA: observed.HeadSHA, Checks: observed.Checks, Reviews: observed.Reviews, Merge: tracker.MergeSummary{State: "unknown"}}
+	if observed.HeadSHA != selected.HeadSHA {
+		detail.Summary.ExternalReview = "stale_head"
+	} else if observed.Reviews.Decision != "" {
+		detail.Summary.ExternalReview = "snapshot: " + observed.Reviews.Decision
+	}
+	return nil
 }

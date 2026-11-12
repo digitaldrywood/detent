@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -71,17 +74,45 @@ func TestWorkItemChangeSurfaceReportsAConnectorWithNoPullRequest(t *testing.T) {
 	t.Parallel()
 
 	f := newAttemptDiffFixture(t)
-	repositoryID, _ := seedProjection(t, f.service.database.db)
-	for _, statement := range []struct {
-		query string
-		args  []any
-	}{
-		{"UPDATE projects SET repository_id = NULL WHERE repository_id = ?", []any{repositoryID}},
-		{"UPDATE projects SET repository_id = ?, github_repository_enabled = 1 WHERE id = ?", []any{repositoryID, f.project.ID}},
-	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
-			t.Fatal(err)
+	other := f.create(t, "Other item with a pull request")
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
 		}
+		project.Settings.CheckoutRepository, project.Settings.RepositoryEnabled = "example-org/example-project", true
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := f.service.config.now()
+	input := changeTestInput()
+	input.Repository = "https://github.com/example-org/example-project"
+	input.External = &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: "https://github.com/example-org/example-project/pull/1"}
+	version := tracker.ChangeVersion{ID: "other_version", ChangeID: "other_change", Number: 1, ChangeVersionInput: input, Policy: hubTestPolicy(), Actor: other.Actor, CreatedAt: now}
+	changeRequest := tracker.ChangeRequest{ID: version.ChangeID, OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: other.WorkItemID,
+		Revision: 1, Title: "Other item change", CurrentVersion: version.ID, CreatedAt: now, UpdatedAt: now}
+	content := eventstore.NewContent(f.service.runDetailStore())
+	changeRow, err := content.PrepareChange(t.Context(), f.project.OrganizationID, historyTestJSON(t, changeRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionRow, err := content.PrepareVersion(t.Context(), f.project.OrganizationID, historyTestJSON(t, version))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
+			return err
+		}
+		_, err := w.CreateVersion(t.Context(), versionRow)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if retained := readWorkItem(t, f.nativeFixture, other.WorkItemID, "?include=change").Change; retained == nil || retained.Number != 1 || retained.ChangeID != changeRequest.ID {
+		t.Fatalf("other item did not retain its own pull request: %+v", retained)
 	}
 
 	requireNativeStatus(t, f.post(t, f.request(2, tracker.AttemptDiffFile{
@@ -253,8 +284,11 @@ func TestAttemptRecordsTheClaimedRevision(t *testing.T) {
 			}
 			f.start(t)
 			var recorded tracker.Revision
-			if err := f.service.database.db.QueryRowContext(t.Context(),
-				"SELECT work_item_revision FROM native_attempts WHERE id = ?", f.attempt).Scan(&recorded); err != nil {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				attempt, err := r.Attempt(t.Context(), f.attempt)
+				recorded = tracker.Revision(attempt.WorkItemRevision)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if recorded != claimed {

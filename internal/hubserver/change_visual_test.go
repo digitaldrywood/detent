@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,8 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,22 +28,24 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 			f := newChangeFixture(t, nil)
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
 			otherIssue := other.create(t, "other-work")
-			var uploader string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name='operator-changes'").Scan(&uploader); err != nil {
+			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil {
 				t.Fatal(err)
 			}
+			uploader := credential.ID
 			upload := func(project tracker.NativeProject, mime string, deleted bool) attachment.Metadata {
 				t.Helper()
 				m := attachment.Metadata{ID: conversation.NewAttachmentID(), ProjectID: string(project.ID), Uploader: uploader, Name: "upload", ContentType: mime, Size: 100, SHA256: policy.Digest([]byte(mime))}
 				if strings.HasPrefix(mime, "image/") {
 					m.Width, m.Height = 1, 1
 				}
-				var tombstone any
+				m.CreatedAt = time.Now().UTC()
 				if deleted {
-					tombstone = formatHubTime(time.Now())
+					m.DeletedAt = &m.CreatedAt
 				}
-				_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,width,height,created_at,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, m.ID, project.OrganizationID, project.ID, m.Uploader, m.Name, m.ContentType, m.Size, m.SHA256, m.Width, m.Height, formatHubTime(time.Now()), tombstone)
-				if err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: project.OrganizationID, Metadata: m, Kind: "attachment"})
+				}); err != nil {
 					t.Fatal(err)
 				}
 				return m
@@ -55,7 +63,9 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 			if otherChange.Body != foreignBody {
 				t.Fatal("other project is not usable")
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO attachment_references(attachment_id,work_item_id) VALUES(?,?)", image.ID, f.issue.WorkItemID); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.BindAttachment(t.Context(), attachmentstore.Reference{ProjectID: f.project.ID, AttachmentID: image.ID, WorkItemID: f.issue.WorkItemID})
+			}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -116,7 +126,13 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 				request := tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "legacy-provenance"}, Body: visual, Provenance: provenance}
 				send(f.path+"/discussion", request, http.StatusOK)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), f.project.ID)
+				if err != nil {
+					return err
+				}
+				return w.UpdateProjectContent(t.Context(), f.project.ID, project.Core.ContentSettingsRevision, true)
+			}); err != nil {
 				t.Fatal(err)
 			}
 			send(legacyPath, legacy, http.StatusOK)
@@ -131,12 +147,28 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 				t.Helper()
 				var change string
 				var versions, evidence, refs, history, revisions, receipts, changes, retained int
-				err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT record_json,
-     (SELECT count(*) FROM change_versions), (SELECT count(*) FROM change_evidence),
-     (SELECT count(*) FROM attachment_references), (SELECT count(*) FROM collaboration_events),
-     (SELECT count(*) FROM collaboration_versions), (SELECT count(*) FROM native_commands),
-     (SELECT count(*) FROM change_requests), (SELECT coalesce(sum(retain_with_work_item),0) FROM attachment_references) FROM change_requests WHERE id=?`, f.change.ID).Scan(&change, &versions, &evidence, &refs, &history, &revisions, &receipts, &changes, &retained)
+				var row eventstore.Change
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					row, err = r.Change(t.Context(), f.change.ID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				value, err := eventstore.NewContent(f.service.runDetailStore()).Change(t.Context(), row)
 				if err != nil {
+					t.Fatal(err)
+				}
+				encoded, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				change = string(encoded)
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT
+     (SELECT count(*) FROM change_versions), (SELECT count(*) FROM change_evidence),
+     (SELECT count(*) FROM attachment_item_references), (SELECT count(*) FROM collaboration_events),
+     (SELECT count(*) FROM collaboration_versions), (SELECT count(*) FROM native_commands),
+     (SELECT count(*) FROM change_requests), (SELECT count(*) FROM attachment_item_references WHERE retain_with_work_item)`).Scan(&versions, &evidence, &refs, &history, &revisions, &receipts, &changes, &retained); err != nil {
 					t.Fatal(err)
 				}
 				raw, err := json.Marshal([]any{change, versions, evidence, refs, history, revisions, receipts, changes, retained})
@@ -218,18 +250,22 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 				if writer == "artifacts" {
 					table = "change_versions"
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "CREATE TRIGGER refuse_visual_publication BEFORE INSERT ON "+table+" BEGIN SELECT RAISE(ABORT,'fixture refusal'); END"); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "CREATE FUNCTION refuse_visual_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture refusal'; END $$; CREATE TRIGGER refuse_visual_publication BEFORE INSERT ON "+table+" FOR EACH ROW EXECUTE FUNCTION refuse_visual_publication()"); err != nil {
 					t.Fatal(err)
 				}
+				t.Cleanup(func() {
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+					defer cancel()
+					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(cleanup, "DROP TRIGGER refuse_visual_publication ON "+table+"; DROP FUNCTION refuse_visual_publication()"); err != nil {
+						t.Error(err)
+					}
+				})
 				before := snapshot()
 				a := artifact("attachment:" + fresh.ID)
 				path, request := build("rollback", visual+" "+fresh.Markdown(string(f.project.OrganizationID)), []tracker.ChangeArtifact{a})
 				send(path, request, http.StatusInternalServerError)
 				if after := snapshot(); before != after {
 					t.Fatalf("failed publication changed records: %s -> %s", before, after)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER refuse_visual_publication"); err != nil {
-					t.Fatal(err)
 				}
 			})
 
@@ -247,7 +283,13 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 				path, request := build(fmt.Sprintf("paired-%d", i), body, []tracker.ChangeArtifact{accepted})
 				send(path, request, http.StatusOK)
 				var bound bool
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM attachment_references WHERE attachment_id=? AND work_item_id=? AND comment_id='' AND retain_with_work_item=1)", m.ID, f.issue.WorkItemID).Scan(&bound); err != nil || !bound {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					references, err := r.AttachmentReferences(t.Context(), f.project.ID, m.ID, corestore.MaxPageSize)
+					for _, reference := range references {
+						bound = bound || reference.WorkItemID == f.issue.WorkItemID && reference.CommentID == "" && reference.RetainWithWorkItem
+					}
+					return err
+				}); err != nil || !bound {
 					t.Fatalf("accepted upload unbound: %v", err)
 				}
 			}
@@ -276,7 +318,20 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 			response = performHubAPIRequest(t, f.service, http.MethodPatch, issuePath, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "replace-issue-body"}, ExpectedRevision: f.issue.Revision, Body: new("Replacement" + issueContractTestSections)})
 			requireNativeStatus(t, response, http.StatusOK)
 			var retained int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_references WHERE work_item_id=? AND retain_with_work_item=1 AND attachment_id IN (?,?)", f.issue.WorkItemID, image.ID, pdf.ID).Scan(&retained); err != nil || retained != 2 {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				for _, id := range []string{image.ID, pdf.ID} {
+					references, err := r.AttachmentReferences(t.Context(), f.project.ID, id, corestore.MaxPageSize)
+					if err != nil {
+						return err
+					}
+					for _, reference := range references {
+						if reference.WorkItemID == f.issue.WorkItemID && reference.RetainWithWorkItem {
+							retained++
+						}
+					}
+				}
+				return nil
+			}); err != nil || retained != 2 {
 				t.Fatalf("issue edit removed immutable references: count=%d error=%v", retained, err)
 			}
 		})

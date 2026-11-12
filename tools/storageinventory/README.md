@@ -67,12 +67,7 @@ Claim ownership starts at `database.claimNextOn` in
 reservations, attempt state and history must share the tenant unit-of-work.
 Candidate preflight is a read snapshot and grants no lease.
 
-Completion enters through `Service.appendNativeRunEvent` in `native_events.go`
-and uses `Service.commitNativeMutation` in `native_api.go`.
-`Service.recordNativeRunEvent`, `recordNativeAttempt`, usage accounting,
-dependency/progress updates, publication metadata, history and command receipt
-must remain failure-atomic. The claim and completion groups name existing fencing,
-replay, usage and object-preparation regressions for downstream parity tests.
+Completion enters through `Service.appendNativeRunEvent` and the typed `appendNativeRunEventTenant` owner. Runner credentials use `Repository.WriteRunnerEventCommand`; other supported entry paths use the tenant transaction. Attempt state, usage accounting, dependency updates, publication metadata, history and command receipts remain failure-atomic. Objects are prepared before the write transaction, which records references and archive accounting. The completion group retains legacy pending-content tests as migration obligations and names typed fencing, replay and rollback regressions; listed tests establish parity only after execution.
 
 The existing PostgreSQL core, lease and event callbacks each call
 `Repository.transaction` independently. The `postgres-callback` group records

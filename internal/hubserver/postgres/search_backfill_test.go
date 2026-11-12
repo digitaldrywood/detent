@@ -120,7 +120,11 @@ func TestSearchBackfillResumesBoundedTenantPages(t *testing.T) {
 			t.Helper()
 			var result []string
 			for _, table := range []string{"storage_conversion_cursors", "storage_conversion_progress"} {
-				rows, err := db.QueryContext(t.Context(), `SELECT * FROM `+table+` ORDER BY organization_id,family`)
+				projection := "organization_id,project_id,family,aggregate_id,converted_rows,converted_bytes"
+				if table == "storage_conversion_cursors" {
+					projection = "organization_id,family,turn,positioned,key_1,key_2,key_3,key_4,sequence,examined_rows,examined_bytes,oversized_rows"
+				}
+				rows, err := db.QueryContext(t.Context(), `SELECT `+projection+` FROM `+table+` ORDER BY organization_id,family`)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -165,6 +169,10 @@ func TestSearchBackfillResumesBoundedTenantPages(t *testing.T) {
 		}
 		if after := snapshot(); !reflect.DeepEqual(before, after) {
 			t.Fatal("family repair changed populated cursor or progress rows")
+		}
+		var inventedTerminalClocks int
+		if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM storage_conversion_cursors WHERE archive_terminal_at IS NOT NULL`).Scan(&inventedTerminalClocks); err != nil || inventedTerminalClocks != 0 {
+			t.Fatalf("upgrade invented archive cursor clocks=%d error=%v", inventedTerminalClocks, err)
 		}
 		if constraint() != progressConstraint {
 			t.Fatal("cursor repair changed progress family contract")

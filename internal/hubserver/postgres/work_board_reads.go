@@ -510,11 +510,80 @@ func (s *session) BoardSequence(ctx context.Context, project tracker.ProjectID) 
 	return result, mapError(ctx, err)
 }
 
+func (s *session) BoardDeliveryState(ctx context.Context, project tracker.ProjectID, subjects []viewstore.BoardDeliverySubject, now time.Time) (viewstore.BoardDeliveryState, error) {
+	var state viewstore.BoardDeliveryState
+	if err := checkPage(len(subjects)); err != nil {
+		return state, err
+	}
+	ids, hashes, users, memberships, sessions := make([]string, len(subjects)), make([]string, len(subjects)), make([]string, len(subjects)), make([]string, len(subjects)), make([]string, len(subjects))
+	for i, subject := range subjects {
+		ids[i], hashes[i], users[i], memberships[i], sessions[i] = subject.CredentialID, subject.CredentialHash, subject.UserID, subject.MembershipID, subject.SessionHash
+	}
+	rows, err := s.db.Query(ctx, `WITH project_state AS MATERIALIZED (
+ SELECT coalesce(b.sequence,0) AS head,coalesce(b.replay_floor,0) AS floor,
+        EXISTS(SELECT 1 FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL) AS live,
+        coalesce((SELECT revision FROM native_board_access_revisions WHERE organization_id=$1 AND subject_kind='organization' AND subject_id=$1),0) AS access_revision
+ FROM (VALUES (1)) seed(value)
+ LEFT JOIN native_board_sequences b ON b.organization_id=$1 AND b.project_id=$2
+)
+SELECT p.head,p.floor,p.live,p.access_revision,
+       coalesce((SELECT revision FROM native_board_access_revisions WHERE organization_id=$1 AND subject_kind='token' AND subject_id=q.credential_id),0),
+       coalesce((SELECT revision FROM native_board_access_revisions WHERE organization_id=$1 AND subject_kind='member' AND subject_id=q.user_id),0),
+       coalesce((SELECT revision FROM native_board_access_revisions WHERE organization_id=$1 AND subject_kind='token' AND subject_id=m.principal_id),0),
+       coalesce(t.token_hash=q.credential_hash AND t.revoked_at IS NULL AND t.created_at<=$8
+         AND (t.expires_at IS NULL OR t.expires_at>$8)
+         AND (q.user_id='' OR (m.active AND m.membership_id=q.membership_id AND principal.id IS NOT NULL AND principal.revoked_at IS NULL
+           AND (t.id=m.principal_id OR (t.hosted_user_id=q.user_id AND t.hosted_membership_id=m.membership_id))))
+         AND (q.session_hash='' OR (h.identity_subject=q.user_id AND h.revoked_at IS NULL AND h.expires_at>$8 AND h.identity_expires_at>$8
+           AND (COALESCE(m.sessions_revoked_before,CASE WHEN NOT m.active THEN m.updated_at END) IS NULL
+             OR h.identity_created_at>COALESCE(m.sessions_revoked_before,CASE WHEN NOT m.active THEN m.updated_at END)))),false),
+       least(t.expires_at,h.expires_at,h.identity_expires_at),
+       coalesce(t.scope,''),coalesce(t.operator_key_scope,''),coalesce(t.operator_project_access,''),coalesce(t.native_only,false),
+       coalesce(m.role,''),coalesce(m.principal_id,'')
+ FROM project_state p
+ CROSS JOIN unnest($3::text[],$4::text[],$5::text[],$6::text[],$7::text[]) WITH ORDINALITY
+ AS q(credential_id,credential_hash,user_id,membership_id,session_hash,ordinal)
+ LEFT JOIN LATERAL (SELECT id,token_hash,revoked_at,created_at,expires_at,hosted_user_id,hosted_membership_id,scope,operator_key_scope,operator_project_access,native_only
+   FROM api_tokens WHERE organization_id=$1 AND id=q.credential_id OFFSET 0) t ON true
+ LEFT JOIN LATERAL (SELECT active,membership_id,principal_id,role,sessions_revoked_before,updated_at
+   FROM hosted_members WHERE organization_id=$1 AND user_id=q.user_id OFFSET 0) m ON true
+ LEFT JOIN LATERAL (SELECT id,revoked_at FROM api_tokens WHERE organization_id=$1 AND id=m.principal_id OFFSET 0) principal ON true
+ LEFT JOIN LATERAL (SELECT identity_subject,revoked_at,expires_at,identity_created_at,identity_expires_at
+   FROM hosted_sessions WHERE organization_id=$1 AND token_hash=q.session_hash OFFSET 0) h ON true
+ ORDER BY q.ordinal`, s.organization, project, ids, hashes, users, memberships, sessions, now)
+	if err != nil {
+		return state, mapError(ctx, err)
+	}
+	defer rows.Close()
+	state.Access = make([]viewstore.BoardDeliveryAccess, 0, len(subjects))
+	for rows.Next() {
+		var access viewstore.BoardDeliveryAccess
+		var expires *time.Time
+		if err := rows.Scan(&state.Head.Sequence, &state.Head.ReplayFloor, &state.ProjectLive,
+			&access.Revisions[0], &access.Revisions[1], &access.Revisions[2], &access.Revisions[3], &access.Live, &expires,
+			&access.CredentialScope, &access.CredentialKeyScope, &access.CredentialProjectAccess, &access.CredentialNativeOnly,
+			&access.MemberRole, &access.MemberPrincipalID); err != nil {
+			return viewstore.BoardDeliveryState{}, mapError(ctx, err)
+		}
+		if expires != nil {
+			access.ExpiresAt = *expires
+		}
+		state.Access = append(state.Access, access)
+	}
+	if err := rows.Err(); err != nil {
+		return viewstore.BoardDeliveryState{}, mapError(ctx, err)
+	}
+	if len(state.Access) != len(subjects) {
+		return viewstore.BoardDeliveryState{}, viewstore.ErrInvalidView
+	}
+	return state, nil
+}
+
 func (s *session) BoardDeltas(ctx context.Context, project tracker.ProjectID, after int64, limit int) ([]viewstore.BoardDelta, error) {
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT sequence,work_item_id,previous_object_key,previous_sha256,previous_bytes,previous_content_bytes,current_object_key,current_sha256,current_bytes,current_content_bytes FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2 AND sequence>$3 ORDER BY sequence LIMIT $4`, s.organization, project, after, limit)
+	rows, err := s.db.Query(ctx, `SELECT sequence,work_item_id,previous_object_key,previous_sha256,previous_bytes,previous_content_bytes,current_object_key,current_sha256,current_bytes,current_content_bytes,topic,entity_id,entity_revision,kind,status,related_id FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2 AND sequence>$3 ORDER BY sequence LIMIT $4`, s.organization, project, after, limit)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -524,7 +593,7 @@ func (s *session) BoardDeltas(ctx context.Context, project tracker.ProjectID, af
 		var row viewstore.BoardDelta
 		var beforeKey, beforeHash, afterKey, afterHash *string
 		var beforeSize, beforeContent, afterSize, afterContent *int64
-		if err := rows.Scan(&row.Sequence, &row.WorkItemID, &beforeKey, &beforeHash, &beforeSize, &beforeContent, &afterKey, &afterHash, &afterSize, &afterContent); err != nil {
+		if err := rows.Scan(&row.Sequence, &row.WorkItemID, &beforeKey, &beforeHash, &beforeSize, &beforeContent, &afterKey, &afterHash, &afterSize, &afterContent, &row.Topic, &row.EntityID, &row.EntityRevision, &row.Kind, &row.Status, &row.RelatedID); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		if beforeKey != nil {

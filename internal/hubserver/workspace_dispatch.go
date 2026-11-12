@@ -2,16 +2,17 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -43,7 +44,6 @@ const (
 type workspaceLabelContextKey struct{}
 
 // allowWorkspaceLabel authorizes the reserved workspace label for one call.
-// Only ensureWorkspaceItem uses it.
 func allowWorkspaceLabel(ctx context.Context) context.Context {
 	return context.WithValue(ctx, workspaceLabelContextKey{}, true)
 }
@@ -101,119 +101,94 @@ func joinWords(values []string) string {
 	return joined
 }
 
-// ensureWorkspaceItem creates the native issue that dispatches a workspace and
-// records the association. Both commit in the caller's transaction, so a
-// refused request leaves no orphaned issue behind.
-func (w *workspaceService) ensureWorkspaceItem(ctx context.Context, tx *sql.Tx, scope nativeScope, record workspaceRecord, now time.Time) (string, error) {
-	project, err := readNativeProject(ctx, tx, scope)
-	if err != nil {
-		return "", fmt.Errorf("read project for workspace item: %w", err)
-	}
-	state, found := firstDispatchableState(project)
-	if !found {
-		return "", nativePublicInvalid("The project has no dispatchable workflow state for a workspace session")
-	}
-	issue, err := createNativeIssueTx(allowWorkspaceLabel(ctx), tx, scope, tracker.CreateIssue{
-		Title:  workspaceItemTitle(record.ID),
-		Body:   workspaceItemBody(record),
-		State:  state,
-		Labels: []string{workspaceItemLabel},
-	}, now)
-	if err != nil {
-		return "", err
-	}
-	item := string(issue.WorkItemID)
-	if err := insertWorkspaceItem(ctx, tx, workspaceItemRecord{
-		WorkItemID: item, WorkspaceID: record.ID, OrganizationID: record.OrganizationID,
-		ProjectID: record.ProjectID, CreatedAt: now,
-	}); err != nil {
-		return "", err
-	}
-	return item, nil
+type workspaceIssueClosePlan struct {
+	plan    workItemRecordPlan
+	fields  workItemRecordFields
+	version eventstore.CollaborationVersion
+	event   eventstore.Event
+	search  searchstore.Document
+	move    bool
 }
 
-// closeWorkspaceDispatchItem ends the workspace's dispatch issue when the
-// workspace reaches a terminal state: the issue moves to the project's first
-// terminal workflow state and the association row is marked closed.
-//
-// The two halves answer two different readers. Closing the association is what
-// the claim gate reads, and it alone already keeps the item from being claimed
-// again. Moving the issue is what a person reads: a closed workspace that left
-// its item sitting in Todo, dispatchable, is a row on the board that looks like
-// outstanding work and is not. The workspace session contract asks only that closing never delete
-// the attempt's artifacts, which this does not touch. A project with no
-// terminal state keeps the issue where it is, exactly as closeCoordinatorItem
-// does; the association closes regardless.
-func (w *workspaceService) closeWorkspaceDispatchItem(ctx context.Context, tx *sql.Tx, record workspaceRecord, now time.Time) error {
-	item, found, err := readWorkspaceItemByWorkspace(ctx, tx, record.ID)
+func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope nativeScope, item string, now time.Time) (workspaceIssueClosePlan, error) {
+	var out workspaceIssueClosePlan
+	if item == "" {
+		return out, nil
+	}
+	plan, err := s.loadWorkItemPlan(ctx, scope, item, "", tracker.UpdateIssue{})
+	if err != nil {
+		return out, err
+	}
+	terminal, found := firstTerminalState(tracker.NativeProject{States: plan.project.States})
+	if !found || plan.issue.State == terminal {
+		return out, nil
+	}
+	from := plan.issue.State
+	plan.issue.State, plan.issue.Terminal = terminal, true
+	plan.issue.Revision++
+	plan.issue.UpdatedAt, plan.issue.LastActivityAt = now, now
+	plan.issue.ClosedAt = &now
+	plan.fields = []string{"state"}
+	out.plan, out.move = plan, true
+	out.fields, err = s.prepareWorkItemFields(ctx, scope.organization, plan)
+	if err != nil {
+		return out, err
+	}
+	raw, err := json.Marshal(plan.issue)
+	if err != nil {
+		return out, err
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	out.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, RecordID: item, Revision: int64(plan.issue.Revision)}, raw)
+	if err != nil {
+		return out, err
+	}
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, FromState: from, ToState: terminal, Reason: "worker_progress"}})
+	if err != nil {
+		return out, err
+	}
+	out.event, err = content.PrepareEvent(ctx, scope.organization, raw)
+	if err != nil {
+		return out, err
+	}
+	out.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + item, SourceID: item, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+	return out, err
+}
+
+func (p workspaceIssueClosePlan) write(ctx context.Context, w tenantstore.Writer) error {
+	if !p.move {
+		return nil
+	}
+	project, err := w.ProjectRecord(ctx, p.plan.issue.ProjectID)
 	if err != nil {
 		return err
 	}
-	if !found || item.ClosedAt != nil {
-		// Either the workspace never got an item, or an earlier terminal
-		// transition already closed it. Closing twice must not move an issue
-		// somebody has since reopened.
-		return closeWorkspaceItem(ctx, tx, record.ID, now)
+	if !sameWorkItemProjectPlan(p.plan.project, project) {
+		return corestore.ErrSerializationFailure
 	}
-	scope := nativeScope{organization: record.OrganizationID, project: record.ProjectID}
-	project, err := readNativeProject(ctx, tx, scope)
+	current, err := w.LockWorkItem(ctx, p.plan.issue.ProjectID, p.plan.issue.WorkItemID)
 	if err != nil {
-		return fmt.Errorf("read project for workspace item: %w", err)
+		return err
 	}
-	terminal, found := firstTerminalState(project)
-	if !found {
-		w.logger.Warn("workspace.item_not_terminated", "workspace_id", record.ID, "work_item_id", item.WorkItemID,
-			"reason", "the project has no terminal workflow state")
-		return closeWorkspaceItem(ctx, tx, record.ID, now)
+	if current.Revision != p.plan.current.Revision || current.EventSequence != p.plan.current.EventSequence {
+		return corestore.ErrSerializationFailure
 	}
-	issue, _, err := readNativeIssue(ctx, tx, scope, item.WorkItemID)
-	if err != nil {
-		return fmt.Errorf("read workspace issue: %w", err)
+	if err := writeWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
+		return err
 	}
-	if issue.State != terminal {
-		from := issue.State
-		issue.State = terminal
-		if _, err := persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned",
-			tracker.CollaborationData{FromState: from, ToState: terminal, Reason: "worker_progress"}, now); err != nil {
-			return fmt.Errorf("close workspace issue: %w", err)
+	if _, err := w.CreateCollaborationVersion(ctx, p.version); err != nil {
+		return err
+	}
+	if _, err := w.AppendEvent(ctx, p.event); err != nil {
+		return err
+	}
+	if err := w.PutSearch(ctx, p.search, current.Revision); err != nil {
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
 		}
+		return w.PutSearch(ctx, p.search, 0)
 	}
-	if err := closeWorkspaceItem(ctx, tx, record.ID, now); err != nil {
-		return err
-	}
-	w.logger.Info("workspace.item_closed", "workspace_id", record.ID, "work_item_id", item.WorkItemID, "state", terminal)
 	return nil
-}
-
-// runnerWorkspaceCapabilities reads what a runner reported it can serve, and
-// whether the report is fresh. A runner with no identity, a stale heartbeat or
-// no report serves nothing: the workspace stays requested rather than being
-// handed to a runner that cannot honour it.
-func runnerWorkspaceCapabilities(ctx context.Context, query nativeQueryer, runnerID string, now time.Time) (workspacesession.Capabilities, string, bool, error) {
-	if runnerID == "" {
-		return workspacesession.Capabilities{}, "", false, nil
-	}
-	var raw, isolation, heartbeat string
-	err := query.QueryRowContext(ctx, `SELECT workspace_capabilities_json, workspace_isolation, last_heartbeat_at
-FROM runner_identities WHERE id = ?`, runnerID).Scan(&raw, &isolation, &heartbeat)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return workspacesession.Capabilities{}, "", false, nil
-		}
-		return workspacesession.Capabilities{}, "", false, fmt.Errorf("read runner workspace capabilities: %w", err)
-	}
-	last, err := parseTimeValue(heartbeat)
-	if err != nil {
-		return workspacesession.Capabilities{}, "", false, fmt.Errorf("decode runner heartbeat: %w", err)
-	}
-	if now.Before(last) || !now.Before(last.Add(runnerauth.HeartbeatTimeout)) {
-		return workspacesession.Capabilities{}, "", false, nil
-	}
-	var capabilities workspacesession.Capabilities
-	if err := json.Unmarshal([]byte(raw), &capabilities); err != nil {
-		return workspacesession.Capabilities{}, "", false, fmt.Errorf("decode runner workspace capabilities: %w", err)
-	}
-	return capabilities, isolation, true, nil
 }
 
 // workspaceClaimable reports whether this runner may claim this workspace's
@@ -236,68 +211,6 @@ func workspaceClaimable(record workspaceRecord, capabilities workspacesession.Ca
 		return false, "the attempt's retained worktree belongs to another runner"
 	}
 	return true, ""
-}
-
-// gateWorkspaceClaim filters the workspace items a claiming runner may take.
-// It returns the set to skip, in the shape the claim loop already uses for
-// coordinator items -- a skipped candidate never consumes the claim, so the
-// next one is still considered -- together with the set of workspace items the
-// claim can see at all, which is what tells the loop a candidate it reaches is
-// a workspace claim rather than project work.
-//
-// workspaceLane reports that this claim is a runner's workspace lane asking
-// for workspace items. Every other claim excludes them in the candidate query
-// itself, so this gate only ever narrows the lane's own candidates; it is
-// called with workspaceLane false as a second line of defence, and then skips
-// every workspace item unconditionally.
-func gateWorkspaceClaim(ctx context.Context, tx *sql.Tx, scope *nativeScope, workspaceLane bool, retain time.Duration, terminalIsolation string, now time.Time) (workspaceClaimGate, error) {
-	items, err := workspaceIssues(ctx, tx)
-	if err != nil {
-		return workspaceClaimGate{}, err
-	}
-	gate := workspaceClaimGate{skip: map[tracker.WorkItemID]struct{}{}, dispatch: map[tracker.WorkItemID]struct{}{}}
-	for id := range items {
-		gate.dispatch[id] = struct{}{}
-		if !workspaceLane {
-			// A workspace item is not project work. The issue lane never runs
-			// one, whether its workspace is still open or long closed.
-			gate.skip[id] = struct{}{}
-		}
-	}
-	if len(items) == 0 || !workspaceLane {
-		return gate, nil
-	}
-	runnerID := ""
-	if scope != nil {
-		runnerID = scope.credential.Runner.RunnerID
-	}
-	capabilities, isolation, fresh, err := runnerWorkspaceCapabilities(ctx, tx, runnerID, now)
-	if err != nil {
-		return workspaceClaimGate{}, err
-	}
-	for id, item := range items {
-		if !item.open {
-			// The workspace has ended and the association is closed. Its
-			// issue stays as the dispatch record it was; nothing claims it
-			// again.
-			gate.skip[id] = struct{}{}
-			continue
-		}
-		if item.record.State != workspacesession.StateRequested {
-			// Already claimed, or on its way out. Either way this claim is
-			// not the one that starts it.
-			gate.skip[id] = struct{}{}
-			continue
-		}
-		retained, err := retainedWorktreeRunnerFor(ctx, tx, item.record, retain, now)
-		if err != nil {
-			return workspaceClaimGate{}, err
-		}
-		if claimable, _ := workspaceClaimable(item.record, capabilities, fresh, runnerID, retained, isolation, terminalIsolation); !claimable {
-			gate.skip[id] = struct{}{}
-		}
-	}
-	return gate, nil
 }
 
 // terminalIsolationAllowed reports whether a runner reporting isolation may
@@ -327,108 +240,6 @@ func terminalIsolationAllowed(requires []string, configured, reported string) bo
 // runner's terminal isolation is not one the organization allows.
 func workspaceIsolationRefused() error {
 	return &nativeError{Code: "forbidden", Message: "The runner's terminal isolation is not allowed by this organization", status: http.StatusForbidden, publicMessage: true}
-}
-
-// workspaceClaimGate is what the claim loop needs to know about the workspace
-// items in front of it: which candidates this claim may not take, and which
-// candidates are workspace dispatch items at all.
-//
-// The two sets answer different questions and are deliberately not one map.
-// skip narrows the candidates; dispatch says what kind of work a candidate is,
-// which is what decides whether the provider reservation applies to it.
-type workspaceClaimGate struct {
-	// skip is the set of candidates this claim must pass over. A skipped
-	// candidate never consumes the claim, so the next one is still
-	// considered.
-	skip map[tracker.WorkItemID]struct{}
-	// dispatch is every workspace item, claimable by this runner or not. Only
-	// the workspace lane is ever offered one, so a candidate in this set that
-	// the loop actually reaches is a workspace claim.
-	dispatch map[tracker.WorkItemID]struct{}
-}
-
-// skipsProviderReservation reports whether this candidate is claimed without a
-// provider reservation.
-//
-// A workspace session serves files, a diff, a terminal or a preview over the
-// relay and runs no model: the workspace session contract gives its claim one slot of the
-// runner's capacity and a workspace lease with its own fencing token, and says
-// nothing about a provider reservation. Putting it through provider
-// requirement matching asked the lane for a local model selection it has no
-// reason to carry, and every claim was refused 409 provider_incompatible.
-//
-// Being a workspace item is the whole test, rather than the lane the claim came
-// from: the lane may also carry a label filter, and a lane that dropped the
-// filter must still take an ordinary issue under the ordinary provider rules.
-func (g workspaceClaimGate) skipsProviderReservation(id tracker.WorkItemID) bool {
-	_, workspace := g.dispatch[id]
-	return workspace
-}
-
-// retainedWorktreeRunnerFor is retainedWorktreeRunner without a service, for
-// the claim loop, which runs inside the database rather than the workspace
-// service.
-func retainedWorktreeRunnerFor(ctx context.Context, query nativeQueryer, record workspaceRecord, retain time.Duration, now time.Time) (string, error) {
-	if record.AttemptID == "" {
-		return "", nil
-	}
-	scope := nativeScope{organization: record.OrganizationID, project: record.ProjectID}
-	running, err := workspaceAttemptRunning(ctx, query, scope, record.AttemptID)
-	if err != nil {
-		return "", err
-	}
-	runnerID, finishedAt, found, err := workspaceAttemptRunner(ctx, query, scope, record.AttemptID)
-	if err != nil || !found || runnerID == "" {
-		return "", err
-	}
-	if running || now.Before(finishedAt.Add(retain)) {
-		return runnerID, nil
-	}
-	return "", nil
-}
-
-// notWorkspaceItemClause excludes workspace items, open or closed, from an
-// issue query that aliases the issues table as i. A workspace item keeps its
-// history and its attempts; it is simply not project work, exactly as a
-// coordinator item is not.
-const notWorkspaceItemClause = `NOT EXISTS (SELECT 1 FROM workspace_items wi
- WHERE wi.work_item_id = i.native_id AND wi.organization_id = i.organization_id AND wi.project_id = i.project_id)`
-
-// updateRunnerWorkspaceReport stores what the runner says it can serve. A
-// heartbeat that omits the report leaves the stored one alone rather than
-// clearing it: an older runner that does not know about workspaces would
-// otherwise revoke its own eligibility on every beat, and the freshness check
-// on last_heartbeat_at is what decides whether a stored report still counts.
-func prepareRunnerWorkspaceReport(capabilities *workspacesession.Capabilities) (string, error) {
-	if capabilities == nil {
-		return "", nil
-	}
-	encoded, err := json.Marshal(capabilities)
-	if err != nil {
-		return "", fmt.Errorf("encode runner workspace capabilities: %w", err)
-	}
-	return string(encoded), nil
-}
-
-func updateRunnerWorkspaceReport(ctx context.Context, tx *sql.Tx, scope nativeScope, capabilities *workspacesession.Capabilities, isolation string) error {
-	raw, err := prepareRunnerWorkspaceReport(capabilities)
-	if err != nil {
-		return err
-	}
-	return storeEncodedRunnerWorkspaceReport(ctx, tx, scope, raw, isolation)
-}
-
-func storeEncodedRunnerWorkspaceReport(ctx context.Context, tx *sql.Tx, scope nativeScope, raw string, isolation string) error {
-	if raw == "" {
-		return nil
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE runner_identities SET workspace_capabilities_json = ?, workspace_isolation = ?
-WHERE id = ? AND token_id = ? AND organization_id = ?`, raw, isolation,
-		scope.credential.Runner.RunnerID, scope.credential.ID, scope.organization)
-	if err != nil {
-		return fmt.Errorf("store runner workspace capabilities: %w", err)
-	}
-	return requireRunnerUpdate(result, nil)
 }
 
 // firstTerminalState reports the project's first terminal workflow state, the

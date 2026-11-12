@@ -141,6 +141,9 @@ func seedLocalBoardIntake(t *testing.T, f nativeFixture, records []localboard.Re
 			if err != nil {
 				return err
 			}
+			if source.SnapshotSHA256 != "" {
+				source.ExpectedSnapshotSHA256 = new(source.SnapshotSHA256)
+			}
 			source.SnapshotObjectKey, source.SnapshotSHA256, source.SnapshotBytes, source.SnapshotContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
 			_, err = w.UpdateLinkedSource(t.Context(), source)
 			return err
@@ -360,6 +363,43 @@ func TestLocalBoardImportFixtures(t *testing.T) {
 			if !bytes.Equal(before, after) {
 				t.Fatal("source copy changed")
 			}
+			if kind == "local_sqlite" {
+				t.Run("terminal prerequisite", func(t *testing.T) {
+					for _, target := range targets {
+						var imported [2]tracker.NativeIssue
+						for index, sourceID := range []string{"terminal-prerequisite", "terminal-dependent"} {
+							record := records[index]
+							record.SourceID = sourceID
+							record.Key = localboard.SourceKey("example-board", "default", kind, sourceID)
+							record.Title = "Example " + sourceID
+							record.Comments = nil
+							if index == 0 {
+								record.State = "Done"
+							} else {
+								record.State = "Backlog"
+								record.Dependencies = []string{localboard.SourceKey("example-board", "default", kind, "terminal-prerequisite")}
+							}
+							response := performHubAPIRequest(t, target.service, http.MethodPost, target.base+"/local-board-import", target.token, localboard.Request{Record: record})
+							requireNativeStatus(t, response, http.StatusOK)
+							var result localboard.Result
+							decodeHubResponse(t, response, &result)
+							if result.SourceID != sourceID || result.WorkItemID == "" || result.Action != "created" {
+								t.Fatalf("%s/%s import identity: %+v", target.project.OrganizationID, sourceID, result)
+							}
+							response = performHubAPIRequest(t, target.service, http.MethodGet, target.base+"/work-items/"+string(result.WorkItemID), target.token, nil)
+							requireNativeStatus(t, response, http.StatusOK)
+							decodeHubResponse(t, response, &imported[index])
+							item := imported[index]
+							if item.WorkItemID != result.WorkItemID || item.OrganizationID != target.project.OrganizationID || item.ProjectID != target.project.ID || item.State != record.State || item.Provenance == nil || item.Provenance.ExternalID != record.Key {
+								t.Fatalf("%s/%s imported record: %+v", target.project.OrganizationID, sourceID, item)
+							}
+						}
+						if imported[0].WorkItemID == imported[1].WorkItemID || !reflect.DeepEqual(imported[1].Dependencies, []tracker.NativeWorkItemID{imported[0].WorkItemID}) {
+							t.Fatalf("%s terminal prerequisite edge: %s -> %v", target.project.OrganizationID, imported[1].WorkItemID, imported[1].Dependencies)
+						}
+					}
+				})
+			}
 		})
 	}
 }
@@ -389,6 +429,18 @@ func TestLocalBoardImportRefusals(t *testing.T) {
 		{"worker", localBoardWorker(t, f), records[0], http.StatusForbidden},
 		{"missing grant", newNativeFixture(t, f.service, "", "no-grant").token, records[0], http.StatusForbidden},
 		{"missing prerequisite", f.token, records[1], http.StatusUnprocessableEntity},
+		{"invalid timestamp", f.token, func() localboard.Record {
+			r := records[0]
+			r.CreatedAt = time.Time{}
+			r.Title = "title-secret"
+			r.Body = "body-secret"
+			return r
+		}(), http.StatusUnprocessableEntity},
+		{"invalid comment identity", f.token, func() localboard.Record {
+			r := records[0]
+			r.Comments = []localboard.Comment{{Body: "body-secret", CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}}
+			return r
+		}(), http.StatusUnprocessableEntity},
 		{"invalid content", f.token, func() localboard.Record {
 			r := records[0]
 			r.Title = strings.Repeat("title-secret", 100)
@@ -418,6 +470,40 @@ func TestLocalBoardImportRefusals(t *testing.T) {
 	if after := localBoardCounts(t, f); !reflect.DeepEqual(before, after) {
 		t.Fatalf("changed pinned source wrote rows: %v -> %v", before, after)
 	}
+	t.Run("prerequisite in another authorized project", func(t *testing.T) {
+		other := localBoardTarget(t, f.service, "prerequisite-isolation")
+		if other.project.OrganizationID != f.project.OrganizationID || other.project.ID == f.project.ID {
+			t.Fatal("fixture requires distinct projects in the same organization")
+		}
+		response := performHubAPIRequest(t, other.service, http.MethodGet, other.base, other.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		admin := f.service.config.TenantRepository.(localBoardTestRepository).admin
+		counts := func() [2][2]int {
+			var rows [2][2]int
+			for i, fixture := range []nativeFixture{f, other} {
+				if err := admin.QueryRowContext(t.Context(), `SELECT
+					(SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2),
+					(SELECT count(*) FROM local_board_imports WHERE organization_id=$1 AND project_id=$2)`,
+					fixture.project.OrganizationID, fixture.project.ID).Scan(&rows[i][0], &rows[i][1]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return rows
+		}
+		before := counts()
+		if before[0][1] != 1 || before[1][1] != 0 {
+			t.Fatalf("prerequisite mappings before import = %v", before)
+		}
+		allBefore := localBoardCounts(t, f)
+		response = performHubAPIRequest(t, other.service, http.MethodPost, other.base+"/local-board-import", other.token, localboard.Request{Record: records[1]})
+		requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+		if after := counts(); after != before {
+			t.Fatalf("foreign prerequisite changed project rows: %v -> %v", before, after)
+		}
+		if after := localBoardCounts(t, f); !reflect.DeepEqual(allBefore, after) {
+			t.Fatalf("foreign prerequisite wrote rows: %v -> %v", allBefore, after)
+		}
+	})
 
 }
 

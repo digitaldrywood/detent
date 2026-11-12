@@ -2,7 +2,7 @@
 
 This directory owns the PostgreSQL schema and transaction boundary for the
 core records, request metrics and platform registry/authentication families.
-Provision `roles.sql` as a database administrator, then apply `migrations/`
+Provision `roles.sql` as a PostgreSQL superuser, then apply `migrations/`
 with the Goose PostgreSQL dialect as
 `detent_migration_v2` on an empty PostgreSQL 17 or 18 database. Existing installations
 apply only the new timestamp migration after provisioning the roles. The
@@ -56,11 +56,11 @@ registry, history scan or derived write is introduced (INV-18).
 
 ## Roles and transaction scope
 
-`roles.sql` provisions three cluster-wide group roles without login, superuser,
+`roles.sql` provisions cluster-wide group roles without login, superuser,
 role administration, database creation, replication or `BYPASSRLS` privileges.
 It rejects pre-existing groups with elevated attributes or combined authority.
 The schema grants apply only to the selected database. Re-running provisioning
-preserves existing roles and requires a database administrator; Goose migrations
+preserves existing roles and requires a PostgreSQL superuser; Goose migrations
 never create or drop cluster-wide roles.
 
 The versioned names isolate this authority family from roles left by prior
@@ -73,6 +73,17 @@ the checked-in migration files remain unchanged.
 | `detent_runtime_v2` | Tenant-scoped SELECT, INSERT, UPDATE and DELETE, plus issue identity sequence usage; no table ownership, schema creation or TRUNCATE. |
 | `detent_platform_v2` | Explicitly authorized cross-organization core data access through its own RLS policies; no schema migration authority. |
 | `detent_migration_v2` | Core table ownership and schema creation; forced RLS still denies unscoped data access until an authorized migration deliberately changes policy. |
+| `detent_local_bootstrap_reader_v2` | Column-level organization ID, name and Local designation reads through bootstrap discovery and authenticated instance organization pages; bound-tenant credential and runner columns authenticate the page function. This role has no members or inherited roles. |
+
+For the Local discovery isolation upgrade, apply the updated `roles.sql` as a
+PostgreSQL superuser before running `detent hub migrate-postgres` with the
+separate migration login. Provisioning creates the isolated function owner and
+the function. The migration grants the two column privileges and removes the
+old migration-role policy and function. Rollback across this migration requires
+restoring a compatible database and binary together. The down migration refuses
+to restore the broader policy, and an older binary expects the removed function.
+
+For the operator organization directory upgrade, apply the updated `roles.sql` as a PostgreSQL superuser, run `detent hub migrate-postgres` with the separate migration login, then start the new binary. The new startup check requires the provisioned directory function and its exact authorization profile.
 
 An administrator provisions separate application, platform and migration login
 credentials and explicitly grants each login only its corresponding group.

@@ -36,13 +36,6 @@ func TestNewHubSchedulingRegistersRuntimeCapacityAndVersion(t *testing.T) {
 			registered <- machine
 			_ = json.NewEncoder(response).Encode(machine)
 		case "/api/v1/claims":
-			var claim hubclient.ClaimRequest
-			if err := json.NewDecoder(request.Body).Decode(&claim); err != nil {
-				t.Errorf("decode claim: %v", err)
-			}
-			if len(claim.Repositories) != 1 || claim.Repositories[0] != "acme/widgets" || claim.PolicyID != descriptor.ID || claim.MachineID != "machine-a" {
-				t.Errorf("legacy claim = %+v", claim)
-			}
 			claims++
 			response.WriteHeader(http.StatusConflict)
 			_, _ = response.Write([]byte(`{"code":"no_claimable_work","message":"none"}`))
@@ -69,17 +62,18 @@ func TestNewHubSchedulingRegistersRuntimeCapacityAndVersion(t *testing.T) {
 	for _, projectID := range []string{"", "legacy"} {
 		t.Run("project="+projectID, func(t *testing.T) {
 			issues, err := source.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: projectID, Repository: "acme/widgets", Policy: descriptor})
-			if err != nil || len(issues) != 0 {
+			if err == nil || !strings.Contains(err.Error(), "generic Hub tracker mode was removed") || len(issues) != 0 {
 				t.Fatalf("FetchCandidateIssues() = %#v, %v", issues, err)
 			}
 		})
 	}
-	if claims != 2 {
-		t.Fatalf("legacy claims = %d, want 2", claims)
+	if claims != 0 {
+		t.Fatalf("legacy claims = %d, want 0", claims)
 	}
-	machine := <-registered
-	if machine.ID != "machine-a" || machine.Capacity != 4 || machine.Version != "dev" || machine.Capabilities["os"] == "" || machine.Capabilities["arch"] == "" {
-		t.Fatalf("registered machine = %#v", machine)
+	select {
+	case machine := <-registered:
+		t.Fatalf("unmapped project registered legacy machine %#v", machine)
+	default:
 	}
 }
 

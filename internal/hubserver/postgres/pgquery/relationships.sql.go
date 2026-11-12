@@ -334,7 +334,7 @@ const lockWorkItemBatch = `-- name: LockWorkItemBatch :many
 WITH requested AS MATERIALIZED (
  SELECT requested.project_id,requested.native_id FROM ROWS FROM(unnest($2::text[]),unnest($3::text[])) AS requested(project_id,native_id)
 )
-SELECT i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id, i.doctor_identity_revision FROM requested r JOIN issues i ON i.organization_id=$1 AND i.project_id=r.project_id AND i.native_id=r.native_id
+SELECT i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id, i.doctor_identity_revision, i.terminal_entered_at, i.archive_restored_at, i.archive_restore_known, i.source_revision, i.source_scheduled, i.source_observed_at FROM requested r JOIN issues i ON i.organization_id=$1 AND i.project_id=r.project_id AND i.native_id=r.native_id
 ORDER BY i.project_id COLLATE "C",i.native_id COLLATE "C" FOR UPDATE OF i
 `
 
@@ -384,6 +384,12 @@ func (q *Queries) LockWorkItemBatch(ctx context.Context, arg LockWorkItemBatchPa
 			&i.RecoveryRunnerID,
 			&i.RecoveryVersionID,
 			&i.DoctorIdentityRevision,
+			&i.TerminalEnteredAt,
+			&i.ArchiveRestoredAt,
+			&i.ArchiveRestoreKnown,
+			&i.SourceRevision,
+			&i.SourceScheduled,
+			&i.SourceObservedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -409,13 +415,15 @@ WITH requested AS (
     JOIN issues source ON source.organization_id=$1 AND source.project_id=$3 AND source.native_id=requested.native_id
     JOIN issue_dependencies d ON d.organization_id=source.organization_id AND d.blocker_project_id=source.project_id AND d.blocker_issue_id=source.id
     UNION ALL
-    SELECT source.native_id, 'related'::text, 'related'::text,
-        CASE WHEN r.first_issue_id=source.id THEN r.second_project_id ELSE r.first_project_id END,
-        CASE WHEN r.first_issue_id=source.id THEN r.second_issue_id ELSE r.first_issue_id END,
-        r.created_at
+    SELECT source.native_id, 'related'::text, 'related'::text, r.second_project_id, r.second_issue_id, r.created_at
     FROM requested
     JOIN issues source ON source.organization_id=$1 AND source.project_id=$3 AND source.native_id=requested.native_id
-    JOIN issue_relationships r ON r.organization_id=source.organization_id AND source.id IN (r.first_issue_id,r.second_issue_id)
+    JOIN issue_relationships r ON r.organization_id=source.organization_id AND r.first_project_id=source.project_id AND r.first_issue_id=source.id
+    UNION ALL
+    SELECT source.native_id, 'related'::text, 'related'::text, r.first_project_id, r.first_issue_id, r.created_at
+    FROM requested
+    JOIN issues source ON source.organization_id=$1 AND source.project_id=$3 AND source.native_id=requested.native_id
+    JOIN issue_relationships r ON r.organization_id=source.organization_id AND r.second_project_id=source.project_id AND r.second_issue_id=source.id
 )
 SELECT c.work_item_id,c.relationship_type,c.direction,c.related_project_id,target.native_id,c.created_at,target.number,target.title,target.workflow_state_name,COALESCE(states.terminal,false),COALESCE(states.dispatchable,false),target.actor_principal_id,COALESCE(organizations.slug,'') AS organization_slug,projects.slug AS project_slug,
     COALESCE(closed.closed_at,'0001-01-01 00:00:00+00'::timestamptz) AS closed_at,
@@ -516,13 +524,13 @@ WITH candidates AS (
     FROM issue_dependencies d
     WHERE d.organization_id=$1 AND d.blocker_project_id=$7 AND d.blocker_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$7 AND i.native_id=$8)
     UNION ALL
-    SELECT 'related'::text, 'related'::text,
-        CASE WHEN first_issue_id=source.id THEN second_project_id ELSE first_project_id END,
-        CASE WHEN first_issue_id=source.id THEN second_issue_id ELSE first_issue_id END,
-        r.created_at
+    SELECT 'related'::text, 'related'::text, r.second_project_id, r.second_issue_id, r.created_at
     FROM issue_relationships r
-    JOIN issues source ON source.organization_id=r.organization_id AND source.id IN (r.first_issue_id,r.second_issue_id)
-    WHERE r.organization_id=$1 AND source.project_id=$7 AND source.native_id=$8
+    WHERE r.organization_id=$1 AND r.first_project_id=$7 AND r.first_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$7 AND i.native_id=$8)
+    UNION ALL
+    SELECT 'related'::text, 'related'::text, r.first_project_id, r.first_issue_id, r.created_at
+    FROM issue_relationships r
+    WHERE r.organization_id=$1 AND r.second_project_id=$7 AND r.second_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=$1 AND i.project_id=$7 AND i.native_id=$8)
 )
 SELECT c.relationship_type,c.direction,c.related_project_id,target.native_id,c.created_at,target.number,target.title,target.workflow_state_name,COALESCE(states.terminal,false),COALESCE(states.dispatchable,false),target.actor_principal_id,COALESCE(organizations.slug,'') AS organization_slug,projects.slug AS project_slug,
     COALESCE(closed.closed_at,'0001-01-01 00:00:00+00'::timestamptz) AS closed_at,
@@ -622,6 +630,34 @@ func (q *Queries) RelationshipPage(ctx context.Context, arg RelationshipPagePara
 		return nil, err
 	}
 	return items, nil
+}
+
+const upsertHubDependency = `-- name: UpsertHubDependency :exec
+INSERT INTO issue_dependencies (organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id,provenance,created_at,updated_at)
+VALUES ($1,$2,$3,$4,$5,'hub',$6,$6)
+ON CONFLICT (organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id)
+DO UPDATE SET provenance=EXCLUDED.provenance, updated_at=EXCLUDED.updated_at
+`
+
+type UpsertHubDependencyParams struct {
+	OrganizationID     tracker.OrganizationID
+	DependentProjectID string
+	DependentIssueID   int64
+	BlockerProjectID   string
+	BlockerIssueID     int64
+	CreatedAt          time.Time
+}
+
+func (q *Queries) UpsertHubDependency(ctx context.Context, arg UpsertHubDependencyParams) error {
+	_, err := q.db.Exec(ctx, upsertHubDependency,
+		arg.OrganizationID,
+		arg.DependentProjectID,
+		arg.DependentIssueID,
+		arg.BlockerProjectID,
+		arg.BlockerIssueID,
+		arg.CreatedAt,
+	)
+	return err
 }
 
 const workItemBlockers = `-- name: WorkItemBlockers :many

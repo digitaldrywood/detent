@@ -503,7 +503,7 @@ type boardAdvancingAttemptRepository struct {
 
 func (r *boardAdvancingAttemptRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
-		return read(&boardAdvancingAttemptReader{Reader: reader, repository: r})
+		return read(&boardAdvancingAttemptReader{Reader: reader, WorkflowTransitionReader: reader.(eventstore.WorkflowTransitionReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), repository: r})
 	})
 }
 
@@ -513,12 +513,14 @@ func (r *boardAdvancingAttemptRepository) ReadTenantSnapshot(ctx context.Context
 		return errors.New("board snapshot fixture requires a snapshot repository")
 	}
 	return owner.ReadTenantSnapshot(ctx, organization, workload, func(reader tenantstore.Reader) error {
-		return read(&boardAdvancingAttemptReader{Reader: reader, repository: r})
+		return read(&boardAdvancingAttemptReader{Reader: reader, WorkflowTransitionReader: reader.(eventstore.WorkflowTransitionReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), repository: r})
 	})
 }
 
 type boardAdvancingAttemptReader struct {
 	tenantstore.Reader
+	eventstore.WorkflowTransitionReader
+	tenantstore.WorkItemRelationshipBatchReader
 	repository *boardAdvancingAttemptRepository
 }
 

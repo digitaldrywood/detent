@@ -57,7 +57,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 		project.GlobalBudget = cfg.Global.Budget
 		project.GlobalWorker = cfg.Global.Worker
 		project.Identity = cfg.Global.Identity
-		checks = append(checks, checkDoctorProjectWithStore(ctx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes)...)
+		checks = append(checks, checkDoctorProject(ctx, project, deps, githubToken, allowWriteProbes)...)
 		if cfg.Client.Configured() {
 			checks = append(checks, checkDoctorHubPolicy(ctx, cfg, project, deps))
 			if check, ok := checkDoctorNativeHumanReviewLane(ctx, cfg, project, deps); ok {
@@ -251,7 +251,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 			Progress: progress.Updates(),
 			Run: func(jobCtx context.Context) []doctorCheck {
 				jobCtx = connector.WithProgressReporter(jobCtx, progress.Pulse)
-				checks := checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, workflowTokenThreshold, progress.Set)
+				checks := checkDoctorProjectWithProgress(jobCtx, project, deps, githubToken, allowWriteProbes, workflowTokenThreshold, progress.Set)
 				if cfg.Client.Configured() {
 					checks = append(checks, checkDoctorHubPolicy(jobCtx, cfg, project, deps))
 				}
@@ -263,17 +263,12 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 }
 
 func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheck {
-	return checkDoctorProjectWithStore(ctx, project, "", deps, githubToken, allowWriteProbes)
-}
-
-func checkDoctorProjectWithStore(ctx context.Context, project globalconfig.Project, storePath string, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheck {
-	return checkDoctorProjectWithProgress(ctx, project, storePath, deps, githubToken, allowWriteProbes, doctorWorkflowDefaultTokenThreshold, nil)
+	return checkDoctorProjectWithProgress(ctx, project, deps, githubToken, allowWriteProbes, doctorWorkflowDefaultTokenThreshold, nil)
 }
 
 func checkDoctorProjectWithProgress(
 	ctx context.Context,
 	project globalconfig.Project,
-	storePath string,
 	deps doctorDeps,
 	githubToken RuntimeSecret,
 	allowWriteProbes bool,
@@ -414,8 +409,7 @@ func checkDoctorProjectWithProgress(
 	checks = append(checks, checkDoctorInstructionBudget(id, files, instructionProblems))
 	checks = append(checks, checkDoctorGateInstructionConflict(id, workflow.Config.Gate.Run, files, instructionProblems))
 	setDoctorCurrentCheck("Project " + id + " model_policy")
-	checks = append(checks, checkDoctorModelPolicy(ctx, id, storePath, workflow.Config, deps))
-	checks = append(checks, checkDoctorTokenAccounting(ctx, id, storePath, deps))
+	checks = append(checks, checkDoctorModelPolicy(id, workflow.Config))
 	setDoctorCurrentCheck("Project " + id + " ci_trigger_shape")
 	checks = append(checks, checkDoctorCITriggerShape(ctx, id, workflow.Config, deps))
 	setDoctorCurrentCheck("Project " + id + " capabilities")
@@ -448,15 +442,11 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " backend model catalogs")
 		checks = append(checks, checkDoctorBackendModelCatalogs(ctx, id, workflow.Config, deps)...)
 	}
-	if strings.TrimSpace(storePath) != "" {
-		setDoctorCurrentCheck("Project " + id + " historical throughput")
-		checks = append(checks, checkDoctorHistoricalThroughput(ctx, id, storePath, workflow.Config.Agent.MaxConcurrentAgents, deps)...)
-	}
 	setDoctorCurrentCheck("Project " + id + " workflow lint")
-	checks = append(checks, checkDoctorWorkflowLint(ctx, id, project, workflow.Config, workflow.Prompt, workflowTokenThreshold, storePath, deps)...)
+	checks = append(checks, checkDoctorWorkflowLint(ctx, id, project, workflow.Config, workflow.Prompt, workflowTokenThreshold, deps)...)
 	if workflow.Config.BacklogAdmission.Enabled {
 		setDoctorCurrentCheck("Project " + id + " backlog admission")
-		checks = append(checks, checkDoctorAdmission(ctx, id, workflow, storePath, deps))
+		checks = append(checks, checkDoctorAdmission(ctx, id, workflow, deps))
 	}
 	setDoctorCurrentCheck("Project " + id + " out-of-scope follow-up guidance")
 	checks = append(checks, checkDoctorFollowupGuidance(id, workflow.Config.Agent.Followups, workflow.Prompt))
@@ -484,10 +474,6 @@ func checkDoctorProjectWithProgress(
 	if workflow.Config.Agent.AutoPromote.Enabled {
 		setDoctorCurrentCheck("Project " + id + " auto-promote")
 		checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
-		if workflow.Config.Gate.Validator.Enabled {
-			setDoctorCurrentCheck("Project " + id + " validator health")
-			checks = append(checks, checkDoctorValidatorHealth(ctx, id, storePath, deps, time.Now()))
-		}
 	}
 	if !workflow.Config.Review.Human && workflow.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
 		setDoctorCurrentCheck("Project " + id + " Human Review policy")
@@ -497,8 +483,8 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " repository merge policy")
 		checks = append(checks, checkDoctorRepositoryMergePolicy(ctx, id, project, workflow.Config, deps))
 	}
-	setDoctorCurrentCheck("Project " + id + " invariant evidence")
-	checks = append(checks, checkDoctorInvariantEvidence(ctx, id, project, workflow.Config, storePath, deps)...)
+	setDoctorCurrentCheck("Project " + id + " branch policy")
+	checks = append(checks, checkDoctorBranchPolicy(ctx, id, project, workflow.Config, deps)...)
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		if workflow.Config.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceLabel {
 			setDoctorCurrentCheck("Project " + id + " label status drift")
@@ -507,7 +493,7 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " dependency auto-unblock")
 		checks = append(checks, checkDoctorDependencyAutoUnblock(ctx, id, workflow.Config, deps))
 		setDoctorCurrentCheck("Project " + id + " blocked recovery")
-		checks = append(checks, checkDoctorBlockedRecovery(ctx, id, workflow.Config, storePath, deps))
+		checks = append(checks, checkDoctorBlockedRecovery(ctx, id, workflow.Config, deps))
 	}
 
 	setDoctorCurrentCheck("Project " + id + " legacy toolchain caches")

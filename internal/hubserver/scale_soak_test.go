@@ -25,10 +25,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -131,6 +140,14 @@ type scaleSoakSeed struct {
 	runners     []runnerFixture
 	details     scaleSoakDetails
 	boardErrors *atomic.Int64
+	attempts    []scaleSoakAttempt
+	payloads    []string
+}
+
+type scaleSoakAttempt struct {
+	item tracker.NativeIssue
+	id   string
+	ref  attachment.ArchiveReference
 }
 
 func seedScaleSoak(t *testing.T, root string, config scaleSoakConfig) scaleSoakSeed {
@@ -141,7 +158,29 @@ func seedScaleSoak(t *testing.T, root string, config scaleSoakConfig) scaleSoakS
 	details := scaleSoakDetails{root: filepath.Join(root, "objects")}
 	boardErrors := &atomic.Int64{}
 	logger := slog.New(scaleSoakLogHandler{Handler: slog.DiscardHandler, boardErrors: boardErrors})
-	service := openTestService(t, Config{Logger: logger, DatabasePath: filepath.Join(root, "hub.db"), RunDetails: details, Conversation: &ConversationConfig{Enabled: true}})
+	repository, _ := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
+		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, scaleSoakWriterTrace{})
+	})
+	service := openLocalPostgresHubTestService(t, repository, Config{Logger: logger, RunDetails: details, Conversation: &ConversationConfig{Enabled: true}, SecretKeys: secretTestKeys(t, "1", "1")})
+	primary := tracker.OrganizationID("org_first")
+	for _, organization := range []tracker.OrganizationID{primary, primary + "_second"} {
+		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
+		key := bytes.Repeat([]byte{0x5a}, 32)
+		envelope, err := service.config.SecretKeys.Seal(key, accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := service.config.now().UTC()
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: key}); err != nil {
+				return err
+			}
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service.database.hostedOrganization, service.localOrganization, service.requestMetrics.organization = primary, string(primary), primary
 	seed := scaleSoakSeed{service: service, details: details, boardErrors: boardErrors}
 	for i := range config.Projects {
 		f := newNativeFixture(t, service, "", fmt.Sprintf("scale-project-%d", i))
@@ -154,94 +193,107 @@ func seedScaleSoak(t *testing.T, root string, config scaleSoakConfig) scaleSoakS
 	for i := range config.Runners {
 		f := seed.fixtures[i%config.Projects]
 		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+		r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}
 		r.enroll(t)
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/machines/register", r.redemption.Credential,
 			map[string]any{"id": r.binding.MachineID, "hostname": "scale-host", "version": "test", "capacity": 1, "backend_isolation": r.redemption.BackendIsolation}), http.StatusOK)
 		seed.runners = append(seed.runners, r)
 	}
-	seedScaleSoakAttempts(t, seed, config)
+	seedScaleSoakAttempts(t, &seed, config)
 	return seed
 }
 
-func seedScaleSoakAttempts(t *testing.T, seed scaleSoakSeed, config scaleSoakConfig) {
+func seedScaleSoakAttempts(t *testing.T, seed *scaleSoakSeed, config scaleSoakConfig) {
 	t.Helper()
-	type prepared struct {
-		item tracker.NativeIssue
-		data tracker.NativeRunData
-		ref  attachment.ArchiveReference
-	}
-	now := formatHubTime(time.Now().UTC().Add(-24 * time.Hour))
-	var uploader string
-	if err := seed.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE scope='admin' LIMIT 1").Scan(&uploader); err != nil {
-		t.Fatal(err)
-	}
-	for offset := 0; offset < config.Attempts; offset += 100 {
-		batch := make([]prepared, 0, 100)
-		for index := offset; index < min(offset+100, config.Attempts); index++ {
-			item := seed.items[index%len(seed.items)]
-			data := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), Sequence: 3, PolicyID: hubTestPolicy().ID, Outcome: "succeeded", CompletionBody: strings.Repeat("Example execution output. ", config.DetailBytes/25+1)[:config.DetailBytes], Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test-model"}}
-			batch = append(batch, prepared{item: item, data: data})
-		}
-		tx, err := seed.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for i := range batch {
-			row := &batch[i]
-			lease := newNativeID("lease")
-			result, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at)
-SELECT ?,id,?,?,?,?,?,?,?,? FROM issues WHERE native_id=?`, lease, seed.runners[0].binding.MachineID, newNativeID("session"), now, now, now, now, now, now, row.item.WorkItemID)
-			if err != nil {
-				t.Fatal(errors.Join(err, tx.Rollback()))
+	now := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Microsecond)
+	for index := range config.Attempts {
+		item := seed.items[index%len(seed.items)]
+		var f nativeFixture
+		for _, candidate := range seed.fixtures {
+			if candidate.project.ID == item.ProjectID {
+				f = candidate
+				break
 			}
-			fence, err := result.LastInsertId()
-			if err != nil {
-				t.Fatal(errors.Join(err, tx.Rollback()))
+		}
+		runner := seed.runners[0]
+		for _, candidate := range seed.runners {
+			if candidate.project.ID == item.ProjectID {
+				runner = candidate
+				break
 			}
-			row.data.LeaseID, row.data.FencingToken = tracker.LeaseID(lease), tracker.FencingToken(fence)
 		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-		for i := range batch {
-			row := &batch[i]
-			raw, err := json.Marshal(map[string]tracker.NativeRunData{runDetailEntry(row.data): row.data})
+		lease := nativeAttemptFixtureLease(t, runner, item, newNativeID("session"))
+		data := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), PolicyID: hubTestPolicy().ID,
+			LeaseID: lease.ID, FencingToken: lease.FencingToken, SessionID: lease.SessionID, MachineID: runner.binding.MachineID, RunnerID: runner.binding.RunnerID,
+			Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test-model"}}
+		var ref attachment.ArchiveReference
+		for _, sequence := range []int64{1, 2, 3} {
+			data.Sequence = sequence
+			status, kind := "running", "run.observed"
+			if sequence == 1 {
+				kind = "run.started"
+			}
+			if sequence == 3 {
+				status, kind, data.Outcome = "succeeded", "run.finished", "succeeded"
+				data.CompletionBody = strings.Repeat("Example execution output. ", config.DetailBytes/25+1)[:config.DetailBytes]
+			}
+			raw, err := json.Marshal(data)
 			if err != nil {
 				t.Fatal(err)
 			}
-			row.ref, err = seed.details.StoreDetail(t.Context(), string(row.item.OrganizationID), raw)
+			ref, err = seed.details.StoreDetail(t.Context(), string(item.OrganizationID), raw)
 			if err != nil {
 				t.Fatal(err)
 			}
+			seed.payloads = append(seed.payloads, ref.Key)
+			event := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: item.OrganizationID, ProjectID: item.ProjectID,
+				AggregateType: "issue", AggregateID: item.WorkItemID, Type: kind, SchemaVersion: 1, RecordedAt: now,
+				Actor: nativeAttemptListingScope(t, f).actor(), Data: tracker.CollaborationData{Run: &data}}
+			raw, err = json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			history, err := eventstore.NewContent(seed.service.runDetailStore()).PrepareEvent(t.Context(), item.OrganizationID, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := seed.service.config.TenantRepository.WriteTenant(t.Context(), item.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				attempt, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: string(lease.ID), FencingToken: int64(lease.FencingToken)},
+					RunID: data.RunID, Sequence: sequence, Status: status, StartedAt: now, PayloadReference: ref, PayloadObjectKey: ref.Key, RuntimeOrdered: true, WorkerCleanupRequired: new(nativeRunCleanupRequired(data))})
+				if err != nil {
+					return err
+				}
+				if err := w.SetAttemptClaimFacts(t.Context(), attemptClaimFacts(attempt, nativeAttemptClaimDisposition(data, nil, item.ProjectID), false)); err != nil {
+					return err
+				}
+				_, err = w.AppendEvent(t.Context(), history)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}
-		tx, err = seed.service.database.db.BeginTx(t.Context(), nil)
+		if err := seed.service.config.TenantRepository.WriteTenant(t.Context(), item.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(lease.ID), FencingToken: int64(lease.FencingToken)}, "completed")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		admin := usagePostgresAdmin(t, seed.service)
+		result, err := admin.ExecContext(t.Context(), `UPDATE leases SET acquired_at=$1,renewed_at=$1,expires_at=$2,released_at=$1 WHERE organization_id=$3 AND lease_id=$4 AND fencing_token=$5 AND released_at IS NOT NULL`, now, now.Add(time.Hour), item.OrganizationID, lease.ID, lease.FencingToken)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, row := range batch {
-			detail := newRunDetailReference(row.ref, string(row.item.OrganizationID), runDetailEntry(row.data))
-			compact, err := json.Marshal(storedRun{NativeRunData: compactRun(row.data), Detail: detail})
-			if err != nil {
-				t.Fatal(errors.Join(err, tx.Rollback()))
-			}
-			_, err = tx.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, detail.AttachmentID, row.item.OrganizationID, row.item.ProjectID, uploader, "archive.gz", "application/gzip", row.ref.CompressedSize, row.ref.SHA256, now, "archive", row.ref.Retention, row.ref.Key, row.ref.UncompressedSize, row.ref.Codec, row.ref.SchemaVersion)
-			if err != nil {
-				t.Fatal(errors.Join(err, tx.Rollback()))
-			}
-			_, err = tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at,work_item_revision,dispatch_generation,detail_attachment_id,policy_id,provider,model,execution_role,final_outcome)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, row.data.AttemptID, row.item.OrganizationID, row.item.ProjectID, row.item.WorkItemID, row.data.LeaseID, row.data.FencingToken, row.data.RunID, 3, "succeeded", string(compact), now, now, row.item.Revision, 1, detail.AttachmentID, row.data.PolicyID, "codex", "test-model", "implement", "succeeded")
-			if err != nil {
-				t.Fatal(errors.Join(err, tx.Rollback()))
-			}
-			_, err = tx.ExecContext(t.Context(), `INSERT INTO attachment_archive_references(organization_id,project_id,work_item_id,attachment_id) VALUES(?,?,?,?)`, row.item.OrganizationID, row.item.ProjectID, row.item.WorkItemID, detail.AttachmentID)
-			if err != nil {
-				t.Fatal(errors.Join(err, tx.Rollback()))
-			}
+		if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+			t.Fatalf("age historical lease rows=%d: %v", rows, err)
 		}
-		if err := tx.Commit(); err != nil {
+		result, err = admin.ExecContext(t.Context(), `UPDATE native_attempts SET updated_at=$1 WHERE organization_id=$2 AND id=$3 AND lease_id=$4 AND fencing_token=$5 AND status='succeeded' AND sequence=3`, now, item.OrganizationID, data.AttemptID, lease.ID, lease.FencingToken)
+		if err != nil {
 			t.Fatal(err)
 		}
+		if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+			t.Fatalf("age historical attempt rows=%d: %v", rows, err)
+		}
+		seed.attempts = append(seed.attempts, scaleSoakAttempt{item: item, id: data.AttemptID, ref: ref})
 	}
 }
 
@@ -294,7 +346,7 @@ type scaleSoakMetrics struct {
 	OperationErrors int64 `json:"non_cancellation_errors"`
 	mu              sync.Mutex
 	Requests        map[string]scaleSoakDistribution `json:"requests"`
-	Writer          scaleSoakDistribution            `json:"writer_hold"`
+	Writer          scaleSoakDistribution            `json:"write_transaction_time"`
 	Jobs            map[string]scaleSoakDistribution `json:"explicit_maintenance_passes"`
 	Failures        []string                         `json:"first_errors,omitempty"`
 }
@@ -323,12 +375,19 @@ func (m *scaleSoakMetrics) record(name string, start time.Time, err error, job, 
 
 func (m *scaleSoakMetrics) middleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		probe := &scaleSoakWriterProbe{active: map[*pgx.Conn]time.Time{}}
+		c.SetRequest(c.Request().WithContext(context.WithValue(c.Request().Context(), scaleSoakWriterKey{}, probe)))
 		err := next(c)
-		timing := writerTimingFrom(c.Request().Context())
-		if timing != nil {
+		probe.mu.Lock()
+		completed, duration, active := probe.completed, probe.duration, len(probe.active)
+		probe.mu.Unlock()
+		if completed > 0 {
 			m.mu.Lock()
-			m.Writer.add(time.Duration(timing.hold.Load()), false)
+			m.Writer.add(duration, false)
 			m.mu.Unlock()
+		}
+		if active != 0 {
+			return errors.Join(err, errors.New("request left a PostgreSQL write transaction open"))
 		}
 		return err
 	}
@@ -408,10 +467,12 @@ func runScaleSoakRunner(ctx context.Context, h scaleSoakHTTP, r runnerFixture, i
 		return nil
 	}
 	heartbeat := func() error {
-		report := capacityReport(time.Now().UTC())
+		now := time.Now().UTC()
+		report := capacityReport(now)
 		report.SharedAccountAlias = r.binding.RunnerID
 		return h.post(ctx, "heartbeat", r.nativeFixture.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
-			map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "scale-runner", "capacity": 1, "version": "test", "provider_reports": []any{report}}, nil)
+			map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "scale-runner", "capacity": 1, "version": "test", "provider_reports": []any{report},
+				"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now}}, nil)
 	}
 	if err := heartbeat(); err != nil {
 		return err
@@ -496,40 +557,60 @@ func scaleSoakMaintenance(ctx context.Context, seed scaleSoakSeed, metrics *scal
 func TestScaleSoakSeed(t *testing.T) {
 	config := scaleSoakConfig{Projects: 2, Items: 4, Attempts: 6, Runners: 2, DetailBytes: 1024}
 	seed := seedScaleSoak(t, t.TempDir(), config)
+	organization := seed.fixtures[0].project.OrganizationID
 	for _, test := range []struct {
 		table string
+		query string
 		want  int
-	}{{"projects", 2}, {"issues", 4}, {"native_attempts", 6}, {"attachments", 6}, {"runner_identities", 2}} {
+	}{
+		{"projects", `SELECT count(*) FROM projects WHERE organization_id=$1`, 2},
+		{"issues", `SELECT count(*) FROM issues WHERE organization_id=$1`, 4},
+		{"native_attempts", `SELECT count(*) FROM native_attempts WHERE organization_id=$1`, 6},
+		{"current attempt archive objects", `SELECT count(*) FROM native_attempts a JOIN archive_objects o ON o.organization_id=a.organization_id AND o.object_key=a.payload_object_key WHERE a.organization_id=$1`, 6},
+		{"runner_identities", `SELECT count(*) FROM runner_identities WHERE organization_id=$1`, 2},
+	} {
 		var count int
-		if err := seed.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM "+test.table).Scan(&count); err != nil || count != test.want {
+		if err := usagePostgresAdmin(t, seed.service).QueryRowContext(t.Context(), test.query, organization).Scan(&count); err != nil || count != test.want {
 			t.Fatalf("%s count=%d want=%d: %v", test.table, count, test.want, err)
 		}
 	}
-	rows, err := seed.service.database.reader.QueryContext(t.Context(), "SELECT project_id,data_json FROM native_attempts ORDER BY fencing_token")
-	if err != nil {
-		t.Fatal(err)
+	var payloads int
+	if err := usagePostgresAdmin(t, seed.service).QueryRowContext(t.Context(), `SELECT count(*) FROM archive_objects WHERE organization_id=$1 AND object_key=ANY($2::text[])`, organization, seed.payloads).Scan(&payloads); err != nil || payloads != 18 {
+		t.Fatalf("retained attempt payloads=%d, want 18: %v", payloads, err)
 	}
-	defer rows.Close()
-	ctx := seed.service.runDetailContext(t.Context())
 	seen := map[tracker.ProjectID]bool{}
-	for rows.Next() {
-		var raw string
-		var project tracker.ProjectID
-		if err := rows.Scan(&project, &raw); err != nil {
-			t.Fatal(err)
+	for _, row := range seed.attempts {
+		var f nativeFixture
+		for _, candidate := range seed.fixtures {
+			if candidate.project.ID == row.item.ProjectID {
+				f = candidate
+				break
+			}
 		}
-		var stored storedRun
-		if err := json.Unmarshal([]byte(raw), &stored); err != nil || stored.Detail == nil {
+		if err := seed.service.config.TenantRepository.ReadTenant(t.Context(), row.item.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			owner, ok := r.(attemptArchiveReader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			object, err := owner.ArchiveObjectByKey(t.Context(), row.ref.Key)
+			if err != nil {
+				return err
+			}
+			if object.Reference != row.ref || object.Reference.Validate(string(row.item.OrganizationID)) != nil {
+				return artifact.ErrIntegrity
+			}
+			return nil
+		}); err != nil {
 			t.Fatalf("missing detail: %v", err)
 		}
-		var data tracker.NativeRunData
-		if err := decodeRunDetail(ctx, seed.service.database.reader, raw, &data); err != nil || len(data.CompletionBody) < config.DetailBytes {
+		data, err := seed.service.readNativeAttemptTenant(t.Context(), nativeAttemptListingScope(t, f), string(row.item.WorkItemID), row.id)
+		if err != nil || len(data.CompletionBody) < config.DetailBytes {
 			t.Fatalf("unreadable detail: %v", err)
 		}
-		seen[project] = true
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
+		if data.Sequence != 3 || data.Status != "succeeded" {
+			t.Fatalf("seeded attempt sequence=%d status=%s", data.Sequence, data.Status)
+		}
+		seen[row.item.ProjectID] = true
 	}
 	if len(seen) != 2 {
 		t.Fatalf("seeded projects=%d", len(seen))
@@ -561,15 +642,15 @@ func TestScaleSoakFleet(t *testing.T) {
 		}
 	}
 	var attempts int
-	if err := seed.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE status='running' AND sequence=5").Scan(&attempts); err != nil || attempts != 2 {
+	if err := usagePostgresAdmin(t, seed.service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND status='running' AND sequence=5", seed.fixtures[0].project.OrganizationID).Scan(&attempts); err != nil || attempts != 2 {
 		t.Fatalf("live attempts=%d: %v", attempts, err)
 	}
 }
 
-func TestScaleSoak(t *testing.T) {
+func runScaleSoak(t *testing.T) {
 	path := os.Getenv("DETENT_SCALE_SOAK_CONFIG")
 	if path == "" {
-		t.Skip("manual scale soak; see WORKFLOW.md")
+		t.Fatal("manual scale soak requires DETENT_SCALE_SOAK_CONFIG; use go run ./tools/scalesoak")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -644,7 +725,7 @@ func TestScaleSoak(t *testing.T) {
 		Metrics          *scaleSoakMetrics `json:"metrics"`
 		Limitations      []string          `json:"limitations"`
 	}{pin, hex.EncodeToString(digest[:]), len(status) > 0, runtime.Version(), runtime.GOOS + "/" + runtime.GOARCH, config, seedDuration.Seconds(), metrics,
-		[]string{"one tenant database; local disk object storage; no model execution", "explicit maintenance passes; entry-plane object retention sweep is a separate fixture", "percentiles are upper bounds from power-of-two microsecond histogram buckets"}}
+		[]string{"isolated PostgreSQL database; one populated tenant; local disk object storage; no model execution", "explicit maintenance passes; entry-plane object retention sweep is a separate fixture", "percentiles are upper bounds from power-of-two microsecond histogram buckets"}}
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -702,5 +783,79 @@ func TestScaleSoakErrorClassification(t *testing.T) {
 				t.Fatalf("operation errors=%d want=%d", metrics.OperationErrors, test.want)
 			}
 		})
+	}
+}
+
+type scaleSoakWriterKey struct{}
+type scaleSoakBeginKey struct{}
+type scaleSoakWriterProbe struct {
+	mu        sync.Mutex
+	active    map[*pgx.Conn]time.Time
+	duration  time.Duration
+	completed int
+}
+
+func (p *scaleSoakWriterProbe) begin(conn *pgx.Conn, started time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active[conn] = started
+}
+
+func (p *scaleSoakWriterProbe) end(conn *pgx.Conn) {
+	if conn.PgConn().TxStatus() != 'I' {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if started, ok := p.active[conn]; ok {
+		p.duration += time.Since(started)
+		p.completed++
+		delete(p.active, conn)
+	}
+}
+
+func scaleSoakWriteBegin(sql string) bool {
+	statement := strings.ToUpper(strings.TrimSpace(sql))
+	return strings.HasPrefix(statement, "BEGIN") && !strings.Contains(statement, "READ ONLY")
+}
+
+type scaleSoakWriterTrace struct{}
+
+func (scaleSoakWriterTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if scaleSoakWriteBegin(data.SQL) {
+		return context.WithValue(ctx, scaleSoakBeginKey{}, time.Now())
+	}
+	return ctx
+}
+
+func (scaleSoakWriterTrace) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	if probe, ok := ctx.Value(scaleSoakWriterKey{}).(*scaleSoakWriterProbe); ok {
+		if started, ok := ctx.Value(scaleSoakBeginKey{}).(time.Time); ok && data.Err == nil && data.CommandTag.String() == "BEGIN" {
+			probe.begin(conn, started)
+		}
+		probe.end(conn)
+	}
+}
+
+func (scaleSoakWriterTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	for _, query := range data.Batch.QueuedQueries {
+		if scaleSoakWriteBegin(query.SQL) {
+			return context.WithValue(ctx, scaleSoakBeginKey{}, time.Now())
+		}
+	}
+	return ctx
+}
+
+func (scaleSoakWriterTrace) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
+	if probe, ok := ctx.Value(scaleSoakWriterKey{}).(*scaleSoakWriterProbe); ok && scaleSoakWriteBegin(data.SQL) && data.Err == nil {
+		if started, ok := ctx.Value(scaleSoakBeginKey{}).(time.Time); ok {
+			probe.begin(conn, started)
+		}
+	}
+}
+
+func (scaleSoakWriterTrace) TraceBatchEnd(ctx context.Context, conn *pgx.Conn, _ pgx.TraceBatchEndData) {
+	if probe, ok := ctx.Value(scaleSoakWriterKey{}).(*scaleSoakWriterProbe); ok {
+		probe.end(conn)
 	}
 }

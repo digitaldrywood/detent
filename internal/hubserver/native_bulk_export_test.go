@@ -9,12 +9,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type missingExportDetail struct {
+	attachment.DetailStore
+	key string
+}
+
+func (m missingExportDetail) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if ref.Key == m.key {
+		return nil, artifact.ErrMissing
+	}
+	return m.DetailStore.ReadDetail(ctx, organization, ref)
+}
 
 func TestPostgresBulkExport(t *testing.T) {
 	repository, f, owner, expected, _ := newPostgresExportLinkedFixture(t)
@@ -105,12 +120,9 @@ func TestPostgresBulkExport(t *testing.T) {
 			}
 			break
 		}
-		store := f.service.config.RunDetails.(*memoryRunDetails)
-		store.mu.Lock()
-		payload := store.data[key]
-		delete(store.data, key)
-		store.mu.Unlock()
-		defer func() { store.mu.Lock(); store.data[key] = payload; store.mu.Unlock() }()
+		previous := f.service.config.RunDetails
+		f.service.config.RunDetails = hubmaintenance.LimitDetails(missingExportDetail{DetailStore: previous, key: key})
+		defer func() { f.service.config.RunDetails = previous }()
 		response := f.request(t, owner, http.MethodGet, f.base+"/work-items/export", nil)
 		requireNativeCode(t, response, http.StatusInternalServerError, "bulk_export_item_failed")
 		if !strings.Contains(response.Body.String(), "work_item_id") || strings.Contains(response.Body.String(), "discussion") {

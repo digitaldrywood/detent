@@ -122,8 +122,8 @@ func TestPostgresBillingBudgetReadRoutes(t *testing.T) {
 			})
 			owner := f.user(t, string(organization)+"owner", "owner", "owner@example.test", "", "")
 			viewer := f.user(t, string(organization)+"viewer", "viewer", "viewer@example.test", "", "")
-			if service.database.db != nil || service.database.reader != nil {
-				t.Fatal("legacy database handle")
+			if service.database.postgres == nil || service.config.TenantRepository == nil {
+				t.Fatal("required PostgreSQL fixture owners are not configured")
 			}
 			ref, _, err := attachment.PrepareArchive(string(organization), 1, bytes.NewReader([]byte(`{"example":true}`)))
 			if err != nil {

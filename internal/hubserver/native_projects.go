@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -140,51 +139,7 @@ func (s *Service) createNativeProject(c echo.Context) error {
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
 	c.Set("native_scope", scope)
-	return s.nativeMutation(c, request.Mutation, request, s.createNativeProjectOperation(request))
-}
-
-func (s *Service) createNativeProjectOperation(request createNativeProjectRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
-	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		if strings.TrimSpace(request.Name) == "" || len(request.Name) > 200 {
-			return nil, nativePublicInvalid("Project name is required and limited to 200 bytes")
-		}
-		if err := validateNativeStates(request.States); err != nil {
-			return nil, err
-		}
-		var exists int
-		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM organizations WHERE id = ?", scope.organization).Scan(&exists); err != nil {
-			return nil, err
-		}
-		if exists != 1 {
-			return nil, nativeNotFound()
-		}
-		project := tracker.NativeProject{ID: tracker.ProjectID(payloadNativeID(ctx, "prj")), OrganizationID: scope.organization, Name: request.Name, Profile: "native", States: nativeTriageStates(request.States), RequireDependencies: true}
-		if err := validateNativeStates(project.States); err != nil {
-			return nil, err
-		}
-		if request.RequireDependencies != nil {
-			project.RequireDependencies = *request.RequireDependencies
-		}
-		states, err := marshalNative(project.States)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO projects (id, organization_id, name, profile, states_json, require_dependencies, created_at, github_repository_enabled, scheduling_rank) VALUES (?, ?, ?, 'native', ?, ?, ?, 0, (SELECT COALESCE(max(scheduling_rank),-1)+1 FROM projects WHERE organization_id=?))", project.ID, project.OrganizationID, project.Name, states, project.RequireDependencies, formatHubTime(now), project.OrganizationID); err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, "UPDATE organizations SET scheduling_revision = scheduling_revision + 1 WHERE id = ?", project.OrganizationID); err != nil {
-			return nil, err
-		}
-		for rank, state := range project.States {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at, board_rank) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now), rank); err != nil {
-				return nil, err
-			}
-		}
-		if err := tx.QueryRowContext(ctx, "SELECT slug FROM projects WHERE id=?", project.ID).Scan(&project.Slug); err != nil {
-			return nil, err
-		}
-		return project, nil
-	}
+	return s.nativeMutation(c, request.Mutation, request, nil)
 }
 
 func validateNativeStates(states []tracker.NativeState) error {

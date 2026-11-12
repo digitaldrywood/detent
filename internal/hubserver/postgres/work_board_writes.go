@@ -5,11 +5,16 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate) error {
@@ -128,29 +133,143 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 		}
 	}
 	if !same {
-		var sequence int64
-		if err := s.db.QueryRow(ctx, `INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES($1,$2,1,0) ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=native_board_sequences.sequence+1 RETURNING sequence`, s.organization, u.ProjectID).Scan(&sequence); err != nil {
-			return mapError(ctx, err)
-		}
-		var beforeKey, beforeHash, afterKey, afterHash *string
-		var beforeSize, beforeContent, afterSize, afterContent *int64
+		delta := viewstore.BoardDelta{WorkItemID: u.WorkItemID, Topic: "card", EntityID: string(u.WorkItemID), EntityRevision: new(u.ExpectedRevision), Kind: "upsert"}
 		if previous != nil {
-			beforeKey, beforeHash = &previous.Payload.Key, &previous.Payload.SHA256
-			beforeSize, beforeContent = &previous.Payload.CompressedSize, &previous.Payload.UncompressedSize
+			value := previous.Payload
+			delta.Previous = &value
 		}
 		if next != nil {
-			afterKey, afterHash = &next.Payload.Key, &next.Payload.SHA256
-			afterSize, afterContent = &next.Payload.CompressedSize, &next.Payload.UncompressedSize
+			value := next.Payload
+			delta.Current = &value
+		} else {
+			delta.Kind = "delete"
 		}
-		if _, err := s.db.Exec(ctx, `INSERT INTO native_board_deltas(organization_id,project_id,sequence,work_item_id,previous_object_key,previous_sha256,previous_bytes,previous_content_bytes,current_object_key,current_sha256,current_bytes,current_content_bytes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, s.organization, u.ProjectID, sequence, u.WorkItemID, beforeKey, beforeHash, beforeSize, beforeContent, afterKey, afterHash, afterSize, afterContent); err != nil {
-			return mapError(ctx, err)
-		}
-		if _, err := s.db.Exec(ctx, `WITH removed AS (DELETE FROM native_board_deltas WHERE (organization_id,project_id,sequence) IN (SELECT organization_id,project_id,sequence FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2 AND sequence<=$3 ORDER BY sequence LIMIT 32) RETURNING sequence) UPDATE native_board_sequences SET replay_floor=greatest(replay_floor,coalesce((SELECT max(sequence) FROM removed),replay_floor)) WHERE organization_id=$1 AND project_id=$2`, s.organization, u.ProjectID, sequence-2048); err != nil {
-			return mapError(ctx, err)
+		if err := s.recordBoardDelta(u.ProjectID, delta); err != nil {
+			return err
 		}
 	}
 	_, err = s.db.Exec(ctx, "DELETE FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, u.ProjectID, u.WorkItemID)
 	return mapError(ctx, err)
+}
+
+type boardAppend struct {
+	project tracker.ProjectID
+	delta   viewstore.BoardDelta
+}
+
+func (s *session) recordBoardDelta(project tracker.ProjectID, delta viewstore.BoardDelta) error {
+	if !s.flushesBoardDeltas || s.readOnly || project == "" || delta.EntityID == "" || delta.EntityRevision != nil && *delta.EntityRevision < 0 {
+		return viewstore.ErrInvalidView
+	}
+	if delta.Topic == "card" {
+		if delta.WorkItemID == "" || delta.Previous == nil && delta.Current == nil {
+			return viewstore.ErrInvalidView
+		}
+	} else if !slices.Contains([]string{"work_item", "board", "lane", "activity", "human_action", "health", "workspace", "action_run"}, delta.Topic) || delta.Previous != nil || delta.Current != nil {
+		return viewstore.ErrInvalidView
+	}
+	s.boardDeltas = append(s.boardDeltas, boardAppend{project: project, delta: delta})
+	return nil
+}
+
+const appendBoardDeltaSQL = `WITH head AS (INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES($1,$2,1,CASE WHEN $3 THEN 1 ELSE 0 END) ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=native_board_sequences.sequence+1,replay_floor=CASE WHEN $3 THEN native_board_sequences.sequence+1 ELSE native_board_sequences.replay_floor END RETURNING sequence)
+INSERT INTO native_board_deltas(organization_id,project_id,sequence,work_item_id,previous_object_key,previous_sha256,previous_bytes,previous_content_bytes,current_object_key,current_sha256,current_bytes,current_content_bytes,topic,entity_id,entity_revision,kind,status,related_id) SELECT $1,$2,head.sequence,$4,$5,$6,$7::bigint,$8::bigint,$9,$10,$11::bigint,$12::bigint,$13,$14,$15::bigint,$16,$17,$18 FROM head`
+
+const boardSequenceHeadSQL = `SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2`
+
+func boardDeltaPayload(delta viewstore.BoardDelta) []any {
+	var beforeKey, beforeHash, afterKey, afterHash *string
+	var beforeSize, beforeContent, afterSize, afterContent *int64
+	if delta.Previous != nil {
+		beforeKey, beforeHash = &delta.Previous.Key, &delta.Previous.SHA256
+		beforeSize, beforeContent = &delta.Previous.CompressedSize, &delta.Previous.UncompressedSize
+	}
+	if delta.Current != nil {
+		afterKey, afterHash = &delta.Current.Key, &delta.Current.SHA256
+		afterSize, afterContent = &delta.Current.CompressedSize, &delta.Current.UncompressedSize
+	}
+	return []any{delta.WorkItemID, beforeKey, beforeHash, beforeSize, beforeContent, afterKey, afterHash, afterSize, afterContent, delta.Topic, delta.EntityID, delta.EntityRevision, delta.Kind, delta.Status, delta.RelatedID}
+}
+
+func (s *session) pendingBoardDeltas() []boardAppend {
+	slices.SortStableFunc(s.boardDeltas, func(a, b boardAppend) int { return strings.Compare(string(a.project), string(b.project)) })
+	lastHealth := make(map[[2]string]int)
+	lastPolicy := make(map[tracker.ProjectID]int)
+	for index, entry := range s.boardDeltas {
+		if entry.delta.Topic == "health" {
+			lastHealth[[2]string{string(entry.project), entry.delta.EntityID}] = index
+		}
+		if entry.delta.Topic == "board" && entry.delta.Kind == "invalidate" {
+			lastPolicy[entry.project] = index
+		}
+	}
+	pending := make([]boardAppend, 0, len(s.boardDeltas))
+	for index, entry := range s.boardDeltas {
+		if entry.delta.Topic == "health" && lastHealth[[2]string{string(entry.project), entry.delta.EntityID}] != index {
+			continue
+		}
+		if entry.delta.Topic == "board" && entry.delta.Kind == "invalidate" && lastPolicy[entry.project] != index {
+			continue
+		}
+		pending = append(pending, entry)
+	}
+	return pending
+}
+
+func (s *session) flushBoardDeltas(ctx context.Context) error {
+	projects := []tracker.ProjectID{}
+	for _, entry := range s.pendingBoardDeltas() {
+		delta := entry.delta
+		policyReset := delta.Topic == "board" && delta.Kind == "invalidate"
+		var sequence int64
+		if err := s.db.QueryRow(ctx, `INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES($1,$2,1,CASE WHEN $3 THEN 1 ELSE 0 END) ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=native_board_sequences.sequence+1,replay_floor=CASE WHEN $3 THEN native_board_sequences.sequence+1 ELSE native_board_sequences.replay_floor END RETURNING sequence`, s.organization, entry.project, policyReset).Scan(&sequence); err != nil {
+			return mapError(ctx, err)
+		}
+		if _, err := s.db.Exec(ctx, `INSERT INTO native_board_deltas(organization_id,project_id,sequence,work_item_id,previous_object_key,previous_sha256,previous_bytes,previous_content_bytes,current_object_key,current_sha256,current_bytes,current_content_bytes,topic,entity_id,entity_revision,kind,status,related_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, append([]any{s.organization, entry.project, sequence}, boardDeltaPayload(delta)...)...); err != nil {
+			return mapError(ctx, err)
+		}
+		if len(projects) == 0 || projects[len(projects)-1] != entry.project {
+			projects = append(projects, entry.project)
+		}
+	}
+	for _, project := range projects {
+		var head int64
+		if err := s.db.QueryRow(ctx, boardSequenceHeadSQL, s.organization, project).Scan(&head); err != nil {
+			return mapError(ctx, err)
+		}
+		if err := s.trimBoardDeltas(ctx, project, head); err != nil {
+			return err
+		}
+	}
+	s.boardDeltas = nil
+	return nil
+}
+
+func (s *session) queueBoardDeltas(batch *pgx.Batch) func(context.Context) error {
+	type boardHead struct {
+		project  tracker.ProjectID
+		sequence int64
+	}
+	heads := []*boardHead{}
+	for _, entry := range s.pendingBoardDeltas() {
+		delta := entry.delta
+		batch.Queue(appendBoardDeltaSQL, append([]any{s.organization, entry.project, delta.Topic == "board" && delta.Kind == "invalidate"}, boardDeltaPayload(delta)...)...)
+		if len(heads) == 0 || heads[len(heads)-1].project != entry.project {
+			heads = append(heads, &boardHead{project: entry.project})
+		}
+	}
+	for _, head := range heads {
+		batch.Queue(boardSequenceHeadSQL, s.organization, head.project).QueryRow(func(row pgx.Row) error { return row.Scan(&head.sequence) })
+	}
+	s.boardDeltas = nil
+	return func(ctx context.Context) error {
+		for _, head := range heads {
+			if err := s.trimBoardDeltas(ctx, head.project, head.sequence); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }
 
 func sameBoardContent(a, b *viewstore.BoardRecord) bool {
@@ -255,4 +374,58 @@ func comparableBoardDisplay(display viewstore.BoardDisplay) viewstore.BoardDispl
 		display.Execution = &execution
 	}
 	return display
+}
+
+func (s *session) trimBoardDeltas(ctx context.Context, project tracker.ProjectID, head int64) error {
+	if head <= 2048 {
+		return nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT ctid,sequence FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2 AND (organization_id,project_id,sequence)>($1,$2,0::bigint) AND (organization_id,project_id,sequence)<=($1,$2,$3) ORDER BY sequence LIMIT 32`, s.organization, project, head-2048)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	type candidate struct {
+		Location pgtype.TID
+		Sequence int64
+	}
+	candidates, err := pgx.CollectRows(rows, pgx.RowToStructByPos[candidate])
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	var floor int64
+	for _, row := range candidates {
+		var removed int64
+		err := s.db.QueryRow(ctx, `DELETE FROM native_board_deltas WHERE ctid=$3 AND organization_id=$1 AND project_id=$2 AND sequence=$4 RETURNING sequence`, s.organization, project, row.Location, row.Sequence).Scan(&removed)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return mapError(ctx, err)
+		}
+		floor = max(floor, removed)
+	}
+	if floor == 0 {
+		return nil
+	}
+	_, err = s.db.Exec(ctx, `UPDATE native_board_sequences SET replay_floor=greatest(replay_floor,$3) WHERE organization_id=$1 AND project_id=$2`, s.organization, project, floor)
+	return mapError(ctx, err)
+}
+
+func (s *session) TrimBoardDeltas(ctx context.Context, after tracker.ProjectID) (tracker.ProjectID, error) {
+	if s.readOnly {
+		return after, viewstore.ErrInvalidView
+	}
+	var project tracker.ProjectID
+	err := s.db.QueryRow(ctx, `SELECT project_id FROM native_board_sequences WHERE organization_id=$1 AND project_id>$2 ORDER BY project_id LIMIT 1 FOR UPDATE SKIP LOCKED`, s.organization, after).Scan(&project)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return after, mapError(ctx, err)
+	}
+	var head int64
+	if err := s.db.QueryRow(ctx, boardSequenceHeadSQL, s.organization, project).Scan(&head); err != nil {
+		return after, mapError(ctx, err)
+	}
+	return project, s.trimBoardDeltas(ctx, project, head)
 }

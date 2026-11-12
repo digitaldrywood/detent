@@ -26,6 +26,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -375,6 +377,11 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 
 func newBrowserHostedFixtureBackend(t *testing.T, allocated bool, organization string, listen bool, configure ...func(*Config)) *browserHostedFixture {
 	t.Helper()
+	return newBrowserHostedFixtureBackendWithService(t, allocated, organization, listen, openHostedPostgresService, configure...)
+}
+
+func newBrowserHostedFixtureBackendWithService(t *testing.T, allocated bool, organization string, listen bool, open func(*testing.T, Config) *Service, configure ...func(*Config)) *browserHostedFixture {
+	t.Helper()
 	server := &httptest.Server{URL: "https://browser.example.test"}
 	base := server.URL
 	if listen {
@@ -397,7 +404,7 @@ func newBrowserHostedFixtureBackend(t *testing.T, allocated bool, organization s
 	for _, apply := range configure {
 		apply(&cfg)
 	}
-	service := openHostedPostgresService(t, cfg)
+	service := open(t, cfg)
 	fixture := &browserHostedFixture{service: service, server: server, provider: provider, cookies: make(map[string]*http.Cookie), stop: make(chan struct{})}
 	accounts := make(map[string]auth.Identity)
 	t.Cleanup(func() {
@@ -903,23 +910,80 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody,
 		Mutation: tracker.Mutation{IdempotencyKey: "browser-worker-issue"}, Title: "Runner session isolation", State: "Todo",
 	}, http.StatusOK), &issue)
-	store := f.service.conversations.store
-	owner, err := store.readConversationByID(t.Context(), f.service.database.db, f.conversation)
-	if err != nil {
+	var owner, existing conversationstore.Conversation
+	principal := ""
+	found := false
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		owner, err = r.Conversation(t.Context(), tracker.ProjectID(f.project), f.conversation)
+		if err != nil {
+			return err
+		}
+		principal = owner.OwnerPrincipalID
+		if issue.Actor.PrincipalID != "" {
+			actor, err := r.AccessCredential(t.Context(), issue.Actor.PrincipalID)
+			if err == nil {
+				principal = actor.ID
+			} else if !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+		}
+		existing, err = r.ConversationByWorkItem(t.Context(), owner.ProjectID, string(issue.WorkItemID))
+		found = err == nil
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	now := f.service.config.now()
-	ctx := prepareTestConversationRecord(t, store, conversationRecord{OrganizationID: owner.OrganizationID, Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now}})
-	tx, err := f.service.database.db.BeginTx(ctx, nil)
-	if err != nil {
+	if found {
+		f.workerChat, f.workerItem = existing.ID, existing.WorkItemID
+		return
+	}
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	worker := conversationRecord{
+		ID: conversation.NewConversationID(), OrganizationID: owner.OrganizationID, ProjectID: owner.ProjectID,
+		OwnerPrincipalID: principal, Title: deriveConversationTitle(issue.Title), Origin: conversationOriginWorker,
+		Visibility: conversation.VisibilityShared, Status: conversation.StatusActive, WorkItemID: string(issue.WorkItemID), LinkedAt: &now,
+		Execution:   conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now},
+		Preferences: conversation.DefaultPreferences(), Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := validateConversationRecord(&worker); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback() })
-	worker, err := f.service.conversations.ensureWorkerConversation(ctx, tx, nativeScope{organization: owner.OrganizationID, project: owner.ProjectID, credential: apiCredential{ID: owner.OwnerPrincipalID}}, string(issue.WorkItemID), now)
-	if err != nil {
-		t.Fatal(err)
+	ctx := prepareTestConversationRecord(t, f.service.conversations.store, worker)
+	prepared, _ := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
+	if len(prepared) != 1 {
+		t.Fatalf("worker conversation content objects=%d, want 1", len(prepared))
 	}
-	if err := f.service.database.commit(t.Context(), tx); err != nil {
+	for _, reference := range prepared {
+		worker.ContentID = contentArchiveID(string(owner.OrganizationID), reference)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, owner.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockWorkItemProject(ctx, owner.ProjectID); err != nil {
+			return err
+		}
+		if _, err := w.LockWorkItem(ctx, owner.ProjectID, issue.WorkItemID); err != nil {
+			return err
+		}
+		existing, err := w.ConversationByWorkItem(ctx, owner.ProjectID, string(issue.WorkItemID))
+		if err == nil {
+			worker = conversationRecordFromStore(existing)
+			return nil
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err := registerPreparedConversationObjects(ctx, w, owner.OrganizationID, prepared, now); err != nil {
+			return err
+		}
+		stored, err := w.CreateConversation(ctx, conversationRecordToStore(worker))
+		if err == nil {
+			worker = conversationRecordFromStore(stored)
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	f.workerChat, f.workerItem = worker.ID, worker.WorkItemID
@@ -950,8 +1014,14 @@ func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Han
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if _, err := hostedPostgresAdmin(t, f.service).ExecContext(r.Context(), "UPDATE hosted_sessions SET expires_at = $1 WHERE token_hash = $2", formatHubTime(time.Now().Add(-time.Second)), apikey.HashToken(cookie.Value)); err != nil {
+			result, err := hostedPostgresAdmin(t, f.service).ExecContext(r.Context(), "UPDATE hosted_sessions SET expires_at=$1 WHERE organization_id=$2 AND token_hash=$3", f.service.config.now().Add(-time.Second), f.service.accessOrganization(), apikey.HashToken(cookie.Value))
+			if err != nil {
 				t.Error(err)
+				http.Error(w, "session expiry failed", http.StatusInternalServerError)
+				return
+			}
+			if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+				t.Errorf("session expiry rows=%d, want 1: %v", changed, err)
 				http.Error(w, "session expiry failed", http.StatusInternalServerError)
 				return
 			}
@@ -1061,7 +1131,14 @@ func TestHostedBrowserPreview(t *testing.T) {
 		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id='starter',base_version=1"); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+			assignment, err := w.BillingAssignment(t.Context())
+			if err != nil {
+				return err
+			}
+			assignment.Base = billingstore.PlanReference{ID: "starter", Version: 1}
+			return w.SetBillingAssignment(t.Context(), assignment, assignment.Revision)
+		}); err != nil {
 			t.Fatal(err)
 		}
 		provider := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
@@ -1083,13 +1160,8 @@ func TestHostedBrowserPreview(t *testing.T) {
 		cfg := f.service.config.Hosted
 		cfg.Plans = &plans
 		cfg.Billing = &HostedBillingConfig{AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_credits_browser"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: base, Prices: []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}}}
-		configureTestCredits(t, f, base)
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE ai_credit_accounts SET balance_micros=1250000,payment_method='pm_credit',failure='automatic payment failed; update the saved payment method'"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES('org_browser_preview','test','fixture-purchase',1250000,'purchase',?)", f.service.config.now().UnixMicro()); err != nil {
-			t.Fatal(err)
-		}
+		configureTestCredits(t, f, base, billingstore.CreditAccount{PaymentMethod: "pm_credit", Failure: "automatic payment failed; update the saved payment method"})
+		postAICreditFixture(t, f.service.database, billingstore.CreditTransaction{Mode: billing.ModeTest, Source: "fixture-purchase", AmountMicros: 1250000, Kind: "purchase", RecordedAt: f.service.config.now()})
 		done := make(chan struct{})
 		close(done)
 		f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
@@ -1181,6 +1253,16 @@ func TestHostedBrowserPreview(t *testing.T) {
 				return
 			}
 			cfg.Conversation.Backend = newFakeCoordinatorBackend()
+			cfg.TenantRepository, cfg.AccessRepository, cfg.BillingRepository = nil, nil, nil
+			if owner, ok := cfg.NativeRunEvents.(tenantNativeRunEventParticipant); ok && owner.service == f.service {
+				cfg.NativeRunEvents = nil
+			}
+			if owner, ok := cfg.ConversationDispatch.(tenantNativeRunEventParticipant); ok && owner.service == f.service {
+				cfg.ConversationDispatch = nil
+			}
+			if owner, ok := cfg.ProjectParticipants.(tenantProjectParticipants); ok && owner.service == f.service {
+				cfg.ProjectParticipants = nil
+			}
 			service, err := Open(t.Context(), cfg)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1417,38 +1499,59 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 		{Name: "Done", Terminal: true},
 		{Name: "Cancelled", Terminal: true},
 	}
-	for _, project := range []string{f.project, f.privateProject} {
+	for projectIndex, project := range []string{f.project, f.privateProject} {
 		scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: tracker.ProjectID(project)}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(t.Context(), scope.project)
+			if err != nil {
+				return err
+			}
+			project.States = nativeTriageStates(states)
+			_, err = w.UpdateProjectRecord(t.Context(), project)
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := applyNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
+		backlog := seedArchiveIssues(t, f.service, scope, 130, "Backlog")
+		var number int64
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			number, err = r.NextWorkItemNumber(t.Context(), scope.project)
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.database.commit(t.Context(), tx); err != nil {
-			t.Fatal(err)
-		}
-		seedArchiveIssues(t, f.service, scope, 130, "Backlog")
-		for _, seed := range []struct {
+		var issues []tracker.NativeIssue
+		var histories [][]tracker.CollaborationEvent
+		for index, seed := range []struct {
 			state string
 			age   time.Duration
 		}{
 			{"Done", 30 * time.Minute}, {"Done", 5 * time.Hour}, {"Done", 60 * time.Hour}, {"Cancelled", 30 * time.Minute},
 		} {
-			issue := seedArchiveIssues(t, f.service, scope, 1, seed.state)[0]
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
+			at := now.Add(-seed.age)
+			issue := backlog[0]
+			issue.WorkItemID, issue.Number = tracker.NativeWorkItemID(newNativeID("wi")), int(number)+index
+			issue.State, issue.Terminal, issue.ClosedAt = seed.state, true, &at
+			issue.CreatedAt, issue.UpdatedAt, issue.LastActivityAt = now.Add(-72*time.Hour), now, now
+			issues = append(issues, issue)
+			histories = append(histories, []tracker.CollaborationEvent{{Type: "workflow.transitioned", RecordedAt: at, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: "Todo", ToState: seed.state}}})
+		}
+		importNativeWorkPageIssues(t, nativeFixture{service: f.service, project: tracker.NativeProject{OrganizationID: scope.organization, ID: scope.project}}, issues, histories, int64(2000+1000*projectIndex))
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			for _, issue := range issues {
+				row, err := r.WorkItem(t.Context(), scope.project, issue.WorkItemID)
+				if err != nil {
+					return err
+				}
+				if row.TerminalEnteredAt == nil || !row.TerminalEnteredAt.Equal(*issue.ClosedAt) {
+					t.Fatalf("historical browser closure=%v want=%v", row.TerminalEnteredAt, issue.ClosedAt)
+				}
 			}
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: seed.state}, now.Add(-seed.age)); err != nil {
-				t.Fatal(err)
-			}
-			if err := f.service.database.commit(t.Context(), tx); err != nil {
-				t.Fatal(err)
-			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
 		}
 	}
-	drainTestNativeClosedTimes(t, f.service)
 	drainTestNativeBoard(t, f.service)
 }

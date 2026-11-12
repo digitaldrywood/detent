@@ -44,7 +44,7 @@ AND ($4='service' OR $3='' OR EXISTS (
     SELECT 1 FROM token_grants principal_grant
     WHERE principal_grant.organization_id=p.organization_id AND principal_grant.project_id=p.id AND principal_grant.token_id=$3
 ))
-AND ($4='service' OR NOT $12 OR EXISTS (
+AND (NOT $12 OR EXISTS (
     SELECT 1 FROM token_grants credential_grant
     WHERE credential_grant.organization_id=p.organization_id AND credential_grant.project_id=p.id AND credential_grant.token_id=$10
 ))

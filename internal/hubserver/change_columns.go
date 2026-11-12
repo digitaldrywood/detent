@@ -309,17 +309,36 @@ func decodeChangeColumnCheckpoint(ctx context.Context, raw string) (*tracker.Nat
 	return &checkpoint, nil
 }
 
+type changeColumnCursor struct {
+	Review         string
+	Checkpoint     string
+	CheckpointTurn bool
+}
+
 func (s *Service) populateChangeColumns(ctx context.Context) error {
+	cursor, _ := s.changeColumnAfter.(changeColumnCursor)
+	if prior, ok := s.changeColumnAfter.(string); ok {
+		cursor.Review = prior
+	}
+	checkpointTurn := cursor.CheckpointTurn
+	cursor.CheckpointTurn = !cursor.CheckpointTurn
+	defer func() { s.changeColumnAfter = cursor }()
+	if checkpointTurn {
+		next, err := s.populateCheckpointSource(ctx, tracker.OrganizationID(s.appOrganizationID()), cursor.Checkpoint)
+		if next != "" || err == nil {
+			cursor.Checkpoint = next
+		}
+		return err
+	}
 	owner, ok := s.config.TenantRepository.(interface {
 		BackfillCurrentChangeReviewsAfter(context.Context, tracker.OrganizationID, *eventstore.Content, int, string) (int, string, error)
 	})
 	if !ok {
 		return workItemStorageUnavailable()
 	}
-	after, _ := s.changeColumnAfter.(string)
-	_, next, err := owner.BackfillCurrentChangeReviewsAfter(ctx, tracker.OrganizationID(s.appOrganizationID()), eventstore.NewContent(s.runDetailStore()), corestore.MaxPageSize, after)
+	_, next, err := owner.BackfillCurrentChangeReviewsAfter(ctx, tracker.OrganizationID(s.appOrganizationID()), eventstore.NewContent(s.runDetailStore()), corestore.MaxPageSize, cursor.Review)
 	if next != "" || err == nil {
-		s.changeColumnAfter = next
+		cursor.Review = next
 	}
 	return err
 }

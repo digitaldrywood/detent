@@ -343,9 +343,13 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 		counter = startCounter(t, person)
 	}
 
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE leases SET expires_at = ? WHERE released_at IS NULL", formatHubTime(time.Now().Add(-time.Minute))); err != nil {
+	result, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(),
+		"UPDATE leases SET acquired_at=acquired_at+($1::timestamptz-expires_at),renewed_at=renewed_at+($1::timestamptz-expires_at),expires_at=$1 WHERE organization_id=$2 AND machine_id=$3 AND released_at IS NULL", time.Now().Add(-time.Minute), f.project.OrganizationID, f.runner.binding.MachineID)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		t.Fatalf("expired leases = %d, error=%v", count, err)
 	}
 	f.awaitLaneIdle(t)
 	if counter != "" {
@@ -383,8 +387,8 @@ func TestWorkspaceLaneUnbindsWhenTheWorkspaceIsClosed(t *testing.T) {
 		t.Fatalf("the session worktree %s remains after close: %v", ready.WorktreePath, err)
 	}
 	var open int
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT COUNT(*) FROM leases WHERE released_at IS NULL AND machine_id = ?", string(f.runner.binding.MachineID)).Scan(&open); err != nil {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(),
+		"SELECT COUNT(*) FROM leases WHERE organization_id=$1 AND released_at IS NULL AND machine_id=$2", f.project.OrganizationID, f.runner.binding.MachineID).Scan(&open); err != nil {
 		t.Fatal(err)
 	}
 	if open != 0 {

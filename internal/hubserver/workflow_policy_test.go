@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,14 +12,230 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func updateWorkflowPolicyFixtureProject(t *testing.T, f nativeFixture, update func(*projectstore.Record)) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		update(&project)
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func saveWorkflowPolicyFixtureGuidance(t *testing.T, f nativeFixture, markdown string) {
+	t.Helper()
+	raw, err := json.Marshal(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := eventstore.NewContent(f.service.runDetailStore()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: f.project.OrganizationID}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateWorkflowPolicyFixtureProject(t, f, func(project *projectstore.Record) {
+		project.Settings.WorkflowKey, project.Settings.WorkflowSHA256, project.Settings.WorkflowBytes, project.Settings.WorkflowContentBytes = ref.PayloadObjectKey, ref.PayloadSHA256, ref.PayloadBytes, ref.PayloadContentBytes
+	})
+}
+
+func unenrolledWorkflowPolicyFixtureCredential(t *testing.T, f nativeFixture) string {
+	t.Helper()
+	token, err := apikey.GenerateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := newNativeID("credential")
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	expires := now.Add(runnerauth.CredentialTTL)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: id, Name: "Unenrolled example reporter", Hash: apikey.HashToken(token), Fingerprint: tokenFingerprint(apikey.HashToken(token)), Scope: "worker", Kind: "service", NativeOnly: true, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: id, ProjectID: f.project.ID})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func installWorkflowPolicyWorkCounts(t *testing.T, f nativeFixture) {
+	t.Helper()
+	admin := conversationTestAdmin(t, f.service)
+	for _, statement := range []string{
+		"CREATE TABLE policy_work_counts(organization_id text NOT NULL,project_id text NOT NULL,kind text NOT NULL)",
+		"GRANT INSERT ON policy_work_counts TO detent_runtime_v2",
+		"CREATE FUNCTION public.count_workflow_policy_fixture() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp AS $count$ BEGIN INSERT INTO public.policy_work_counts VALUES(TG_ARGV[0],TG_ARGV[1],TG_ARGV[2]); RETURN NEW; END $count$",
+		"GRANT EXECUTE ON FUNCTION public.count_workflow_policy_fixture() TO detent_runtime_v2",
+	} {
+		if _, err := admin.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	organization, project := pgtransport.QuoteLiteral(string(f.project.OrganizationID)), pgtransport.QuoteLiteral(string(f.project.ID))
+	for _, target := range []struct{ table, key, operation, kind string }{{"native_board_dirty", "project_id", "INSERT", "card"}, {"project_workflow_states", "project_id", "UPDATE", "state"}, {"projects", "id", "UPDATE", "project"}} {
+		statement := "CREATE TRIGGER count_policy_" + target.kind + " AFTER " + target.operation + " ON " + target.table + " FOR EACH ROW WHEN (NEW.organization_id=" + organization + " AND NEW." + target.key + "=" + project + ") EXECUTE FUNCTION public.count_workflow_policy_fixture(" + organization + "," + project + "," + pgtransport.QuoteLiteral(target.kind) + ")"
+		if _, err := admin.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func seedWorkflowPolicyNativeLanding(t *testing.T, f nativeFixture, commit, baseRef string, partial bool) string {
+	t.Helper()
+	source := f.createIndependent(t, "Landing provenance source")
+	approval, err := f.service.readTenantProjectPolicy(t.Context(), f.project.OrganizationID, f.project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	runner.enroll(t)
+	runner.reportCapacity(t)
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, tracker.NativeClaim{WorkItemID: source.WorkItemID, PolicyID: approval.Policy.ID, MachineID: runner.binding.MachineID, SessionID: "landing-source", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	event := nativeStartedEvent(lease)
+	path := f.base + "/work-items/" + string(source.WorkItemID) + "/events"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, event), http.StatusOK)
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(runner.redemption.Credential), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("landing actor status%d: %v", status, err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	actor := scope.actor()
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	change := tracker.ChangeRequest{ID: "change_landed", OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: source.WorkItemID, Title: "Landed source", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	content := eventstore.NewContent(f.service.runDetailStore())
+	changeRow, err := content.PrepareChange(t.Context(), f.project.OrganizationID, historyTestJSON(t, change))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := changeTestInput()
+	input.Repository = "https://github.com/example-org/example-project"
+	input.HeadSHA = strings.Repeat("b", 40)
+	input.PolicyID = approval.Policy.ID
+	input.RunID, input.AttemptID = event.Data.RunID, event.Data.AttemptID
+	version := tracker.ChangeVersion{ID: "version_landed", ChangeID: change.ID, Number: 1, ChangeVersionInput: input, Policy: approval.Policy, Actor: analyticsTestScope(t, f).actor(), CreatedAt: now}
+	versionRow, err := content.PrepareVersion(t.Context(), f.project.OrganizationID, historyTestJSON(t, version))
+	if err != nil {
+		t.Fatal(err)
+	}
+	change.CurrentVersion = version.ID
+	change.Revision++
+	change.Landed = &tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: commit, BaseRef: baseRef, Method: "merge", Actor: actor, LandedAt: now}
+	updated, err := content.PrepareChange(t.Context(), f.project.OrganizationID, historyTestJSON(t, change))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Revision = 1
+	frozen, err := content.PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: source.WorkItemID, ChangeID: change.ID, VersionID: version.ID}, *change.Landed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: f.project.OrganizationID, AttemptID: event.Data.AttemptID, VersionID: version.ID, Repository: version.Repository, BaseRef: baseRef}, tracker.NativeLandingReceipt{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: commit, BaseRef: baseRef, Method: "merge", Landed: true, ObservedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
+			return err
+		}
+		if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: source.WorkItemID, ChangeID: change.ID, CreatedAt: now}); err != nil {
+			return err
+		}
+		if _, err := w.CreateVersion(t.Context(), versionRow); err != nil {
+			return err
+		}
+		if _, err := w.UpdateChange(t.Context(), updated); err != nil {
+			return err
+		}
+		if _, err := w.CreateLandingReceipt(t.Context(), receipt); err != nil {
+			return err
+		}
+		return w.RecordVersionLanding(t.Context(), frozen)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome = "run.finished", "finish-landing-source", 2, "succeeded"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, event), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+	if partial {
+		result, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE change_requests SET landed_at=NULL,landed_head_sha=NULL,landed_merge_sha=NULL,landed_base_ref=NULL WHERE organization_id=$1 AND project_id=$2 AND id=$3 AND landed_version_id=$4", f.project.OrganizationID, f.project.ID, change.ID, version.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count, err := result.RowsAffected(); err != nil || count != 1 {
+			t.Fatalf("partial landing fixture rows%d: %v", count, err)
+		}
+	}
+	return actor.PrincipalID
+}
+
+func seedWorkflowPolicyPullRequest(t *testing.T, f nativeFixture, commit, baseRef string, bound, merged bool) {
+	t.Helper()
+	if bound {
+		updateWorkflowPolicyFixtureProject(t, f, func(project *projectstore.Record) { project.Settings.Repository = "example-org/example-project" })
+	}
+	var mergedAt any
+	if merged {
+		mergedAt = testTimestamp
+	}
+	raw, err := json.Marshal(map[string]any{"action": "closed", "repository": map[string]any{"full_name": "example-org/example-project", "default_branch": "develop"}, "pull_request": map[string]any{"node_id": "PR_policy_landing", "number": 1, "title": "Landed workflow instructions", "state": "closed", "draft": false, "html_url": "https://github.com/example-org/example-project/pull/1", "created_at": testTimestamp, "updated_at": testTimestamp, "merge_commit_sha": commit, "merged_at": mergedAt, "merged_by": map[string]any{"login": "landing-owner"}, "base": map[string]any{"ref": baseRef, "sha": strings.Repeat("a", 40)}, "head": map[string]any{"ref": "workflow-source", "sha": commit}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := eventstore.NewContent(f.service.runDetailStore())
+	ref, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: f.project.OrganizationID}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	row := projectstore.GitHubWebhook{DeliveryID: "policy-landing", Repository: "example-org/example-project", EventType: "pull_request", Action: "closed", Digest: policy.Digest(raw), Payload: ref, ReceivedAt: now, ExpiresAt: now.Add(time.Hour), NextAttemptAt: now, Status: "pending"}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		created, err := w.(projectstore.GitHubIntakeWriter).CreateGitHubWebhook(t.Context(), row)
+		if err == nil && !created {
+			return errors.New("landing webhook fixture already exists")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.maintainGitHubWebhookRecords(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var stored projectstore.GitHubWebhook
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		stored, err = r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), row.DeliveryID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := content.Receipt(t.Context(), stored.Payload)
+	if err != nil || string(persisted) != string(raw) || stored.Status != "completed" {
+		t.Fatalf("landing webhook source was not retained/completed: status=%s err=%v", stored.Status, err)
+	}
+}
 
 func TestObservedRepositoryWorkflowApply(t *testing.T) {
 	t.Parallel()
@@ -40,13 +255,14 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		history                                                                               int
 		historyLegacy                                                                         string
 		landing                                                                               string
-		unbound, unmerged, otherBranch, lateLanding                                           bool
+		unbound, unmerged, otherBranch, lateLanding, liesDefaultBranch                        bool
 		partialLanding, otherCommit                                                           bool
 		largeHistory                                                                          bool
 		changedSource, concurrentReports                                                      bool
 	}{
 		{name: "native landing applies instructions without reachability report", initial: true, canonical: true, changedInputs: true, landing: "native", active: true, status: http.StatusNoContent, applied: true},
 		{name: "bound merged PR applies instructions without reachability report", initial: true, canonical: true, changedInputs: true, landing: "pr", active: true, status: http.StatusNoContent, applied: true},
+		{name: "runner cannot authorize feature PR by calling it default", initial: true, canonical: true, changedInputs: true, landing: "pr", otherBranch: true, liesDefaultBranch: true, status: http.StatusNoContent},
 		{name: "native landing recorded after default branch apply gains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "native", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
 		{name: "merged PR recorded after default branch apply gains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "pr", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
 		{name: "native landing recorded after unlanded observation stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", lateLanding: true, status: http.StatusNoContent},
@@ -107,12 +323,13 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			f := newNativeFixture(t, nil, "", test.name)
 			clearNativeFixturePolicy(t, f)
 			if !test.bind {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = ? WHERE id = ?", "example-org/example-project", f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				updateWorkflowPolicyFixtureProject(t, f, func(project *projectstore.Record) {
+					project.Settings.CheckoutRepository = "example-org/example-project"
+				})
 			}
 			runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			runner.enroll(t)
+			runner.reportCapacity(t)
 			var canonicalPolicy policy.Descriptor
 			original := hubTestPolicy()
 			original.Workflow = &policy.Workflow{Source: "detent.yaml", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
@@ -162,14 +379,15 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 				historyCount++
 				var err error
-				initialApproval, _, err = readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				initialApproval, _, err = f.service.readTenantProjectPolicyRevision(t.Context(), f.project.OrganizationID, f.project.ID)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.bind {
 				f.service.config.ReconcileBackend = &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_example", Owner: "example-org", Name: "example-project", UpdatedAt: time.Now().UTC()}}}}}
-				integration, err := readProjectIntegration(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+				project, err := f.service.readTenantProjectRecord(t.Context(), analyticsTestScope(t, f))
+				integration := projectIntegrationRecord(project)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -251,6 +469,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			candidate = candidate.WithID()
 			source := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("b", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("c", 40), DefaultBranchReachable: test.reachable}
+			if test.liesDefaultBranch {
+				source.DefaultBranch = "feature"
+			}
 			if test.local {
 				source = nil
 			}
@@ -270,50 +491,13 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					baseRef = "feature"
 				}
 				if test.landing == "native" {
-					change := tracker.ChangeRequest{ID: "change_landed", OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: item.WorkItemID, CurrentVersion: "version_landed", Landed: &tracker.ChangeLanding{VersionID: "version_landed", MergeSHA: source.Commit, BaseRef: baseRef, Actor: tracker.Actor{Kind: "runner", PrincipalID: landingActor}}}
+					commit := source.Commit
 					if test.otherCommit {
-						change.Landed.MergeSHA = strings.Repeat("e", 40)
+						commit = strings.Repeat("e", 40)
 					}
-					raw, err := json.Marshal(change)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_requests(id, organization_id, project_id, work_item_id, record_json) VALUES(?,?,?,?,?)", change.ID, f.project.OrganizationID, f.project.ID, item.WorkItemID, string(raw)); err != nil {
-						t.Fatal(err)
-					}
-					if test.partialLanding {
-						if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_requests SET landed_version_id=? WHERE id=?`, change.Landed.VersionID, change.ID); err != nil {
-							t.Fatal(err)
-						}
-					}
-					version := tracker.ChangeVersion{ID: "version_landed", ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example-org/example-project"}}
-					raw, err = json.Marshal(version)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_versions(id, change_id, number, record_json) VALUES(?,?,?,?)", version.ID, change.ID, 1, string(raw)); err != nil {
-						t.Fatal(err)
-					}
+					landingActor = seedWorkflowPolicyNativeLanding(t, f, commit, baseRef, test.partialLanding)
 				} else {
-					repositoryID, _ := seedProjection(t, f.service.database.db)
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE repositories SET github_owner = ?, github_name = ? WHERE id = ?", "example-org", "example-project", repositoryID); err != nil {
-						t.Fatal(err)
-					}
-					if !test.unbound {
-						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id = NULL WHERE repository_id = ?", repositoryID); err != nil {
-							t.Fatal(err)
-						}
-						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id = ? WHERE id = ?", repositoryID, f.project.ID); err != nil {
-							t.Fatal(err)
-						}
-					}
-					mergedAt := testTimestamp
-					if test.unmerged {
-						mergedAt = ""
-					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE pull_requests SET merge_sha = ?, merged_at = ?, merged_by = ?, base_ref = ?, github_state = 'closed', url = ? WHERE repository_id = ?", source.Commit, mergedAt, "landing-owner", baseRef, "https://github.com/example-org/example-project/pull/1", repositoryID); err != nil {
-						t.Fatal(err)
-					}
+					seedWorkflowPolicyPullRequest(t, f, source.Commit, baseRef, !test.unbound, !test.unmerged)
 				}
 			}
 			if !test.lateLanding {
@@ -321,25 +505,26 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			token := runner.redemption.Credential
 			if test.legacy {
-				token = f.worker(t, "legacy")
+				token = unenrolledWorkflowPolicyFixtureCredential(t, f)
 			}
 			var pinned tracker.NativeLease
 			worker := ""
 			if test.active {
-				worker = f.worker(t, "active")
-				machine := tracker.MachineID("machine_abc")
+				active := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+				if !test.fleet {
+					active.redemption.Capacity = 1
+				}
+				active.enroll(t)
+				worker = active.redemption.Credential
+				machine := active.binding.MachineID
 				if test.fleet {
-					active := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-					active.enroll(t)
-					worker, machine = active.redemption.Credential, active.binding.MachineID
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, active.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "Active runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}, "isolation_tier": isolation.NativeTrusted}), http.StatusOK)
 					if test.humanApproval {
 						candidate.Requirements.MachineID = string(runner.binding.MachineID)
 						candidate = candidate.WithID()
 					}
-				} else {
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": machine, "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
 				}
+				active.reportCapacity(t)
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: item.WorkItemID, PolicyID: original.ID, MachineID: machine, SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &pinned)
@@ -385,14 +570,34 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
-							if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,?,?)", version.ID, change.ID, version.Number, string(raw)); err != nil {
-								t.Fatal(err)
+						scope := analyticsTestScope(t, f)
+						content := eventstore.NewContent(f.service.runDetailStore())
+						versionRow, err := content.PrepareVersion(t.Context(), scope.organization, raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						current, err := f.service.readChangeRecord(t.Context(), scope, string(id), change.ID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						revision := current.Revision
+						current.CurrentVersion = version.ID
+						current.Revision++
+						changeRow, err := content.PrepareChange(t.Context(), scope.organization, historyTestJSON(t, current))
+						if err != nil {
+							t.Fatal(err)
+						}
+						changeRow.Revision = int64(revision)
+						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+							if _, err := w.CreateVersion(t.Context(), versionRow); err != nil {
+								return err
 							}
-							if _, err := tx.ExecContext(t.Context(), "UPDATE change_requests SET record_json=json_set(record_json,'$.current_version_id',?) WHERE id=?", version.ID, change.ID); err != nil {
-								t.Fatal(err)
-							}
-						})
+							_, err := w.UpdateChange(t.Context(), changeRow)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+
 					}
 					response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 					requireNativeStatus(t, response, http.StatusOK)
@@ -404,16 +609,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID), f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &item)
-				for _, statement := range []string{
-					"CREATE TABLE policy_work_counts(kind TEXT NOT NULL)",
-					"CREATE TRIGGER count_policy_dirty AFTER INSERT ON native_board_dirty BEGIN INSERT INTO policy_work_counts VALUES('card'); END",
-					"CREATE TRIGGER count_policy_states AFTER UPDATE ON workflow_states BEGIN INSERT INTO policy_work_counts VALUES('state'); END",
-					"CREATE TRIGGER count_policy_projects AFTER UPDATE ON projects BEGIN INSERT INTO policy_work_counts VALUES('project'); END",
-				} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
-						t.Fatal(err)
-					}
-				}
+				installWorkflowPolicyWorkCounts(t, f)
 			}
 			report := policy.Observation{Descriptor: candidate, Source: source}
 			if test.concurrentReports {
@@ -444,25 +640,6 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			if test.lateLanding {
 				seedLanding()
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if test.landing == "native" {
-					err = recordPolicyLandingProvenance(t.Context(), tx, string(f.project.OrganizationID)+"/"+string(f.project.ID), 0, "example-org/example-project", source.Commit, policyLanding{ChangeID: "change_landed"})
-				} else {
-					var repositoryID int64
-					if err := tx.QueryRowContext(t.Context(), "SELECT id FROM repositories WHERE github_owner = 'example-org' AND github_name = 'example-project'").Scan(&repositoryID); err != nil {
-						t.Fatal(err)
-					}
-					err = recordMergedPullRequestPolicyLanding(t.Context(), tx, repositoryID, normalizedPullRequest{State: "closed", URL: "https://github.com/example-org/example-project/pull/1", MergeSHA: source.Commit, MergedAt: time.Now()})
-				}
-				if err != nil {
-					t.Fatal(errors.Join(err, tx.Rollback()))
-				}
-				if err := tx.Commit(); err != nil {
-					t.Fatal(err)
-				}
 			}
 			if test.history > 0 {
 				for path, before := range historySummaries {
@@ -478,8 +655,8 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 						t.Errorf("instruction-only adoption changed summary: before=%#v after=%#v", before, detail.Summary)
 					}
 					drainTestNativeBoard(t, f.service)
-					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
-					page, err := f.service.readBoardIssues(f.service.runDetailContext(t.Context()), scope, url.Values{"include": {"board"}, "limit": {"2000"}})
+					scope := analyticsTestScope(t, f)
+					page, err := f.service.readBoardRecords(f.service.runDetailContext(t.Context()), scope, url.Values{"include": {"board"}, "limit": {"2000"}})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -496,7 +673,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 				for _, kind := range []string{"card", "state", "project"} {
 					var count int
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM policy_work_counts WHERE kind=?", kind).Scan(&count); err != nil {
+					if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM policy_work_counts WHERE organization_id=$1 AND project_id=$2 AND kind=$3", f.project.OrganizationID, f.project.ID, kind).Scan(&count); err != nil {
 						t.Fatal(err)
 					}
 					t.Logf("instruction-only adoption: %s work=%d, retained history=%d", kind, count, test.history)
@@ -511,7 +688,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 			}
 			if test.adopt {
-				approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				approval, _, err := f.service.readTenantProjectPolicyRevision(t.Context(), f.project.OrganizationID, f.project.ID)
 				if err != nil || approval.Policy.ID != candidate.ID {
 					t.Fatalf("repository report was not applied: %+v %v", approval, err)
 				}
@@ -531,7 +708,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), http.StatusNoContent)
 			}
 			if test.humanApproval {
-				approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				approval, _, err := f.service.readTenantProjectPolicyRevision(t.Context(), f.project.OrganizationID, f.project.ID)
 				if err != nil || approval.Policy.ID != original.ID || strings.HasPrefix(approval.ApprovedBy, "runner_") {
 					t.Fatalf("runner replaced administrator approval: %+v %v", approval, err)
 				}
@@ -540,7 +717,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, Policy: candidate}), http.StatusOK)
 			}
 			if test.forge != "" && !test.applied {
-				approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				approval, _, err := f.service.readTenantProjectPolicyRevision(t.Context(), f.project.OrganizationID, f.project.ID)
 				if err != nil || approval.Policy.ID != original.ID || !reflect.DeepEqual(approval.Policy.Gates, original.Gates) || !reflect.DeepEqual(approval.Policy.Requirements, original.Requirements) || approval.Policy.Profile != original.Profile {
 					t.Fatalf("forgery changed approval: %+v %v", approval, err)
 				}
@@ -621,7 +798,12 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					claimStatus := http.StatusOK
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: original.ID, MachineID: pinned.MachineID, SessionID: "continued", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), claimStatus)
 				}
-				policyID, err := f.service.database.leasePolicyID(t.Context(), pinned.ID)
+				var policyID string
+				err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					pin, err := r.LeasePolicy(t.Context(), pinned.ID)
+					policyID = pin.PolicyID
+					return err
+				})
 				if err != nil || policyID != original.ID {
 					t.Fatalf("lease pin changed: %s, %v", policyID, err)
 				}
@@ -710,7 +892,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					t.Fatalf("next history page = %+v", nextPage)
 				}
 			}
-			project, err := readNativeProject(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			project, err := f.service.readTenantProjectRecord(t.Context(), analyticsTestScope(t, f))
 			wantStates := nativeFixtureStates()
 			if test.initial {
 				wantStates = original.Workflow.States
@@ -756,9 +938,13 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if err != nil || actual.Match(candidate) != nil || loaded.Config.Hooks != local.Config.Hooks {
 					t.Fatalf("legacy approval hid supplied authored candidate: %+v %v", actual, err)
 				}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_second", "hostname": "second", "capacity": 1, "version": "test"}), http.StatusOK)
+				second := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+				second.redemption.Capacity = 1
+				second.enroll(t)
+				second.reportCapacity(t)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", second.redemption.Credential, report), http.StatusNoContent)
 				fresh := f.create(t, "Claim retained legacy approval after upgrade")
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: "machine_second", SessionID: "unapproved", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", second.redemption.Credential, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: second.binding.MachineID, SessionID: "unapproved", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
 				current, err := native.ProjectPolicy(t.Context())
 				if err != nil || current.Policy.ID != original.ID || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || len(current.History) != 0 {
@@ -795,9 +981,7 @@ func TestObservedCloudWorkflowGuidanceAdoptsSameContract(t *testing.T) {
 		}
 		return descriptor
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET workflow_markdown=? WHERE id=?", markdown, f.project.ID); err != nil {
-		t.Fatal(err)
-	}
+	saveWorkflowPolicyFixtureGuidance(t, f, markdown)
 	before := resolve(markdown)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", before)
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
@@ -811,11 +995,9 @@ func TestObservedCloudWorkflowGuidanceAdoptsSameContract(t *testing.T) {
 		{"new security contract", strings.Replace(markdown, "enabled: false", "enabled: true", 1), strings.Replace(markdown, "enabled: false", "enabled: true", 1), true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET workflow_markdown=? WHERE id=?", test.saved, f.project.ID); err != nil {
-				t.Fatal(err)
-			}
+			saveWorkflowPolicyFixtureGuidance(t, f, test.saved)
 			selected := resolve(test.selected)
-			prior, _, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			prior, _, err := f.service.readTenantProjectPolicyRevision(t.Context(), f.project.OrganizationID, f.project.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -825,7 +1007,7 @@ func TestObservedCloudWorkflowGuidanceAdoptsSameContract(t *testing.T) {
 				want = http.StatusConflict
 			}
 			requireNativeStatus(t, response, want)
-			after, _, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			after, _, err := f.service.readTenantProjectPolicyRevision(t.Context(), f.project.OrganizationID, f.project.ID)
 			if err != nil {
 				t.Fatal(err)
 			}

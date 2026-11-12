@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -46,143 +45,38 @@ func (s *Service) issueBrowserURL(ctx context.Context, id string) (string, error
 	return path, nil
 }
 
-func setOrganizationSlug(ctx context.Context, tx *sql.Tx, id, slug string) error {
-	if err := readableurl.Validate(slug); err != nil {
-		return nativeInvalid(err.Error())
-	}
-	var owner string
-	err := tx.QueryRowContext(ctx, "SELECT organization_id FROM organization_slugs WHERE slug=?", slug).Scan(&owner)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if err == nil && owner != id {
-		return nativePublicInvalid("This slug is already reserved")
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO organization_slugs(slug,organization_id) VALUES(?,?) ON CONFLICT DO NOTHING", slug, id); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE organizations SET slug=? WHERE id=?", slug, id)
-	return err
-}
-
 func (s *Service) syncOrganizationSlug(ctx context.Context, slug string) error {
 	if slug == "" {
 		return nil
 	}
-	if s.config.TenantRepository != nil {
-		current, err := s.readableOrganizationSlug(ctx)
-		if err != nil || current == slug {
-			return err
-		}
-		return s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(s.appOrganizationID()), corestore.Serving, func(w tenantstore.Writer) error { return w.SetAccessOrganizationSlug(ctx, nil, slug) })
+	repository := s.config.TenantRepository
+	if repository == nil {
+		return workItemStorageUnavailable()
 	}
-	var current string
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", s.appOrganizationID()).Scan(&current); err != nil {
+	current, err := s.readableOrganizationSlug(ctx)
+	if err != nil || current == slug {
 		return err
 	}
-	if current == slug {
-		return nil
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := setOrganizationSlug(ctx, tx, s.appOrganizationID(), slug); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return repository.WriteTenant(ctx, tracker.OrganizationID(s.appOrganizationID()), corestore.Serving, func(w tenantstore.Writer) error { return w.SetAccessOrganizationSlug(ctx, nil, slug) })
 }
 
 func (s *Service) slugSettings(c echo.Context) error {
-	ctx := c.Request().Context()
 	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	project := c.Param("project")
 	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(project), credential: credential}
-	if project != "" && s.config.TenantRepository != nil {
+	if s.config.TenantRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
+	if project != "" {
 		return s.projectRecordSlugSettings(c, scope)
 	}
-	if project == "" && s.config.TenantRepository != nil {
-		return s.organizationSlugRecordSettings(c, scope)
-	}
-	if project != "" {
-		if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	var current string
-	query, args := "SELECT slug FROM organizations WHERE id=?", []any{scope.organization}
-	if project != "" {
-		query, args = "SELECT slug FROM projects WHERE organization_id=? AND id=?", []any{scope.organization, project}
-	}
-	if c.Request().Method == http.MethodGet {
-		if err := s.database.reader.QueryRowContext(ctx, query, args...).Scan(&current); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, map[string]string{"slug": current})
-	}
-	if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if project == "" && s.hostedShared() {
-		return s.nativeAPIError(c, nativePublicInvalid("Edit the organization slug through the shared entry"))
-	}
-	var input struct {
-		Slug         string `json:"slug"`
-		ExpectedSlug string `json:"expected_slug"`
-	}
-	if err := decodeAPIJSON(c, &input); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	if err := readableurl.Validate(input.Slug); err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer tx.Rollback()
-	scope.requireHostedAdmin = true
-	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := tx.QueryRowContext(ctx, query, args...).Scan(&current); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if current != input.ExpectedSlug {
-		return s.nativeAPIError(c, nativePublicInvalid("The slug changed; reload and try again"))
-	}
-	if project == "" {
-		err = setOrganizationSlug(ctx, tx, string(scope.organization), input.Slug)
-	} else {
-		var owner string
-		err = tx.QueryRowContext(ctx, "SELECT project_id FROM project_slugs WHERE organization_id=? AND slug=?", scope.organization, input.Slug).Scan(&owner)
-		if errors.Is(err, sql.ErrNoRows) {
-			err = nil
-		}
-		if err == nil && owner != "" && owner != project {
-			err = nativePublicInvalid("This slug is already reserved")
-		}
-		if err == nil {
-			_, err = tx.ExecContext(ctx, "INSERT INTO project_slugs(organization_id,slug,project_id) VALUES(?,?,?) ON CONFLICT DO NOTHING", scope.organization, input.Slug, project)
-		}
-		if err == nil {
-			_, err = tx.ExecContext(ctx, "UPDATE projects SET slug=? WHERE organization_id=? AND id=?", input.Slug, scope.organization, project)
-		}
-	}
-	if err == nil {
-		err = tx.Commit()
-	}
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, map[string]string{"slug": input.Slug})
+	return s.organizationSlugRecordSettings(c, scope)
 }
 
-func (s *Service) readableReference(ctx context.Context, query nativeQueryer, scope nativeScope, reference string) (string, error) {
+func (s *Service) readableReference(ctx context.Context, scope nativeScope, reference string) (string, error) {
 	parsed, err := url.Parse(reference)
 	if err != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", nativeNotFound()
@@ -200,12 +94,10 @@ func (s *Service) readableReference(ctx context.Context, query nativeQueryer, sc
 	if len(parts) != 4 || parts[2] != "issues" {
 		return "", nativeNotFound()
 	}
-	if s.config.TenantRepository != nil {
-		return s.readableRecordReference(ctx, scope, parts, true)
+	if s.config.TenantRepository == nil {
+		return "", workItemStorageUnavailable()
 	}
-	var id string
-	err = query.QueryRowContext(ctx, `SELECT i.native_id FROM organization_slugs o JOIN project_slugs p ON p.organization_id=o.organization_id JOIN issues i ON i.project_id=p.project_id WHERE o.slug=? AND p.slug=? AND i.number=? AND i.organization_id=? AND i.project_id=?`, parts[0], parts[1], parts[3], scope.organization, scope.project).Scan(&id)
-	return id, err
+	return s.readableRecordReference(ctx, scope, parts, true)
 }
 
 func (s *Service) canonicalToolResult(ctx context.Context, result operatortool.Result, name string) (operatortool.Result, error) {
@@ -297,14 +189,10 @@ func (s *Service) canonicalBrowserLink(ctx context.Context, link string) (string
 		}
 	}
 	if path == "" && len(parts) >= 4 && parts[2] == "issues" {
-		var id string
-		var err error
-		if s.config.TenantRepository != nil {
-			id, err = s.readableRecordReference(ctx, nativeScope{organization: tracker.OrganizationID(s.appOrganizationID())}, parts, false)
-		} else {
-			err = s.database.reader.QueryRowContext(ctx, `SELECT i.native_id FROM organization_slugs o JOIN project_slugs p ON p.organization_id=o.organization_id JOIN issues i ON i.project_id=p.project_id WHERE o.slug=? AND p.slug=? AND i.number=?`, parts[0], parts[1], parts[3]).Scan(&id)
+		if s.config.TenantRepository == nil {
+			return "", workItemStorageUnavailable()
 		}
-
+		id, err := s.readableRecordReference(ctx, nativeScope{organization: tracker.OrganizationID(s.appOrganizationID())}, parts, false)
 		if err == nil {
 			path, err = s.readIssueBrowserPath(ctx, id)
 			if err != nil {
@@ -313,7 +201,7 @@ func (s *Service) canonicalBrowserLink(ctx context.Context, link string) (string
 			if len(parts) > 4 {
 				path += "/" + strings.Join(parts[4:], "/")
 			}
-		} else if !errors.Is(err, sql.ErrNoRows) && !isNativeNotFound(err) {
+		} else if !isNativeNotFound(err) {
 			return "", err
 		}
 	}
@@ -383,6 +271,10 @@ func (s *Service) readablePage(ctx context.Context, credential apiCredential, pa
 }
 
 func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
+	repository := s.config.TenantRepository
+	if repository == nil {
+		return "", false, workItemStorageUnavailable()
+	}
 	path := c.Request().URL.Path
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	orgSlug, err := s.readableOrganizationSlug(c.Request().Context())
@@ -395,21 +287,12 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 	}
 	if requestedOrgSlug == "" && !s.hostedShared() && len(parts) >= 2 {
 		owned := false
-		if s.config.TenantRepository != nil {
-			if err := s.config.TenantRepository.ReadTenant(c.Request().Context(), tracker.OrganizationID(s.appOrganizationID()), corestore.Serving, func(r tenantstore.Reader) error {
-				var err error
-				owned, err = r.AccessOrganizationSlug(c.Request().Context(), parts[0])
-				return err
-			}); err != nil {
-				return "", false, err
-			}
-		} else {
-			var owner string
-			err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT organization_id FROM organization_slugs WHERE slug=?", parts[0]).Scan(&owner)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return "", false, err
-			}
-			owned = err == nil && owner == s.appOrganizationID()
+		if err := repository.ReadTenant(c.Request().Context(), tracker.OrganizationID(s.appOrganizationID()), corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			owned, err = r.AccessOrganizationSlug(c.Request().Context(), parts[0])
+			return err
+		}); err != nil {
+			return "", false, err
 		}
 		if owned {
 			requestedOrgSlug = parts[0]
@@ -439,7 +322,7 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 		}
 		return "", false, nativeNotFound()
 	}
-	if s.config.TenantRepository != nil && (legacyIssue || legacyProjectIssue || legacyProject) {
+	if legacyIssue || legacyProjectIssue || legacyProject {
 		kind := "project"
 		if legacyIssue {
 			kind = "issue"
@@ -448,48 +331,6 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 		}
 		target, err := s.readableLegacyRecordPath(c.Request().Context(), credential, parts, kind)
 		return target, true, err
-	}
-	if legacyIssue {
-		id := parts[2]
-		var project string
-		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id=? AND native_id=?", s.appOrganizationID(), id).Scan(&project); err != nil {
-			return "", false, err
-		}
-		scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(project), credential: credential}
-		if err := s.requireHostedProject(c.Request().Context(), s.database.reader, scope, false); err != nil {
-			return "", false, err
-		}
-		if err := requireReporterItem(c.Request().Context(), s.database.reader, scope, id); err != nil {
-			return "", false, err
-		}
-		target, err := s.issueBrowserURL(c.Request().Context(), id)
-		if len(parts) > 3 {
-			target += "/" + strings.Join(parts[3:], "/")
-		}
-		return target, true, err
-	}
-	if legacyProjectIssue {
-		scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(parts[1]), credential: credential}
-		if err := s.requireHostedProject(c.Request().Context(), s.database.reader, scope, false); err != nil {
-			return "", false, err
-		}
-		issue, err := s.resolveOperatorNativeItem(c.Request().Context(), s.database.reader, scope, parts[3])
-		if err != nil {
-			return "", false, err
-		}
-		target := issue.WebURL
-		if len(parts) > 4 {
-			target += "/" + strings.Join(parts[4:], "/")
-		}
-		return target, true, err
-	}
-	if legacyProject {
-		var slug string
-		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT slug FROM projects WHERE organization_id=? AND id=?", s.appOrganizationID(), parts[2]).Scan(&slug); err != nil {
-			return "", false, err
-		}
-		path = "/" + slug
-		parts = []string{slug}
 	}
 	if len(parts) > 0 && readableurl.Validate(parts[0]) == nil {
 		_, _, target, err := s.readablePage(c.Request().Context(), credential, path)
@@ -531,7 +372,7 @@ func (s *Service) normalizeToolReferences(ctx context.Context, call operatortool
 			return call, err
 		}
 		scope.project = tracker.ProjectID(project)
-		id, err := s.readableReference(authorized, s.database.reader, scope, reference)
+		id, err := s.readableReference(authorized, scope, reference)
 		if err != nil {
 			return call, safeWorkReadError(err)
 		}

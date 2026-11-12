@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -190,8 +191,5 @@ func nativeAnalyticsAttemptPage(attempts []nativeAnalyticsAttempt, offset, limit
 }
 
 func maxTime(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
+	return hubapi.MaxTime(a, b)
 }

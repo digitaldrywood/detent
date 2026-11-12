@@ -1,81 +1,96 @@
 package hubserver
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
-	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func hostedStorageConfig(t *testing.T) Config {
+func hostedStorageConfig(t *testing.T, configure ...func(*Config)) Config {
 	t.Helper()
-	return Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"),
-		Logger:       discardLogger(),
-		Hosted: &HostedConfig{
-			OrganizationID:       "org_hosted",
-			WorkOSOrganizationID: "org_provider",
-			PublicURL:            "https://tenant.example.test",
-		},
+	cfg := Config{Logger: discardLogger(), ListenAddress: "127.0.0.1:0", InitialAdminToken: []byte(testHubAdminToken), RunnerReleaseClient: &runnerReleaseFixture{}, Content: (&changeObjectFixture{}).call, RunDetails: &memoryRunDetails{}, Hosted: &HostedConfig{OrganizationID: "org_hosted", WorkOSOrganizationID: "org_provider", PublicURL: "https://tenant.example.test", Provider: newHostedSecurityProvider()}}
+	for _, apply := range configure {
+		apply(&cfg)
 	}
+	return hostedPostgresConfig(t, cfg)
 }
 
-func openHostedStorage(t *testing.T, cfg Config) *database {
+func openHostedStorage(t *testing.T, cfg Config) *Service {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	started := time.Now()
 	defer func() { t.Logf("hub_fixture_open_seconds=%.6f", time.Since(started).Seconds()) }()
-	seedHubDatabaseTemplate(t, cfg.DatabasePath)
-	db, err := openDatabase(t.Context(), cfg.normalized())
+	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
+		if err := service.Close(); err != nil {
 			t.Error(err)
 		}
 	})
-	return db
+	return service
+}
+
+func hostedStorageProject(t *testing.T, service *Service, id tracker.ProjectID) projectstore.Record {
+	t.Helper()
+	var record projectstore.Record
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		var err error
+		record, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: service.accessOrganization(), ID: id, Name: "private-project-sentinel", Profile: "native"}, States: nativeFixtureStates()})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return record
 }
 
 func TestHostedDatabaseBindingRestart(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name      string
-		change    func(*Config)
-		wantError bool
+		name                  string
+		change                func(*Config)
+		wantError, shapeError bool
 	}{
 		{name: "same binding"},
-		{name: "local reopen", change: func(c *Config) { c.Hosted = nil }, wantError: true},
 		{name: "other organization", change: func(c *Config) { c.Hosted.OrganizationID = "org_other" }, wantError: true},
 		{name: "other provider", change: func(c *Config) { c.Hosted.WorkOSOrganizationID = "org_other_provider" }, wantError: true},
-		{name: "missing provider", change: func(c *Config) { c.Hosted.WorkOSOrganizationID = "" }, wantError: true},
+		{name: "missing provider", change: func(c *Config) { c.Hosted.WorkOSOrganizationID = "" }, wantError: true, shapeError: true},
 		{name: "other host", change: func(c *Config) { c.Hosted.PublicURL = "https://other.example.test" }, wantError: true},
 		{name: "other bootstrap subject", change: func(c *Config) { c.Hosted.BootstrapSubject = "user_other" }, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := hostedStorageConfig(t)
-			db := openHostedStorage(t, cfg)
-			seedProjection(t, db.db)
-			if err := db.Close(); err != nil {
+			service := openHostedStorage(t, cfg)
+			record := hostedStorageProject(t, service, "prj_binding")
+			if err := service.Close(); err != nil {
 				t.Fatal(err)
 			}
 			if test.change != nil {
 				test.change(&cfg)
 			}
-			reopened, err := openDatabase(t.Context(), cfg.normalized())
+			reopened, err := Open(t.Context(), cfg)
 			if test.wantError {
-				if !errors.Is(err, ErrHostedDatabaseBinding) {
+				if err == nil || !test.shapeError && !errors.Is(err, ErrHostedDatabaseBinding) {
 					t.Fatalf("reopen error = %v", err)
 				}
 				if reopened != nil {
-					t.Fatal("rejected binding returned a database")
+					reopened.Close()
+					t.Fatal("rejected binding returned a Service")
 				}
 				return
 			}
@@ -83,12 +98,14 @@ func TestHostedDatabaseBindingRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer reopened.Close()
-			var organization string
-			if err := reopened.db.QueryRowContext(t.Context(), "SELECT organization_id FROM projects").Scan(&organization); err != nil {
+			if err := reopened.config.TenantRepository.ReadTenant(t.Context(), record.Core.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				got, err := r.ProjectRecord(t.Context(), record.Core.ID)
+				if err == nil && (got.Core.OrganizationID != tracker.OrganizationID(cfg.Hosted.OrganizationID) || reopened.database.hostedOrganization != got.Core.OrganizationID) {
+					t.Fatalf("project organization = %q, bound organization = %q", got.Core.OrganizationID, reopened.database.hostedOrganization)
+				}
+				return err
+			}); err != nil {
 				t.Fatal(err)
-			}
-			if organization != cfg.Hosted.OrganizationID || string(reopened.hostedOrganization) != organization {
-				t.Fatalf("project organization = %q, bound organization = %q", organization, reopened.hostedOrganization)
 			}
 		})
 	}
@@ -97,10 +114,9 @@ func TestHostedDatabaseBindingRestart(t *testing.T) {
 func TestHostedDatabaseCloudAliases(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, from, to string
-		mutate         func(*Config)
-		originBound    bool
-		wantError      bool
+		name, from, to         string
+		mutate                 func(*Config)
+		originBound, wantError bool
 	}{
 		{name: "production", from: "https://hub.detent.build", to: "https://cloud.detent.build"},
 		{name: "staging", from: "https://staging.hub.detent.build", to: "https://staging.cloud.detent.build"},
@@ -117,23 +133,27 @@ func TestHostedDatabaseCloudAliases(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := hostedStorageConfig(t)
-			cfg.Hosted.PublicURL = test.from
-			if !test.originBound {
-				cfg.Hosted.SharedEntry = &HostedSharedEntry{Generation: 1}
-			}
-			db := openHostedStorage(t, cfg)
-			seedProjection(t, db.db)
-			if err := db.Close(); err != nil {
+			cfg := hostedStorageConfig(t, func(cfg *Config) {
+				cfg.Hosted.PublicURL = test.from
+				if !test.originBound {
+					cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", Generation: 1, PublicKeys: []ed25519.PublicKey{hostedSharedKey(71).Public().(ed25519.PublicKey)}}
+				}
+			})
+			service := openHostedStorage(t, cfg)
+			hostedStorageProject(t, service, "prj_alias")
+			if err := service.Close(); err != nil {
 				t.Fatal(err)
 			}
 			cfg.Hosted.PublicURL = test.to
 			if test.mutate != nil {
 				test.mutate(&cfg)
 			}
-			reopened, err := openDatabase(t.Context(), cfg.normalized())
+			reopened, err := Open(t.Context(), cfg)
 			if test.wantError {
 				if !errors.Is(err, ErrHostedDatabaseBinding) || reopened != nil {
+					if reopened != nil {
+						reopened.Close()
+					}
 					t.Fatalf("reopen = %v, %v; want binding rejection", reopened, err)
 				}
 				return
@@ -144,8 +164,7 @@ func TestHostedDatabaseCloudAliases(t *testing.T) {
 			defer reopened.Close()
 			var stored string
 			var generation, projects, migrations int
-			if err := reopened.db.QueryRowContext(t.Context(), `SELECT public_url, allocation_generation,
-(SELECT count(*) FROM projects), (SELECT count(*) FROM hosted_binding_migrations) FROM hosted_tenant`).Scan(&stored, &generation, &projects, &migrations); err != nil {
+			if err := hostedPostgresAdmin(t, reopened).QueryRowContext(t.Context(), `SELECT public_url,allocation_generation,(SELECT count(*) FROM projects WHERE organization_id=$1),(SELECT count(*) FROM hosted_binding_migrations WHERE organization_id=$1) FROM hosted_tenant WHERE organization_id=$1`, reopened.accessOrganization()).Scan(&stored, &generation, &projects, &migrations); err != nil {
 				t.Fatal(err)
 			}
 			if stored != test.from || generation != 1 || projects != 1 || migrations != 0 {
@@ -157,93 +176,61 @@ func TestHostedDatabaseCloudAliases(t *testing.T) {
 
 func TestHostedDatabaseBootstrapBinding(t *testing.T) {
 	t.Parallel()
-	cfg := hostedStorageConfig(t)
-	cfg.Hosted.WorkOSOrganizationID = ""
-	cfg.Hosted.BootstrapSubject = "user_creator"
-	db := openHostedStorage(t, cfg)
-	if _, err := db.db.ExecContext(t.Context(), "UPDATE hosted_tenant SET provider_id = 'org_created' WHERE singleton = 1"); err != nil {
-		t.Fatal(err)
+	cfg := hostedStorageConfig(t, func(cfg *Config) { cfg.Hosted.WorkOSOrganizationID = ""; cfg.Hosted.BootstrapSubject = "user_creator" })
+	service := openHostedStorage(t, cfg)
+	organization := service.accessOrganization()
+	for range 2 {
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error { return w.BindAccessTenantProvider(t.Context(), "org_created") }); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := db.db.ExecContext(t.Context(), "UPDATE hosted_tenant SET provider_id = 'org_replacement' WHERE singleton = 1"); err == nil {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error { return w.BindAccessTenantProvider(t.Context(), "org_replacement") }); err == nil {
 		t.Fatal("provider rebinding was accepted")
 	}
-	if err := db.Close(); err != nil {
+	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openHostedStorage(t, cfg)
-	report, err := db.hostedMetadata(t.Context())
+	service = openHostedStorage(t, cfg)
+	report, err := service.readHostedMetadata(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.ProviderOrganizationID != "org_created" {
 		t.Fatalf("provider organization = %q", report.ProviderOrganizationID)
 	}
-}
-
-func TestHostedDatabaseRejectsExistingContent(t *testing.T) {
-	t.Parallel()
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
-		name      string
-		statement string
-		wantError bool
+		name   string
+		change func(*Config)
 	}{
-		{name: "empty local database"},
-		{name: "extra organization", statement: "INSERT INTO organizations (id, name, created_at) VALUES ('org_other', 'content-sentinel', '2026-09-01T00:00:00Z')", wantError: true},
-		{name: "project", statement: "INSERT INTO projects (organization_id, name, profile, created_at) SELECT id, 'content-sentinel', 'native', '2026-09-01T00:00:00Z' FROM organizations", wantError: true},
-		{name: "session", statement: "INSERT INTO hosted_sessions (token_hash, email, identity_json, expires_at, created_at) VALUES ('hash', 'content-sentinel', '{}', '2026-09-02T00:00:00Z', '2026-09-01T00:00:00Z')", wantError: true},
-		{name: "missing local organization", statement: "UPDATE organizations SET local = 0", wantError: true},
+		{"wrong bootstrap", func(c *Config) { c.Hosted.BootstrapSubject = "user_other" }},
+		{"missing bootstrap", func(c *Config) { c.Hosted.BootstrapSubject = "" }},
+		{"maintenance requires provider", func(c *Config) { c.CredentialMaintenance = true }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := hostedStorageConfig(t)
-			local := cfg
-			local.Hosted = nil
-			db := openHostedStorage(t, local)
-			if test.statement != "" {
-				if _, err := db.db.ExecContext(t.Context(), test.statement); err != nil {
-					t.Fatal(err)
+			changed := cfg
+			hosted := *cfg.Hosted
+			changed.Hosted = &hosted
+			test.change(&changed)
+			reopened, err := Open(t.Context(), changed)
+			if err == nil || reopened != nil {
+				if reopened != nil {
+					reopened.Close()
 				}
-			}
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			bound, err := openDatabase(t.Context(), cfg.normalized())
-			if test.wantError {
-				if !errors.Is(err, ErrHostedDatabaseBinding) || strings.Contains(err.Error(), "content-sentinel") {
-					t.Fatalf("binding error = %v", err)
-				}
-				localDB := openHostedStorage(t, local)
-				var count int
-				if err := localDB.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_tenant").Scan(&count); err != nil {
-					t.Fatal(err)
-				}
-				if count != 0 {
-					t.Fatal("rejected binding persisted a tenant")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer bound.Close()
-			if bound.hostedOrganization != "org_hosted" {
-				t.Fatalf("organization = %q", bound.hostedOrganization)
+				t.Fatalf("untrusted bootstrap reopen = %v, %v", reopened, err)
 			}
 		})
 	}
 }
 
 func TestHostedDatabaseRejectsInvalidBinding(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, field := range []string{"organization", "public URL", "provider without bootstrap"} {
 		t.Run(field, func(t *testing.T) {
 			t.Parallel()
 			cfg := hostedStorageConfig(t)
-			seedHubDatabaseTemplate(t, cfg.DatabasePath)
 			switch field {
 			case "organization":
 				cfg.Hosted.OrganizationID = ""
@@ -252,9 +239,12 @@ func TestHostedDatabaseRejectsInvalidBinding(t *testing.T) {
 			case "provider without bootstrap":
 				cfg.Hosted.WorkOSOrganizationID = ""
 			}
-			db, err := openDatabase(t.Context(), cfg.normalized())
-			if !errors.Is(err, ErrHostedDatabaseBinding) || db != nil {
-				t.Fatalf("database = %v, error = %v", db, err)
+			service, err := Open(t.Context(), cfg)
+			if err == nil || service != nil {
+				if service != nil {
+					service.Close()
+				}
+				t.Fatalf("Service = %v, error = %v", service, err)
 			}
 		})
 	}
@@ -262,32 +252,121 @@ func TestHostedDatabaseRejectsInvalidBinding(t *testing.T) {
 
 func TestHostedDatabaseConstrainsBackgroundWrites(t *testing.T) {
 	t.Parallel()
-	db := openHostedStorage(t, hostedStorageConfig(t))
-	seedProjection(t, db.db)
+	service := openHostedStorage(t, hostedStorageConfig(t))
+	first := service.accessOrganization()
+	second := tracker.OrganizationID("org_other")
+	repository := service.config.TenantRepository
+	now := service.config.now()
+	if err := repository.WriteTenant(t.Context(), second, corestore.Background, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: second, Name: "Other", CreatedAt: now}); err != nil {
+			return err
+		}
+		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: second, ProviderID: "org_other_provider", Deployment: "origin", PublicURL: "https://other.example.test"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, organization := range []tracker.OrganizationID{first, second} {
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_shared", Name: "Example", Profile: "native"}, States: nativeFixtureStates()})
+			if err != nil {
+				return err
+			}
+			if organization == first {
+				record.Settings.Repository, record.Settings.RepositoryEnabled = "owner/repository", true
+				if _, err := w.UpdateProjectRecord(t.Context(), record); err != nil {
+					return err
+				}
+			}
+			state := "Todo"
+			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: record.Core.ID, NativeID: "wi_shared", Number: 1, Revision: 1, Title: "Example", WorkflowStateName: &state, CreatedAt: now, UpdatedAt: now, NativeCreatedAt: now, NativeUpdatedAt: now}); err != nil {
+				return err
+			}
+			return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "machine_shared", Hostname: "example", DisplayName: "Example", Capacity: 1, Version: "test"})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, test := range []struct {
-		name      string
-		statement string
+		name  string
+		write func(tenantstore.Writer) error
 	}{
-		{name: "additional organization", statement: "INSERT INTO organizations (id, name, created_at) VALUES ('org_other', 'Other', '2026-09-01T00:00:00Z')"},
-		{name: "organization reassignment", statement: "UPDATE organizations SET id = 'org_other'"},
-		{name: "repository trigger target", statement: "UPDATE organizations SET local = 0"},
-		{name: "organization removal", statement: "DELETE FROM organizations"},
-		{name: "tenant removal", statement: "DELETE FROM hosted_tenant"},
-		{name: "tenant replacement", statement: "INSERT OR REPLACE INTO hosted_tenant (singleton, organization_id, provider_id, public_url) VALUES (1, 'org_hosted', 'org_replacement', 'https://other.example.test')"},
-		{name: "tenant reassignment", statement: "UPDATE hosted_tenant SET organization_id = 'org_other'"},
-		{name: "host reassignment", statement: "UPDATE hosted_tenant SET public_url = 'https://other.example.test'"},
-		{name: "foreign project", statement: "INSERT INTO projects (id, organization_id, name, profile, created_at) VALUES ('prj_other', 'org_other', 'Other', 'native', '2026-09-01T00:00:00Z')"},
-		{name: "project reassignment", statement: "UPDATE projects SET organization_id = 'org_other'"},
-		{name: "issue reassignment", statement: "UPDATE issues SET organization_id = 'org_other'"},
-		{name: "unscoped machine", statement: "INSERT INTO machines (id, hostname, capacity, version, last_heartbeat_at, registered_at, updated_at) VALUES ('machine', 'host', 1, 'v1', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"},
+		{"foreign organization", func(w tenantstore.Writer) error {
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: second, Name: "Changed", CreatedAt: now})
+		}},
+		{"tenant reassignment", func(w tenantstore.Writer) error {
+			return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: second})
+		}},
+		{"foreign project", func(w tenantstore.Writer) error {
+			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: second, ID: "prj_other", Name: "Changed", Profile: "native"}})
+			return err
+		}},
+		{"project reassignment", func(w tenantstore.Writer) error {
+			record, err := w.ProjectRecord(t.Context(), "prj_shared")
+			if err != nil {
+				return err
+			}
+			record.Core.OrganizationID = second
+			_, err = w.UpdateProjectRecord(t.Context(), record)
+			return err
+		}},
+		{"issue reassignment", func(w tenantstore.Writer) error {
+			row, err := w.WorkItem(t.Context(), "prj_shared", "wi_shared")
+			if err != nil {
+				return err
+			}
+			row.OrganizationID = second
+			_, err = w.UpdateWorkItem(t.Context(), row)
+			return err
+		}},
+		{"foreign machine", func(w tenantstore.Writer) error {
+			return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: second, ID: "machine_other", Hostname: "other", Capacity: 1, Version: "test"})
+		}},
+		{"unscoped machine", func(w tenantstore.Writer) error {
+			return w.RegisterMachine(t.Context(), leasestore.Machine{ID: "machine_unscoped", Hostname: "other", Capacity: 1, Version: "test"})
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := db.db.ExecContext(t.Context(), test.statement); err == nil {
-				t.Fatal("cross-organization write was accepted")
+			if err := repository.WriteTenant(t.Context(), first, corestore.Background, test.write); !errors.Is(err, corestore.ErrTenantMismatch) {
+				t.Fatalf("cross-organization write = %v", err)
 			}
 		})
 	}
-	targets, err := db.reconcileTargets(t.Context())
+	for _, organization := range []tracker.OrganizationID{first, second} {
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			tenant, err := r.AccessTenant(t.Context())
+			if err != nil {
+				return err
+			}
+			if tenant.OrganizationID != organization {
+				t.Fatal("tenant association changed")
+			}
+			record, err := r.ProjectRecord(t.Context(), "prj_shared")
+			if err != nil {
+				return err
+			}
+			if record.Core.OrganizationID != organization || record.Core.Name != "Example" {
+				t.Fatalf("project changed: %+v", record.Core)
+			}
+			issue, err := r.WorkItem(t.Context(), "prj_shared", "wi_shared")
+			if err != nil {
+				return err
+			}
+			if issue.OrganizationID != organization || issue.Title != "Example" {
+				t.Fatalf("issue changed: %+v", issue)
+			}
+			machine, err := r.Machine(t.Context(), "machine_shared")
+			if err != nil {
+				return err
+			}
+			if machine.OrganizationID != organization || machine.Hostname != "example" {
+				t.Fatalf("machine changed: %+v", machine)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	targets, err := service.database.reconcileTargets(t.Context())
 	if err != nil || len(targets) != 1 {
 		t.Fatalf("background reconciliation targets = %d, error = %v", len(targets), err)
 	}
@@ -295,37 +374,60 @@ func TestHostedDatabaseConstrainsBackgroundWrites(t *testing.T) {
 
 func TestHostedMetadataExcludesCustomerContent(t *testing.T) {
 	t.Parallel()
-	db := openHostedStorage(t, hostedStorageConfig(t))
-	_, issueID := seedProjection(t, db.db)
+	expectedActivity := time.Date(2026, 9, 1, 12, 0, 0, 500_000_000, time.UTC)
+	cfg := hostedStorageConfig(t, func(cfg *Config) { cfg.now = func() time.Time { return expectedActivity } })
+	service := openHostedStorage(t, cfg)
+	project := hostedStorageProject(t, service, "prj_metadata")
 	const sentinel = "private-content-credential-sentinel"
-	for _, statement := range []string{
-		"UPDATE issues SET title = ?, body = ?, url = ?",
-		"UPDATE repositories SET github_owner = ?, github_name = ?, config_json = json_object('credential', ?)",
-		"UPDATE api_tokens SET name = ?, token_fingerprint = ?, last_used_at = ?",
-	} {
-		if _, err := db.db.ExecContext(t.Context(), statement, sentinel, sentinel, sentinel); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.db.ExecContext(t.Context(), "INSERT INTO hosted_members (user_id, email, membership_id, role, principal_id, created_at, updated_at) VALUES ('user', ?, 'membership', 'viewer', ?, ?, ?)", sentinel, bootstrapTokenID, testTimestamp, testTimestamp); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.db.ExecContext(t.Context(), "INSERT INTO hosted_sessions (token_hash, email, identity_json, expires_at, created_at) VALUES (?, ?, json_object('credential', ?), '2026-09-03T12:00:00Z', '2026-09-01T12:00:00.5Z')", sentinel, sentinel, sentinel); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.db.ExecContext(t.Context(), `
-INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at)
-SELECT 'event', organization_id, project_id, native_id, 1, 'issue.created', 1, json_object('actor', ?), json_object('body', ?), ?
-FROM issues WHERE id = ?`, sentinel, sentinel, testTimestamp, issueID); err != nil {
-		t.Fatal(err)
-	}
-	report, err := db.hostedMetadata(t.Context())
+	organization := service.accessOrganization()
+	at := expectedActivity.Add(-500 * time.Millisecond)
+	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project.Core.ID, WorkItemID: "wi_metadata", Number: 1, Revision: 1}, State: "Todo", Title: sentinel, Body: sentinel, WebURL: "https://private.example.test/" + sentinel, CreatedAt: at, UpdatedAt: at, LastActivityAt: at}
+	fields, err := service.prepareWorkItemFields(t.Context(), organization, workItemRecordPlan{issue: issue, create: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedActivity := time.Date(2026, 9, 1, 12, 0, 0, 500_000_000, time.UTC)
-	if report.OrganizationID != "org_hosted" || report.ProviderOrganizationID != "org_provider" || report.Members != 1 || report.Projects != 1 || report.Events != 1 || report.Runners != 0 || !report.LastActivity.Equal(expectedActivity) || report.DatabaseBytes <= 0 || !report.Healthy {
+	content := eventstore.NewContent(service.runDetailStore())
+	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: project.Core.ID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: 1}, historyTestJSON(t, issue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := content.PrepareEvent(t.Context(), organization, historyTestJSON(t, tracker.CollaborationEvent{ID: "event_metadata", OrganizationID: organization, ProjectID: project.Core.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, AggregateSequence: 1, Type: "issue.created", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin", DisplayName: sentinel}, Data: tracker.CollaborationData{Reason: sentinel, Revision: 1}, RecordedAt: at}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		project.Settings.Repository = "owner/" + sentinel
+		if _, err := w.UpdateProjectRecord(t.Context(), project); err != nil {
+			return err
+		}
+		if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project.Core.ID, NativeID: issue.WorkItemID, Number: 1, Revision: 1, Title: issue.Title, BodyObjectKey: &fields.Body, WorkflowStateName: &issue.State, CreatedAt: at, UpdatedAt: at, NativeCreatedAt: at, NativeUpdatedAt: at, LastActivityAt: at}); err != nil {
+			return err
+		}
+		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+			return err
+		}
+		if _, err := w.AppendEvent(t.Context(), event); err != nil {
+			return err
+		}
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "metadata_credential", Name: sentinel, Fingerprint: sentinel, Hash: apikey.HashToken(sentinel), Scope: "operator", Kind: "service", CreatedAt: at, UpdatedAt: at, LastUsedAt: &at}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_metadata", Email: sentinel + "@example.test", MembershipID: "membership_metadata", PrincipalID: "test_hub_admin", Role: "viewer", Active: true, CreatedAt: at, UpdatedAt: at}); err != nil {
+			return err
+		}
+		return w.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: organization, Hash: apikey.HashToken("session" + sentinel), Email: sentinel + "@example.test", Subject: "user_metadata", ProviderOrganizationID: "org_provider", SessionID: sentinel, IdentityCreatedAt: at, IdentityExpiresAt: expectedActivity.Add(time.Hour), CreatedAt: expectedActivity, ExpiresAt: expectedActivity.Add(time.Hour)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.readHostedMetadata(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OrganizationID != "org_hosted" || report.ProviderOrganizationID != "org_provider" || report.Members == nil || *report.Members != 1 || report.Projects == nil || *report.Projects != 1 || report.Events == nil || *report.Events != 1 || report.Runners == nil || *report.Runners != 0 || report.LastActivity == nil || !report.LastActivity.Equal(expectedActivity) || !report.Healthy {
 		t.Fatalf("report = %#v", report)
+	}
+	if report.DatabaseBytes != nil || report.CostDrivers.DatabaseBytes != nil || report.CostDrivers.WALBytes != nil || !slices.Contains(report.UnavailableUsage, "database_bytes") || !slices.Contains(report.UnavailableUsage, "wal_bytes") {
+		t.Fatalf("physical storage was fabricated: %#v", report)
 	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
@@ -334,13 +436,12 @@ FROM issues WHERE id = ?`, sentinel, sentinel, testTimestamp, issueID); err != n
 	if strings.Contains(string(encoded), sentinel) || strings.Contains(string(encoded), testHubAdminToken) {
 		t.Fatal("report contains customer content or credentials")
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &fields); err != nil {
+	var fieldsByName map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fieldsByName); err != nil {
 		t.Fatal(err)
 	}
-	allowed := map[string]bool{"organization_id": true, "provider_organization_id": true, "members": true, "projects": true, "runners": true, "events": true, "last_activity": true, "database_bytes": true, "healthy": true}
-	for name := range fields {
-		if !allowed[name] {
+	for name := range fieldsByName {
+		if !slices.Contains([]string{"organization_id", "provider_organization_id", "members", "projects", "runners", "events", "last_activity", "database_bytes", "healthy", "unavailable_usage", "entitlement", "plan_id", "storage_quota_bytes", "event_quota", "cost_drivers"}, name) {
 			t.Fatalf("unapproved report field %q", name)
 		}
 	}
@@ -348,36 +449,25 @@ FROM issues WHERE id = ?`, sentinel, sentinel, testTimestamp, issueID); err != n
 
 func TestHostedMetadataFailsWithoutExposingErrors(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name  string
-		local bool
-		fail  func(*testing.T, *database)
-	}{
-		{name: "local database", local: true},
-		{name: "closed database", fail: func(t *testing.T, d *database) {
-			if err := d.Close(); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "unavailable file", fail: func(t *testing.T, d *database) { d.path = filepath.Join(t.TempDir(), "private-path-sentinel") }},
-		{name: "invalid activity", fail: func(t *testing.T, d *database) {
-			if _, err := d.db.ExecContext(t.Context(), "INSERT INTO hosted_sessions (token_hash, email, identity_json, expires_at, created_at) VALUES ('hash', 'email', '{}', 'expiry', 'private-path-sentinel')"); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
+	for _, name := range []string{"local database", "closed database", "not ready"} {
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			cfg := hostedStorageConfig(t)
-			if test.local {
-				cfg.Hosted = nil
+			service := openHostedStorage(t, hostedStorageConfig(t))
+			readService := &Service{database: service.database, config: service.config}
+			switch name {
+			case "local database":
+				readService.config.Hosted = nil
+			case "closed database":
+				if err := service.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := service.database.postgres.Ping(t.Context()); err == nil {
+					t.Fatal("closed PostgreSQL pool remained available")
+				}
+				readService.ready.Store(true)
 			}
-			db := openHostedStorage(t, cfg)
-			if test.fail != nil {
-				test.fail(t, db)
-			}
-			report, err := db.hostedMetadata(t.Context())
-			if !errors.Is(err, ErrHostedMetadataUnavailable) || report != (HostedMetadata{}) || strings.Contains(err.Error(), "private-path-sentinel") {
+			report, err := readService.readHostedMetadata(t.Context())
+			if err != ErrHostedMetadataUnavailable || !reflect.DeepEqual(report, hostedMetadataResponse{}) || strings.Contains(err.Error(), "private-path-sentinel") {
 				t.Fatalf("report = %#v, error = %v", report, err)
 			}
 		})

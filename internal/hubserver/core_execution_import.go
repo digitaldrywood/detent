@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -8,10 +9,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/diffbody"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -22,11 +29,13 @@ import (
 )
 
 type CoreExecutionImportSource struct {
-	BundlePath     string
-	CopyPath       string
-	OrganizationID tracker.OrganizationID
-	SourceObjects  attachment.DetailStore
-	Objects        attachment.DetailStore
+	BundlePath       string
+	CopyPath         string
+	OrganizationID   tracker.OrganizationID
+	SourceObjects    attachment.DetailStore
+	SourceDiffBodies attachment.Storage
+	DiffBodies       attachment.Storage
+	Objects          attachment.DetailStore
 }
 
 type coreMachineImportRow struct {
@@ -42,6 +51,7 @@ type coreLeaseImportRow struct {
 }
 
 type coreAttemptImportRow struct {
+	Project          tracker.ProjectID `json:"-"`
 	Attempt          leasestore.Attempt
 	Payload          string
 	Checkpoint       sql.NullString
@@ -81,7 +91,7 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 	content := eventstore.NewContent(source.Objects)
 	var imported int64
 	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
-		if err := postgres.ValidateNeutralCoreImportTables(bundle, "issues", "leases", "machines", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "api_tokens", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "native_attempts", "native_attempt_events", "work_events", "change_content_objects", "attachments"); err != nil {
+		if err := postgres.ValidateNeutralCoreImportTables(bundle, "issues", "leases", "machines", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "api_tokens", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "native_attempts", "native_attempt_events", "work_events", "change_content_objects", "attachments", "attempt_diffs", "attempt_diff_files", "attempt_diff_file_archives"); err != nil {
 			return err
 		}
 		tx := newCoreNeutralImport(bundle)
@@ -225,6 +235,12 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 				return err
 			}
 		}
+
+		diffs, err := importCoreExecutionDiffs(ctx, tx, target, content, source, copyHash)
+		if err != nil {
+			return err
+		}
+		imported += diffs
 
 		workEvents, err := readCoreWorkEventImportPage(ctx, tx, source.OrganizationID, 0)
 		if err != nil {
@@ -682,6 +698,7 @@ func readCoreAttemptImportPage(ctx context.Context, tx *coreNeutralImport, organ
 		if err := raw.Decode(map[string]any{"project_id": &project, "work_item_id": &item}); err != nil {
 			return nil, err
 		}
+		row.Project = tracker.ProjectID(project)
 		issue, err := tx.one(ctx, "issues", map[string]string{"organization_id": string(organization), "project_id": project, "native_id": item}, []string{"id"})
 		if err != nil {
 			return nil, err
@@ -720,6 +737,10 @@ func prepareCoreExecutionReceipt[T any](ctx context.Context, content *eventstore
 
 func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, content *eventstore.Content, source CoreExecutionImportSource, copyHash string, row coreAttemptImportRow) (postgres.CoreAttemptImport, error) {
 	attempt := row.Attempt
+	var checkpointDetails []attachmentstore.ArchiveRecord
+	var checkpointObjects []attachment.ArchiveReference
+	var checkpointReference attachment.ArchiveReference
+	var artifactsReference attachment.ArchiveReference
 	payload := []byte(row.Payload)
 	if row.PayloadObject.Valid && row.PayloadObject.String != "" {
 		var err error
@@ -735,6 +756,25 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, con
 	if err := json.Unmarshal(payload, &run); err != nil || run.AttemptID != attempt.ID || string(run.LeaseID) != attempt.LeaseID || int64(run.FencingToken) != attempt.FencingToken || run.RunID != attempt.RunID || run.Sequence != attempt.Sequence {
 		return postgres.CoreAttemptImport{}, eventstore.ErrInvalidRecord
 	}
+	var artifactIDs []string
+	if err := json.Unmarshal([]byte(row.ArtifactIDs), &artifactIDs); err != nil {
+		return postgres.CoreAttemptImport{}, eventstore.ErrInvalidRecord
+	}
+	if !sameStringSlice(artifactIDs, run.ArtifactIDs) {
+		if len(run.ArtifactIDs) != 0 {
+			return postgres.CoreAttemptImport{}, eventstore.ErrInvalidRecord
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &fields); err != nil {
+			return postgres.CoreAttemptImport{}, eventstore.ErrInvalidRecord
+		}
+		fields["artifact_ids"] = json.RawMessage(row.ArtifactIDs)
+		var err error
+		payload, err = json.Marshal(fields)
+		if err != nil {
+			return postgres.CoreAttemptImport{}, eventstore.ErrInvalidRecord
+		}
+	}
 	payloadRef, err := verifiedCoreImportObject(ctx, source.Objects, source.OrganizationID, payload)
 	if err != nil {
 		return postgres.CoreAttemptImport{}, err
@@ -745,6 +785,12 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, con
 		}
 		attempt.LocalAttemptID = run.Runtime.LocalAttemptID
 		attempt.LocalAttemptIDRecorded = attempt.LocalAttemptID > 0
+	}
+	attempt.WorkerCleanupRequired = new(nativeRunCleanupRequired(run))
+	attempt.RuntimeSummarySequence = attempt.Sequence
+	if run.Runtime != nil {
+		heartbeat := run.Runtime.HeartbeatAt
+		attempt.RuntimeHeartbeatAt = &heartbeat
 	}
 	attempt.PayloadObjectKey = payloadRef.Key
 	if row.Checkpoint.Valid && row.Checkpoint.String != "" && row.Checkpoint.String != "null" || row.CheckpointObject.Valid && row.CheckpointObject.String != "" {
@@ -763,13 +809,48 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, con
 			return postgres.CoreAttemptImport{}, err
 		}
 		attempt.CheckpointObjectKey = &ref.Key
-	}
-	if row.ArtifactIDs == "" || !json.Valid([]byte(row.ArtifactIDs)) {
-		return postgres.CoreAttemptImport{}, eventstore.ErrInvalidRecord
-	}
-	var artifactIDs []string
-	if err := json.Unmarshal([]byte(row.ArtifactIDs), &artifactIDs); err != nil || !sameStringSlice(artifactIDs, run.ArtifactIDs) {
-		return postgres.CoreAttemptImport{}, eventstore.ErrInvalidRecord
+		checkpointReference = ref
+		decoded, decodeErr := decodeAttemptCheckpoint(ctx, attempt, checkpoint, func(ctx context.Context, detail *runDetailReference) ([]byte, error) {
+			key := detail.ObjectKey
+			var uploader string
+			if key == "" {
+				metadata, err := tx.one(ctx, "attachments", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(row.Project), "id": detail.AttachmentID, "kind": "archive", "customer_owned": "0", "storage_binding_id": ""}, []string{"id"})
+				if err != nil {
+					return nil, err
+				}
+				if err := metadata.Decode(map[string]any{"object_key": &key, "uploader": &uploader}); err != nil {
+					return nil, err
+				}
+				if uploader == "" {
+					return nil, eventstore.ErrInvalidRecord
+				}
+			}
+			raw, err := readCoreExecutionObject(ctx, tx, source, key)
+			if err != nil {
+				return nil, err
+			}
+			copied, err := verifiedCoreImportObject(ctx, source.Objects, source.OrganizationID, raw)
+			if err != nil {
+				return nil, err
+			}
+			if copied.Key != key {
+				return nil, eventstore.ErrInvalidRecord
+			}
+			if uploader == "" {
+				checkpointObjects = append(checkpointObjects, copied)
+				return raw, nil
+			}
+			checkpointDetails = append(checkpointDetails, attachmentstore.ArchiveRecord{OrganizationID: source.OrganizationID, ProjectID: row.Project, ID: detail.AttachmentID, Uploader: uploader, Reference: copied, CreatedAt: attempt.StartedAt})
+			return raw, nil
+		})
+		if decodeErr == nil {
+			attempt.CheckpointPreservesSource = new(decoded.PreservesSource())
+		} else {
+			checkpointDetails, checkpointObjects = nil, nil
+			if ctx.Err() != nil {
+				return postgres.CoreAttemptImport{}, ctx.Err()
+			}
+		}
 	}
 	if len(artifactIDs) != 0 {
 		ref, err := verifiedCoreImportObject(ctx, source.Objects, source.OrganizationID, []byte(row.ArtifactIDs))
@@ -777,12 +858,13 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, con
 			return postgres.CoreAttemptImport{}, err
 		}
 		attempt.ArtifactsObjectKey = &ref.Key
+		artifactsReference = ref
 	}
 	receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-attempt", attempt.ID, row)
 	if err != nil {
 		return postgres.CoreAttemptImport{}, err
 	}
-	return postgres.CoreAttemptImport{Attempt: attempt, Receipt: receipt}, nil
+	return postgres.CoreAttemptImport{CleanupRunnerID: run.RunnerID, CleanupMachineID: string(run.MachineID), Attempt: attempt, Receipt: receipt, CheckpointDetails: checkpointDetails, CheckpointObjects: checkpointObjects, CheckpointReference: checkpointReference, PayloadReference: payloadRef, ArtifactsReference: artifactsReference}, nil
 }
 
 func importCoreAttemptEvents(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, organization tracker.OrganizationID, attempt leasestore.Attempt) error {
@@ -832,4 +914,207 @@ func sameStringSlice(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+func importCoreExecutionDiffs(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, source CoreExecutionImportSource, copyHash string) (int64, error) {
+	var imported int64
+	err := tx.each(ctx, "attempt_diffs", map[string]string{"organization_id": string(source.OrganizationID)}, []string{"id"}, func(raw postgres.NeutralImportRow) error {
+		var diff leasestore.AttemptDiff
+		var created string
+		ref := contentReference()
+		diff.OrganizationID = source.OrganizationID
+		if err := raw.Decode(map[string]any{"id": &diff.ID, "attempt_id": &diff.AttemptID, "project_id": &diff.ProjectID, "work_item_id": &diff.WorkItemID, "source": &diff.Generation.Source, "source_id": &diff.Generation.ID, "seq": &diff.Generation.Seq, "base_sha": &diff.BaseSHA, "head_sha": &diff.HeadSHA, "producer_kind": &diff.Producer.Kind, "producer_id": &diff.Producer.ID, "producer_runner_id": &diff.Producer.RunnerID, "producer_lease_id": &diff.Producer.LeaseID, "producer_fencing_token": &diff.Producer.FencingToken, "file_count": &diff.FileCount, "patch_bytes": &diff.PatchBytes, "posted_bytes": &diff.PostedBytes, "truncated": &diff.Truncated, "manifest_expired": &diff.ManifestExpired, "created_at": &created, "object_key": &ref.Key, "object_sha256": &ref.SHA256, "object_bytes": &ref.CompressedSize, "content_bytes": &ref.UncompressedSize}); err != nil {
+			return err
+		}
+		var err error
+		diff.CreatedAt, err = parseCoreExecutionTime(created)
+		if err != nil {
+			return err
+		}
+		item, err := tx.one(ctx, "issues", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(diff.ProjectID), "native_id": string(diff.WorkItemID)}, []string{"id"})
+		if err != nil {
+			return err
+		}
+		if err := item.Decode(map[string]any{"id": &diff.IssueID}); err != nil {
+			return err
+		}
+		files, err := readCoreExecutionDiffFiles(ctx, tx, source, diff, ref)
+		if err != nil {
+			return fmt.Errorf("read historical diff files: %w", err)
+		}
+		if len(files) != diff.FileCount || len(files) > tracker.MaxDiffFiles || tracker.ValidateDiffFiles(files) != nil {
+			return artifact.ErrIntegrity
+		}
+		keys := []string{}
+		for position := range files {
+			file := &files[position]
+			if file.PatchExpired || diff.ManifestExpired {
+				if file.PatchBody != nil {
+					file.PatchBody = nil
+					file.PatchExpired = true
+				}
+				continue
+			}
+			if file.PatchBody == nil {
+				continue
+			}
+			if file.Patch != "" || file.PatchBody.Validate(string(source.OrganizationID), string(diff.ProjectID), tracker.MaxDiffPatchBytes) != nil {
+				return artifact.ErrIntegrity
+			}
+			expected := diffbody.New(string(source.OrganizationID), string(diff.ProjectID), diff.ID, position, "")
+			parts := strings.Split(file.PatchBody.Key, "/")
+			if len(parts) != 7 || parts[4] != diff.ID || parts[5] != strconv.Itoa(position) || strings.Join(parts[:6], "/") != expected.Key[:strings.LastIndex(expected.Key, "/")] {
+				return artifact.ErrIntegrity
+			}
+			if err := copyCoreExecutionDiffBody(ctx, source, *file.PatchBody); err != nil {
+				return err
+			}
+			keys = append(keys, file.PatchBody.Key)
+		}
+		manifest, err := json.Marshal(files)
+		if err != nil {
+			return err
+		}
+		published, err := content.PreparePayload(ctx, source.OrganizationID, manifest)
+		if err != nil {
+			return err
+		}
+		diff.ArchiveID = "core_diff_" + artifact.Digest([]byte(string(source.OrganizationID) + "\n" + diff.ID + "\n" + published.Key))[:32]
+		archive := artifactstore.ArchiveObject{OrganizationID: source.OrganizationID, ID: diff.ArchiveID, Reference: published, CreatedAt: diff.CreatedAt}
+		receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-attempt-diff", diff.ID, struct {
+			Diff      leasestore.AttemptDiff
+			Reference attachment.ArchiveReference
+			BodyKeys  []string
+		}{diff, published, keys})
+		if err != nil {
+			return err
+		}
+		if err := target.ImportCoreAttemptDiff(ctx, postgres.CoreAttemptDiffImport{Diff: diff, Archive: archive, BodyKeys: keys, Receipt: receipt}); err != nil {
+			return fmt.Errorf("import historical diff: %w", err)
+		}
+		imported++
+		return nil
+	})
+	return imported, err
+}
+
+func readCoreExecutionDiffFiles(ctx context.Context, tx *coreNeutralImport, source CoreExecutionImportSource, diff leasestore.AttemptDiff, manifest attachment.ArchiveReference) ([]tracker.AttemptDiffFile, error) {
+	if manifest.Key != "" {
+		if manifest.Validate(string(source.OrganizationID)) != nil {
+			return nil, artifact.ErrIntegrity
+		}
+		data, err := source.SourceObjects.ReadDetail(ctx, string(source.OrganizationID), manifest)
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(data)) != manifest.UncompressedSize {
+			return nil, artifact.ErrIntegrity
+		}
+		var files []tracker.AttemptDiffFile
+		if err := json.Unmarshal(data, &files); err != nil {
+			return nil, err
+		}
+		return files, nil
+	}
+	positions := map[int]tracker.AttemptDiffFile{}
+	err := tx.each(ctx, "attempt_diff_files", map[string]string{"diff_id": diff.ID}, []string{"position"}, func(raw postgres.NeutralImportRow) error {
+		position := 0
+		var file tracker.AttemptDiffFile
+		var body diffbody.Reference
+		if err := raw.Decode(map[string]any{"position": &position, "path": &file.Path, "old_path": &file.OldPath, "status": &file.Status, "additions": &file.Additions, "deletions": &file.Deletions, "binary": &file.Binary, "patch": &file.Patch, "truncated": &file.Truncated, "denied": &file.Denied, "patch_object": &body.Key, "patch_sha256": &body.SHA256, "patch_size": &body.Bytes, "patch_expired": &file.PatchExpired}); err != nil {
+			return err
+		}
+		if position < 0 || position >= tracker.MaxDiffFiles {
+			return artifact.ErrIntegrity
+		}
+		if _, exists := positions[position]; exists {
+			return artifact.ErrIntegrity
+		}
+		if body.Key != "" && !file.PatchExpired {
+			file.PatchBody = &body
+		}
+		positions[position] = file
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	err = tx.each(ctx, "attempt_diff_file_archives", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(diff.ProjectID), "diff_id": diff.ID}, []string{"position"}, func(raw postgres.NeutralImportRow) error {
+		position := 0
+		ref := contentReference()
+		if err := raw.Decode(map[string]any{"position": &position, "object_key": &ref.Key, "object_sha256": &ref.SHA256, "object_bytes": &ref.CompressedSize, "content_bytes": &ref.UncompressedSize}); err != nil {
+			return err
+		}
+		if position < 0 || position >= tracker.MaxDiffFiles || ref.Validate(string(source.OrganizationID)) != nil {
+			return artifact.ErrIntegrity
+		}
+		if _, exists := positions[position]; exists {
+			return artifact.ErrIntegrity
+		}
+		data, err := source.SourceObjects.ReadDetail(ctx, string(source.OrganizationID), ref)
+		if err != nil {
+			return err
+		}
+		if int64(len(data)) != ref.UncompressedSize {
+			return artifact.ErrIntegrity
+		}
+		var stored struct {
+			DiffID   string                  `json:"diff_id"`
+			Position int                     `json:"position"`
+			File     tracker.AttemptDiffFile `json:"file"`
+		}
+		if err := json.Unmarshal(data, &stored); err != nil {
+			return err
+		}
+		if stored.DiffID != diff.ID || stored.Position != position {
+			return artifact.ErrIntegrity
+		}
+		positions[position] = stored.File
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(positions) != diff.FileCount {
+		return nil, artifact.ErrIntegrity
+	}
+	files := make([]tracker.AttemptDiffFile, len(positions))
+	for position := range files {
+		file, exists := positions[position]
+		if !exists {
+			return nil, artifact.ErrIntegrity
+		}
+		files[position] = file
+	}
+	return files, nil
+}
+
+func copyCoreExecutionDiffBody(ctx context.Context, source CoreExecutionImportSource, ref diffbody.Reference) error {
+	if source.SourceDiffBodies == nil || source.DiffBodies == nil {
+		return artifact.ErrStorage
+	}
+	read := func(store attachment.Storage) ([]byte, error) {
+		body, err := store.Open(ctx, ref.Key)
+		if err != nil {
+			return nil, err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(body, ref.Bytes+1))
+		closeErr := body.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return nil, err
+		}
+		if int64(len(data)) != ref.Bytes || artifact.Digest(data) != ref.SHA256 {
+			return nil, artifact.ErrIntegrity
+		}
+		return data, nil
+	}
+	data, err := read(source.SourceDiffBodies)
+	if err != nil {
+		return err
+	}
+	if err := source.DiffBodies.Put(ctx, ref.Key, bytes.NewReader(data), ref.Bytes, "text/plain", ref.SHA256); err != nil {
+		return err
+	}
+	_, err = read(source.DiffBodies)
+	return err
 }

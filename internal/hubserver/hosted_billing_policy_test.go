@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -12,7 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -62,9 +68,37 @@ func TestHostedBillingDowngradePreservesGrantsAndData(t *testing.T) {
 			if test.grant && !strings.Contains(page, "Complimentary access") {
 				t.Fatal("billing hid the independent grant")
 			}
-			var projects int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects").Scan(&projects); err != nil || projects < 3 {
-				t.Fatalf("downgrade removed project data: %d %v", projects, err)
+			var projects int64
+			var complete bool
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+				reader, ok := r.(billingstore.PopulationReader)
+				if !ok {
+					return ErrBillingUsageUnavailable
+				}
+				var err error
+				projects, complete, err = reader.BillingPopulation(t.Context(), "projects", f.service.config.now(), time.Minute)
+				if err != nil {
+					return err
+				}
+				retained, err := r.Project(t.Context(), tracker.ProjectID(project))
+				if err != nil {
+					return err
+				}
+				if retained.DeletedAt != nil {
+					return fmt.Errorf("paid project was deleted during downgrade")
+				}
+				if test.grant {
+					grant, err := r.BillingGrant(t.Context(), "complimentary_fixture")
+					if err != nil {
+						return err
+					}
+					if grant.RevokedAt != nil || grant.Plan != (billingstore.PlanReference{ID: "test_paid", Version: 1}) || !slices.Equal(grant.Scope, []string{"projects"}) {
+						return fmt.Errorf("downgrade changed independent complimentary grant")
+					}
+				}
+				return nil
+			}); err != nil || !complete || projects < 3 {
+				t.Fatalf("downgrade removed project data: %d complete=%t error=%v", projects, complete, err)
 			}
 			entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
 			if err != nil || entitlement.Source != "base" {
@@ -81,9 +115,11 @@ func TestHostedBillingPreservesRunningLease(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	plans := hostedTestPlans(t, f.service, nil)
-	plans.Plans[0].Version++
-	plans.Plans[0].Features = slices.DeleteFunc(slices.Clone(plans.Plans[0].Features), func(feature string) bool { return feature == "native_execution" })
-	plans.Base = plans.Plans[0].PlanReference
+	free := plans.Plans[0]
+	free.Version++
+	free.Features = slices.DeleteFunc(slices.Clone(free.Features), func(feature string) bool { return feature == "native_execution" })
+	plans.Plans = append(plans.Plans, free)
+	plans.Base = free.PlanReference
 	hosted := *f.service.config.Hosted
 	hosted.Plans = &plans
 	if err := f.service.database.configureHostedPlans(t.Context(), &hosted); err != nil {
@@ -103,20 +139,15 @@ func TestHostedBillingPreservesRunningLease(t *testing.T) {
 	if err := f.service.database.commitHostedBilling(t.Context(), paid, 0, nil, now); err != nil {
 		t.Fatal(err)
 	}
-	requests := make([]tracker.ClaimRequest, 2)
+	work := newNativeFixture(t, f.service, f.service.accessOrganization(), "billing-lease-work")
+	approveHubTestPolicy(t, f.service, work.base+"/policy", hubTestPolicy())
+	requests := make([]tracker.NativeClaim, 2)
+	tokens := make([]string, 2)
 	for i := range 2 {
-		item := f.seedIssue(t, i+1)
-		var id tracker.WorkItemID
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id=?", item).Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		machine := tracker.MachineID(fmt.Sprintf("billing_machine_%d", i))
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO machines(id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id,token_id) VALUES(?,?,?,1,'test',?,?,?,'org_security','bootstrap-admin')`, machine, machine, machine, formatHubTime(now), formatHubTime(now), formatHubTime(now)); err != nil {
-			t.Fatal(err)
-		}
-		requests[i] = tracker.ClaimRequest{WorkItemID: id, MachineID: machine, SessionID: fmt.Sprintf("billing_session_%d", i), TTL: time.Minute}
+		issue := work.create(t, fmt.Sprintf("Billing work %d", i))
+		tokens[i], requests[i] = hostedPlanWorkRequest(t, work, issue, fmt.Sprintf("billing_session_%d", i))
 	}
-	lease, err := f.service.Tracker().Claim(t.Context(), requests[0])
+	lease, err := claimHostedPlanWork(t, work, tokens[0], requests[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,14 +155,26 @@ func TestHostedBillingPreservesRunningLease(t *testing.T) {
 	if err := f.service.database.commitHostedBilling(t.Context(), canceled, 0, nil, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.Tracker().Renew(t.Context(), tracker.RenewRequest{LeaseID: lease.ID, FencingToken: lease.FencingToken, TTL: time.Minute}); err != nil {
-		t.Fatalf("billing cancellation blocked running work: %v", err)
+	replay, err := claimHostedPlanWork(t, work, tokens[0], requests[0])
+	if err != nil || replay.ID != lease.ID || replay.FencingToken != lease.FencingToken {
+		t.Fatalf("billing cancellation blocked owned claim replay: %+v %v", replay, err)
 	}
-	if _, err := f.service.Tracker().Claim(t.Context(), requests[1]); err == nil {
-		t.Fatal("new excess dispatch bypassed cancellation")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, work.base+"/leases/"+string(lease.ID)+"/renew", tokens[0], tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 60})
+	if response.Code != http.StatusOK {
+		t.Fatalf("billing cancellation blocked running work: %d %s", response.Code, response.Body.String())
 	}
-	if err := f.service.Tracker().Release(t.Context(), tracker.ReleaseRequest{LeaseID: lease.ID, FencingToken: lease.FencingToken, Reason: "completed"}); err != nil {
-		t.Fatalf("safe release failed: %v", err)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, work.base+"/claims", tokens[1], requests[1])
+	requireNativeCode(t, response, http.StatusTooManyRequests, "allowance_exhausted")
+	var refused struct {
+		Resource string `json:"resource"`
+	}
+	decodeHubResponse(t, response, &refused)
+	if refused.Resource != "native_execution" {
+		t.Fatalf("new dispatch refused for unrelated reason: %s", response.Body.String())
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodPost, work.base+"/leases/"+string(lease.ID)+"/release", tokens[0], tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"})
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("safe release failed: %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -217,12 +260,17 @@ func TestHostedBillingCommitIsAtomic(t *testing.T) {
 	t.Parallel()
 	f, p := newHostedBillingFixture(t)
 	requireNativeStatus(t, postBillingEvent(t, f, "evt_atomic", "invoice.paid", true), http.StatusOK)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_billing_ack BEFORE UPDATE ON hosted_billing_events BEGIN SELECT RAISE(ABORT,'fixture acknowledgment failure'); END`); err != nil {
+	admin := hostedPostgresAdmin(t, f.service)
+	if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION reject_billing_ack() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.organization_id=TG_ARGV[0] AND OLD.event_id=TG_ARGV[1] THEN RAISE EXCEPTION 'fixture acknowledgment failure' USING ERRCODE='23514'; END IF; RETURN NEW; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `CREATE TRIGGER reject_billing_ack BEFORE UPDATE OF processed_at ON hosted_billing_events FOR EACH ROW EXECUTE FUNCTION reject_billing_ack('org_browser_preview','evt_atomic')`); err != nil {
 		t.Fatal(err)
 	}
 	p.snapshot = activeBillingSnapshot(time.Now())
-	if err := f.service.billing.reconcile(t.Context()); err == nil {
-		t.Fatal("failed acknowledgment committed")
+	var acknowledgment *pgconn.PgError
+	if err := f.service.billing.reconcile(t.Context()); !errors.As(err, &acknowledgment) || acknowledgment.Code != "23514" || acknowledgment.Message != "fixture acknowledgment failure" {
+		t.Fatalf("failed acknowledgment committed or fault was not reached: %v", err)
 	}
 	state, err := f.service.database.readHostedBilling(t.Context())
 	if err != nil || state.Status != "free" {
@@ -232,9 +280,23 @@ func TestHostedBillingCommitIsAtomic(t *testing.T) {
 	if err != nil || entitlement.Source != "base" {
 		t.Fatal("entitlement partially committed")
 	}
-	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_audit").Scan(&count); err != nil || count != 0 {
-		t.Fatalf("audit partially committed: %d %v", count, err)
+	var audits []billingstore.Audit
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		audits, err = r.BillingAudits(t.Context(), 0, 1)
+		if err != nil {
+			return err
+		}
+		event, err := r.BillingEvent(t.Context(), "evt_atomic")
+		if err != nil {
+			return err
+		}
+		if event.ProcessedAt != nil {
+			return fmt.Errorf("failed acknowledgment marked event processed")
+		}
+		return nil
+	}); err != nil || len(audits) != 0 {
+		t.Fatalf("audit partially committed: %d %v", len(audits), err)
 	}
 }
 
@@ -257,6 +319,7 @@ func TestHostedBillingWorkerShutdown(t *testing.T) {
 	}
 	p := &blockingHostedBillingProvider{started: make(chan struct{})}
 	cfg := f.service.config
+	cfg.TenantRepository, cfg.AccessRepository, cfg.BillingRepository = nil, nil, nil
 	cfg.Hosted.Billing.Provider = p
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
@@ -312,7 +375,14 @@ func TestHostedBillingPageStates(t *testing.T) {
 			}
 			if test.name == "complimentary base" {
 				price := f.service.config.Hosted.Billing.Prices[0]
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plans SET record_json=json_set(record_json,'$.monthly_usd_cents',1200) WHERE id=? AND version=?", price.Plan.ID, price.Plan.Version); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+					plan, err := w.BillingPlan(t.Context(), billingstore.PlanReference{ID: price.Plan.ID, Version: price.Plan.Version})
+					if err != nil {
+						return err
+					}
+					plan.MonthlyUSDCents = new(int64(1200))
+					return w.ReplaceBillingPlan(t.Context(), plan)
+				}); err != nil {
 					t.Fatal(err)
 				}
 				if label := f.service.hostedPriceLabel(t.Context(), price); label == price.Label {

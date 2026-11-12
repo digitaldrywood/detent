@@ -14,7 +14,7 @@ INSERT INTO project_slugs(organization_id,slug,project_id) VALUES($1,$2,$3)
 ON CONFLICT(organization_id,slug) DO UPDATE SET project_id=EXCLUDED.project_id WHERE project_slugs.project_id=EXCLUDED.project_id;
 
 -- name: CreateProjectSettings :exec
-INSERT INTO project_settings(organization_id,project_id) VALUES($1,$2);
+INSERT INTO project_settings(organization_id,project_id,aging_enabled,archive_completed_after_days,archive_cancelled_after_days) VALUES($1,$2,false,30,7);
 
 -- name: UpdateProjectSettings :one
 UPDATE project_settings SET revision=revision+1,intake=sqlc.arg(intake),projection=sqlc.arg(projection),repository_enabled=sqlc.arg(repository_enabled),repository=sqlc.arg(repository),checkout_repository=sqlc.arg(checkout_repository),aging_enabled=sqlc.arg(aging_enabled),duplicate_challenge=sqlc.arg(duplicate_challenge),archive_completed_after_days=sqlc.narg(archive_completed_after_days),archive_cancelled_after_days=sqlc.narg(archive_cancelled_after_days),workflow_key=sqlc.arg(workflow_key),workflow_sha256=sqlc.arg(workflow_sha256),workflow_bytes=sqlc.arg(workflow_bytes),workflow_content_bytes=sqlc.arg(workflow_content_bytes)

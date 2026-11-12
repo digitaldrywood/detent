@@ -33,6 +33,7 @@ type workItemDuplicateLink struct {
 	issue     tracker.NativeIssue
 	version   eventstore.CollaborationVersion
 	event     eventstore.Event
+	bytes     int64
 }
 
 func duplicateContentHash(request tracker.CreateIssue) (string, error) {
@@ -248,7 +249,7 @@ func (s *Service) validateWorkItemChallengeReplay(ctx context.Context, scope nat
 			return err
 		}
 		if err := lockWorkItemDuplicateSource(ctx, w, scope.project, challenge.SourceSequence); err != nil {
-			if errors.Is(err, searchstore.ErrIndexPending) {
+			if errors.Is(err, searchstore.ErrIndexPending) || errors.Is(err, corestore.ErrRevisionConflict) {
 				return nativeConflict(0)
 			}
 			return err
@@ -329,7 +330,11 @@ func (s *Service) prepareWorkItemDuplicateLinks(ctx context.Context, scope nativ
 		if err != nil {
 			return nil, err
 		}
-		links = append(links, workItemDuplicateLink{candidate: candidate, issue: issue, version: version, event: event})
+		eventBytes, err := collaborationEventChargeBytes(eventRaw)
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, workItemDuplicateLink{candidate: candidate, issue: issue, version: version, event: event, bytes: int64(len(raw)) + eventBytes})
 	}
 	return links, nil
 }
@@ -524,11 +529,7 @@ func lockWorkItemDuplicateSource(ctx context.Context, w tenantstore.Writer, proj
 	if !ok {
 		return workItemStorageUnavailable()
 	}
-	err := writer.LockDuplicateSource(ctx, project, sequence)
-	if errors.Is(err, corestore.ErrRevisionConflict) {
-		return nativeConflict(0)
-	}
-	return err
+	return writer.LockDuplicateSource(ctx, project, sequence)
 }
 
 type workItemMachinePriority struct {

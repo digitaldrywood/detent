@@ -111,25 +111,26 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 		if err != nil {
 			return err
 		}
+		limit, err := s.attachmentQuotaLimit(ctx, w)
+		if err != nil {
+			return err
+		}
+		if err := w.LockArchiveAccounting(ctx); err != nil {
+			return err
+		}
 		object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: archiveID, Reference: ref, CreatedAt: now})
 		if err != nil {
 			return err
 		}
-		if object.ID == archiveID {
-			limit, err := s.attachmentQuotaLimit(ctx, w)
-			if err != nil {
-				return err
-			}
-			usage, err := w.AdjustCollaborationBytes(ctx, ref.CompressedSize, limit)
-			if errors.Is(err, corestore.ErrNotFound) {
-				return attachmentAccountingUnavailable()
-			}
-			if err != nil {
-				return err
-			}
-			if !usage.Allowed {
-				return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
-			}
+		usage, err := w.ChargeArchiveObject(ctx, object.ID, limit)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return attachmentAccountingUnavailable()
+		}
+		if err != nil {
+			return err
+		}
+		if !usage.Allowed {
+			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 		}
 		if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.organization, ArchiveID: object.ID, Kind: "attempt-diff", ID: diffID, CreatedAt: now}); err != nil {
 			return err

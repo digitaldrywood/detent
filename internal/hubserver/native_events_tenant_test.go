@@ -36,18 +36,15 @@ type nativeRunEventParticipantFixture struct {
 	lease  int
 }
 
-func withClosedSQLite(t *testing.T, service *Service, organization tracker.OrganizationID, call func() error) error {
+func withSuppressedSpriteWake(t *testing.T, service *Service, organization tracker.OrganizationID, call func() error) error {
 	t.Helper()
-	reader := service.database.reader
 	startSpritePool := service.startSpritePoolForQueue
 	key := spriteWakeKey{organization: organization}
-	service.database.reader = nil
 	service.startSpritePoolForQueue = func(nativeScope) {}
 	service.spriteWakeMu.Lock()
 	service.spriteWakes[key] = &spriteLifecyclePass{}
 	service.spriteWakeMu.Unlock()
 	defer func() {
-		service.database.reader = reader
 		service.startSpritePoolForQueue = startSpritePool
 		service.spriteWakeMu.Lock()
 		delete(service.spriteWakes, key)
@@ -250,7 +247,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := withClosedSQLite(t, service, organization.ID, func() error {
+	if err := withSuppressedSpriteWake(t, service, organization.ID, func() error {
 		_, err := service.appendNativeRunEventTenant(t.Context(), scope, string(issue.WorkItemID), finish)
 		return err
 	}); err != nil {
@@ -479,12 +476,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	if _, err := service.readNativeAttemptPageTenant(t.Context(), reporterScope, string(secondIssue.WorkItemID), url.Values{"limit": {"200"}}, json.Marshal); err != nil {
 		t.Fatalf("reporter-owned attempt page: %v", err)
 	}
-	originalDB, originalReader := service.database.db, service.database.reader
-	service.database.db, service.database.reader = nil, nil
 	func() {
-		defer func() {
-			service.database.db, service.database.reader = originalDB, originalReader
-		}()
 		attemptsPath := itemPath + "/" + string(secondIssue.WorkItemID) + "/attempts?view=detail"
 		response := performHubAPIRequest(t, service, http.MethodGet, attemptsPath, testHubAdminToken, nil)
 		requireNativeStatus(t, response, http.StatusOK)
@@ -705,7 +697,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	var cancelRelease *httptest.ResponseRecorder
 	originalNow := service.config.now
 	service.config.now = func() time.Time { return thirdLease.RenewedAt.Add(-time.Second) }
-	err = withClosedSQLite(t, service, organization.ID, func() error {
+	err = withSuppressedSpriteWake(t, service, organization.ID, func() error {
 		var err error
 		cancelRelease, err = callCancelRelease()
 		return err
@@ -907,7 +899,7 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 					var issue tracker.NativeIssue
 					decodeHubResponse(t, response, &issue)
 					path := base + "/work-items/" + string(issue.WorkItemID)
-					claim := tracker.NativeClaim{PolicyID: policy.PolicyID, WorkItemID: issue.WorkItemID, MachineID: binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+					claim := tracker.NativeClaim{PolicyID: policy.PolicyID, WorkItemID: issue.WorkItemID, MachineID: binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 					response = performHubAPIRequest(t, service, http.MethodPost, base+"/claims", token, claim)
 					requireNativeStatus(t, response, http.StatusOK)
 					var lease tracker.NativeLease

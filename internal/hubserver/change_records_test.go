@@ -704,7 +704,7 @@ func newChangePolicyPostgresTenantFixture(t *testing.T, repository tenantstore.R
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", CreatedAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "org_provider"}); err != nil {
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "org_provider", BootstrapSubject: "user_owner", Deployment: "origin", PublicURL: "http://127.0.0.1:7777"}); err != nil {
 			return err
 		}
 		project := projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()}
@@ -826,7 +826,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 }
 
 func TestChangeVersionRecordPublishesRunningSource(t *testing.T) {
-	for _, mode := range []string{"current", "audit", "default approval", "default revert", "atomic rollback", "concurrent pin", "imported approval", "imported observation", "pinned"} {
+	for _, mode := range []string{"current", "audit", "independent audit", "independent audit pending", "independent audit over bound", "independent audit duplicate many", "independent audit self", "independent audit cycle", "independent audit terminal", "default approval", "default revert", "atomic rollback", "concurrent pin", "imported approval", "imported observation", "pinned"} {
 		t.Run(mode, func(t *testing.T) {
 			repository, admin := projectRecordPostgresWithAdmin(t, 4)
 			details := &memoryRunDetails{}
@@ -841,7 +841,6 @@ func TestChangeVersionRecordPublishesRunningSource(t *testing.T) {
 }
 
 func testChangeVersionRecordPublication(t *testing.T, running bool, repository tenantstore.Repository, f hostedSecurityFixture, owner hostedSecurityUser, admin *sql.DB, details *memoryRunDetails, reviewModes ...string) {
-	t.Helper()
 	service := f.service
 	originalPostgres, originalAccess, originalTenant := service.database.postgres, service.config.AccessRepository, service.config.TenantRepository
 	service.database.postgres = repository.(*postgres.Repository)
@@ -851,6 +850,19 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		service.database.postgres, service.config.AccessRepository, service.config.TenantRepository = originalPostgres, originalAccess, originalTenant
 	})
 	orgID, projectID := tracker.OrganizationID(service.config.Hosted.OrganizationID), f.project
+	originalKeys := service.config.SecretKeys
+	service.config.SecretKeys = secretTestKeys(t, "1", "1")
+	t.Cleanup(func() { service.config.SecretKeys = originalKeys })
+	cursorEnvelope, err := service.config.SecretKeys.Seal(bytes.Repeat([]byte{0x35}, 32), accessstore.SecretAAD(orgID, "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
+		seeded := service.config.now().UTC()
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: orgID, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: seeded}, accessstore.SecretAudit{OrganizationID: orgID, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: cursorEnvelope.Version, RecordedAt: seeded})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-item"}, Title: "Version issue", Body: workItemRecordBody, State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var item tracker.NativeIssue
@@ -867,7 +879,9 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	if len(reviewModes) > 0 {
 		reviewMode = reviewModes[0]
 	}
-	if reviewMode == "audit" {
+	independentAudit := strings.HasPrefix(reviewMode, "independent audit")
+	auditMode := reviewMode == "audit" || independentAudit
+	if auditMode {
 		previous := descriptor.ID
 		descriptor.Gates.SecurityAudit = true
 		descriptor = descriptor.WithID()
@@ -875,7 +889,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		reviewPolicy = defaultChangeReviewPolicy(descriptor)
 	}
 	var originalReview eventstore.ReviewPolicy
-	if reviewMode != "current" && reviewMode != "audit" {
+	if reviewMode != "current" && !auditMode {
 		oldRules := reviewPolicy
 		if reviewMode == "pinned" {
 			var principal string
@@ -1075,7 +1089,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", LocalAttemptID: 42, Generation: 1, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 1, SessionID: 42}}
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, start), http.StatusOK)
-	if reviewMode == "audit" {
+	if auditMode {
 		ctx := hubapi.WithMutationAuthority(t.Context(), native.Scope(), tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, nil)
 		sessions := hubapi.NewRunnerSessions(native)
 		id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(item.WorkItemID), StartedAt: now, AgentRole: "code", Model: "example-model"})
@@ -1100,7 +1114,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	input := changeTestInput()
 	input.AttemptID, input.RunID, input.PolicyID = start.Data.AttemptID, start.Data.RunID, descriptor.ID
 	bundle := changeTestSource(t, &input)
-	if reviewMode == "audit" {
+	if auditMode {
 		input.Validation = &gate.CommandResult{Command: "make check", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1}
 	}
 	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-version", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, ExpectedVersionID: "", ChangeVersionInput: input, SourceBundle: bundle}
@@ -1114,7 +1128,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, observation), http.StatusOK)
 		}
 	}
-	if reviewMode != "current" && reviewMode != "audit" {
+	if reviewMode != "current" && !auditMode {
 		if reviewMode == "imported observation" {
 			observed := performHubAPIRequest(t, service, http.MethodPost, f.base+"/policy/observed", workerToken, policy.Observation{Descriptor: descriptor})
 			requireNativeStatus(t, observed, http.StatusNoContent)
@@ -1259,7 +1273,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	requireNativeStatus(t, versionResponse, http.StatusOK)
 	var version tracker.ChangeVersion
 	decodeHubResponse(t, versionResponse, &version)
-	if running && reviewMode != "audit" {
+	if running && !auditMode {
 		finish.Data.Sequence = 4
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, finish), http.StatusOK)
 	}
@@ -1292,7 +1306,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	if !bytes.Equal(sourceResponse.Body.Bytes(), bundle) {
 		t.Fatal("hydrated source differed from published immutable bundle")
 	}
-	if running && reviewMode == "audit" {
+	if running && (auditMode) {
 		ctx := hubapi.WithMutationAuthority(t.Context(), native.Scope(), tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, nil)
 		sessions := hubapi.NewRunnerSessions(native)
 		id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(item.WorkItemID), StartedAt: now, AgentRole: "security_audit", Model: "example-model"})
@@ -1313,6 +1327,96 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", LocalAttemptID: 42, Generation: 1, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 1, SessionID: id}}
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, observation), http.StatusOK)
 		audit := tracker.SecurityAuditReview{VersionID: version.ID, SessionID: id, DiffDigest: version.Source.DiffSHA256, Verdict: "pass", Run: securityaudit.Run{ID: id, InvocationID: "review-invocation", ProjectID: string(projectID), IssueID: string(item.WorkItemID), Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
+		if independentAudit {
+			result := independentRepairReview(version, now).Validator
+			audit.Verdict, audit.Run.Verdict, audit.Run.Summary = "rework", securityaudit.VerdictFail, "Independent source failure"
+			audit.Run.Findings = []securityaudit.Finding{{ID: "independent-input", Severity: "p1", Body: result.Findings[0].Body, CheckCommand: result.Findings[0].CheckCommand, CheckDiagnostic: result.Findings[0].CheckDiagnostic}}
+			audit.Run.Checks = []securityaudit.CheckComparison{{Head: gate.CommandObservation(result.Commands[0]), Base: *result.Commands[0].BaseReproduction}}
+			if reviewMode == "independent audit over bound" || reviewMode == "independent audit duplicate many" {
+				for index := 0; index < corestore.MaxPageSize; index++ {
+					finding, check := audit.Run.Findings[0], audit.Run.Checks[0]
+					finding.ID = fmt.Sprintf("independent-%d", index)
+					if reviewMode == "independent audit over bound" {
+						diagnostic := fmt.Sprintf("input%c%c.go:4:2: invalid input", 'a'+rune(index/26), 'a'+rune(index%26))
+						finding.Body, finding.CheckDiagnostic = diagnostic, diagnostic
+						finding.CheckCommand = fmt.Sprintf("check-input-%d", index)
+						check.Head.Command, check.Base.Command = finding.CheckCommand, finding.CheckCommand
+						check.Head.Output, check.Base.Output = diagnostic, diagnostic
+					}
+					audit.Run.Findings = append(audit.Run.Findings, finding)
+					audit.Run.Checks = append(audit.Run.Checks, check)
+				}
+			}
+			audit.Run.Findings = append(audit.Run.Findings, securityaudit.Finding{ID: "resolved-history", Status: "resolved", Severity: "p1", Body: "Resolved historical finding remains in instructions"})
+			securityaudit.NormalizeAttribution(&audit.Run)
+		}
+		wantRefusal := ""
+		wantItems := 2
+		if independentAudit {
+			failures := (tracker.ChangeReview{Decision: "changes_requested", SecurityAudit: &audit}).IndependentFailures()
+			wantFailures := 1
+			if reviewMode == "independent audit over bound" || reviewMode == "independent audit duplicate many" {
+				wantFailures = corestore.MaxPageSize + 1
+			}
+			if len(failures) != wantFailures {
+				t.Fatalf("audit fixture proved %d independent failures, want %d", len(failures), wantFailures)
+			}
+			request := independentRepairRequest(failures[0], change.ID)
+			switch reviewMode {
+			case "independent audit pending":
+				response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "uninitialized-item"}, Title: "Uninitialized unrelated issue", Body: workItemRecordBody, State: "Todo"})
+				requireNativeStatus(t, response, http.StatusOK)
+				var unrelated tracker.NativeIssue
+				decodeHubResponse(t, response, &unrelated)
+				var uninitialized eventstore.CollaborationVersion
+				if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					uninitialized, err = r.CollaborationVersion(t.Context(), string(unrelated.WorkItemID), int64(unrelated.Revision))
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				details.mu.Lock()
+				original := bytes.Clone(details.data[uninitialized.PayloadObjectKey])
+				delete(details.data, uninitialized.PayloadObjectKey)
+				details.mu.Unlock()
+				t.Cleanup(func() {
+					details.mu.Lock()
+					details.data[uninitialized.PayloadObjectKey] = original
+					details.mu.Unlock()
+				})
+				if _, err := admin.ExecContext(t.Context(), "UPDATE issues SET doctor_identity_revision=NULL WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", orgID, projectID, unrelated.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				wantRefusal = "Canonical repair identity coverage is pending"
+			case "independent audit over bound":
+				wantRefusal, wantItems = "Independent repair batch exceeds the request limit", 1
+			case "independent audit self":
+				response := f.request(t, owner, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID), nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var current tracker.NativeIssue
+				decodeHubResponse(t, response, &current)
+				response = f.request(t, owner, http.MethodPatch, f.base+"/work-items/"+string(item.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "self-origin"}, ExpectedRevision: current.Revision, Body: &request.Body})
+				requireNativeStatus(t, response, http.StatusOK)
+				wantRefusal, wantItems = "Dependencies cannot form a cycle", 1
+			case "independent audit cycle", "independent audit terminal":
+				request.IdempotencyKey = "existing-repair"
+				if reviewMode == "independent audit terminal" {
+					request.State, request.Body = "Done", request.Body+"\n\ndetent:no-dispatch"
+				}
+				response := f.request(t, owner, http.MethodPost, f.base+"/work-items", request)
+				requireNativeStatus(t, response, http.StatusOK)
+				var repair tracker.NativeIssue
+				decodeHubResponse(t, response, &repair)
+				if reviewMode == "independent audit cycle" {
+					response = f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(repair.WorkItemID)+"/dependencies", tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "cycle-owner"}, ExpectedRevision: repair.Revision, RelatedWorkItemID: item.WorkItemID, Operation: "add"})
+					requireNativeStatus(t, response, http.StatusOK)
+					wantRefusal = "Dependencies cannot form a cycle"
+				} else {
+					wantRefusal = "Repair owner is terminal and cannot accept new work"
+				}
+			}
+		}
 		connector, err := hubapi.NewNativeConnector(native)
 		if err != nil {
 			t.Fatal(err)
@@ -1346,7 +1450,50 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 			t.Fatal(err)
 		}
 		detail, err := native.RuntimeChange(ctx, item.WorkItemID, change.ID)
-		if err != nil || len(detail.Reviews) != 1 || detail.Summary.Status != "reviewed" {
+		if independentAudit {
+			wantDependencies := 1
+			if wantRefusal != "" {
+				wantDependencies = 0
+			}
+			if err != nil || len(detail.Reviews) != 1 || len(detail.Reviews[0].RepairDependencies) != wantDependencies || detail.Summary.Status != "needs_evidence" || detail.Reviews[0].RepairRefusal != wantRefusal || detail.Reviews[0].Decision != "changes_requested" || detail.Reviews[0].SecurityAudit == nil {
+				t.Fatalf("independent audit lost canonical repair evidence: reviews=%+v error=%v", detail.Reviews, err)
+			}
+			var repairs []corestore.WorkItem
+			var producer leasestore.Lease
+			if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				producer, err = r.Lease(t.Context(), string(activeLease.ID))
+				if err != nil {
+					return err
+				}
+				repairs, err = r.WorkItems(t.Context(), projectID, 0, 10)
+				return err
+			}); err != nil || len(repairs) != wantItems {
+				t.Fatalf("independent audit replay changed repair owners: items=%+v error=%v", repairs, err)
+			}
+			if producer.ReleasedAt != nil || producer.FencingToken != int64(activeLease.FencingToken) {
+				t.Fatalf("review cancelled or replaced its active producer lease: %+v", producer)
+			}
+			response := f.request(t, owner, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID)+"/comments", nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var comments tracker.Page[tracker.NativeComment]
+			decodeHubResponse(t, response, &comments)
+			if len(comments.Items) != 1 || !strings.Contains(comments.Items[0].Body, audit.Run.Summary) {
+				t.Fatalf("review replay lost or duplicated rework instructions: %+v", comments.Items)
+			}
+			for _, finding := range audit.Run.Findings {
+				if !strings.Contains(comments.Items[0].Body, finding.Body) {
+					t.Fatalf("review instructions omitted finding %s", finding.ID)
+				}
+			}
+			response = f.request(t, owner, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID), nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var current tracker.NativeIssue
+			decodeHubResponse(t, response, &current)
+			if current.State != item.State || current.Terminal || len(current.Dependencies) != len(detail.Reviews[0].RepairDependencies) {
+				t.Fatalf("independent audit bypassed ordinary worker workflow: %+v", current)
+			}
+		} else if err != nil || len(detail.Reviews) != 1 || detail.Summary.Status != "reviewed" {
 			t.Fatalf("audit publication or replay lost its evidence: reviews=%d status=%s error=%v", len(detail.Reviews), detail.Summary.Status, err)
 		}
 		for _, test := range []struct {
@@ -1730,6 +1877,14 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		if _, err := r.LandingReceipt(t.Context(), landingStart.Data.AttemptID); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("rolled-back landing receipt lookup error = %v, want not found", err)
 		}
+		sourceVersion, err := r.Version(t.Context(), change.ID, nextVersion.ID)
+		if err != nil {
+			return err
+		}
+		if sourceVersion.FrozenLanding != nil {
+			t.Fatal("rolled-back landing retained frozen version metadata")
+		}
+
 		current, err := r.Change(t.Context(), change.ID)
 		if err != nil {
 			return err
@@ -1792,6 +1947,12 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	if landedReplay.Body.String() != landedResponse.Body.String() {
 		t.Fatal("landing retry changed the archived response")
 	}
+	var frozenChange tracker.ChangeRequest
+	decodeHubResponse(t, landedResponse, &frozenChange)
+	if frozenChange.Landed == nil || frozenChange.Landed.Quality == nil || frozenChange.Landed.Quality.IssueBody != workItemRecordBody {
+		t.Fatalf("landing did not freeze original contract: %+v", frozenChange.Landed)
+	}
+	originalQuality := frozenChange.Landed.Quality
 	var originalReceipt eventstore.LandingReceipt
 	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -2044,6 +2205,18 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	if laterVersion.ID == nextVersion.ID {
 		t.Fatalf("later immutable version = %+v", laterVersion)
 	}
+	historicalResponse := f.request(t, owner, http.MethodGet, changePath, nil)
+	requireNativeStatus(t, historicalResponse, http.StatusOK)
+	var historicalDetail tracker.ChangeDetail
+	decodeHubResponse(t, historicalResponse, &historicalDetail)
+	var historicalVersion tracker.ChangeVersion
+	if index := slices.IndexFunc(historicalDetail.Versions, func(version tracker.ChangeVersion) bool { return version.ID == nextVersion.ID }); index >= 0 {
+		historicalVersion = historicalDetail.Versions[index]
+	}
+	if historicalVersion.ID != nextVersion.ID || historicalVersion.LandingQuality == nil || historicalVersion.LandingQuality.IssueBody != workItemRecordBody || !reflect.DeepEqual(historicalVersion.LandingQuality, originalQuality) {
+		t.Fatalf("later publication discarded frozen version quality: %+v", historicalVersion)
+	}
+
 	laterEcho := landingEvent("landing-after-later-version", 14, landedClaim)
 	requireStep("run event", laterEcho.IdempotencyKey, laterEcho.Data.Sequence, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, laterEcho))
 	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {

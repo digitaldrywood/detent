@@ -54,3 +54,17 @@ func (s *session) GitHubImportForIssue(ctx context.Context, project tracker.Proj
 	row, err := s.queries.ReadGitHubImportForIssue(ctx, pgquery.ReadGitHubImportForIssueParams{OrganizationID: s.organization, ProjectID: project, IssueNumber: number})
 	return importJob(row), mapError(ctx, err)
 }
+
+func (s *session) GitHubImportForWorkItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (projectstore.GitHubImport, error) {
+	rows, err := s.queries.ReadGitHubImportForWorkItem(ctx, pgquery.ReadGitHubImportForWorkItemParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: string(item)})
+	if err != nil {
+		return projectstore.GitHubImport{}, mapError(ctx, err)
+	}
+	if len(rows) == 0 {
+		return projectstore.GitHubImport{}, corestore.ErrNotFound
+	}
+	if len(rows) != 1 {
+		return projectstore.GitHubImport{}, corestore.ErrRevisionConflict
+	}
+	return importJob(rows[0]), nil
+}

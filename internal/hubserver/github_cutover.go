@@ -2,17 +2,27 @@ package hubserver
 
 import (
 	"context"
-	"crypto/sha256"
-	"database/sql"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -40,287 +50,526 @@ type CutoverReceipt struct {
 	Integration            ProjectIntegration `json:"integration"`
 }
 
+type cutoverSourceRecord struct {
+	Item        corestore.WorkItem
+	Version     eventstore.CollaborationVersion
+	Import      projectstore.GitHubImport
+	ImportFound bool
+	Records     []projectstore.GitHubImportRecord
+}
+
+type cutoverSourceSnapshot struct {
+	Project projectstore.Record
+	Policy  policystore.Revision
+	Sources []cutoverSourceRecord
+	Busy    bool
+}
+
+type preparedCutoverItem struct {
+	current      corestore.WorkItem
+	issue        tracker.NativeIssue
+	version      eventstore.CollaborationVersion
+	event        eventstore.Event
+	dependencies []tracker.NativeWorkItemID
+	outbound     *projectstore.GitHubOutbound
+	search       searchstore.Document
+}
+
 func (s *Service) cutoverProject(c echo.Context) error {
 	var request CutoverRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, s.cutoverProjectOperation(request))
+	scope := nativeRequestScope(c)
+	scope.requireHostedAdmin = true
+	c.Set("native_scope", scope)
+	return s.nativeMutation(c, request.Mutation, request, nil)
 }
 
-func (s *Service) cutoverProjectOperation(request CutoverRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
-	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		if err := validateNativeStates(request.States); err != nil {
-			return nil, err
-		}
-		initialFound := false
-		for _, state := range request.States {
-			if state.Name == request.InitialState {
-				initialFound = true
-			}
-		}
-		if !initialFound {
-			return nil, nativePublicInvalid("Initial state must be a configured native workflow state")
-		}
-		if request.CloseSource {
-			destination, err := url.Parse(request.DestinationURL)
-			if err != nil || destination.Host == "" || destination.User != nil || (destination.Scheme != "https" && destination.Scheme != "http") {
-				return nil, nativePublicInvalid("Link-and-close requires an absolute Detent destination URL")
-			}
-		}
-		receipt, err := inspectCutover(ctx, tx, scope, request, now)
+func readCutoverSourceSnapshot(ctx context.Context, r tenantstore.Reader, scope nativeScope, now time.Time) (cutoverSourceSnapshot, error) {
+	var snapshot cutoverSourceSnapshot
+	var err error
+	snapshot.Project, err = r.ProjectRecord(ctx, scope.project)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Policy, err = r.ProjectPolicy(ctx, scope.project)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return snapshot, err
+	}
+	imports, ok := r.(projectstore.GitHubImportReader)
+	if !ok {
+		return snapshot, workItemStorageUnavailable()
+	}
+	records, ok := r.(projectstore.GitHubImportRecordReader)
+	if !ok {
+		return snapshot, workItemStorageUnavailable()
+	}
+	after := int64(0)
+	for {
+		items, err := r.WorkItems(ctx, scope.project, after, corestore.MaxPageSize)
 		if err != nil {
-			return nil, err
+			return snapshot, err
 		}
-		if request.DryRun {
-			return receipt, nil
+		if len(items) == 0 {
+			break
 		}
+		for _, item := range items {
+			source := cutoverSourceRecord{Item: item, Records: []projectstore.GitHubImportRecord{}}
+			source.Version, err = r.CollaborationVersion(ctx, string(item.NativeID), item.Revision)
+			if err != nil {
+				return snapshot, err
+			}
+			source.Import, err = imports.GitHubImportForWorkItem(ctx, scope.project, item.NativeID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return snapshot, err
+			}
+			source.ImportFound = err == nil
+			if source.ImportFound {
+				sequence := int64(0)
+				for {
+					page, err := records.GitHubImportRecords(ctx, scope.project, source.Import.ID, sequence, corestore.MaxPageSize)
+					if err != nil {
+						return snapshot, err
+					}
+					count := min(len(page), corestore.MaxPageSize)
+					source.Records = append(source.Records, page[:count]...)
+					if len(page) <= corestore.MaxPageSize {
+						break
+					}
+					if count == 0 || page[count-1].Sequence <= sequence {
+						return snapshot, eventstore.ErrInvalidRecord
+					}
+					sequence = page[count-1].Sequence
+				}
+			}
+			busy, err := r.WorkItemHasActiveLease(ctx, scope.project, item.NativeID, now)
+			if err != nil {
+				return snapshot, err
+			}
+			snapshot.Busy = snapshot.Busy || busy
+			snapshot.Sources = append(snapshot.Sources, source)
+			if item.ID <= after {
+				return snapshot, eventstore.ErrInvalidRecord
+			}
+			after = item.ID
+		}
+	}
+	return snapshot, nil
+}
+
+func cutoverSourceFingerprint(snapshot cutoverSourceSnapshot, request CutoverRequest) (string, error) {
+	snapshot.Project.Page = nil
+	request.Mutation = tracker.Mutation{}
+	request.DryRun = false
+	request.Checkpoint = ""
+	raw, err := json.Marshal(struct {
+		Source  cutoverSourceSnapshot
+		Request CutoverRequest
+	}{snapshot, request})
+	if err != nil {
+		return "", err
+	}
+	return artifact.Digest(raw), nil
+}
+
+func cutoverSourceReference(issue tracker.NativeIssue) (string, int, error) {
+	for _, reference := range issue.ExternalReferences {
+		if reference.Provider != "github" || reference.Kind != "issue" {
+			continue
+		}
+		_, repository, number, err := tracker.ParseGitHubIssueURL(reference.URL)
+		if err != nil || reference.Repository != repository || reference.Number != number {
+			return "", 0, eventstore.ErrInvalidRecord
+		}
+		return repository, number, nil
+	}
+	return "", 0, nativePublicInvalid("Issue has no GitHub source")
+}
+
+func (s *Service) cutoverRecordDependency(ctx context.Context, row projectstore.GitHubImportRecord) (string, error) {
+	if row.DependencyID != "" {
+		return row.DependencyID, nil
+	}
+	if row.ProvenanceExternalID != "" {
+		return row.ProvenanceExternalID, nil
+	}
+	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, row.Payload)
+	if err != nil {
+		return "", err
+	}
+	var historical GitHubImportRecord
+	if json.Unmarshal(raw, &historical) != nil || historical.SourceKey != row.SourceKey || historical.Kind != "dependency" {
+		return "", artifact.ErrIntegrity
+	}
+	var identity struct {
+		NodeID string `json:"node_id"`
+	}
+	if json.Unmarshal(historical.Data, &identity) != nil || identity.NodeID == "" {
+		return "", eventstore.ErrInvalidRecord
+	}
+	return identity.NodeID, nil
+}
+
+func (s *Service) inspectCutoverRecords(ctx context.Context, scope nativeScope, source cutoverSourceSnapshot, request CutoverRequest) (CutoverReceipt, []tracker.NativeIssue, [][]tracker.NativeWorkItemID, error) {
+	receipt := CutoverReceipt{Blockers: []string{}, HistoryLimitations: []string{}, CloseSource: request.CloseSource, Integration: projectIntegrationRecord(source.Project), Issues: len(source.Sources)}
+	workflow, err := s.projectRecordWorkflow(ctx, source.Project)
+	if err != nil {
+		return receipt, nil, nil, err
+	}
+	receipt.Integration.WorkflowMarkdown = workflow
+	if source.Project.Core.Profile != "github_compatible" {
+		receipt.Blockers = append(receipt.Blockers, "Project is already native; automatic rollback is not supported")
+	}
+	if source.Busy {
+		receipt.Blockers = append(receipt.Blockers, "Finish active project work before cutover")
+	}
+	issues := make([]tracker.NativeIssue, len(source.Sources))
+	identities := map[string]tracker.NativeWorkItemID{}
+	states := map[string]tracker.NativeState{}
+	for _, state := range request.States {
+		states[state.Name] = state
+	}
+	for i, row := range source.Sources {
+		issue, err := s.hydrateCanonicalWorkItemRecord(ctx, row.Item, row.Version)
+		if err != nil {
+			return receipt, nil, nil, err
+		}
+		issues[i] = issue
+		if issue.Provenance != nil && issue.Provenance.Provider == "github" && issue.Provenance.ExternalID != "" {
+			identity := issue.Provenance.ExternalID
+			if previous, found := identities[identity]; found && previous != issue.WorkItemID {
+				return receipt, nil, nil, eventstore.ErrInvalidRecord
+			}
+			identities[identity] = issue.WorkItemID
+		}
+		if !row.ImportFound {
+			receipt.IncompleteImports++
+			receipt.Blockers = append(receipt.Blockers, "Import every source issue before cutover")
+		} else {
+			updated := row.Item.NativeUpdatedAt
+			if issue.Provenance != nil && !issue.Provenance.UpdatedAt.IsZero() {
+				updated = issue.Provenance.UpdatedAt
+			}
+			if row.Import.Status != "retrieved" || row.Import.SourceUpdatedAt == nil || !updated.Equal(*row.Import.SourceUpdatedAt) {
+				receipt.IncompleteImports++
+			}
+			receipt.HistoryLimitations = append(receipt.HistoryLimitations, row.Import.Gaps...)
+		}
+		if issue.State != "" {
+			if _, found := states[issue.State]; !found {
+				receipt.Blockers = append(receipt.Blockers, "Native states must preserve every existing workflow state")
+			}
+		}
+		if issue.Terminal || issue.ClosedAt != nil {
+			if state, found := states[request.ClosedState]; !found || !state.Terminal {
+				receipt.Blockers = append(receipt.Blockers, "Specify a terminal closed_state to preserve closed GitHub issues")
+			}
+		}
+	}
+	dependencies := make([][]tracker.NativeWorkItemID, len(source.Sources))
+	for i, row := range source.Sources {
+		for _, record := range row.Records {
+			if record.Kind != "dependency" || !record.CurrentDependency {
+				continue
+			}
+			identity, err := s.cutoverRecordDependency(ctx, record)
+			if err != nil {
+				return receipt, nil, nil, err
+			}
+			target, found := identities[identity]
+			if !found {
+				receipt.UnresolvedDependencies++
+				continue
+			}
+			if target == row.Item.NativeID {
+				return receipt, nil, nil, corestore.ErrInvalidRelationship
+			}
+			dependencies[i] = append(dependencies[i], target)
+		}
+		slices.Sort(dependencies[i])
+		dependencies[i] = slices.Compact(dependencies[i])
+	}
+	dependenciesIncomplete := slices.ContainsFunc(source.Sources, func(row cutoverSourceRecord) bool {
+		return row.ImportFound && slices.Contains([]string{"issue", "comments", "timeline", "dependencies"}, row.Import.Stage)
+	})
+	if dependenciesIncomplete {
+		receipt.Blockers = append(receipt.Blockers, "Finish dependency retrieval before cutover; partial history acceptance does not omit dependency pages")
+	}
+	if receipt.IncompleteImports != 0 && !request.AcceptPartial {
+		receipt.Blockers = append(receipt.Blockers, "Finish all import pages and reimport changed source issues, or explicitly accept partial history")
+	}
+	if receipt.UnresolvedDependencies != 0 {
+		receipt.Blockers = append(receipt.Blockers, "Import unresolved dependency issues into this project before cutover")
+	}
+	receipt.Checkpoint, err = cutoverSourceFingerprint(source, request)
+	return receipt, issues, dependencies, err
+}
+
+func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope nativeScope, options nativeCommandOptions, request CutoverRequest) (json.RawMessage, error) {
+	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return nil, err
+	}
+	hash, err := nativeCommandHash(request)
+	if err != nil {
+		return nil, err
+	}
+	if raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, options.OperationID, request.IdempotencyKey, hash); found || err != nil {
+		return raw, err
+	}
+	if err := validateNativeStates(request.States); err != nil {
+		return nil, err
+	}
+	initial := false
+	for _, state := range request.States {
+		initial = initial || state.Name == request.InitialState
+	}
+	if !initial {
+		return nil, nativePublicInvalid("Initial state must be a configured native workflow state")
+	}
+	if request.CloseSource {
+		destination, err := url.Parse(request.DestinationURL)
+		if err != nil || destination.Host == "" || destination.User != nil || (destination.Scheme != "https" && destination.Scheme != "http") {
+			return nil, nativePublicInvalid("Link-and-close requires an absolute Detent destination URL")
+		}
+	}
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, workItemStorageUnavailable()
+	}
+	now := s.config.now().UTC()
+	var snapshot cutoverSourceSnapshot
+	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+			return err
+		}
+		if err := s.database.requireHostedFeatureRecord(ctx, r, "github_integration", now); err != nil {
+			return err
+		}
+		var err error
+		snapshot, err = readCutoverSourceSnapshot(ctx, r, scope, now)
+		return err
+	})
+	if err != nil {
+		return nil, projectRecordError(err)
+	}
+	receipt, issues, dependencies, err := s.inspectCutoverRecords(ctx, scope, snapshot, request)
+	if err != nil {
+		return nil, err
+	}
+	var prepared []preparedCutoverItem
+	var stored eventstore.Receipt
+	if !request.DryRun {
 		if len(receipt.Blockers) != 0 {
-			return nil, nativeInvalid(strings.Join(receipt.Blockers, "; "))
+			return nil, nativePublicInvalid(strings.Join(receipt.Blockers, "; "))
 		}
-		if request.Checkpoint == "" || receipt.Checkpoint != request.Checkpoint {
+		if request.Checkpoint == "" || request.Checkpoint != receipt.Checkpoint {
 			return nil, nativePublicInvalid("Cutover checkpoint changed; repeat the dry run and review its receipt")
 		}
 		if request.CloseSource && s.config.OutboxBackend == nil {
 			return nil, nativePublicInvalid("Link-and-close requires configured GitHub transport")
 		}
-		if err := applyCutover(ctx, tx, scope, request, now); err != nil {
+		prepared, err = s.prepareCutoverItems(ctx, scope, snapshot, issues, dependencies, request, now)
+		if err != nil {
 			return nil, err
 		}
+		next := snapshot.Project
+		next.Core.Profile = "native"
+		next.Core.ContentSettingsRevision++
+		next.Settings.Intake = "manual"
+		next.Settings.Revision++
+		next.States = nativeTriageStates(request.States)
 		receipt.Applied = true
-		receipt.Integration, err = readProjectIntegration(ctx, tx, scope)
+		receipt.Integration = projectIntegrationRecord(next)
+		receipt.Integration.WorkflowMarkdown, err = s.projectRecordWorkflow(ctx, snapshot.Project)
 		if err != nil {
 			return nil, err
 		}
-		raw, err := marshalNative(receipt)
+		raw, err := json.Marshal(receipt)
 		if err != nil {
 			return nil, err
 		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO github_cutovers (project_id, checkpoint, receipt_json, actor_id, created_at) VALUES (?, ?, ?, ?, ?)", scope.project, receipt.Checkpoint, raw, scope.credential.ID, formatHubTime(now))
-		return receipt, err
-	}
-}
-
-func inspectCutover(ctx context.Context, tx *sql.Tx, scope nativeScope, request CutoverRequest, now time.Time) (CutoverReceipt, error) {
-	result := CutoverReceipt{Blockers: []string{}, HistoryLimitations: []string{}, CloseSource: request.CloseSource}
-	integration, err := readProjectIntegration(ctx, tx, scope)
-	if err != nil {
-		return result, err
-	}
-	result.Integration = integration
-	if integration.Profile != "github_compatible" {
-		result.Blockers = append(result.Blockers, "Project is already native; automatic rollback is not supported")
-	}
-	if err := requireIntegrationIdle(ctx, tx, scope, now); err != nil {
-		result.Blockers = append(result.Blockers, err.Error())
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.revision, i.source_updated_at, COALESCE(g.revision, 0), COALESCE(g.status, 'missing'), COALESCE(g.source_updated_at, ''), COALESCE(g.gaps_json, '[]'), COALESCE(ws.detent_state, '')
-FROM issues i LEFT JOIN github_imports g ON g.work_item_id = i.native_id LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.project_id = ? ORDER BY i.native_id`, scope.project)
-	if err != nil {
-		return result, err
-	}
-	defer rows.Close()
-	fingerprint := []any{integration, request.States, request.InitialState, request.ClosedState, request.AcceptPartial, request.CloseSource, request.DestinationURL}
-	for rows.Next() {
-		var id, source, status, imported, gaps, state string
-		var revision, importRevision int64
-		if err := rows.Scan(&id, &revision, &source, &importRevision, &status, &imported, &gaps, &state); err != nil {
-			return result, err
-		}
-		result.Issues++
-		fingerprint = append(fingerprint, []any{id, revision, source, importRevision, status, imported, gaps, state})
-		if status != "retrieved" || !sameImportSourceTime(source, imported) {
-			result.IncompleteImports++
-		}
-		if status == "missing" {
-			result.Blockers = append(result.Blockers, "Import source issue "+id+" before cutover")
-		}
-		var limitations []string
-		if err := json.Unmarshal([]byte(gaps), &limitations); err != nil {
-			return result, err
-		}
-		result.HistoryLimitations = append(result.HistoryLimitations, limitations...)
-		if state != "" {
-			found := false
-			for _, configured := range request.States {
-				if configured.Name == state {
-					found = true
-				}
-			}
-			if !found {
-				result.Blockers = append(result.Blockers, "Native states must preserve existing state "+state)
-			}
+		stored, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
+		if err != nil {
+			return nil, err
 		}
 	}
-	if err := rows.Close(); err != nil {
-		return result, err
-	}
-	if err := rows.Err(); err != nil {
-		return result, err
-	}
-	if result.IncompleteImports != 0 && !request.AcceptPartial {
-		result.Blockers = append(result.Blockers, "Finish all import pages and reimport changed source issues, or explicitly accept partial history")
-	}
-	prefix, legacyDependencies, err := legacyImportDependencies(ctx, tx, scope.project)
-	if err != nil {
-		return result, err
-	}
-	err = tx.QueryRowContext(ctx, prefix+`SELECT count(*) FROM github_import_records r JOIN github_imports g ON g.id = r.import_id
-WHERE g.project_id = ? AND r.kind = 'dependency' AND r.current_dependency = 1 AND NOT EXISTS (SELECT 1 FROM issues i WHERE i.project_id = g.project_id AND i.github_node_id = `+importedDependencyID+`)`, append(legacyDependencies, scope.project)...).Scan(&result.UnresolvedDependencies)
-	if err != nil {
-		return result, err
-	}
-	if result.UnresolvedDependencies != 0 {
-		result.Blockers = append(result.Blockers, "Import unresolved dependency issues into this project before cutover")
-	}
-	var closed int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id = ? AND github_state <> 'open'", scope.project).Scan(&closed); err != nil {
-		return result, err
-	}
-	closedStateValid := false
-	for _, state := range request.States {
-		if state.Name == request.ClosedState && state.Terminal {
-			closedStateValid = true
+	return s.tenantReceiptMutation(ctx, scope, options.OperationID, request.Mutation, request, receipt, func(w tenantstore.Writer) error {
+		if err := s.database.requireHostedFeatureRecord(ctx, w, "github_integration", now); err != nil {
+			return err
 		}
-	}
-	if closed > 0 && !closedStateValid {
-		result.Blockers = append(result.Blockers, "Specify a terminal closed_state to preserve closed GitHub issues")
-	}
-	var sourceVersions, policies string
-	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(group_concat(source_version, ','), '') FROM (SELECT source_version FROM issues WHERE project_id = ? ORDER BY native_id)", scope.project).Scan(&sourceVersions); err != nil {
-		return result, err
-	}
-	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(group_concat(policy_id, ','), '') FROM (SELECT policy_id FROM project_policies WHERE scope IN (?, ?) ORDER BY scope)", "repository:"+strings.ToLower(integration.Repository), string(scope.organization)+"/"+string(scope.project)).Scan(&policies); err != nil {
-		return result, err
-	}
-	fingerprint = append(fingerprint, sourceVersions, policies)
-	fingerprint = append(fingerprint, result.UnresolvedDependencies)
-	raw, err := json.Marshal(fingerprint)
-	if err != nil {
-		return result, err
-	}
-	digest := sha256.Sum256(raw)
-	result.Checkpoint = hex.EncodeToString(digest[:])
-	return result, nil
-}
-
-func sameImportSourceTime(left, right string) bool {
-	a, err := time.Parse(time.RFC3339Nano, left)
-	if err != nil {
-		return false
-	}
-	b, err := time.Parse(time.RFC3339Nano, right)
-	return err == nil && a.Equal(b)
-}
-
-func applyCutover(ctx context.Context, tx *sql.Tx, scope nativeScope, request CutoverRequest, now time.Time) error {
-	stamp := formatHubTime(now)
-	request.States = nativeTriageStates(request.States)
-	if err := validateNativeStates(request.States); err != nil {
-		return err
-	}
-	for _, state := range request.States {
-		_, err := tx.ExecContext(ctx, "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, stamp, stamp)
+		if err := w.LockRelationshipGraph(ctx); err != nil {
+			return err
+		}
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		current, err := readCutoverSourceSnapshot(ctx, w, scope, now)
 		if err != nil {
 			return err
 		}
-	}
-	states, err := marshalNative(request.States)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE projects SET profile = 'native', states_json = ?, github_intake = 'manual', integration_revision = integration_revision + 1 WHERE id = ?", states, scope.project)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE issues SET revision = revision + 1, native_updated_at = ?, workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = CASE WHEN issues.github_state <> 'open' THEN ? ELSE COALESCE((SELECT detent_state FROM workflow_states WHERE id = issues.workflow_state_id), ?) END) WHERE project_id = ?`, stamp, scope.project, request.ClosedState, request.InitialState, scope.project)
-	if err != nil {
-		return err
-	}
-	prefix, legacyDependencies, err := legacyImportDependencies(ctx, tx, scope.project)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, prefix+`INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
-SELECT b.id, i.id, 'github_import', ?, ? FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues i ON i.native_id = g.work_item_id JOIN issues b ON b.project_id = i.project_id AND b.github_node_id = `+importedDependencyID+` WHERE g.project_id = ? AND r.kind = 'dependency' AND r.current_dependency = 1 ON CONFLICT DO NOTHING`, append(legacyDependencies, stamp, stamp, scope.project)...)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE queue_entries SET scope = ?, workflow_state_id = (SELECT workflow_state_id FROM issues WHERE id = queue_entries.issue_id), state = (SELECT ws.detent_state FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.id = queue_entries.issue_id), updated_at = ? WHERE issue_id IN (SELECT id FROM issues WHERE project_id = ?)`, scope.project, stamp, scope.project)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO queue_entries (issue_id, workflow_state_id, scope, state, rank, created_at, updated_at)
-SELECT i.id, i.workflow_state_id, i.project_id, ws.detent_state, i.native_id, ?, ? FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.project_id = ? AND NOT EXISTS (SELECT 1 FROM queue_entries q WHERE q.issue_id = i.id)`, stamp, stamp, scope.project)
-	if err != nil {
-		return err
-	}
-	if err := supersedeDisallowedOutbox(ctx, tx, scope, now); err != nil {
-		return err
-	}
-	if err := preserveCutoverPolicy(ctx, tx, scope); err != nil {
-		return err
-	}
-	rows, err := tx.QueryContext(ctx, "SELECT native_id FROM issues WHERE project_id = ? ORDER BY native_id", scope.project)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, id := range ids {
-		issue, _, err := readNativeIssue(ctx, tx, scope, id)
+		fingerprint, err := cutoverSourceFingerprint(current, request)
 		if err != nil {
 			return err
 		}
-		if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
+		if fingerprint != receipt.Checkpoint {
+			return nativeConflict(tracker.Revision(current.Project.Settings.Revision))
+		}
+		if request.DryRun {
+			return nil
+		}
+		owner, ok := w.(postgres.CutoverWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		queues := make([]postgres.CutoverQueueItem, len(prepared))
+		for i, item := range prepared {
+			queues[i] = postgres.CutoverQueueItem{WorkItemID: item.current.NativeID, ExpectedRevision: item.current.Revision, State: item.issue.State}
+		}
+		outbox, ok := w.(projectstore.GitHubOutboxWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		if err := outbox.SupersedeGitHubCompatibilityWrites(ctx, scope.project, snapshot.Project.Settings.RepositoryEnabled, now); err != nil {
 			return err
 		}
-		if err := recordNativeChange(ctx, tx, scope, issue, id, issue.Revision, "issue.cutover", tracker.CollaborationData{Revision: issue.Revision}, now); err != nil {
+		_, err = owner.CommitProjectCutover(ctx, postgres.CutoverCommit{ExpectedContentRevision: snapshot.Project.Core.ContentSettingsRevision, States: nativeTriageStates(request.States), Queues: queues, Receipt: pgquery.StoreCutoverReceiptParams{OrganizationID: scope.organization, ProjectID: scope.project, Checkpoint: receipt.Checkpoint, SourceProfile: "github_compatible", ExpectedRevision: snapshot.Project.Settings.Revision, ReceiptObjectKey: stored.PayloadObjectKey, ReceiptSha256: stored.PayloadSHA256, ReceiptBytes: stored.PayloadBytes, ReceiptContentBytes: stored.PayloadContentBytes, ActorID: scope.credential.ID, CreatedAt: now}})
+		if errors.Is(err, postgres.ErrCutoverQueuePosition) {
+			return nativePublicInvalid("Choose one queue position per work item before cutover; existing ranks have been retained")
+		}
+		if errors.Is(err, projectstore.ErrActiveWork) {
+			return nativePublicInvalid("Finish active work and reconcile pending source writes before cutover")
+		}
+		if err != nil {
 			return err
 		}
-		if request.CloseSource {
-			body := fmt.Sprintf("This issue is now managed in Detent: %s\n\nNative work item: %s", request.DestinationURL, id)
-			if err := enqueueNativeSummary(ctx, tx, scope, id, request.Checkpoint+":"+id, body, true, now); err != nil {
+		for _, item := range prepared {
+			current := item.current
+			current.WorkflowStateName = new(item.issue.State)
+			current.NativeUpdatedAt, current.UpdatedAt, current.LastActivityAt = now, now, now
+			if _, err := w.UpdateWorkItem(ctx, current); err != nil {
 				return err
 			}
+			author := item.issue.Actor.PrincipalID
+			if item.issue.Provenance != nil {
+				author = item.issue.Provenance.AuthorID
+			}
+			var waitSince *time.Time
+			if slices.ContainsFunc(request.States, func(state tracker.NativeState) bool {
+				return state.Name == item.issue.State && state.Dispatchable && !state.Terminal && !state.OperatorOnly
+			}) {
+				waitSince = &now
+			}
+			if err := w.PutWorkItemFacts(ctx, claimstore.WorkItemFacts{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item.current.NativeID, Author: author, Repository: snapshot.Project.Settings.Repository, Assignees: item.issue.Assignees, DispatchWaitSince: waitSince}); err != nil {
+				return err
+			}
+			if err := w.PutSearch(ctx, item.search, item.current.Revision); err != nil {
+				return err
+			}
+			for _, target := range item.dependencies {
+				relationship := corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item.current.NativeID, RelatedProjectID: scope.project, RelatedWorkItemID: target, Type: "dependency", CompatibilityEdge: true}
+				if err := w.SetRelationship(ctx, relationship, "add", now); err != nil {
+					return err
+				}
+			}
+			if _, err := w.CreateCollaborationVersion(ctx, item.version); err != nil {
+				return err
+			}
+			if _, err := w.AppendEvent(ctx, item.event); err != nil {
+				return err
+			}
+			if item.outbound != nil {
+				if err := outbox.EnqueueGitHubOutbound(ctx, *item.outbound); err != nil {
+					return err
+				}
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
-func preserveCutoverPolicy(ctx context.Context, tx *sql.Tx, scope nativeScope) error {
-	integration, err := readProjectIntegration(ctx, tx, scope)
-	if err != nil {
-		return err
+func (s *Service) prepareCutoverItems(ctx context.Context, scope nativeScope, snapshot cutoverSourceSnapshot, issues []tracker.NativeIssue, dependencies [][]tracker.NativeWorkItemID, request CutoverRequest, now time.Time) ([]preparedCutoverItem, error) {
+	result := make([]preparedCutoverItem, len(issues))
+	states := map[string]tracker.NativeState{}
+	for _, state := range request.States {
+		states[state.Name] = state
 	}
-	legacy := "repository:" + strings.ToLower(integration.Repository)
-	native := string(scope.organization) + "/" + string(scope.project)
-	var conflicts int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM project_policies a JOIN project_policies b ON a.policy_id <> b.policy_id WHERE a.scope = ? AND b.scope = ?", legacy, native).Scan(&conflicts); err != nil {
-		return err
+	byID := make(map[tracker.NativeWorkItemID]tracker.NativeIssue, len(issues))
+	for _, issue := range issues {
+		byID[issue.WorkItemID] = issue
 	}
-	if conflicts != 0 {
-		return nativePublicInvalid("Native and repository policy approvals differ; reconcile trusted approvals before cutover")
+	for i, issue := range issues {
+		next := issue
+		next.Profile = "native"
+		next.Revision++
+		next.UpdatedAt = now
+		if issue.Terminal || issue.ClosedAt != nil {
+			next.State = request.ClosedState
+		} else if issue.State == "" {
+			next.State = request.InitialState
+		}
+		next.Terminal = states[next.State].Terminal
+		next.Dependencies = slices.Clone(dependencies[i])
+		next.Blockers = []tracker.NativeDependency{}
+		next.DependencyReady = true
+		for _, target := range dependencies[i] {
+			if candidate, found := byID[target]; found {
+				targetState := candidate.State
+				if candidate.Terminal || candidate.ClosedAt != nil {
+					targetState = request.ClosedState
+				} else if targetState == "" {
+					targetState = request.InitialState
+				}
+				terminal := states[targetState].Terminal
+				next.Blockers = append(next.Blockers, tracker.NativeDependency{ID: target, ProjectID: scope.project, Number: candidate.Number, Title: candidate.Title, State: targetState, Terminal: terminal, Dispatchable: states[targetState].Dispatchable, ClosedAt: candidate.ClosedAt})
+				if !terminal {
+					next.DependencyReady = false
+				}
+			}
+		}
+		if _, _, err := s.validateWorkItemRecordFilingTenant(ctx, scope, workItemRecordPlan{project: snapshot.Project, issue: next}); err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(next)
+		if err != nil {
+			return nil, err
+		}
+		version, err := eventstore.NewContent(s.runDetailStore()).PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: next.WorkItemID, RecordID: string(next.WorkItemID), Revision: int64(next.Revision)}, raw)
+		if err != nil {
+			return nil, err
+		}
+		eventID := "evt_cutover_" + artifact.Digest([]byte(request.Checkpoint+":"+string(next.WorkItemID)))
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: eventID, OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: next.WorkItemID, Type: "issue.cutover", SchemaVersion: 1, RecordedAt: now, Actor: scope.actor(), Data: tracker.CollaborationData{Revision: next.Revision}})
+		if err != nil {
+			return nil, err
+		}
+		event, err := eventstore.NewContent(s.runDetailStore()).PrepareEvent(ctx, scope.organization, eventRaw)
+		if err != nil {
+			return nil, err
+		}
+		search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: next.WorkItemID, ID: "issue:" + string(next.WorkItemID), SourceID: string(next.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(next.Revision), UpdatedAt: now}, searchstore.Text{Title: next.Title, Body: next.Body, Labels: next.Labels})
+		if err != nil {
+			return nil, err
+		}
+		prepared := preparedCutoverItem{current: snapshot.Sources[i].Item, issue: next, version: version, event: event, dependencies: dependencies[i], search: search}
+		if request.CloseSource {
+			repository, number, err := cutoverSourceReference(issue)
+			if err != nil {
+				return nil, err
+			}
+			body := fmt.Sprintf("This issue is now managed in Detent: %s\n\nNative work item: %s", request.DestinationURL, next.WorkItemID)
+			outbound, err := s.prepareNativeSourceSummary(ctx, scope, next.WorkItemID, repository, number, request.Checkpoint+":"+string(next.WorkItemID), body, true, "")
+			if err != nil {
+				return nil, err
+			}
+			prepared.outbound = &outbound
+		}
+		result[i] = prepared
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at,gate_github_pull_request) SELECT ?, r.policy_id, r.metadata_json, r.approved_by, r.approved_at,r.gate_github_pull_request FROM policy_revisions r JOIN project_policies p ON p.scope = r.scope AND p.policy_id = r.policy_id WHERE p.scope = ? ON CONFLICT DO NOTHING`, native, legacy)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) SELECT ?, policy_id FROM project_policies WHERE scope = ? ON CONFLICT DO NOTHING", native, legacy)
-	return err
+	return result, nil
 }
 
 type projectNativeSummaryRequest struct {
@@ -333,81 +582,127 @@ func (s *Service) projectNativeSummary(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, s.projectNativeSummaryOperation(request, c.Param("item")))
+	return s.nativeMutation(c, request.Mutation, request, nil)
 }
 
-func (s *Service) projectNativeSummaryOperation(request projectNativeSummaryRequest, item string) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
-	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		integration, err := readProjectIntegration(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if integration.Profile != "native" || integration.Projection != "summary" {
-			return nil, nativePublicInvalid("Native summary projection is not enabled")
-		}
-		var linked int
-		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM linked_issue_sources WHERE work_item_id = ?", item).Scan(&linked); err != nil {
-			return nil, err
-		}
-		if linked != 0 {
-			return nil, nativePublicInvalid("Linked source comments are private to Cloud")
-		}
-		if err := enqueueNativeSummary(ctx, tx, scope, item, request.IdempotencyKey, request.Body, false, now); err != nil {
-			return nil, err
-		}
-		return struct {
-			Status string `json:"status"`
-		}{"pending"}, nil
-	}
-}
-
-func enqueueNativeSummary(ctx context.Context, tx *sql.Tx, scope nativeScope, item, key, body string, closeSource bool, now time.Time) error {
-	return enqueueNativeSourceSummary(ctx, tx, scope, item, key, body, closeSource, "", now)
-}
-
-func enqueueNativeSourceSummary(ctx context.Context, tx *sql.Tx, scope nativeScope, item, key, body string, closeSource bool, stateReason string, now time.Time) error {
+func (s *Service) prepareNativeSourceSummary(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, repository string, number int, key, body string, closeSource bool, stateReason string) (projectstore.GitHubOutbound, error) {
 	if strings.TrimSpace(body) == "" || len(body) > 60<<10 {
-		return nativePublicInvalid("Summary must contain 1 byte to 60 KiB")
+		return projectstore.GitHubOutbound{}, nativePublicInvalid("Summary must contain 1 byte to 60 KiB")
 	}
-	var issueID, repositoryID int64
-	var sourceNumber int
-	var linkedNumber int
-	var sourceURL string
-	if err := tx.QueryRowContext(ctx, `SELECT i.id, COALESCE(i.repository_id, 0), COALESCE(i.github_number, 0), COALESCE(l.source_url, '')
- FROM issues i LEFT JOIN linked_issue_sources l ON l.work_item_id = i.native_id
- WHERE i.project_id = ? AND i.native_id = ?`, scope.project, item).Scan(&issueID, &repositoryID, &sourceNumber, &sourceURL); err != nil {
-		return err
+	if _, _, valid := splitRepositoryFullName(repository); !valid || number < 1 {
+		return projectstore.GitHubOutbound{}, nativePublicInvalid("Issue has no GitHub source")
 	}
-	if sourceURL != "" {
-		_, repository, number, err := tracker.ParseGitHubIssueURL(sourceURL)
+	marker := "<!-- detent-summary:" + string(item) + " -->"
+	if key == "intake" || strings.HasPrefix(key, "cancelled:") {
+		marker = "<!-- detent-summary:" + string(item) + ":" + key + " -->"
+	}
+	desired, err := json.Marshal(WorkpadDesired{Phase: "summary", Body: body, Marker: marker, Summary: true, CloseSource: closeSource, StateReason: stateReason, IssueNumber: number})
+	if err != nil {
+		return projectstore.GitHubOutbound{}, err
+	}
+	payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, desired)
+	if err != nil {
+		return projectstore.GitHubOutbound{}, err
+	}
+	bucket := "summary:" + string(item)
+	if closeSource {
+		bucket = "cutover:" + string(item)
+	}
+	return projectstore.GitHubOutbound{ProjectID: scope.project, WorkItemID: item, Key: "native:" + string(item) + ":" + key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkpad), CreatedAt: s.config.now().UTC(), Payload: payload, CoalesceKey: bucket}, nil
+}
+
+func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope nativeScope, options nativeCommandOptions, request projectNativeSummaryRequest) (json.RawMessage, error) {
+	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return nil, err
+	}
+	hash, err := nativeCommandHash(request)
+	if err != nil {
+		return nil, err
+	}
+	if raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, options.OperationID, request.IdempotencyKey, hash); found || err != nil {
+		return raw, err
+	}
+	project, err := s.readProjectRecord(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	if project.Core.Profile != "native" || project.Settings.Projection != "summary" {
+		return nil, nativePublicInvalid("Native summary projection is not enabled")
+	}
+	item, version, err := s.readWorkItemRecord(ctx, scope, options.Item)
+	if err != nil {
+		return nil, err
+	}
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := r.LinkedSource(ctx, scope.project, item.NativeID)
+		if err == nil {
+			return nativePublicInvalid("Linked source comments are private to Cloud")
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	issue, err := s.hydrateCanonicalWorkItemRecord(ctx, item, version)
+	if err != nil {
+		return nil, err
+	}
+	repository, number, err := cutoverSourceReference(issue)
+	if err != nil {
+		return nil, err
+	}
+	outbound, err := s.prepareNativeSourceSummary(ctx, scope, item.NativeID, repository, number, request.IdempotencyKey, request.Body, false, "")
+	if err != nil {
+		return nil, err
+	}
+	outbound.Key = "native:" + string(item.NativeID) + ":" + newNativeID("projection") + ":" + request.IdempotencyKey
+	result := struct {
+		Status string `json:"status"`
+	}{"pending"}
+	return s.tenantReceiptMutation(ctx, scope, options.OperationID, request.Mutation, request, result, func(w tenantstore.Writer) error {
+		if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, s.config.now()); err != nil {
+			return err
+		}
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		latest, err := w.ProjectRecord(ctx, scope.project)
 		if err != nil {
 			return err
 		}
-		sourceNumber = number
-		linkedNumber = number
-		if err := tx.QueryRowContext(ctx, "SELECT id FROM repositories WHERE lower(github_owner || '/' || github_name) = ?", repository).Scan(&repositoryID); err != nil {
+		if latest.Core.Profile != "native" || latest.Settings.Projection != "summary" || latest.Settings.Revision != project.Settings.Revision {
+			return nativeConflict(tracker.Revision(latest.Settings.Revision))
+		}
+		current, err := w.LockWorkItem(ctx, scope.project, item.NativeID)
+		if err != nil {
 			return err
 		}
-	}
-	if repositoryID == 0 || sourceNumber == 0 {
-		return nativePublicInvalid("Issue has no GitHub source")
-	}
-	marker := "<!-- detent-summary:" + item + " -->"
-	if key == "intake" || strings.HasPrefix(key, "cancelled:") {
-		marker = "<!-- detent-summary:" + item + ":" + key + " -->"
-	}
-	desired, err := marshalNative(WorkpadDesired{Phase: "summary", Body: body, Marker: marker, Summary: true, CloseSource: closeSource, StateReason: stateReason, IssueNumber: linkedNumber})
-	if err != nil {
-		return err
-	}
-	coalesce := "summary:" + item
-	if closeSource {
-		coalesce = "cutover:" + item
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE github_outbox SET status = 'superseded', completed_at = ?, updated_at = ? WHERE coalesce_key = ? AND status IN ('pending', 'retrying')", formatOutboxTime(now), formatOutboxTime(now), coalesce)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO github_outbox (idempotency_key, repository_id, issue_id, mutation_kind, desired_json, status, coalesce_key, created_at, updated_at, desired_issue_number, desired_summary) VALUES (?, ?, ?, 'workpad', ?, 'pending', ?, ?, ?, ?, 1)`, "native:"+item+":"+key, repositoryID, issueID, desired, coalesce, formatOutboxTime(now), formatOutboxTime(now), linkedNumber)
-	return err
+		if current.Revision != item.Revision || !reflect.DeepEqual(current.NativeSourceKey, item.NativeSourceKey) {
+			return nativeConflict(tracker.Revision(current.Revision))
+		}
+		if scope.credential.Scope == apiScopeWorker {
+			if err := s.authorizeAttachmentCommentLease(ctx, w, scope, item, request.Mutation); err != nil {
+				return err
+			}
+		}
+		if _, err := w.LinkedSource(ctx, scope.project, item.NativeID); err == nil {
+			return nativePublicInvalid("Linked source comments are private to Cloud")
+		} else if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		owner, ok := w.(projectstore.GitHubOutboxWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		if err := owner.SupersedeGitHubSummaries(ctx, scope.project, outbound.CoalesceKey, s.config.now()); err != nil {
+			return err
+		}
+		return owner.EnqueueGitHubOutbound(ctx, outbound)
+	})
 }

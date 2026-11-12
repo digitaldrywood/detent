@@ -31,7 +31,7 @@ func TestLocalBoardMigrationToLanding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("local web app status = %d", response.StatusCode)
+		t.Errorf("local web app status = %d", response.StatusCode)
 	}
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 	runner.enroll(t)

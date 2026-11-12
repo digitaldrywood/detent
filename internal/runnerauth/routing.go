@@ -66,6 +66,7 @@ type ClaimState struct {
 }
 
 type RoutingSnapshot struct {
+	ProjectConfiguration        *ProjectConfiguration        `json:"project_configuration,omitempty"`
 	RepositoryListRequest       string                       `json:"repository_list_request,omitempty"`
 	HostMetricsAcknowledged     []hostmetrics.Acknowledgment `json:"host_metrics_acknowledged,omitempty"`
 	Changes                     *HeartbeatChanges            `json:"changes,omitempty"`

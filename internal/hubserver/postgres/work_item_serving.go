@@ -32,6 +32,11 @@ func (s *session) WorkItemBySource(ctx context.Context, project tracker.ProjectI
 	return corestore.WorkItem(row), mapError(ctx, err)
 }
 
+func (s *session) WorkItemByProvenance(ctx context.Context, project tracker.ProjectID, provider, externalID string) (corestore.WorkItem, error) {
+	row, err := s.queries.WorkItemByProvenance(ctx, pgquery.WorkItemByProvenanceParams{OrganizationID: s.organization, ProjectID: project, ProvenanceProvider: &provider, ProvenanceExternalID: &externalID})
+	return corestore.WorkItem(row), mapError(ctx, err)
+}
+
 func (s *session) CommentBySource(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, source string) (corestore.Comment, error) {
 	row, err := s.queries.CommentBySource(ctx, pgquery.CommentBySourceParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, SourceKey: &source})
 	return corestore.Comment(row), mapError(ctx, err)

@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -45,6 +47,54 @@ func (s *session) AccessSecrets(ctx context.Context, afterProject tracker.Projec
 	return result, mapError(ctx, rows.Err())
 }
 
+func (s *session) FirstProjectAccessSecret(ctx context.Context, kind string) (accessstore.Secret, error) {
+	if kind == "" {
+		return accessstore.Secret{}, corestore.ErrInvalidPage
+	}
+	row := accessstore.Secret{OrganizationID: s.organization, Kind: kind}
+	query := `SELECT secret.project_id,secret.organization_slug,secret.ciphertext,secret.nonce,secret.wrapped_data_key,secret.master_key_version,secret.updated_at
+ FROM project_secrets secret JOIN projects project ON project.organization_id=secret.organization_id AND project.id=secret.project_id
+ WHERE secret.organization_id=$1 AND secret.kind=$2 AND project.deleted_at IS NULL
+ ORDER BY project.scheduling_rank,project.id LIMIT 1`
+	if !s.readOnly {
+		query += ` FOR SHARE OF secret,project`
+	}
+	err := s.db.QueryRow(ctx, query, s.organization, kind).Scan(&row.ProjectID, &row.OrganizationSlug, &row.Envelope.Ciphertext, &row.Envelope.Nonce, &row.Envelope.WrappedKey, &row.Envelope.Version, &row.UpdatedAt)
+	return row, mapError(ctx, err)
+}
+
+func (s *session) PromoteAccessSecret(ctx context.Context, prior, row accessstore.Secret, audit accessstore.SecretAudit) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	if prior.OrganizationID != row.OrganizationID || prior.ProjectID == "" || row.ProjectID != "" || prior.Kind == "" || prior.Kind != row.Kind || row.UpdatedAt.IsZero() || audit.OrganizationID != row.OrganizationID || audit.ProjectID != "" || audit.Kind != row.Kind || audit.KeyVersion != row.Envelope.Version {
+		return accessstore.ErrDenied
+	}
+	result, err := s.db.Exec(ctx, `WITH source AS MATERIALIZED (
+ SELECT secret.project_id,secret.organization_slug,secret.ciphertext,secret.nonce,secret.wrapped_data_key,secret.master_key_version,secret.updated_at
+ FROM project_secrets secret JOIN projects project ON project.organization_id=secret.organization_id AND project.id=secret.project_id
+ WHERE secret.organization_id=$1 AND secret.kind=$2 AND project.deleted_at IS NULL
+ ORDER BY project.scheduling_rank,project.id LIMIT 1 FOR SHARE OF secret,project
+ )
+ INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at)
+ SELECT $1,$2,$3,$4,$5,$6,$7,$8 FROM source
+ WHERE source.project_id=$9 AND source.organization_slug=$10 AND source.ciphertext=$11 AND source.nonce=$12 AND source.wrapped_data_key=$13 AND source.master_key_version=$14 AND source.updated_at=$15
+ ON CONFLICT (organization_id,kind) DO NOTHING`, s.organization, row.Kind, row.OrganizationSlug, row.Envelope.Ciphertext, row.Envelope.Nonce, row.Envelope.WrappedKey, row.Envelope.Version, row.UpdatedAt,
+		prior.ProjectID, prior.OrganizationSlug, prior.Envelope.Ciphertext, prior.Envelope.Nonce, prior.Envelope.WrappedKey, prior.Envelope.Version, prior.UpdatedAt)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if result.RowsAffected() != 1 {
+		if _, err := s.AccessSecret(ctx, "", row.Kind); err == nil {
+			return corestore.ErrUniqueViolation
+		} else if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		return corestore.ErrRevisionConflict
+	}
+	return s.RecordAccessSecretAudit(ctx, audit)
+}
+
 func (s *session) StoreAccessSecret(ctx context.Context, row accessstore.Secret, audit accessstore.SecretAudit) error {
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err
@@ -57,6 +107,10 @@ func (s *session) StoreAccessSecret(ctx context.Context, row accessstore.Secret,
 		_, err = s.db.Exec(ctx, `INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
  ON CONFLICT(organization_id,kind) DO UPDATE SET organization_slug=excluded.organization_slug,ciphertext=excluded.ciphertext,nonce=excluded.nonce,wrapped_data_key=excluded.wrapped_data_key,master_key_version=excluded.master_key_version,updated_at=excluded.updated_at`, row.OrganizationID, row.Kind, row.OrganizationSlug, row.Envelope.Ciphertext, row.Envelope.Nonce, row.Envelope.WrappedKey, row.Envelope.Version, row.UpdatedAt)
 	} else {
+		if _, err := s.queries.ShareActiveProject(ctx, pgquery.ShareActiveProjectParams{OrganizationID: s.organization, ID: row.ProjectID}); err != nil {
+			return mapError(ctx, err)
+		}
+
 		_, err = s.db.Exec(ctx, `INSERT INTO project_secrets(organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
  ON CONFLICT(organization_id,project_id,kind) DO UPDATE SET organization_slug=excluded.organization_slug,ciphertext=excluded.ciphertext,nonce=excluded.nonce,wrapped_data_key=excluded.wrapped_data_key,master_key_version=excluded.master_key_version,updated_at=excluded.updated_at`, row.OrganizationID, row.ProjectID, row.Kind, row.OrganizationSlug, row.Envelope.Ciphertext, row.Envelope.Nonce, row.Envelope.WrappedKey, row.Envelope.Version, row.UpdatedAt)
 	}

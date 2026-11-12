@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -210,6 +209,20 @@ func (s *Service) tenantProjectWorkflowHistory(ctx context.Context, organization
 		if len(rows) > limit {
 			more = true
 			rows = rows[:limit]
+		}
+		for index := range rows {
+			row := &rows[index]
+			if row.ChangeID != "" || row.PullRequestURL != "" || row.Repository == "" || !validCommitID(row.SourceCommit) {
+				continue
+			}
+			landing, err := reader.ProjectPolicyLanding(ctx, project, row.Repository, row.SourceCommit, "")
+			if errors.Is(err, corestore.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			row.ChangeID, row.PullRequestURL = landing.ChangeID, landing.PullRequestURL
 		}
 		definitions = make(map[string]policystore.Revision, len(rows)*2)
 		for _, row := range rows {
@@ -734,6 +747,10 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 		Source:         observation.Source,
 		Revision:       revision,
 	}
+	preparedLanding, err := s.prepareObservedPolicyLanding(ctx, scope, observation)
+	if err != nil {
+		return err
+	}
 	apply := true
 	writeObservation := func(writer tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, writer, scope, true); err != nil {
@@ -780,7 +797,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 		if !accepted || !apply {
 			return nil
 		}
-		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, canonical, previous, previousRevision, record.Revision, review, now)
+		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, canonical, previous, previousRevision, record.Revision, review, preparedLanding, now)
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, writeObservation)
 	if !errors.Is(err, projectstore.ErrStateInUse) {
@@ -859,7 +876,54 @@ func sameTenantProjectPolicyRevisionContent(left, right policystore.Revision) bo
 	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyID == right.PolicyID && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
 }
 
-func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope nativeScope, project projectstore.Record, reporter string, observation policy.Observation, canonical policy.Descriptor, previous policy.Approval, previousRevision, observedRevision policystore.Revision, review preparedDefaultReviewPolicy, now time.Time) error {
+func (s *Service) prepareObservedPolicyLanding(ctx context.Context, scope nativeScope, observation policy.Observation) (eventstore.PolicyLanding, error) {
+	source := observation.Source
+	if observation.Workflow == nil || source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != observation.Workflow.Revision {
+		return eventstore.PolicyLanding{}, nil
+	}
+	var landing eventstore.PolicyLanding
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		project, err := r.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		repository := project.Settings.CheckoutRepository
+		if repository == "" {
+			repository = project.Settings.Repository
+		}
+		if repository == "" || !strings.EqualFold(repository, source.Repository) {
+			return nil
+		}
+		landing, err = r.ProjectPolicyLanding(ctx, scope.project, repository, source.Commit, source.DefaultBranch)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return eventstore.PolicyLanding{}, err
+	}
+	if landing.Native != nil {
+		frozen, err := eventstore.NewContent(s.runDetailStore()).VersionLanding(ctx, *landing.Native)
+		if err != nil {
+			return eventstore.PolicyLanding{}, err
+		}
+		landing.Actor = frozen.Actor.PrincipalID
+	}
+	return landing, nil
+}
+
+func samePolicyLandingSource(left, right eventstore.PolicyLanding) bool {
+	if left.Native != nil && right.Native != nil {
+		left.Actor, right.Actor = "", ""
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope nativeScope, project projectstore.Record, reporter string, observation policy.Observation, canonical policy.Descriptor, previous policy.Approval, previousRevision, observedRevision policystore.Revision, review preparedDefaultReviewPolicy, preparedLanding eventstore.PolicyLanding, now time.Time) error {
 	descriptor := observation.Descriptor
 	current, err := writer.ProjectPolicy(ctx, scope.project)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -896,6 +960,10 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 			if err != nil {
 				return err
 			}
+			if !samePolicyLandingSource(landing, preparedLanding) {
+				return nil
+			}
+			landing.Actor = preparedLanding.Actor
 		}
 		if !carryover && (sourceUnavailable || !source.DefaultBranchReachable && landing.ChangeID == "" && landing.PullRequestURL == "") {
 			return nil
@@ -1076,116 +1144,6 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	return s.nativeAPIError(c, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone, publicMessage: true})
 }
 
-func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change, landing policyLanding) (result policy.Approval, resultErr error) {
-	if change.ObservedPolicyID != "" {
-		if !reflect.ValueOf(change.Policy).IsZero() {
-			return result, nativePublicInvalid("Supply either observed_policy_id or policy, not both")
-		}
-		now, err := d.currentTime()
-		if err != nil {
-			return result, err
-		}
-		observed, err := readObservedPolicies(ctx, tx, scope, policy.Descriptor{}, now)
-		if err != nil {
-			return result, err
-		}
-		for _, candidate := range observed {
-			if candidate.Policy.ID == change.ObservedPolicyID {
-				change.Policy = candidate.Policy
-				break
-			}
-		}
-		if change.Policy.ID == "" {
-			return result, nativePublicInvalid("observed_policy_id does not identify a current authorized observation in this project")
-		}
-	}
-	resolved, err := workflowconfig.ResolveSharedPolicy(change.Policy)
-	if err != nil {
-		return result, nativeInvalid(err.Error())
-	}
-	change.Policy = resolved
-	if err := validateWorkflowPolicy(ctx, tx, scope, change.Policy); err != nil {
-		return result, err
-	}
-	var current string
-	err = tx.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", scope).Scan(&current)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return result, err
-	}
-	if current != change.ExpectedID && current != change.Policy.ID {
-		return result, policyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
-	}
-	now, err := d.currentTime()
-	if err != nil {
-		return result, err
-	}
-	now = payloadTimestamp(ctx, now)
-	carryover := false
-	if current != "" && current != change.Policy.ID {
-		previous, err := requireProjectPolicy(ctx, tx, scope)
-		if err != nil {
-			return result, err
-		}
-		carryover = change.Policy.SameAuthoredInputs(previous.Policy)
-	}
-	if current != change.Policy.ID && !carryover {
-		organization, project, native := strings.Cut(scope, "/")
-		if native && !strings.HasPrefix(scope, "repository:") {
-			nativeScope := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}
-			var profile, source string
-			if err := tx.QueryRowContext(ctx, "SELECT profile, workflow_source FROM projects WHERE organization_id=? AND id=?", organization, project).Scan(&profile, &source); err != nil {
-				return result, err
-			}
-			if profile == "native" {
-				if change.Policy.Workflow == nil && source != "" {
-					return result, policyMismatch("Repository-controlled workflow requires a resolved workflow in the policy descriptor; inspect the repository definition with an updated runner")
-				}
-				if change.Policy.Workflow != nil {
-					if err := applyNativeProjectStates(ctx, tx, nativeScope, change.Policy.Workflow.States, now); err != nil {
-						return result, err
-					}
-					revision := change.Policy.Workflow.Revision
-					if revision == "" {
-						revision = change.Policy.SourceRevision
-					}
-					if _, err := tx.ExecContext(ctx, "UPDATE projects SET workflow_source=?, workflow_source_revision=?, workflow_markdown='', integration_revision=integration_revision+1 WHERE organization_id=? AND id=?", change.Policy.Workflow.Source, revision, organization, project); err != nil {
-						return result, err
-					}
-				}
-			}
-		}
-	}
-	if current != change.Policy.ID && (change.Policy.Workflow != nil || carryover) {
-		if err := recordWorkflowApply(ctx, tx, scope, actor, current, change.Policy, now, landing); err != nil {
-			return result, err
-		}
-	}
-	raw, err := json.Marshal(change.Policy)
-	if err != nil {
-		return result, err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at, source_digest, workflow_revision,gate_github_pull_request) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (scope, policy_id) DO UPDATE SET approved_by = excluded.approved_by, approved_at = excluded.approved_at,gate_github_pull_request=excluded.gate_github_pull_request WHERE policy_revisions.approved_by = 'runner-report' OR ?", scope, change.Policy.ID, string(raw), actor, formatHubTime(now), change.Policy.SourceDigest, policyWorkflowRevision(change.Policy), change.Policy.Gates.GitHubPullRequest, current != change.Policy.ID); err != nil {
-		return result, err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT (scope) DO UPDATE SET policy_id = excluded.policy_id WHERE project_policies.policy_id IS NOT excluded.policy_id", scope, change.Policy.ID); err != nil {
-		return result, err
-	}
-	reviewChanged, err := followDefaultChangeReviewPolicy(ctx, tx, scope, change.Policy)
-	if err != nil {
-		return result, err
-	}
-	if current != change.Policy.ID || reviewChanged {
-		if err := resetNativeBoardPolicy(ctx, tx, scope); err != nil {
-			return result, err
-		}
-	}
-	result, err = requireProjectPolicy(ctx, tx, scope)
-	if err != nil {
-		return result, err
-	}
-	return result, nil
-}
-
 type preparedDefaultReviewPolicy struct {
 	current eventstore.ReviewPolicy
 	next    eventstore.ReviewPolicy
@@ -1275,74 +1233,6 @@ func defaultChangeReviewPolicy(descriptor policy.Descriptor) tracker.ChangeRevie
 // gate, the way the default does, so a descriptor approval may rewrite it.
 func followsRepositoryGate(rules tracker.ChangeReviewPolicy) bool {
 	return rules.ID != "" && len(rules.RequiredChecks) == 0
-}
-
-// followDefaultChangeReviewPolicy keeps a native project's review policy usable
-// across a repository policy approval. A project with no review policy, or
-// one that pins no checks, gets the default under the approved descriptor. A
-// review policy an administrator shaped by pinning checks is never
-// rewritten: it goes stale, and publishing says so until the administrator
-// approves it again against the new descriptor. A descriptor whose gates the
-// default cannot satisfy leaves the project as it is.
-func followDefaultChangeReviewPolicy(ctx context.Context, tx *sql.Tx, scope string, descriptor policy.Descriptor) (bool, error) {
-	organization, project, ok := strings.Cut(scope, "/")
-	if !ok || strings.HasPrefix(scope, "repository:") {
-		return false, nil
-	}
-	native := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}
-	current, err := readChangePolicy(ctx, tx, native)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-	rules, follow := defaultFollowingReviewPolicy(current, descriptor)
-	if !follow {
-		return false, nil
-	}
-	raw, err := json.Marshal(rules)
-	if err != nil {
-		return false, err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO change_review_policies (organization_id, project_id, policy_json) VALUES (?, ?, ?)
-ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.policy_json`, native.organization, native.project, string(raw))
-	return err == nil, err
-}
-
-// backfillChangeReviewPolicies gives every project with an approved
-// repository policy the review policy approving it now seeds: projects
-// approved before seeding existed had none, so no run could publish a
-// version, and projects seeded while the default required review follow the
-// repository gate like any other default. It is hub migration 40.
-func backfillChangeReviewPolicies(ctx context.Context, tx *sql.Tx) error {
-	scopes, err := approvedProjectScopes(ctx, tx)
-	if err != nil {
-		return err
-	}
-	for _, scope := range scopes {
-		approval, err := requireProjectPolicy(ctx, tx, scope)
-		if err != nil {
-			continue
-		}
-		if _, err := followDefaultChangeReviewPolicy(ctx, tx, scope, approval.Policy); err != nil {
-			return fmt.Errorf("backfill review policy for %s: %w", scope, err)
-		}
-	}
-	return nil
-}
-
-func approvedProjectScopes(ctx context.Context, tx *sql.Tx) (scopes []string, err error) {
-	rows, err := tx.QueryContext(ctx, `SELECT scope FROM project_policies WHERE scope NOT LIKE 'repository:%' ORDER BY scope`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-	for rows.Next() {
-		var scope string
-		if err := rows.Scan(&scope); err != nil {
-			return nil, err
-		}
-		scopes = append(scopes, scope)
-	}
-	return scopes, rows.Err()
 }
 
 type policyQuerier interface {

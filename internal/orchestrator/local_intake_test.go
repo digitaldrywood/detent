@@ -1,24 +1,17 @@
 package orchestrator
 
 import (
-	"path/filepath"
 	"reflect"
-	"strconv"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestLocalIntakeCohortLifecycle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	queued := dispatchTestIssue("queued", "Todo")
@@ -34,29 +27,16 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Rework", "Human Review"}},
 		{Name: "Done", Terminal: true}, {Name: "Blocked"}, {Name: "Backlog"},
 	}, reviewed: new(false)}
-	dbPath := filepath.Join(t.TempDir(), "runtime.db")
-	attempts := openCompletionDeferralStoreWithoutCleanup(t, dbPath)
 	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "local"}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{SourceState: "Human Review", ReworkState: "Rework"}})
-	orch := &Orchestrator{cfg: cfg, projectID: "local", connector: tracker, workAttempts: attempts}
+	orch := &Orchestrator{cfg: cfg, projectID: "local", connector: tracker}
 	state := newState(cfg)
-	id, ok := orch.startDurableWorkAttempt(t.Context(), &state, admitted, 1, now, "", runpkg.RunModeImplement, completionSourceStartRecord{}, orch.cfg.Policy)
-	if !ok {
-		t.Fatal("initial local admission failed")
-	}
+	state.localAdmitted[admitted.ID] = struct{}{}
+	state.localAdmitted[blocked.ID] = struct{}{}
 	cancelled := false
-	state.Running[admitted.ID] = Running{Issue: admitted, WorkAttemptID: id, StartedAt: now, Mode: runpkg.RunModeImplement, cancel: func() { cancelled = true }}
+	state.Running[admitted.ID] = Running{Issue: admitted, StartedAt: now, Mode: runpkg.RunModeImplement, cancel: func() { cancelled = true }}
 	orch.setLocalIntakeDisabled(true)
 	if cancelled || state.Draining {
 		t.Fatal("intake off stopped the worker or entered shutdown drain")
-	}
-	if _, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "local", IssueID: foreign.ID, WorkerType: "runner", StartedAt: now, WorkerMetadataJSON: `{}`}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "other", IssueID: queued.ID, WorkerType: "agent", StartedAt: now, WorkerMetadataJSON: `{"run_mode":"implement"}`}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "local", IssueID: blocked.ID, WorkerType: "agent", StartedAt: now, WorkerMetadataJSON: `{"run_mode":"implement"}`}); err != nil {
-		t.Fatal(err)
 	}
 	change := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: "head", Files: 1}
 	complete := func(mode string, result runpkg.RunResult) {
@@ -67,31 +47,14 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 	if got := tracker.stateIssues[2].State; got != "Human Review" {
 		t.Fatalf("implementation completion = %s", got)
 	}
-	for i := range 60 {
-		id, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "local", IssueID: "old-other-" + strconv.Itoa(i), WorkerType: "agent", StartedAt: now.Add(time.Minute), WorkerMetadataJSON: `{"run_mode":"implement"}`})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := attempts.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(2 * time.Minute), TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := attempts.Close(); err != nil {
-		t.Fatal(err)
-	}
-	attempts = openCompletionDeferralStore(t, dbPath)
-	orch = &Orchestrator{cfg: cfg, projectID: "local", connector: tracker, workAttempts: attempts}
-	orch.setLocalIntakeDisabled(true)
-	state = newState(cfg)
-	orch.recoverLocalAdmissions(t.Context(), &state)
 	state.BoardIssues = cloneIssues(tracker.stateIssues)
 	orch.snapshotLocalIntake(&state)
 	if !reflect.DeepEqual(state.LocalIntake.Remaining, []string{admitted.ID}) || !reflect.DeepEqual(state.LocalIntake.Blocked, []string{blocked.ID}) {
-		t.Fatalf("restarted cohort = %+v", state.LocalIntake)
+		t.Fatalf("in-process cohort = %+v", state.LocalIntake)
 	}
 	for _, issue := range []connector.Issue{queued, backlog, foreign} {
 		if orch.localIntakeAllows(&state, issue) {
-			t.Fatalf("unadmitted issue %s eligible after restart", issue.ID)
+			t.Fatalf("unadmitted issue %s eligible while intake is disabled", issue.ID)
 		}
 	}
 	for _, turn := range []struct {
@@ -109,11 +72,7 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 			if !orch.localIntakeAllows(&state, issue) {
 				t.Fatal("admitted continuation suppressed")
 			}
-			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, issue, 1, now, "", turn.mode, completionSourceStartRecord{}, orch.cfg.Policy)
-			if !ok {
-				t.Fatal("continuation attempt failed")
-			}
-			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: id, StartedAt: now, Mode: turn.mode}
+			state.Running[issue.ID] = Running{Issue: issue, StartedAt: now, Mode: turn.mode}
 			tracker.reviewed = new(true)
 			result := runpkg.RunResult{FinalState: FinalStateCompleted, NativeChange: change, NativeLanding: turn.landing}
 			if turn.landing != nil && turn.landing.Landed {
@@ -144,28 +103,20 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 	}
 }
 
-func TestLocalIntakeDispatchesOnlyDurableContinuations(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
+func TestLocalIntakeDispatchesOnlyAdmittedContinuations(t *testing.T) {
 	for _, lane := range []string{"In Progress", "Rework", "Merging"} {
 		t.Run(lane, func(t *testing.T) {
 			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "local"}, LocalIntakeDisabled: true, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}})
 			admitted := dispatchTestIssue("admitted", lane)
 			queued := dispatchTestIssue("queued", "Todo")
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{admitted, queued}}
-			attempts := openCompletionDeferralStore(t, filepath.Join(t.TempDir(), "runtime.db"))
-			if _, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "local", IssueID: admitted.ID, WorkerType: "agent", StartedAt: time.Now().Add(-time.Hour), WorkerMetadataJSON: `{"run_mode":"implement"}`}); err != nil {
-				t.Fatal(err)
-			}
 			backend := newWorkerHostRunner()
-			orch, err := New(cfg, Dependencies{Connector: tracker, Runner: backend, WorkAttempts: attempts})
+			orch, err := New(cfg, Dependencies{Connector: tracker, Runner: backend})
 			if err != nil {
 				t.Fatal(err)
 			}
 			state := newState(cfg)
-			orch.recoverLocalAdmissions(t.Context(), &state)
+			state.localAdmitted[admitted.ID] = struct{}{}
 			if outcome := orch.dispatchIssueWithAdmission(t.Context(), &state, queued, 1, time.Now(), "", false, nil); outcome.dispatched {
 				t.Fatal("unstarted Todo acquired a local worker")
 			}

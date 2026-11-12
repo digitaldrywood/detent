@@ -15,16 +15,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
+type hostedRuntimePlanMode uint8
+
+const (
+	hostedRuntimeReplacePlans hostedRuntimePlanMode = iota
+	hostedRuntimeInitializePlans
+)
+
 type publishedRuntimeCatalogWriter interface {
 	RuntimePrepared(context.Context) (string, error)
 	ApplyPublishedRuntimeCatalog(context.Context, string, billingstore.RuntimeRevision, []billingstore.Plan, []billingstore.Price, []billingstore.PlanAudit) error
 }
 
 func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool) error {
-	return d.applyRuntimeRecordsAtRevision(ctx, plans, prices, actor, reason, stage, validate, nil)
+	return d.applyRuntimeRecordsAtRevision(ctx, plans, prices, actor, reason, stage, validate, hostedRuntimeReplacePlans, nil)
 }
 
-func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool, expected *string) error {
+func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool, planMode hostedRuntimePlanMode, expected *string) error {
 	if d.billingAuditStore == nil {
 		return errors.New("hosted billing audit storage is unavailable")
 	}
@@ -118,12 +125,15 @@ func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans Host
 				}
 			} else if err != nil {
 				return err
-			} else {
-				visible, err := w.RuntimePublished(ctx, stored.RuntimeID)
-				if err != nil {
-					return err
+			} else if planMode == hostedRuntimeInitializePlans && stored.RuntimeID != revision.ID {
+				published := stored.RuntimeID == ""
+				if !published {
+					published, err = w.RuntimePublished(ctx, stored.RuntimeID)
+					if err != nil {
+						return err
+					}
 				}
-				if !visible {
+				if published {
 					if err := w.SetBillingPlanRuntime(ctx, ref, revision.ID); err != nil {
 						return err
 					}

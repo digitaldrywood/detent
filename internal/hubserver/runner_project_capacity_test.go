@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -18,7 +20,7 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 	for _, shared := range []bool{false, true} {
 		t.Run(fmt.Sprintf("shared host %t", shared), func(t *testing.T) {
 			now := time.Date(2026, 10, 16, 20, 0, 0, 0, time.UTC)
-			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
+			cfg := Config{now: func() time.Time { return now }}
 			first := newNativeFixture(t, openTestService(t, cfg), "", "first-project")
 			other := newNativeFixture(t, first.service, first.project.OrganizationID, "other-project")
 			r := prepareRunner(t, first, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
@@ -162,7 +164,7 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 			if err := first.service.Close(); err != nil {
 				t.Fatal(err)
 			}
-			first.service = openTestService(t, cfg)
+			first.service = reopenPostgresNativeService(t, first.service)
 			other.service = first.service
 			if stored = read(r); stored.ProjectCapacityLimits[first.project.ID] != 0 || stored.ProjectUsed[first.project.ID] != 4 {
 				t.Fatalf("restart lost limits or usage=%+v", stored)
@@ -172,8 +174,12 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 				t.Fatalf("runner limits crossed identities=%+v", siblingStored)
 			}
 			expired := winners[0]
-			if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(now), expired.lease.ID); err != nil {
+			result, err := usagePostgresAdmin(t, first.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=acquired_at+($1::timestamptz-expires_at),renewed_at=renewed_at+($1::timestamptz-expires_at),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3 AND fencing_token=$4 AND released_at IS NULL", now, first.project.OrganizationID, expired.lease.ID, expired.lease.FencingToken)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if count, err := result.RowsAffected(); err != nil || count != 1 {
+				t.Fatalf("expired lease rows=%d error=%v", count, err)
 			}
 			renewal := tracker.NativeLeaseMutation{FencingToken: expired.lease.FencingToken, TTLSeconds: 300}
 			renewPath := expired.base + "/leases/" + string(expired.lease.ID) + "/renew"
@@ -186,8 +192,12 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 			claim(r, first, "inherited-total", http.StatusOK)
 			claim(r, other, "inherited-ninth", http.StatusConflict)
 			expired = winners[1]
-			if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(now), expired.lease.ID); err != nil {
+			result, err = usagePostgresAdmin(t, first.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=acquired_at+($1::timestamptz-expires_at),renewed_at=renewed_at+($1::timestamptz-expires_at),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3 AND fencing_token=$4 AND released_at IS NULL", now, first.project.OrganizationID, expired.lease.ID, expired.lease.FencingToken)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if count, err := result.RowsAffected(); err != nil || count != 1 {
+				t.Fatalf("expired lease rows=%d error=%v", count, err)
 			}
 			item := first.create(t, "renewal-race-contender")
 			contender := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: item.WorkItemID, MachineID: r.binding.MachineID, SessionID: "renewal-race-contender", TTLSeconds: 300, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
@@ -224,7 +234,9 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 func TestRunnerProjectCapacityAdministration(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "project-capacity-admin")
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-capacity-admin")
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations (id, name, created_at) VALUES ('org_foreign_capacity', 'Foreign organization', ?)", testTimestamp); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_foreign_capacity", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_foreign_capacity", Name: "Foreign organization", Slug: "foreign-capacity", CreatedAt: f.service.config.now()})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	foreign := newNativeFixture(t, f.service, "org_foreign_capacity", "foreign-capacity-admin")

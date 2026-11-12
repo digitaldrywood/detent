@@ -13,6 +13,8 @@ import (
 
 var ErrTransactionRequired = errors.New("access mutation requires the shared tenant transaction")
 
+const MaxAuditPruneBatch = 5000
+
 var ErrDenied = errors.New("tenant access is unavailable or inactive")
 
 type LookupError struct {
@@ -236,6 +238,14 @@ type ProjectAccessPageReader interface {
 	ProjectAccessPage(context.Context, ProjectAccessFilter) ([]ProjectAccess, error)
 }
 
+type InstanceOrganizationPageReader interface {
+	AccessInstanceOrganizationPage(context.Context, string, string, int, int) ([]Organization, bool, error)
+}
+
+type CredentialMetadataPageReader interface {
+	AccessCredentialMetadataPage(context.Context, int, int) ([]Credential, bool, error)
+}
+
 type ProjectAccessCleaner interface {
 	DeleteAccessProjectGrants(context.Context, tracker.ProjectID) error
 }
@@ -276,6 +286,7 @@ type Reader interface {
 	AuthorizeAccess(context.Context, Authority, time.Time) (Member, error)
 	AccessSecret(context.Context, tracker.ProjectID, string) (Secret, error)
 	AccessSecrets(context.Context, tracker.ProjectID, string, int) ([]Secret, error)
+	FirstProjectAccessSecret(context.Context, string) (Secret, error)
 }
 
 type Writer interface {
@@ -284,6 +295,8 @@ type Writer interface {
 	UpdateAccessKeyAudit(context.Context, int64, string, string, tracker.ProjectID, string, int) error
 	SyncHostedAdministratorProjectAccess(context.Context, string, string) error
 	RecordAccessAudit(context.Context, Audit) (int64, error)
+	PruneAccessAuditReads(context.Context, int) (int, error)
+	PruneAccessAuditsBefore(context.Context, time.Time, int) (int, error)
 	EnsureAccessCredential(context.Context, Credential) error
 	SetAccessTransactionInvitation(context.Context, string, string) error
 	DeleteAccessTokenGrant(context.Context, string, tracker.ProjectID) error
@@ -317,6 +330,7 @@ type Writer interface {
 	RevokeAccessMember(context.Context, string, time.Time) error
 	RotateAccessCredential(context.Context, string, string, string, time.Time) error
 	RenewAccessCredential(context.Context, string, string, string, time.Time, time.Time) error
+	ScopeAccessCredentialToNative(context.Context, string, time.Time) error
 	RevokeAccessCredential(context.Context, string, time.Time) error
 	RevokeAccessSession(context.Context, string, time.Time) error
 	ConsumeAccessTransaction(context.Context, string, string, time.Time) (LoginTransaction, error)
@@ -325,6 +339,11 @@ type Writer interface {
 	DeleteAccessInvitation(context.Context, string) (string, error)
 	DeleteAccessProjectGrant(context.Context, string, tracker.ProjectID) error
 	StoreAccessSecret(context.Context, Secret, SecretAudit) error
+	PromoteAccessSecret(context.Context, Secret, Secret, SecretAudit) error
 	DeleteAccessSecret(context.Context, tracker.ProjectID, string, SecretAudit) error
 	RecordAccessSecretAudit(context.Context, SecretAudit) error
+}
+
+type SessionRevocationReader interface {
+	AccessSessionMemberRevoked(context.Context, string) (bool, error)
 }

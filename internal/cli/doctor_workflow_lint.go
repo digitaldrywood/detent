@@ -8,9 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
-	"time"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
@@ -18,15 +16,6 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/gate"
-)
-
-const (
-	doctorWorkflowWaitStatusLiveness = 15 * time.Minute
-	doctorWorkflowWaitStatusWindow   = 24 * time.Hour
-	doctorWorkflowCeilingWindow      = 24 * time.Hour
-	doctorWorkflowCeilingSampleLimit = 50
-	doctorWorkflowCeilingMinAttempts = 5
-	doctorWorkflowCeilingShare       = 0.20
 )
 
 var doctorJobLabelConditionPatterns = []*regexp.Regexp{
@@ -43,29 +32,7 @@ type doctorShipSkill struct {
 	Path    string
 }
 
-type doctorWaitStatusIncident struct {
-	Issue       string
-	Lane        string
-	FirstSkipAt time.Time
-	LastSkipAt  time.Time
-	SkipCount   int64
-}
-
-type doctorCeilingHistory struct {
-	Attempts          int
-	CeilingDeaths     int
-	MaxObservedTokens int64
-}
-
-func doctorRuntimeStorePath(configPath string) string {
-	configPath = strings.TrimSpace(configPath)
-	if configPath == "" {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(configPath), "detent.db")
-}
-
-func checkDoctorWorkflowLint(ctx context.Context, projectID string, project globalconfig.Project, cfg workflowconfig.Config, prompt string, workflowTokenThreshold int, storePath string, deps doctorDeps) []doctorCheck {
+func checkDoctorWorkflowLint(ctx context.Context, projectID string, project globalconfig.Project, cfg workflowconfig.Config, prompt string, workflowTokenThreshold int, deps doctorDeps) []doctorCheck {
 	workflowPath := doctorWorkflowLintPath(project)
 	checks := make([]doctorCheck, 0)
 	if sizeCheck, ok := checkDoctorWorkflowPromptSize(projectID, workflowPath, prompt, cfg.Agent.Skills.Path, workflowTokenThreshold); ok {
@@ -82,7 +49,6 @@ func checkDoctorWorkflowLint(ctx context.Context, projectID string, project glob
 	checks = append(checks, checkDoctorRequiredCheckTriggers(projectID, project, cfg)...)
 	checks = append(checks, checkDoctorGateCommand(ctx, projectID, workflowPath, project, cfg, deps)...)
 	checks = append(checks, checkDoctorShipSkill(projectID, workflowPath, cfg, deps)...)
-	checks = append(checks, checkDoctorWorkflowRuntimeLint(ctx, projectID, workflowPath, storePath, cfg, deps)...)
 	return checks
 }
 
@@ -687,174 +653,4 @@ func doctorCodexPluginEnabled(configPath string, plugin string, provider string)
 		}
 	}
 	return false, nil
-}
-
-func checkDoctorWorkflowRuntimeLint(ctx context.Context, projectID string, workflowPath string, storePath string, cfg workflowconfig.Config, deps doctorDeps) []doctorCheck {
-	if strings.TrimSpace(storePath) == "" || deps.openSQLiteReadOnly == nil || deps.now == nil {
-		return nil
-	}
-	db, err := deps.openSQLiteReadOnly(ctx, storePath)
-	if err != nil {
-		return nil
-	}
-
-	now := deps.now()
-	checks := make([]doctorCheck, 0, 2)
-	if gate.NormalizeKind(cfg.Gate.Kind) == gate.KindArtifact {
-		incidents, err := doctorWaitStatusIncidents(ctx, db, projectID, cfg, now)
-		if err == nil && len(incidents) > 0 {
-			items := make([]string, 0, len(incidents))
-			for _, incident := range incidents {
-				items = append(items, fmt.Sprintf("%s in %s for %s (%d skips)", incident.Issue, incident.Lane, now.Sub(incident.FirstSkipAt).Round(time.Minute), incident.SkipCount))
-			}
-			checks = append(checks, doctorCheck{
-				Name:   "Project " + projectID + " workflow lint wait-status liveness",
-				Status: doctorWarn,
-				Detail: fmt.Sprintf("%s has active attempt==0 items continuously skipped for artifact_gate_wait_status beyond %s with gate.artifact.wait_statuses=%s: %s", workflowPath, doctorWorkflowWaitStatusLiveness, strings.Join(cfg.Gate.Artifact.WaitStatuses, ","), strings.Join(items, "; ")),
-				Hint:   fmt.Sprintf("Remove creation-state values from gate.artifact.wait_statuses in %s, seed a dispatchable status, or move the listed items to a dispatchable status.", workflowPath),
-			})
-		}
-	}
-	if cfg.Agent.MaxSessionTokens > 0 {
-		history, err := doctorCeilingAttemptHistory(ctx, db, projectID, cfg.Agent.MaxSessionTokens, now)
-		if err == nil && history.Attempts >= doctorWorkflowCeilingMinAttempts && cfg.Agent.MaxSessionTokens < history.MaxObservedTokens && float64(history.CeilingDeaths)/float64(history.Attempts) >= doctorWorkflowCeilingShare {
-			checks = append(checks, doctorCheck{
-				Name:   "Project " + projectID + " workflow lint session ceiling",
-				Status: doctorWarn,
-				Detail: fmt.Sprintf("%s agent.max_session_tokens=%d is below the observed working-set: %d of %d recent attempts (%.0f%%) terminated token_ceiling_exceeded; max observed tokens=%d; each death re-burns the full ceiling — see #1221", workflowPath, cfg.Agent.MaxSessionTokens, history.CeilingDeaths, history.Attempts, float64(history.CeilingDeaths)*100/float64(history.Attempts), history.MaxObservedTokens),
-				Hint:   fmt.Sprintf("Recalibrate agent.max_session_tokens in %s above the successful working-set with retry headroom, or remove the cap until measured; assume every ceiling retry re-burns the full configured cap.", workflowPath),
-			})
-		}
-	}
-	if err := db.Close(); err != nil {
-		checks = append(checks, doctorCheck{
-			Name:   "Project " + projectID + " workflow lint telemetry",
-			Status: doctorWarn,
-			Detail: fmt.Sprintf("%s workflow lint telemetry at %s could not be closed: %v", workflowPath, storePath, err),
-			Hint:   "Rerun detent doctor and check the SQLite runtime store for filesystem or locking errors.",
-		})
-	}
-	return checks
-}
-
-const doctorWaitStatusIncidentsQuery = `
-WITH issue_summaries AS (
-  SELECT
-    COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned') AS issue_key,
-    MAX(id) AS latest_id,
-    MAX(CASE
-      WHEN COALESCE(result, '') != 'skipped'
-        OR COALESCE(reason, '') != 'artifact_gate_wait_status'
-        OR COALESCE(attempt_number, 0) != 0
-      THEN id
-      ELSE 0
-    END) AS reset_id
-  FROM scheduler_decisions
-  WHERE project_id = ?
-    AND decision_at >= ?
-  GROUP BY issue_key
-), active_issues AS (
-  SELECT
-    summaries.issue_key,
-    COALESCE(latest.lane, '') AS lane,
-    summaries.reset_id
-  FROM issue_summaries AS summaries
-  JOIN scheduler_decisions AS latest ON latest.id = summaries.latest_id
-  WHERE COALESCE(latest.result, '') = 'skipped'
-    AND COALESCE(latest.reason, '') = 'artifact_gate_wait_status'
-    AND COALESCE(latest.attempt_number, 0) = 0
-)
-SELECT
-  active_issues.issue_key,
-  active_issues.lane,
-  MIN(streak.decision_at),
-  MAX(streak.decision_at),
-  COUNT(*)
-FROM active_issues
-JOIN scheduler_decisions AS streak
-  ON COALESCE(NULLIF(streak.identifier, ''), NULLIF(streak.issue_id, ''), NULLIF(streak.issue_url, ''), 'unassigned') = active_issues.issue_key
-  AND streak.id > active_issues.reset_id
-WHERE streak.project_id = ?
-  AND streak.decision_at >= ?
-  AND COALESCE(streak.result, '') = 'skipped'
-  AND COALESCE(streak.reason, '') = 'artifact_gate_wait_status'
-  AND COALESCE(streak.attempt_number, 0) = 0
-GROUP BY active_issues.issue_key, active_issues.lane`
-
-func doctorWaitStatusIncidents(ctx context.Context, db doctorTelemetryStore, projectID string, cfg workflowconfig.Config, now time.Time) ([]doctorWaitStatusIncident, error) {
-	projectID = strings.TrimSpace(projectID)
-	cutoff := now.Add(-doctorWorkflowWaitStatusWindow).UTC().Format(time.RFC3339Nano)
-	rows, err := db.QueryContext(ctx, doctorWaitStatusIncidentsQuery, projectID, cutoff, projectID, cutoff)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	freshness := 2 * time.Duration(cfg.Polling.IntervalMS) * time.Millisecond
-	if freshness < 5*time.Minute {
-		freshness = 5 * time.Minute
-	}
-	incidents := make([]doctorWaitStatusIncident, 0)
-	for rows.Next() {
-		var incident doctorWaitStatusIncident
-		var firstRaw string
-		var lastRaw string
-		if err := rows.Scan(&incident.Issue, &incident.Lane, &firstRaw, &lastRaw, &incident.SkipCount); err != nil {
-			return nil, err
-		}
-		incident.FirstSkipAt, err = doctorWorkflowSessionTimestamp(firstRaw)
-		if err != nil {
-			return nil, err
-		}
-		incident.LastSkipAt, err = doctorWorkflowSessionTimestamp(lastRaw)
-		if err != nil {
-			return nil, err
-		}
-		if now.Sub(incident.FirstSkipAt) <= doctorWorkflowWaitStatusLiveness || now.Sub(incident.LastSkipAt) > freshness || !slices.Contains(cfg.Tracker.ActiveStates, incident.Lane) {
-			continue
-		}
-		incidents = append(incidents, incident)
-	}
-	return incidents, rows.Err()
-}
-
-func doctorCeilingAttemptHistory(ctx context.Context, db doctorTelemetryStore, projectID string, configuredCeiling int64, now time.Time) (doctorCeilingHistory, error) {
-	rows, err := db.QueryContext(ctx, `
-SELECT COALESCE(error_message, ''), COALESCE(metrics_json, '{}')
-FROM work_attempts
-WHERE project_id = ?
-  AND worker_type = 'agent'
-  AND completed_at IS NOT NULL
-  AND completed_at >= ?
-ORDER BY completed_at DESC, id DESC
-LIMIT ?`, strings.TrimSpace(projectID), now.Add(-doctorWorkflowCeilingWindow).UTC().Format(time.RFC3339Nano), doctorWorkflowCeilingSampleLimit)
-	if err != nil {
-		return doctorCeilingHistory{}, err
-	}
-	defer rows.Close()
-
-	var history doctorCeilingHistory
-	for rows.Next() {
-		var errorMessage string
-		var metricsJSON string
-		if err := rows.Scan(&errorMessage, &metricsJSON); err != nil {
-			return doctorCeilingHistory{}, err
-		}
-		history.Attempts++
-		var metrics struct {
-			TotalTokens int64 `json:"total_tokens"`
-		}
-		if err := json.Unmarshal([]byte(metricsJSON), &metrics); err == nil && metrics.TotalTokens > history.MaxObservedTokens {
-			history.MaxObservedTokens = metrics.TotalTokens
-		}
-		if strings.Contains(errorMessage, "session token ceiling exceeded") &&
-			strings.Contains(errorMessage, "source=max_session_tokens") &&
-			doctorWorkflowErrorInt64(errorMessage, "ceiling_tokens") == configuredCeiling {
-			history.CeilingDeaths++
-			if total := doctorWorkflowErrorInt64(errorMessage, "total_tokens"); total > history.MaxObservedTokens {
-				history.MaxObservedTokens = total
-			}
-		}
-	}
-	return history, rows.Err()
 }

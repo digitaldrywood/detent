@@ -48,6 +48,73 @@ func (r *Repository) SetReleasePreference(ctx context.Context, organization trac
 	})
 }
 
+func (r *Repository) LocalReleasePreference(ctx context.Context, organization tracker.OrganizationID, principal, hash string, now time.Time) (accountstore.ReleasePreference, error) {
+	var preference accountstore.ReleasePreference
+	found := false
+	err := r.transaction(ctx, organization, corestore.Serving, true, func(s *session) error {
+		if err := s.authorizeLocalReleasePreference(ctx, principal, hash, now, false); err != nil {
+			return err
+		}
+		err := s.db.QueryRow(ctx, `SELECT version,build_time FROM hosted_release_preferences WHERE organization_id=$1 AND user_id=$2`, organization, "local_"+principal).Scan(&preference.Version, &preference.BuildTime)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return mapError(ctx, err)
+		}
+		found = true
+		return nil
+	})
+	if err == nil && !found {
+		return accountstore.ReleasePreference{}, pgx.ErrNoRows
+	}
+	return preference, err
+}
+
+func (r *Repository) SetLocalReleasePreference(ctx context.Context, organization tracker.OrganizationID, principal, hash string, now time.Time, preference accountstore.ReleasePreference) error {
+	return r.transaction(ctx, organization, corestore.Serving, false, func(s *session) error {
+		if err := s.authorizeLocalReleasePreference(ctx, principal, hash, now, true); err != nil {
+			return err
+		}
+		_, err := s.db.Exec(ctx, `INSERT INTO hosted_release_preferences (organization_id,user_id,version,build_time) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id,user_id) DO UPDATE SET version=excluded.version,build_time=excluded.build_time WHERE excluded.build_time>=hosted_release_preferences.build_time`, organization, "local_"+principal, preference.Version, preference.BuildTime)
+		return mapError(ctx, err)
+	})
+}
+
+func (s *session) authorizeLocalReleasePreference(ctx context.Context, principal, hash string, now time.Time, requireMember bool) error {
+	credential, err := s.AccessCredential(ctx, principal)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return accessstore.ErrDenied
+	}
+	if err != nil {
+		return err
+	}
+	if !credential.Valid(hash, now) || credential.Scope != "admin" || credential.NativeOnly || credential.UserID != "" || credential.MembershipID != "" || credential.KeyScope != "" && credential.KeyScope != "admin" {
+		return accessstore.ErrDenied
+	}
+	var runner bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM runner_identities WHERE organization_id=$1 AND token_id=$2)`, s.organization, principal).Scan(&runner); err != nil {
+		return mapError(ctx, err)
+	}
+	if runner {
+		return accessstore.ErrDenied
+	}
+	member, err := s.AccessMember(ctx, "local_"+principal)
+	if errors.Is(err, corestore.ErrNotFound) {
+		if requireMember {
+			return accessstore.ErrDenied
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !member.Active || member.PrincipalID != principal || member.MembershipID != "local_"+principal || member.Role != "admin" {
+		return accessstore.ErrDenied
+	}
+	return nil
+}
+
 func (r *Repository) DailySummaryPreference(ctx context.Context, organization tracker.OrganizationID, user, membership, principal string) (accountstore.DailySummaryPreference, error) {
 	var preference accountstore.DailySummaryPreference
 	err := r.transaction(ctx, organization, corestore.Serving, true, func(s *session) error {

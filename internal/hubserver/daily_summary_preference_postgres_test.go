@@ -33,7 +33,7 @@ func TestPostgresDailySummaryPreferences(t *testing.T) {
 			}
 			first := f.user(t, "first", "member", "first@example.test", "", "")
 			second := f.user(t, "second", "member", "second@example.test", "", "")
-			disableLegacyPostgresTestHandles(t, f.service, repository)
+			configurePostgresTestRoutes(t, f.service, repository)
 			f.service.config.Hosted.EmailSender = healthEmailSenderFunc(func(context.Context, auth.EmailMessage) error { t.Fatal("unexpected summary delivery"); return nil })
 			if err := f.service.deliverDailySummaries(t.Context(), now); err != nil {
 				t.Fatal(err)

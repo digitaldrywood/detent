@@ -206,6 +206,10 @@ func configurePostgresTenant(t *testing.T, cfg *hubserver.Config, databases ...*
 			t.Error(err)
 		}
 	})
+	deployment, generation := "origin", int64(0)
+	if cfg.Hosted.SharedEntry != nil {
+		deployment, generation = "shared", cfg.Hosted.SharedEntry.Generation
+	}
 	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
 	now := time.Now().UTC()
 	cursorEnvelope, err := keys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
@@ -219,7 +223,7 @@ func configurePostgresTenant(t *testing.T, cfg *hubserver.Config, databases ...*
 		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: "hub_" + strings.ReplaceAll(uuid.NewString(), "-", ""), CursorKey: bytes.Repeat([]byte{1}, 32)}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, AllocationGeneration: 1}); err != nil {
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 			return err
 		}
 		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now}); err != nil {

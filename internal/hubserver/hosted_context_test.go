@@ -138,13 +138,21 @@ func hostedContextData(t *testing.T, reply hostedContextReply, denied bool) json
 
 func seedHostedContextRunner(t *testing.T, f hostedSecurityFixture, id, version string, heartbeat time.Time, revoked bool) {
 	t.Helper()
-	now := formatHubTime(f.service.config.now())
+	now := f.service.config.now().UTC()
+	expires := now.Add(time.Hour)
 	token := "tok_" + id
-	operatorSQL(t, f, `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at,native_only) VALUES(?,?,?,?,'worker',?,?,1)`, token, token, sha256Hex(token), id, now, now)
-	operatorSQL(t, f, `INSERT INTO machines(id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id,token_id) VALUES(?,?,?,1,?,?,?,?,'org_security',?)`, "machine_"+id, id, id, version, formatHubTime(heartbeat), now, now, token)
-	operatorSQL(t, f, `INSERT INTO runner_enrollments(id,organization_id,runner_id,machine_id,token_hash,operations_json,created_at,expires_at,created_by,redeemed_at) VALUES(?,'org_security',?,?,?,'["claim"]',?,?,?,?)`, "enr_"+id, id, "machine_"+id, sha256Hex("enr_"+id), now, formatHubTime(f.service.config.now().Add(time.Hour)), token, now)
-	operatorSQL(t, f, `INSERT INTO runner_identities(id,organization_id,machine_id,token_id,enrollment_id,operations_json,created_at,display_name,capacity_limit,reported_capacity,os,architecture,last_heartbeat_at) VALUES(?,'org_security',?,?,?,'["claim"]',?,?,1,1,'linux','arm64',?)`, id, "machine_"+id, token, "enr_"+id, now, id, formatHubTime(heartbeat))
+	db := hostedPostgresAdmin(t, f.service)
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.ExecContext(t.Context(), query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,created_at,updated_at,native_only) VALUES('org_security',$1,$1,$2,$3,'worker',$4,$4,TRUE)`, token, sha256Hex(token), id, now)
+	exec(`INSERT INTO machines(organization_id,id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES('org_security',$1,$2,$2,1,$3,$4,$5,$5)`, "machine_"+id, id, version, heartbeat, now)
+	exec(`INSERT INTO runner_enrollments(organization_id,id,runner_id,machine_id,token_hash,scope,operations,created_at,expires_at,created_by,redeemed_at) VALUES('org_security',$1,$2,$3,$4,'projects',ARRAY['claim'],$5,$6,$7,$5)`, "enr_"+id, id, "machine_"+id, sha256Hex("enr_"+id), now, expires, token)
+	exec(`INSERT INTO runner_identities(organization_id,runner_id,machine_id,token_id,enrollment_id,scope,operations,created_at,expires_at,display_name,capacity_limit,reported_capacity,os,architecture,last_heartbeat_at) VALUES('org_security',$1,$2,$3,$4,'projects',ARRAY['claim'],$5,$6,$1,1,1,'linux','arm64',$7)`, id, "machine_"+id, token, "enr_"+id, now, expires, heartbeat)
 	if revoked {
-		operatorSQL(t, f, "UPDATE api_tokens SET revoked_at=? WHERE id=?", now, token)
+		exec("UPDATE api_tokens SET revoked_at=$1 WHERE organization_id='org_security' AND id=$2", now, token)
 	}
 }

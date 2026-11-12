@@ -1,85 +1,12 @@
 package hub
 
 import (
-	"bytes"
-	"database/sql"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/digitaldrywood/detent/internal/hubserver"
 )
-
-func TestVerifyDatabaseIntegrityRestoredFixtures(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name, schema string
-		tenant       bool
-		corrupt      bool
-		tables       int
-		wantError    bool
-	}{
-		{"tenant scoped tokenizer", "", true, false, 6, false},
-		{"registry", "CREATE TABLE tenants (id TEXT PRIMARY KEY); INSERT INTO tenants VALUES ('example-one'), ('example-two')", false, false, 1, false},
-		{"auth", "CREATE TABLE sessions (id TEXT PRIMARY KEY); INSERT INTO sessions VALUES ('example-one'), ('example-two')", false, false, 1, false},
-		{"damaged tenant page", "", true, true, 0, true},
-		{"orphaned index page", "CREATE TABLE records (id TEXT PRIMARY KEY); INSERT INTO records VALUES ('example-one'), ('example-two'); PRAGMA writable_schema=ON; DELETE FROM sqlite_schema WHERE type='index'", false, false, 0, true},
-		{"empty", "", false, false, 0, true},
-		{"missing", "", false, false, 0, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			var contents []byte
-			if test.tenant {
-				var err error
-				contents, err = os.ReadFile("testdata/tenant.db")
-				if err != nil {
-					t.Fatal(err)
-				}
-			} else if test.schema != "" {
-				fixture := filepath.Join(t.TempDir(), "fixture.db")
-				db, err := sql.Open("sqlite", fixture)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { db.Close() })
-				if _, err := db.ExecContext(t.Context(), test.schema); err != nil {
-					t.Fatal(err)
-				}
-				if err := db.Close(); err != nil {
-					t.Fatal(err)
-				}
-				contents, err = os.ReadFile(fixture)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.corrupt {
-				contents[len(contents)/2] = 0
-			}
-			restored := filepath.Join(t.TempDir(), "restored.db")
-			if test.name != "missing" {
-				if err := os.WriteFile(restored, contents, 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			tables, err := hubserver.VerifyDatabaseIntegrity(t.Context(), restored)
-			if (err != nil) != test.wantError || tables != test.tables {
-				t.Fatalf("integrity check = (%d, %v), want tables=%d error=%v", tables, err, test.tables, test.wantError)
-			}
-			after, err := os.ReadFile(restored)
-			if test.name == "missing" {
-				if !os.IsNotExist(err) {
-					t.Fatalf("missing database was created: %v", err)
-				}
-			} else if err != nil || !bytes.Equal(contents, after) {
-				t.Fatalf("verification changed restored database: %v", err)
-			}
-		})
-	}
-}
 
 func TestReleaseDeploysToLegacyReceiver(t *testing.T) {
 	t.Parallel()

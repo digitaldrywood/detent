@@ -1,19 +1,36 @@
 package hubserver
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestReportsFilterDimensions(t *testing.T) {
 	f := newUsageHostedFixture(t)
-	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+	session, err := f.service.hostedSessions.Authenticate(t.Context(), f.cookies["owner"].Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, status, err := f.service.hostedSessionCredential(t.Context(), session, apikey.HashToken(f.cookies["owner"].Value))
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("owner credential status=%d error=%v", status, err)
+	}
+	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: credential}
 	to := f.service.config.now().UTC().Truncate(time.Hour)
 	priority := func(value int) *int { return &value }
 	seeds := []struct {
@@ -27,37 +44,85 @@ func TestReportsFilterDimensions(t *testing.T) {
 		{"runner bug", "Done", "bug", "principal_rpt_two", nil, nil},
 		{"cancelled cloud", "Cancelled", "change_request", "principal_rpt_one", []string{"rpt-cloud"}, priority(1)},
 	}
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	ids := map[string]string{}
-	for i, seed := range seeds {
-		issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: seed.name, Body: nativeContractTestBody, State: seed.state, Type: seed.kind, Labels: seed.labels, Priority: seed.priority}, to.Add(-30*time.Hour))
+	admin := hostedPostgresAdmin(t, f.service)
+	content := eventstore.NewContent(f.service.runDetailStore())
+	seedIssue := func(scope nativeScope, id tracker.NativeWorkItemID, number int64, title, state, kind, filer string, labels []string, priority *int, created, closed time.Time, existing bool) tracker.NativeIssue {
+		t.Helper()
+		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: id, Number: int(number), Revision: 1}, Title: title, Body: nativeContractTestBody, State: state, Terminal: state == "Done" || state == "Cancelled", Type: kind, Priority: priority, Labels: labels, Actor: tracker.Actor{Kind: "human", PrincipalID: filer}, CreatedAt: created, UpdatedAt: closed, LastActivityAt: closed}
+		if issue.Terminal {
+			issue.ClosedAt = &closed
+		}
+		from := "Todo"
+		var current corestore.WorkItem
+		if existing {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				current, err = r.WorkItem(t.Context(), scope.project, id)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			issue.Number, issue.Revision = int(current.Number), tracker.Revision(current.Revision+1)
+			from = stringValue(current.WorkflowStateName)
+		}
+		fields, err := f.service.prepareWorkItemFields(t.Context(), scope.organization, workItemRecordPlan{issue: issue, create: !existing})
 		if err != nil {
-			t.Fatalf("seed %s: %v", seed.name, err)
-		}
-		ids[seed.name] = string(issue.WorkItemID)
-		if err := appendNativeHistory(t.Context(), tx, scope, ids[seed.name], "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: seed.state}, to.Add(-time.Duration(10+i)*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=json_set(actor_json,'$.principal_id',?) WHERE native_id=?", seed.filer, ids[seed.name]); err != nil {
+		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: id, RecordID: string(id), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
+		if err != nil {
 			t.Fatal(err)
 		}
+		event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: closed, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: from, ToState: state}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if existing {
+				current.Title, current.IssueType, current.Priority = title, kind, priority
+				current.BodyObjectKey, current.IssueContractObjectKey = &fields.Body, fields.Contract
+				current.ActorKind, current.ActorPrincipalID, current.WorkflowStateName = &issue.Actor.Kind, &issue.Actor.PrincipalID, &state
+				if _, err := w.UpdateWorkItem(t.Context(), current); err != nil {
+					return err
+				}
+			} else if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: id, Number: number, Revision: 1, Title: title, IssueType: kind, Priority: priority, BodyObjectKey: &fields.Body, IssueContractObjectKey: fields.Contract, WorkflowStateName: &state, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, CreatedAt: created, NativeCreatedAt: created, UpdatedAt: closed, NativeUpdatedAt: closed, LastActivityAt: closed}); err != nil {
+				return err
+			}
+			if err := w.SetWorkItemLabels(t.Context(), scope.project, id, labels); err != nil {
+				return err
+			}
+			if err := w.PutWorkItemFacts(t.Context(), claimstore.WorkItemFacts{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: id, Author: filer}); err != nil {
+				return err
+			}
+			if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+				return err
+			}
+			_, err := w.AppendEvent(t.Context(), event)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var terminal *time.Time
+		if issue.Terminal {
+			terminal = &closed
+		}
+		if _, err := admin.ExecContext(t.Context(), "UPDATE issues SET created_at=CASE WHEN $7 THEN created_at ELSE $1 END,native_created_at=$1,updated_at=$2,native_updated_at=$2,terminal_entered_at=$3 WHERE organization_id=$4 AND project_id=$5 AND native_id=$6", created, closed, terminal, scope.organization, scope.project, id, existing); err != nil {
+			t.Fatal(err)
+		}
+		return issue
 	}
-	if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET created_at=? WHERE native_id=(SELECT work_item_id FROM native_attempts WHERE id='attempt_browser_usage_1_0')", formatHubTime(to.AddDate(0, 0, -20))); err != nil {
+	var runnerItem tracker.NativeWorkItemID
+	if err := admin.QueryRowContext(t.Context(), "SELECT i.native_id FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND a.project_id=$2 AND a.id='attempt_browser_usage_0_0'", scope.organization, scope.project).Scan(&runnerItem); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET work_item_id=?,started_at=?,updated_at=? WHERE id='attempt_browser_usage_0_0'", ids["runner bug"], formatHubTime(to.Add(-5*time.Hour)), formatHubTime(to.Add(-4*time.Hour))); err != nil {
-		t.Fatal(err)
+	for i, seed := range seeds {
+		id, created, existing := tracker.NativeWorkItemID(newNativeID("issue")), to.Add(-30*time.Hour), false
+		if seed.name == "runner bug" {
+			id, created, existing = runnerItem, to.AddDate(0, 0, -20), true
+		}
+		seedIssue(scope, id, int64(1000+i), seed.name, seed.state, seed.kind, seed.filer, seed.labels, seed.priority, created, to.Add(-time.Duration(10+i)*time.Hour), existing)
 	}
-	if err := f.service.database.commit(t.Context(), tx); err != nil {
-		t.Fatal(err)
-	}
-	drainTestNativeClosedTimes(t, f.service)
 	drainTestNativeBoard(t, f.service)
-	rebuildTestAnalyticsRollups(t, f.service, scope)
 	read := func(t *testing.T, query url.Values) hostedReportsReport {
 		t.Helper()
 		var report hostedReportsReport
@@ -66,12 +131,18 @@ func TestReportsFilterDimensions(t *testing.T) {
 	}
 	base := url.Values{"project": {f.project}, "range": {"24h"}}
 	unfiltered := read(t, base)
-	shipped, err := readNativeClosedPopulation(t.Context(), f.service.database.reader, scope, "", nil, to.Add(-24*time.Hour), to)
+	population, err := f.service.readIssues(t.Context(), scope, url.Values{"state": {"Done"}, "archived": {"all"}, "limit": {"200"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unfiltered.Completion.Done != len(shipped.Shipped) || unfiltered.Completion.Done < 4 {
-		t.Fatalf("unfiltered shipped=%d population=%d", unfiltered.Completion.Done, len(shipped.Shipped))
+	shipped := []tracker.NativeIssue{}
+	for _, issue := range population.Items {
+		if issue.State == "Done" && issue.ClosedAt != nil && !issue.ClosedAt.Before(to.Add(-24*time.Hour)) && issue.ClosedAt.Before(to) {
+			shipped = append(shipped, issue)
+		}
+	}
+	if unfiltered.Completion.Done != len(shipped) || unfiltered.Completion.Done < 4 {
+		t.Fatalf("unfiltered shipped=%d population=%d", unfiltered.Completion.Done, len(shipped))
 	}
 	for _, tt := range []struct {
 		name      string
@@ -115,7 +186,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 			}
 			listed := 0
 			for _, issue := range page.Items {
-				if slices.ContainsFunc(shipped.Shipped, func(s nativeShippedIssue) bool { return s.ID == string(issue.WorkItemID) }) {
+				if slices.ContainsFunc(shipped, func(s tracker.NativeIssue) bool { return s.WorkItemID == issue.WorkItemID }) {
 					listed++
 				}
 			}
@@ -186,38 +257,62 @@ func TestReportsFilterDimensions(t *testing.T) {
 	})
 	t.Run("options read only the readable projects", func(t *testing.T) {
 		secret := nativeScope{organization: scope.organization, project: "prj_rpt_secret"}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		project, err := f.service.readTenantProjectRecord(t.Context(), scope)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback()
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,'secret',profile,states_json,created_at FROM projects WHERE id=?`, secret.project, f.project); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) SELECT ?, source_name, detent_state, terminal, dispatchable, created_at, updated_at FROM workflow_states WHERE project_id=?`, secret.project, f.project); err != nil {
-			t.Fatal(err)
-		}
-		issue, err := createNativeFixtureIssueTx(t.Context(), tx, secret, tracker.CreateIssue{Title: "secret", Body: nativeContractTestBody, State: "Todo", Labels: []string{"rpt-secret"}}, to.Add(-3*time.Hour))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, statement := range []struct {
-			query string
-			args  []any
-		}{
-			{"UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=json_set(actor_json,'$.principal_id','principal_rpt_secret') WHERE native_id=?", []any{issue.WorkItemID}},
-			{`INSERT INTO leases (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at)
- SELECT 'lease_rpt_secret',(SELECT id FROM issues WHERE native_id=?),machine_id,'session_rpt_secret',expires_at,acquired_at,renewed_at,released_at,created_at,updated_at FROM leases WHERE lease_id='lease_browser_usage_0_1'`, []any{issue.WorkItemID}},
-			{"INSERT INTO lease_runners (lease_id, runner_id) VALUES ('lease_rpt_secret','runner_browser_preview_shared')", nil},
-			{"DELETE FROM hosted_project_grants WHERE project_id=?", []any{secret.project}},
-			{`INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at)
- SELECT 'attempt_rpt_secret',organization_id,?,?,'lease_rpt_secret',(SELECT max(fencing_token)+1 FROM native_attempts),'run_rpt_secret',1,status,data_json,?,? FROM native_attempts WHERE id='attempt_browser_usage_0_1'`, []any{secret.project, issue.WorkItemID, formatHubTime(to.Add(-2 * time.Hour)), formatHubTime(to.Add(-time.Hour))}},
-		} {
-			if _, err := tx.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
-				t.Fatalf("seed the unreadable project: %v", err)
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: secret.project, Name: "secret", Slug: "secret", Profile: "native"}, States: project.States})
+			if err != nil {
+				return err
 			}
+			cleaner, ok := w.(accessstore.ProjectAccessCleaner)
+			if !ok {
+				return ErrProjectParticipants
+			}
+			return cleaner.DeleteAccessProjectGrants(t.Context(), secret.project)
+		}); err != nil {
+			t.Fatal(err)
 		}
-		if err := f.service.database.commit(t.Context(), tx); err != nil {
+		issue := seedIssue(secret, "issue_rpt_secret", 1, "secret", "Todo", "bug", "principal_rpt_secret", []string{"rpt-secret"}, nil, to.Add(-3*time.Hour), to.Add(-3*time.Hour), false)
+		var issueID int64
+		if err := admin.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", scope.organization, secret.project, issue.WorkItemID).Scan(&issueID); err != nil {
+			t.Fatal(err)
+		}
+		started, finished := to.Add(-2*time.Hour), to.Add(-time.Hour)
+		var fence int64
+		if err := admin.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,expires_at,acquired_at,renewed_at) VALUES($1,'lease_rpt_secret',$2,'machine_browser_preview_runner','session_rpt_secret',1,$3,$4,$5) RETURNING fencing_token`, scope.organization, issueID, to.Add(time.Hour), started, finished).Scan(&fence); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) VALUES($1,'run_rpt_secret',$2)", scope.organization, issueID); err != nil {
+			t.Fatal(err)
+		}
+		data := tracker.NativeRunData{RunID: "run_rpt_secret", AttemptID: "attempt_rpt_secret", LeaseID: "lease_rpt_secret", FencingToken: tracker.FencingToken(fence), MachineID: "machine_browser_preview_runner", RunnerID: "runner_browser_preview_shared", Sequence: 1, Outcome: "succeeded"}
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := content.PreparePayload(t.Context(), scope.organization, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: "event_rpt_secret", OrganizationID: scope.organization, ProjectID: secret.project, AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "runner_browser_preview_shared"}, RecordedAt: finished, Data: tracker.CollaborationData{Run: &data}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at) VALUES($1,$2,'attempt_rpt_secret',$3,'lease_rpt_secret',$4,'run_rpt_secret',1,'succeeded',1,1,$5,$6,$7)`, scope.organization, secret.project, issueID, fence, ref.Key, started, finished); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: scope.organization, LeaseID: "lease_rpt_secret", RunnerID: "runner_browser_preview_shared", AssignedAt: started}); err != nil {
+				return err
+			}
+			_, err := w.AppendEvent(t.Context(), event)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), "UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND lease_id='lease_rpt_secret'", finished, scope.organization); err != nil {
 			t.Fatal(err)
 		}
 		for _, project := range []string{f.project, reportsAllProjects} {

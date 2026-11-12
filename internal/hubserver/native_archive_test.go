@@ -5,37 +5,95 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func seedArchiveIssues(t *testing.T, service *Service, scope nativeScope, count int, state string) []tracker.NativeIssue {
 	t.Helper()
 	seedNativeFixturePolicy(t, service, string(scope.organization)+"/"+string(scope.project))
-	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", scope.project); err != nil {
-		t.Fatal(err)
-	}
-	tx, err := service.database.db.BeginTx(t.Context(), nil)
+	project, err := service.readTenantProjectRecord(t.Context(), scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
+	project.Settings.DuplicateChallenge = false
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	actor := scope.actor()
+	if actor.PrincipalID == "" {
+		actor = tracker.Actor{Kind: "human", PrincipalID: "example-owner"}
+	}
+	content := eventstore.NewContent(service.runDetailStore())
 	issues := make([]tracker.NativeIssue, 0, count)
-	for i := range count {
-		issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: fmt.Sprintf("Seed %d", i), Body: nativeContractTestBody, State: state}, time.Now())
+	for index := range count {
+		var number int64
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			number, err = r.NextWorkItemNumber(t.Context(), scope.project)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		now := service.config.now().UTC().Truncate(time.Microsecond)
+		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: int(number), Revision: 1, Profile: "native"}, Title: fmt.Sprintf("Seed %d", index), Body: nativeContractTestBody, State: state, Actor: actor, Labels: []string{}, Assignees: []string{}, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, IssueContract: &issuecontract.State{ConfirmedSections: config.IssueContractSectionDigests(nativeContractTestBody)}}
+		for _, configured := range project.States {
+			if configured.Name == state {
+				issue.Terminal = configured.Terminal
+			}
+		}
+		if issue.Terminal {
+			issue.ClosedAt = &now
+		}
+		fields, err := service.prepareWorkItemFields(t.Context(), scope.organization, workItemRecordPlan{issue: issue, create: true})
 		if err != nil {
 			t.Fatal(err)
 		}
+		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: 1}, historyTestJSON(t, issue))
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, Type: "issue.created", SchemaVersion: 1, Actor: actor, RecordedAt: now, Data: tracker.CollaborationData{Revision: 1}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		document, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: now}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateWorkItemWithClaimFacts(t.Context(), corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: issue.WorkItemID, Number: number, Revision: 1, Title: issue.Title, BodyObjectKey: &fields.Body, IssueContractObjectKey: fields.Contract, WorkflowStateName: &state, ActorKind: &actor.Kind, ActorPrincipalID: &actor.PrincipalID, CreatedAt: now, UpdatedAt: now, NativeCreatedAt: now, NativeUpdatedAt: now, LastActivityAt: now}, nil, claimstore.WorkItemFacts{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, Author: actor.PrincipalID}, claimstore.QueueEntry{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, Scope: string(scope.project), State: state, Rank: string(issue.WorkItemID), CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+				return err
+			}
+			if err := w.PutSearch(t.Context(), document, 0); err != nil {
+				return err
+			}
+			_, err := w.AppendEvent(t.Context(), event)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
 		issues = append(issues, issue)
-	}
-	if err := service.database.commit(t.Context(), tx); err != nil {
-		t.Fatal(err)
 	}
 	return issues
 }
@@ -72,6 +130,7 @@ func TestNativeArchiveLifecycle(t *testing.T) {
 				t.Fatal("idempotent response changed")
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+test.action, f.token, archiveRequest(issue, "stale-"+test.name)), http.StatusConflict)
+			drainTestNativeBoard(t, f.service)
 			for _, query := range []string{"", "?archived=true", "?archived=all"} {
 				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items"+query, f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
@@ -95,15 +154,18 @@ func TestNativeArchiveLifecycle(t *testing.T) {
 					t.Fatal("archive audit lost")
 				}
 			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ids, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{NativeScope: &nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, Scope: string(f.project.ID)}, nil, nil, nil, nil, nil, nil, nil, nil)
-			if rollbackErr := tx.Rollback(); rollbackErr != nil {
-				t.Fatal(rollbackErr)
-			}
-			if err != nil {
+			scope := analyticsTestScope(t, f)
+			var ids []tracker.NativeWorkItemID
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := f.service.authorizeAccessScope(t.Context(), r, scope, false); err != nil {
+					return err
+				}
+				page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: f.project.ID, Scope: string(f.project.ID), AvailableAt: f.service.config.now(), Limit: corestore.MaxPageSize})
+				for _, candidate := range page.Items {
+					ids = append(ids, candidate.WorkItemID)
+				}
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if (len(ids) == 0) != test.archived {
@@ -138,8 +200,13 @@ func TestNativeArchiveActiveWork(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
 			}
 			if test.expired {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at = ? WHERE lease_id = ?", formatHubTime(time.Now().Add(-time.Hour)), lease.ID); err != nil {
+				now := f.service.config.now().UTC()
+				result, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$1,renewed_at=$2,expires_at=$3 WHERE organization_id=$4 AND lease_id=$5 AND fencing_token=$6", now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-time.Hour), f.project.OrganizationID, lease.ID, int64(lease.FencingToken))
+				if err != nil {
 					t.Fatal(err)
+				}
+				if count, err := result.RowsAffected(); err != nil || count != 1 {
+					t.Fatalf("expired lease fixture affected%d rows: %v", count, err)
 				}
 			}
 			status := http.StatusConflict
@@ -167,7 +234,7 @@ func TestNativeArchiveActiveWork(t *testing.T) {
 				}
 			}
 			if status == http.StatusOK {
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: "machine", SessionID: "archived-claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: lease.MachineID, SessionID: "archived-claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 				requireNativeStatus(t, response, http.StatusConflict)
 			}
 		})
@@ -325,8 +392,8 @@ func TestNativeArchiveSelfHostedNoQuota(t *testing.T) {
 
 func TestHostedIssueImportAllocation(t *testing.T) {
 	t.Parallel()
-	backend := &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "digitaldrywood", Name: "detent", UpdatedAt: time.Now().UTC()}}}}}
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), ReconcileBackend: backend, ImportBackend: &importFixtureBackend{}})
+	backend := &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "example-org", Name: "example-project", UpdatedAt: time.Now().UTC()}}}}}
+	service := openTestService(t, Config{ReconcileBackend: backend, ImportBackend: &importFixtureBackend{}})
 	f := newNativeFixture(t, service, "", "import-quota")
 	d := service.database
 	d.hostedOrganization = f.project.OrganizationID
@@ -335,7 +402,7 @@ func TestHostedIssueImportAllocation(t *testing.T) {
 	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &config}); err != nil {
 		t.Fatal(err)
 	}
-	response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/integration/repository", testHubAdminToken, map[string]any{"idempotency_key": "bind", "expected_revision": "1", "repository": "digitaldrywood/detent"})
+	response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/integration/repository", testHubAdminToken, map[string]any{"idempotency_key": "bind", "expected_revision": "1", "repository": "example-org/example-project"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var integration ProjectIntegration
 	decodeHubResponse(t, response, &integration)
@@ -346,7 +413,7 @@ func TestHostedIssueImportAllocation(t *testing.T) {
 	response = performHubAPIRequest(t, service, http.MethodPost, f.base+"/imports/"+second.ID+"/advance", f.token, map[string]any{"expected_revision": fmt.Sprint(second.Revision)})
 	requireNativeStatus(t, response, http.StatusTooManyRequests)
 	var count int
-	if err := d.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id = ?", f.project.ID).Scan(&count); err != nil || count != 1 {
+	if err := usagePostgresAdmin(t, service).QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("import rejection count=%d err=%v", count, err)
 	}
 	item := readWorkItem(t, f, tracker.NativeWorkItemID(first.WorkItemID), "")
@@ -428,18 +495,31 @@ func TestHostedIssueAllowanceCatalog(t *testing.T) {
 			if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
 				t.Fatal(err)
 			}
-			plan, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, config.Base)
+			storedPlan := func() billingstore.Plan {
+				t.Helper()
+				var stored billingstore.Plan
+				if err := f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+					var err error
+					stored, err = r.BillingPlan(t.Context(), billingstore.PlanReference{ID: config.Base.ID, Version: config.Base.Version})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return stored
+			}
+			before := storedPlan()
+			plan, err := f.service.database.readHostedPlan(t.Context(), nil, config.Base)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got := plan.Allowances["unarchived_issues"]; got != test.want {
 				t.Fatalf("issue allowance = %d, want %d", got, test.want)
 			}
-			var raw string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT record_json FROM hosted_plans WHERE id = ? AND version = ?", config.Base.ID, config.Base.Version).Scan(&raw); err != nil {
-				t.Fatal(err)
+			after := storedPlan()
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("reading catalog changed its stored typed plan")
 			}
-			if test.configured == nil && strings.Contains(raw, "unarchived_issues") {
+			if _, exists := after.Allowances["unarchived_issues"]; test.configured == nil && exists {
 				t.Fatal("reading legacy catalog rewrote its immutable version")
 			}
 		})

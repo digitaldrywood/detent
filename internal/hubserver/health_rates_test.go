@@ -197,6 +197,48 @@ func TestHealthRateIncidentReplay(t *testing.T) {
 
 func TestHealthRateBoundaries(t *testing.T) {
 	t.Parallel()
+	t.Run("exact quantiles yield at every merge budget", func(t *testing.T) {
+		large := make([]float64, 257)
+		for index := range large {
+			large[index] = float64(257 - index)
+		}
+		for _, test := range []struct {
+			name        string
+			samples     []float64
+			median, p90 float64
+		}{
+			{name: "empty"},
+			{name: "single", samples: []float64{3}, median: 3, p90: 3},
+			{name: "duplicates and interpolation", samples: []float64{9, 1, 7, 1, 10, 3}, median: 5, p90: 9.5},
+			{name: "many runs", samples: large, median: 129, p90: 231.4},
+		} {
+			for _, pageSize := range []int{3, 64} {
+				for _, budget := range []int{1, 7, 64} {
+					t.Run(fmt.Sprintf("%s/page%d/budget%d", test.name, pageSize, budget), func(t *testing.T) {
+						var fold healthQuantileFold
+						for start := 0; start < len(test.samples); start += pageSize {
+							if err := fold.add(test.samples[start:min(start+pageSize, len(test.samples))]); err != nil {
+								t.Fatal(err)
+							}
+						}
+						for step := 0; ; step++ {
+							used, done := fold.advance(budget)
+							if used > budget || step > 16*(len(test.samples)+1) {
+								t.Fatalf("quantile work exceeded budget or stopped progressing: used=%d budget=%d step=%d", used, budget, step)
+							}
+							if done {
+								break
+							}
+						}
+						median, p90, ready := fold.values()
+						if !ready || median != test.median || p90 != test.p90 || median != healthQuantile(test.samples, healthMedianQuantile) || p90 != healthQuantile(test.samples, healthBaselineQuantile) {
+							t.Fatalf("quantiles=(%g,%g,%t), want(%g,%g)", median, p90, ready, test.median, test.p90)
+						}
+					})
+				}
+			}
+		}
+	})
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	failing := func(p *healthRateProject, at time.Time, n int) {
 		for range n {

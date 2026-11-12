@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -130,7 +132,7 @@ func (r *Repository) ImportConversationBatch(ctx context.Context, batch Conversa
 
 func (s *session) importConversationRow(ctx context.Context, row ConversationImportRow) error {
 	var previousSnapshot, previousHash string
-	err := s.db.QueryRow(ctx, `SELECT snapshot_id,request_hash FROM conversation_history_import_rows WHERE organization_id=$1 AND source_table=$2 AND source_row_id=$3`, s.organization, row.Table, row.Receipt.SourceRow).Scan(&previousSnapshot, &previousHash)
+	err := s.db.QueryRow(ctx, `SELECT snapshot_id,request_hash FROM conversation_history_import_rows WHERE organization_id=$1 AND source_table=$2 AND source_row_id=$3`, s.organization, row.Receipt.Table, row.Receipt.SourceRow).Scan(&previousSnapshot, &previousHash)
 	if err == nil {
 		if previousSnapshot != row.Receipt.SnapshotID {
 			return mutation.ErrConflict
@@ -146,6 +148,7 @@ func (s *session) importConversationRow(ctx context.Context, row ConversationImp
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
+	row = conversationImportTypedRecordFields(row)
 	columns := make([]string, len(row.Columns))
 	placeholders := make([]string, len(row.Columns))
 	for n, column := range row.Columns {
@@ -220,4 +223,106 @@ func (s *session) recoverConversationImportOwnership(ctx context.Context, row Co
 		return mutation.ErrConflict
 	}
 	return nil
+}
+
+func conversationImportTypedRecordFields(row ConversationImportRow) ConversationImportRow {
+	row.Columns = append([]string(nil), row.Columns...)
+	row.Values = append([]any(nil), row.Values...)
+	values := make(map[string]any, len(row.Columns))
+	for index, key := range row.Columns {
+		values[key] = row.Values[index]
+	}
+	decode := func(key string, target any, required ...string) bool {
+		var raw []byte
+		switch value := values[key].(type) {
+		case string:
+			raw = []byte(value)
+		case []byte:
+			raw = value
+		case json.RawMessage:
+			raw = value
+		default:
+			return false
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw, &fields) != nil || json.Unmarshal(raw, target) != nil {
+			return false
+		}
+		for _, key := range required {
+			if _, exists := fields[key]; !exists {
+				return false
+			}
+		}
+		return true
+	}
+	appendField := func(key string, value any) {
+		row.Columns = append(row.Columns, key)
+		row.Values = append(row.Values, value)
+	}
+	switch row.Table {
+	case "conversations":
+		var execution conversation.Execution
+		completeCapabilities := func() bool {
+			var raw []byte
+			switch value := values["execution_json"].(type) {
+			case string:
+				raw = []byte(value)
+			case []byte:
+				raw = value
+			case json.RawMessage:
+				raw = value
+			default:
+				return false
+			}
+			var fields struct {
+				Capabilities map[string]json.RawMessage `json:"capabilities"`
+			}
+			if json.Unmarshal(raw, &fields) != nil {
+				return false
+			}
+			for _, key := range []string{"steer", "interrupt", "answer", "continue"} {
+				if _, exists := fields.Capabilities[key]; !exists {
+					return false
+				}
+			}
+			return true
+		}
+		matchingLease := func() bool {
+			if execution.Owner.LeaseID == "" {
+				return values["execution_lease_id"] == nil || values["execution_lease_id"] == ""
+			}
+			return values["execution_lease_id"] == execution.Owner.LeaseID
+		}
+		if decode("execution_json", &execution, "status", "attempt_id", "run_id", "lease_id", "fencing_token", "runner_id", "machine_id", "thread_id", "turn_id", "resume", "capabilities", "error", "updated_at") && execution.Status.Valid() && completeCapabilities() && matchingLease() && values["execution_status"] == string(execution.Status) && values["execution_settled"] == execution.Settled {
+			for _, field := range []struct {
+				key   string
+				value any
+			}{
+				{"execution_attempt_id", execution.Owner.AttemptID}, {"execution_run_id", execution.Owner.RunID}, {"execution_fencing_token", execution.Owner.FencingToken}, {"execution_runner_id", execution.Owner.RunnerID}, {"execution_machine_id", execution.Owner.MachineID}, {"execution_thread_id", execution.Owner.ThreadID}, {"execution_turn_id", execution.Owner.TurnID}, {"execution_resume", execution.Resume}, {"execution_can_steer", execution.Capabilities.Steer}, {"execution_can_interrupt", execution.Capabilities.Interrupt}, {"execution_can_answer", execution.Capabilities.Answer}, {"execution_can_continue", execution.Capabilities.Continue}, {"execution_error", execution.Error}, {"execution_updated_at", execution.UpdatedAt},
+			} {
+				appendField(field.key, field.value)
+			}
+		}
+		var preferences conversation.Preferences
+		if decode("preferences_json", &preferences, "model", "reasoning_effort", "access") {
+			appendField("preference_model", preferences.Model)
+			appendField("preference_effort", preferences.ReasoningEffort)
+			appendField("preference_access", preferences.Access)
+		}
+	case "conversation_commands":
+		var receipt conversation.Receipt
+		if decode("receipt_json", &receipt, "key", "kind", "status", "message_id", "question_id", "error", "updated_at") && values["receipt_status"] == string(receipt.Status) {
+			var code, failure any
+			if receipt.Error != nil {
+				code, failure = receipt.Error.Code, receipt.Error.Message
+			}
+			for _, field := range []struct {
+				key   string
+				value any
+			}{{"receipt_key", receipt.Key}, {"receipt_kind", receipt.Kind}, {"receipt_message_id", receipt.MessageID}, {"receipt_question_id", receipt.QuestionID}, {"receipt_error_code", code}, {"receipt_error_message", failure}, {"receipt_updated_at", receipt.UpdatedAt}} {
+				appendField(field.key, field.value)
+			}
+		}
+	}
+	return row
 }

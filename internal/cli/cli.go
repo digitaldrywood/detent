@@ -521,19 +521,19 @@ func defaultOptions() options {
 	return options{
 		resolvePath: globalconfig.ResolvePath,
 		readStartup: func(path string) (globalconfig.Config, error) {
-			return readLocalConfigurationSource(context.Background(), path)
+			return readRunnerConfiguration(path)
 		},
 		read: func(path string) (globalconfig.Config, error) {
-			return readLocalConfigurationSource(context.Background(), path)
+			return readRunnerConfiguration(path)
 		},
 		readProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
-			return readLocalConfigurationProjectFile(path, projectID)
+			return globalconfig.ReadProject(path, projectID)
 		},
 		readDoctor: func(path string) (globalconfig.Config, error) {
 			return readLocalConfigurationFile(context.Background(), path, globalconfig.WithMissingWorkflowFiles())
 		},
 		readDoctorProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
-			return readLocalConfigurationProjectFile(path, projectID, globalconfig.WithMissingWorkflowFiles())
+			return globalconfig.ReadProject(path, projectID, globalconfig.WithMissingWorkflowFiles())
 		},
 		readOrDefault: func(path string) (globalconfig.Config, error) {
 			cfg, err := readLocalConfigurationFile(context.Background(), path, globalconfig.WithProjectPathLiterals())
@@ -543,7 +543,7 @@ func defaultOptions() options {
 			return cfg, err
 		},
 		write: func(path string, cfg globalconfig.Config) error {
-			return writeLocalConfigurationFile(path, cfg)
+			return globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals())
 		},
 		boot:        defaultBoot,
 		signal:      noSignal,
@@ -979,12 +979,10 @@ func updateProject(
 		}
 	}
 	var promotedPriority *int
-	if operation == OperationPromoteProject && cfg.Client.Configured() {
+	if operation == OperationPromoteProject {
 		priority, applyErr := promoteHubProjectRank(ctx, cfg, id, cfg.Projects[index].Priority, opts.lookupEnv)
 		err = applyErr
 		promotedPriority = &priority
-	} else if operation == OperationPromoteProject {
-		err = writeLocalConfigurationRank(ctx, path, cfg, id, cfg.Projects[index].Priority)
 	} else {
 		err = opts.write(path, cfg)
 	}

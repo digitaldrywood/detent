@@ -2,22 +2,26 @@ package orchestrator_test
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestTargetedReconcileUpdatesBoardWithoutFullPoll(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		result    connector.ReconcileResult
-		wantCount int
-		wantState string
+		name        string
+		result      connector.ReconcileResult
+		wantCount   int
+		wantState   string
+		laneFailure bool
 	}{
 		{
 			name: "external label transition",
@@ -36,6 +40,7 @@ func TestTargetedReconcileUpdatesBoardWithoutFullPoll(t *testing.T) {
 			},
 			wantCount: 0,
 		},
+		{name: "canonical lane error preserves prior targeted state", result: connector.ReconcileResult{Found: true, Issue: targetedReconcileIssue("In Progress")}, wantCount: 1, wantState: "Backlog", laneFailure: true},
 	}
 
 	for _, tt := range tests {
@@ -46,13 +51,17 @@ func TestTargetedReconcileUpdatesBoardWithoutFullPoll(t *testing.T) {
 			base := newFakeConnector()
 			base.stateIssues = []connector.Issue{initial}
 			tracker := &targetedConnector{fakeConnector: base, result: tt.result}
+			var source connector.Connector = tracker
+			if tt.laneFailure {
+				source = &targetedLaneConnector{targetedConnector: tracker}
+			}
 			orch, err := orchestrator.New(orchestrator.Config{
 				PollInterval:        time.Hour,
 				MaxConcurrentAgents: 1,
 				ActiveStates:        []string{"Todo", "In Progress"},
 				ObservedStates:      []string{"Backlog"},
 				TerminalStates:      []string{"Done"},
-			}, orchestrator.Dependencies{Connector: tracker})
+			}, orchestrator.Dependencies{Connector: source})
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -82,7 +91,7 @@ func TestTargetedReconcileUpdatesBoardWithoutFullPoll(t *testing.T) {
 			}
 
 			state := waitForTargetedState(t, orch, func(state orchestrator.State) bool {
-				return state.DataSeq > initialState.DataSeq
+				return state.DataSeq > initialState.DataSeq || tt.laneFailure && state.ManualRefresh.Status == telemetry.RefreshAttemptStatusFailed
 			})
 			if len(state.BoardIssues) != tt.wantCount {
 				t.Fatalf("BoardIssues = %#v, want %d items", state.BoardIssues, tt.wantCount)
@@ -91,7 +100,11 @@ func TestTargetedReconcileUpdatesBoardWithoutFullPoll(t *testing.T) {
 				if state.BoardIssues[0].State != tt.wantState {
 					t.Fatalf("BoardIssues[0].State = %q, want %q", state.BoardIssues[0].State, tt.wantState)
 				}
-				if state.BoardIssues[0].StageUpdatedAt == nil || !state.BoardIssues[0].StageUpdatedAt.Equal(*tt.result.Issue.UpdatedAt) {
+				if tt.laneFailure {
+					if !reflect.DeepEqual(state.BoardIssues, initialState.BoardIssues) || state.DataSeq != initialState.DataSeq {
+						t.Fatalf("failed targeted observation changed published ownership: before=%+v after=%+v", initialState.BoardIssues, state.BoardIssues)
+					}
+				} else if state.BoardIssues[0].StageUpdatedAt == nil || !state.BoardIssues[0].StageUpdatedAt.Equal(*tt.result.Issue.UpdatedAt) {
 					t.Fatalf("StageUpdatedAt = %v, want external update time %v", state.BoardIssues[0].StageUpdatedAt, tt.result.Issue.UpdatedAt)
 				}
 			}
@@ -103,6 +116,15 @@ func TestTargetedReconcileUpdatesBoardWithoutFullPoll(t *testing.T) {
 			}
 		})
 	}
+}
+
+type targetedLaneConnector struct{ *targetedConnector }
+
+func (c *targetedLaneConnector) CurrentLaneEntry(_ context.Context, issue connector.Issue) (connector.IssueStateTransition, bool, error) {
+	if issue.State == "In Progress" {
+		return connector.IssueStateTransition{}, false, errors.New("canonical lane history unavailable")
+	}
+	return connector.IssueStateTransition{}, false, nil
 }
 
 type targetedConnector struct {

@@ -80,7 +80,7 @@ func (s *Scheduler) processGitHubBatchPage(ctx context.Context, client *NativeCl
 		for _, item := range task.Items {
 			entry := tracker.GitHubBatchItemResult{Number: item.Number, Snapshot: item.Snapshot}
 			var err error
-			if entry.Snapshot == nil {
+			if entry.Snapshot == nil || item.NeedsDiscussion {
 				if s.githubIntake == nil {
 					err = errors.New("runner GitHub read access is not configured")
 				} else {
@@ -92,6 +92,12 @@ func (s *Scheduler) processGitHubBatchPage(ctx context.Context, client *NativeCl
 				}
 			}
 			if err != nil {
+				if !githubBatchSourceFailure(err) {
+					if len(result.Results) == 0 {
+						return receipt, err
+					}
+					break
+				}
 				entry.Error, entry.RetryAt = githubBatchDiagnostic(err)
 			}
 			result.Results = append(result.Results, entry)
@@ -127,10 +133,21 @@ func (s *Scheduler) processGitHubBatchPage(ctx context.Context, client *NativeCl
 		}
 	}
 	if sourceErr != nil {
+		if !githubBatchSourceFailure(sourceErr) {
+			return receipt, sourceErr
+		}
 		result.Error, result.RetryAt = githubBatchDiagnostic(sourceErr)
 	}
 	err := client.Transport().Request(ctx, http.MethodPost, client.Scope()+"/onboarding/issue-intake/result", result, &receipt)
 	return receipt, err
+}
+
+func githubBatchSourceFailure(err error) bool {
+	var status *githubconnector.StatusError
+	if errors.As(err, &status) {
+		return status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusTooManyRequests
+	}
+	return errors.Is(err, githubconnector.ErrNotFound) || errors.Is(err, githubconnector.ErrRateLimited)
 }
 
 func githubBatchDiagnostic(sourceErr error) (string, string) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -20,6 +21,9 @@ func (d *database) hostedPlanUsage(ctx context.Context, now time.Time, allowance
 }
 
 func (d *database) readHostedPlanUsage(ctx context.Context, query nativeQueryer, now time.Time, allowanceNames ...string) (HostedEntitlement, error) {
+	if d.billingRepository != nil {
+		return d.readHostedPlanUsageRecord(ctx, now, allowanceNames...)
+	}
 	entitlement, err := d.hostedEntitlement(ctx, query, now)
 	if err != nil {
 		return entitlement, err
@@ -36,6 +40,34 @@ func (d *database) readHostedPlanUsage(ctx context.Context, query nativeQueryer,
 	entitlement.Usage, err = d.hostedConsumption(ctx, query, now, metrics...)
 	delete(entitlement.Usage, "events_total")
 	return entitlement, err
+}
+
+func (d *database) readHostedPlanUsageRecord(ctx context.Context, now time.Time, allowanceNames ...string) (HostedEntitlement, error) {
+	var result HostedEntitlement
+	err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		var err error
+		result, err = d.hostedEntitlementRecord(ctx, reader, now)
+		if err != nil {
+			return err
+		}
+		var metrics []string
+		if len(allowanceNames) != 0 {
+			metrics = append(metrics, "usage_windows")
+			for _, metric := range allowanceNames {
+				if _, limited := result.Allowances[metric]; limited {
+					metrics = append(metrics, metric)
+				}
+			}
+		}
+		usage, err := d.readHostedConsumptionRecord(ctx, reader, now, metrics...)
+		if err != nil {
+			return err
+		}
+		result.Usage, result.Unavailable = usage.usage, usage.unavailable
+		delete(result.Usage, "events_total")
+		return nil
+	})
+	return result, err
 }
 
 func (s *Service) hostedPlanPage(c echo.Context) error {

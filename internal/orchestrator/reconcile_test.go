@@ -48,6 +48,7 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 		name       string
 		tracker    []connector.Issue
 		err        error
+		laneErr    error
 		wantState  string
 		wantTitle  string
 		wantURL    string
@@ -69,6 +70,12 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 			wantTitle:  "Live title",
 			wantURL:    "https://github.com/digitaldrywood/detent/issues/225#live",
 			wantLabels: []string{"bug", "live"},
+		},
+		{
+			name:      "retains previous running issue on canonical lane failure",
+			tracker:   []connector.Issue{{ID: prior.ID, State: "Rework", Title: "Unobserved human move"}},
+			laneErr:   errors.New("canonical lane history unavailable"),
+			wantState: "Todo", wantTitle: prior.Title, wantURL: prior.URL, wantLabels: prior.Labels,
 		},
 		{
 			name:       "retains previous running issue on fetch error",
@@ -104,6 +111,13 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 			}
 
+			if tt.laneErr != nil {
+				priorAt := now.Add(-time.Hour)
+				running := state.Running[prior.ID]
+				running.Issue.StageUpdatedAt = &priorAt
+				state.Running[prior.ID] = running
+				orch.connector = &runningLaneEntryConnector{runningStateConnector: tracker, laneErr: tt.laneErr}
+			}
 			orch.tick(context.Background(), &state, now)
 
 			snapshot := state.Snapshot(now)
@@ -407,6 +421,7 @@ func TestReconcileRunningIssuesRevokesIneligibleMerge(t *testing.T) {
 		name     string
 		tracker  connector.Issue
 		hydrated *connector.Issue
+		laneErr  error
 		reason   string
 	}{
 		{
@@ -457,6 +472,17 @@ func TestReconcileRunningIssuesRevokesIneligibleMerge(t *testing.T) {
 			}(),
 			reason: mergeRevocationPullRequestNotOpen,
 		},
+		{
+			name:    "canonical lane failure still revokes closed pull request",
+			tracker: cloneIssue(base),
+			hydrated: func() *connector.Issue {
+				issue := cloneIssue(base)
+				issue.PullRequest.State = "CLOSED"
+				return &issue
+			}(),
+			laneErr: errors.New("canonical lane history unavailable"),
+			reason:  mergeRevocationPullRequestNotOpen,
+		},
 	}
 
 	for _, tt := range tests {
@@ -485,7 +511,17 @@ func TestReconcileRunningIssuesRevokesIneligibleMerge(t *testing.T) {
 				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 			}
 
+			if tt.laneErr != nil {
+				orch.connector = &runningLaneEntryConnector{runningStateConnector: tracker, laneErr: tt.laneErr}
+			}
+			priorRunning := state.Running[base.ID]
+			priorClaimed := state.Claimed[base.ID]
 			orch.reconcileRunningIssues(t.Context(), &state, now)
+			if tt.laneErr != nil {
+				if !reflect.DeepEqual(state.Running[base.ID].Issue, priorRunning.Issue) || state.Running[base.ID].CompletionLane != priorRunning.CompletionLane || !reflect.DeepEqual(state.Claimed[base.ID], priorClaimed) {
+					t.Fatal("canonical lane failure changed the retained running or claimed snapshot")
+				}
+			}
 			if tt.reason == mergeRevocationStateChanged {
 				if context.Cause(runCtx) != nil {
 					t.Fatal("lane change stopped merge worker")
@@ -1212,7 +1248,9 @@ func TestTerminalCompletedAtUsesTerminalConditionTimestamp(t *testing.T) {
 func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.T) {
 	t.Parallel()
 
+	stageAt := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	current := connector.Issue{
+		State: "Human Review", StageUpdatedAt: &stageAt, StageUpdatedActor: connector.IssueActor{Kind: "human", Login: "example-user"},
 		ID:            "issue-running",
 		Assignees:     []string{"worker-1"},
 		Fields:        map[string]string{"Status": "Todo"},
@@ -1222,10 +1260,11 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 	}
 
 	tests := []struct {
-		name          string
-		refreshed     connector.Issue
-		wantAssignees []string
-		wantFields    map[string]string
+		name             string
+		refreshed        connector.Issue
+		wantAssignees    []string
+		wantFields       map[string]string
+		wantStageCleared bool
 	}{
 		{
 			name:          "missing metadata preserves current values",
@@ -1240,17 +1279,20 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 			wantFields:    map[string]string{},
 		},
 		{
-			name:          "interrupted native attempt clears earlier disposition",
-			refreshed:     connector.Issue{ID: current.ID, Metadata: map[string]string{"hub_profile": "native", "hub_revision": "6"}},
-			wantAssignees: []string{"worker-1"},
-			wantFields:    map[string]string{"Status": "Todo"},
+			name:             "interrupted native attempt clears earlier disposition",
+			wantStageCleared: true,
+			refreshed:        connector.Issue{ID: current.ID, Metadata: map[string]string{"hub_profile": "native", "hub_revision": "6"}},
+			wantAssignees:    []string{"worker-1"},
+			wantFields:       map[string]string{"Status": "Todo"},
 		},
 		{
-			name:          "new native attempt replaces earlier disposition",
-			refreshed:     connector.Issue{ID: current.ID, Metadata: map[string]string{"hub_profile": "native", "hub_revision": "7", "hub_disposition_attempt_id": "new-attempt", "hub_disposition_return_state": "Rework"}, WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, ReasonCode: "permission_wait"}, BlockerReason: "operator approval"},
-			wantAssignees: []string{"worker-1"},
-			wantFields:    map[string]string{"Status": "Todo"},
+			name:             "new native attempt replaces earlier disposition",
+			wantStageCleared: true,
+			refreshed:        connector.Issue{ID: current.ID, Metadata: map[string]string{"hub_profile": "native", "hub_revision": "7", "hub_disposition_attempt_id": "new-attempt", "hub_disposition_return_state": "Rework"}, WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, ReasonCode: "permission_wait"}, BlockerReason: "operator approval"},
+			wantAssignees:    []string{"worker-1"},
+			wantFields:       map[string]string{"Status": "Todo"},
 		},
+		{name: "changed state drops obsolete stage hint", refreshed: connector.Issue{ID: current.ID, State: "Rework"}, wantAssignees: []string{"worker-1"}, wantFields: map[string]string{"Status": "Todo"}, wantStageCleared: true},
 	}
 
 	for _, tt := range tests {
@@ -1258,6 +1300,13 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 			t.Parallel()
 
 			got := mergeIssueTrackerFields(current, tt.refreshed)
+			if tt.wantStageCleared {
+				if got.StageUpdatedAt != nil || got.StageUpdatedActor != (connector.IssueActor{}) {
+					t.Fatalf("fresh lane inherited obsolete stage evidence: %+v", got)
+				}
+			} else if got.StageUpdatedAt == nil || !got.StageUpdatedAt.Equal(stageAt) || got.StageUpdatedActor != current.StageUpdatedActor {
+				t.Fatalf("unchanged lane lost its stage evidence: %+v", got)
+			}
 			if tt.refreshed.Metadata["hub_profile"] == "native" {
 				if !reflect.DeepEqual(got.WorkpadSignal, workpad.CloneSignal(tt.refreshed.WorkpadSignal)) || !reflect.DeepEqual(got.Metadata, tt.refreshed.Metadata) || got.BlockerReason != tt.refreshed.BlockerReason {
 					t.Fatalf("fresh native snapshot inherited blocked disposition: %+v", got)
@@ -1315,6 +1364,15 @@ func TestMergeIssueTrackerFieldsUpdatesMappedPriorityName(t *testing.T) {
 
 func reconcilePriorityPointer(value int) *int {
 	return &value
+}
+
+type runningLaneEntryConnector struct {
+	*runningStateConnector
+	laneErr error
+}
+
+func (c *runningLaneEntryConnector) CurrentLaneEntry(context.Context, connector.Issue) (connector.IssueStateTransition, bool, error) {
+	return connector.IssueStateTransition{}, false, c.laneErr
 }
 
 type runningStateConnector struct {

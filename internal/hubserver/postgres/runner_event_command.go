@@ -28,10 +28,7 @@ func (r *Repository) WriteRunnerEventCommand(ctx context.Context, org tracker.Or
 		if !ok {
 			return corestore.ErrInvalidPage
 		}
-		if err := write(ctx, f); err != nil {
-			return err
-		}
-		return f.flushRunEvents(ctx)
+		return write(ctx, f)
 	})
 }
 
@@ -44,8 +41,9 @@ func (r *Repository) runnerEventCommand(ctx context.Context, org tracker.Organiz
 		return err
 	}
 	defer release()
-	s := &session{organization: org, readOnly: readOnly, leaseClock: r.leaseClock, credentials: map[string]accessstore.Credential{}, tokenGrants: map[projectAccessKey]accessstore.TokenGrant{}}
+	s := &session{organization: org, readOnly: readOnly, flushesBoardDeltas: !readOnly, leaseClock: r.leaseClock, credentials: map[string]accessstore.Credential{}, tokenGrants: map[projectAccessKey]accessstore.TokenGrant{}}
 	f, facts := newRunnerEventFacts(s, s, command)
+	f.ownsBoardDeltas = !readOnly
 	b := new(pgx.Batch)
 	lock := ""
 	if !readOnly {
@@ -100,7 +98,19 @@ func (r *Repository) runnerEventCommand(ctx context.Context, org tracker.Organiz
 	if err := use(ctx, f); err != nil {
 		return err
 	}
-	return mapError(ctx, tx.Commit(ctx))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !readOnly {
+		if err := f.flushRunEvents(ctx); err != nil {
+			return err
+		}
+	}
+	err = tx.Commit(ctx)
+	if err == nil && f.boardDelivery {
+		r.notifyBoardCommit()
+	}
+	return mapError(ctx, err)
 }
 
 func runnerEventOptions(readOnly bool) pgtransport.Options {

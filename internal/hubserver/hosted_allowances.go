@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -57,6 +60,119 @@ func recountCollaborationBytes(ctx context.Context, tx *sql.Tx) error {
 	return err
 }
 
+type hostedConsumptionRecord struct {
+	usage       map[string]int64
+	unavailable []string
+}
+
+func (d *database) readHostedConsumptionRecord(ctx context.Context, reader tenantstore.Reader, now time.Time, metrics ...string) (hostedConsumptionRecord, error) {
+	result := hostedConsumptionRecord{usage: map[string]int64{}}
+	plans := d.plans()
+	if plans == nil || plans.WindowSeconds <= 0 {
+		return result, ErrBillingUsageUnavailable
+	}
+	if len(metrics) == 0 {
+		metrics = append([]string{"events_total", "usage_windows"}, hostedAllowanceNames()...)
+	}
+	selected := map[string]bool{}
+	for _, metric := range metrics {
+		selected[metric] = true
+	}
+	windows := selected["usage_windows"]
+	windowMetrics := []string{"api_mutations", "ingested_events", "heartbeats", "http_requests", "http_duration_microseconds", "http_response_bytes", "http_request_bytes", "http_request_bytes_known", "artifact_bytes", "artifact_upload_bytes", "artifact_retention_seconds", "relay_bytes"}
+	for _, metric := range windowMetrics {
+		windows = windows || selected[metric]
+	}
+	byMetric := map[string]int64{}
+	if windows {
+		start := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
+		names := map[string]bool{}
+		for _, metric := range windowMetrics {
+			if selected["usage_windows"] || selected[metric] {
+				names[metric] = true
+			}
+		}
+		if selected["usage_windows"] {
+			for _, metric := range hostedAllowanceNames() {
+				if metric != "artifact_retained_bytes" && metric != "artifact_reserved_bytes" {
+					names[metric] = true
+				}
+			}
+		}
+		for _, metric := range slices.Sorted(maps.Keys(names)) {
+			amount, err := reader.BillingUsage(ctx, start, metric)
+			if errors.Is(err, corestore.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return result, err
+			}
+			byMetric[metric] = amount
+		}
+	}
+	populations, ok := reader.(billingstore.PopulationReader)
+	if !ok {
+		return result, ErrBillingUsageUnavailable
+	}
+	var artifactUsage *artifact.Usage
+	for _, metric := range slices.Sorted(maps.Keys(selected)) {
+		known := true
+		var used int64
+		var err error
+		switch metric {
+		case "usage_windows":
+			continue
+		case "events_total", "history_records", "unarchived_issues", "members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work":
+			used, known, err = populations.BillingPopulation(ctx, metric, now, time.Duration(plans.ConnectedSeconds)*time.Second)
+		case "collaboration_bytes":
+			used, err = reader.CollaborationBytes(ctx)
+			if errors.Is(err, corestore.ErrNotFound) {
+				known = false
+				err = nil
+			}
+		case "artifact_retained_bytes", "artifact_reserved_bytes":
+			if artifactUsage == nil {
+				value, readErr := reader.HostedArtifactUsage(ctx)
+				if readErr != nil && !errors.Is(readErr, corestore.ErrNotFound) {
+					return result, readErr
+				}
+				artifactUsage = &value
+			}
+			known = artifactUsage.ObservedAt.After(time.Unix(0, 0))
+			used = artifactUsage.RetainedBytes
+			if metric == "artifact_reserved_bytes" {
+				used = artifactUsage.ReservedBytes
+			}
+		default:
+			if !slices.Contains(windowMetrics, metric) {
+				return result, ErrBillingUsageUnavailable
+			}
+			used = byMetric[metric]
+		}
+		if err != nil {
+			return result, err
+		}
+		if selected["usage_windows"] && metric != "artifact_retained_bytes" && metric != "artifact_reserved_bytes" {
+			if override, exists := byMetric[metric]; exists {
+				used, known = override, true
+			}
+		}
+		if known {
+			result.usage[metric] = used
+		} else {
+			result.unavailable = append(result.unavailable, metric)
+		}
+	}
+	if selected["usage_windows"] {
+		for metric, amount := range byMetric {
+			if metric != "artifact_retained_bytes" && metric != "artifact_reserved_bytes" {
+				result.usage[metric] = amount
+			}
+		}
+	}
+	return result, nil
+}
+
 func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, now time.Time, metrics ...string) (map[string]int64, error) {
 	runtimePlans := d.plans()
 	result := make(map[string]int64)
@@ -64,48 +180,19 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		return result, nil
 	}
 	if d.billingRepository != nil {
-		if len(metrics) == 0 {
-			return nil, ErrBillingUsageUnavailable
-		}
-		usageWindows := false
-		collaborationBytes := false
-		for _, metric := range metrics {
-			switch metric {
-			case "usage_windows":
-				usageWindows = true
-			case "collaboration_bytes":
-				collaborationBytes = true
-			default:
-				return nil, ErrBillingUsageUnavailable
-			}
-		}
-		if err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
-			if usageWindows {
-				window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
-				start := time.Unix(window, 0).UTC()
-				rows, err := reader.BillingUsages(ctx, start, 64)
-				if err != nil {
-					return err
-				}
-				for _, row := range rows {
-					result[row.Metric] = row.Amount
-				}
-			}
-			if collaborationBytes {
-				used, err := reader.CollaborationBytes(ctx)
-				if err != nil {
-					if errors.Is(err, corestore.ErrNotFound) {
-						return ErrBillingUsageUnavailable
-					}
-					return err
-				}
-				result["collaboration_bytes"] = used
-			}
-			return nil
-		}); err != nil {
+		var selected hostedConsumptionRecord
+		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			var err error
+			selected, err = d.readHostedConsumptionRecord(ctx, reader, now, metrics...)
+			return err
+		})
+		if err != nil {
 			return nil, err
 		}
-		return result, nil
+		if len(selected.unavailable) != 0 {
+			return selected.usage, ErrBillingUsageUnavailable
+		}
+		return selected.usage, nil
 	}
 	queries := map[string]string{
 		"members":             "SELECT count(*) FROM hosted_members WHERE active = 1",

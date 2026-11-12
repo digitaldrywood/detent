@@ -46,3 +46,69 @@ SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND outcome I
 
 -- name: RecordSpriteProvisionFailure :execrows
 UPDATE project_sprite_allocations SET provision_failures=provision_failures+1 WHERE organization_id=$1 AND project_id=$2 AND revision=$3;
+
+-- name: SpriteMember :one
+SELECT * FROM runner_sprite_memberships WHERE organization_id=$1 AND name=$2;
+
+-- name: SpriteLeaseUsage :one
+WITH active AS (
+ SELECT l.lease_id,l.machine_id,l.session_id,COALESCE(assignment.runner_id,'') AS runner_id,
+ CASE WHEN lower(trim(COALESCE(i.workflow_state_name,'')))='merging' AND landing_policy.gate_github_pull_request IS FALSE THEN i.project_id ELSE '' END AS capacity_project
+ FROM leases l
+ JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+ JOIN machines machine ON machine.organization_id=l.organization_id AND machine.id=l.machine_id AND machine.sprite_name=machine.hostname AND machine.sprite_name<>''
+ LEFT JOIN runner_lease_assignments assignment ON assignment.organization_id=l.organization_id AND assignment.lease_id=l.lease_id
+ LEFT JOIN LATERAL (
+  SELECT approved.gate_github_pull_request FROM change_issue_links link
+  JOIN change_requests change ON change.organization_id=link.organization_id AND change.project_id=link.project_id AND change.id=link.change_id
+  JOIN change_versions version ON version.organization_id=change.organization_id AND version.change_id=change.id AND version.id=change.current_version_id
+  JOIN policy_revisions approved ON approved.organization_id=version.organization_id AND approved.project_id=i.project_id AND approved.policy_id=version.policy_revision_id
+  JOIN projects project ON project.organization_id=i.organization_id AND project.id=i.project_id AND project.profile='native'
+  WHERE link.organization_id=i.organization_id AND link.project_id=i.project_id AND link.work_item_id=i.native_id
+  ORDER BY link.created_at DESC,link.change_id DESC LIMIT 1
+ ) landing_policy ON true
+ WHERE l.organization_id=sqlc.arg(organization_id) AND l.released_at IS NULL AND l.expires_at>sqlc.arg(now)::timestamptz
+), slots AS (
+ SELECT DISTINCT CASE WHEN capacity_project<>'' AND session_id ~ '^landing/[^/]+/[^/]+$'
+ THEN machine_id||'/'||capacity_project||'/'||split_part(session_id,'/',2)||'/'||runner_id ELSE lease_id END AS slot
+ FROM active
+)
+SELECT count(*) FROM slots WHERE sqlc.arg(joining)::text='' OR slot<>sqlc.arg(joining)::text;
+
+-- name: SpriteAllocationSize :one
+SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND allocation_project_id=$2 AND state<>'deleted';
+
+-- name: SpriteMemberHoldsWork :one
+SELECT EXISTS (
+ SELECT 1 FROM runner_identities r JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
+ WHERE r.organization_id=sqlc.arg(organization_id) AND r.enrollment_id=sqlc.arg(enrollment_id) AND l.released_at IS NULL
+ AND (r.removed_at IS NULL OR EXISTS (SELECT 1 FROM native_attempts n WHERE n.organization_id=l.organization_id AND n.lease_id=l.lease_id AND n.status='interrupted' AND n.checkpoint_object_key IS NOT NULL AND n.cleanup_acknowledged_at IS NULL))
+) OR EXISTS (
+ SELECT 1 FROM runner_identities r JOIN runner_lease_assignments assignment ON assignment.organization_id=r.organization_id AND assignment.runner_id=r.runner_id
+ JOIN native_attempts n ON n.organization_id=assignment.organization_id AND n.lease_id=assignment.lease_id
+ WHERE r.organization_id=sqlc.arg(organization_id) AND r.enrollment_id=sqlc.arg(enrollment_id)
+ AND (n.status='running' OR n.status='interrupted' AND n.checkpoint_object_key IS NOT NULL AND n.cleanup_acknowledged_at IS NULL)
+);
+
+-- name: SpriteAllocationAuthority :one
+SELECT EXISTS (
+ SELECT 1 FROM project_sprite_allocations allocation
+ JOIN api_tokens token ON token.organization_id=allocation.organization_id AND token.id=allocation.configured_by
+ JOIN projects project ON project.organization_id=allocation.organization_id AND project.id=allocation.project_id AND project.deleted_at IS NULL
+ WHERE allocation.organization_id=sqlc.arg(organization_id) AND allocation.project_id=sqlc.arg(project_id)
+ AND token.revoked_at IS NULL AND token.created_at<=sqlc.arg(now)::timestamptz AND (token.expires_at IS NULL OR token.expires_at>sqlc.arg(now)::timestamptz)
+ AND ((token.scope='admin' AND NOT token.native_only) OR token.operator_project_access='all' OR EXISTS(SELECT 1 FROM token_grants grant_row WHERE grant_row.organization_id=token.organization_id AND grant_row.token_id=token.id AND grant_row.project_id=allocation.project_id))
+ AND (token.operator_key_scope='' OR token.operator_key_scope='admin')
+ AND ((token.scope='admin' AND NOT token.native_only) OR EXISTS (
+  SELECT 1 FROM hosted_members member JOIN hosted_project_grants grant_row ON grant_row.organization_id=member.organization_id AND grant_row.user_id=member.user_id AND grant_row.project_id=allocation.project_id AND grant_row.can_write
+  WHERE member.organization_id=token.organization_id AND member.principal_id=token.id AND member.active AND member.role IN ('owner','admin')
+ AND EXISTS(SELECT 1 FROM token_grants principal_grant WHERE principal_grant.organization_id=member.organization_id AND principal_grant.token_id=member.principal_id AND principal_grant.project_id=allocation.project_id)
+ ))
+);
+
+-- name: SpriteMemberPlacementCounts :one
+SELECT count(*) FILTER (WHERE other.allocation_project_id=member.allocation_project_id AND other.state NOT IN ('deleted','deleting'))::bigint AS active_count,
+ count(*) FILTER (WHERE other.allocation_project_id<>member.allocation_project_id AND other.state NOT IN ('deleted','deleting'))::bigint AS other_count,
+ count(*) FILTER (WHERE other.allocation_project_id=member.allocation_project_id AND other.name<>member.name AND (other.state='enrolled' OR other.state='bootstrapping' AND (other.created_at<member.created_at OR other.created_at=member.created_at AND other.name<member.name)))::bigint AS ahead_count
+FROM runner_sprite_memberships member JOIN runner_sprite_memberships other ON other.organization_id=member.organization_id
+WHERE member.organization_id=$1 AND member.name=$2;

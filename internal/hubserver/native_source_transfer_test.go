@@ -3,10 +3,10 @@ package hubserver
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -16,6 +16,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -59,14 +62,14 @@ func TestNativeSourceTransfer(t *testing.T) {
 		{name: "stale revision", stale: true, released: true, status: http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			clock := &leaseTestClock{value: time.Now().UTC()}
-			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: clock.Now}))
+			clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+			var diagnostics bytes.Buffer
+			config := Config{Clock: clock.Now, Logger: slog.New(slog.NewTextHandler(&diagnostics, nil))}
 			if test.name == "transfer and duplicate request" {
 				objects := &changeObjectFixture{}
-				f.service.config.Content = objects.call
+				config.Content = objects.call
 			}
-			var diagnostics bytes.Buffer
-			f.service.config.Logger = slog.New(slog.NewTextHandler(&diagnostics, nil))
+			f := newChangeFixture(t, newClockedPostgresNativeService(t, config))
 			t.Cleanup(func() {
 				if t.Failed() {
 					t.Log(diagnostics.String())
@@ -81,9 +84,9 @@ func TestNativeSourceTransfer(t *testing.T) {
 				b = a
 			}
 			if test.stopped {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", f.project.ID, f.issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "source-in-progress"}, ExpectedRevision: f.issue.Revision, State: "In Progress", Reason: "user_requested"})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &f.issue)
 			}
 			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: f.issue.WorkItemID, MachineID: a.binding.MachineID, SessionID: "source", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", a.redemption.Credential, claim)
@@ -201,6 +204,17 @@ func TestNativeSourceTransfer(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/release", a.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			}
 			if test.acknowledged {
+				var nextSequence int64
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					attempt, err := reader.Attempt(t.Context(), event.Data.AttemptID)
+					if err == nil {
+						nextSequence = attempt.Sequence + 1
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				ack := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "terminated"}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: event.Data.AttemptID, RunID: event.Data.RunID, LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: event.Data.PolicyID, Identity: event.Data.Identity, Sequence: nextSequence, Outcome: "cancelled"}}
 				if !test.replacement {
 					for _, release := range []struct {
 						name, payload  string
@@ -213,37 +227,43 @@ func TestNativeSourceTransfer(t *testing.T) {
 						{name: "private reason", payload: `{"reason":"private release details"}`},
 					} {
 						t.Run(release.name, func(t *testing.T) {
-							tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-							if err != nil {
-								t.Fatal(err)
-							}
-							defer tx.Rollback()
-							data := event.Data
-							if release.missing {
-								data.LeaseID = "missing-lease"
-							}
-							if release.stale {
-								data.FencingToken++
+							var payload struct {
+								Reason string `json:"reason"`
 							}
 							if release.payload != "" {
-								if err := withMutableClaimFact(t.Context(), tx, "work_events_no_update", func() error {
-									_, err := tx.ExecContext(t.Context(), `UPDATE work_events SET payload_json=? WHERE kind='lease_released' AND fencing_token=?`, release.payload, lease.FencingToken)
+								if err := json.Unmarshal([]byte(release.payload), &payload); err != nil {
+									t.Fatal(err)
+								}
+							}
+							if release.missing || release.stale {
+								invalid := ack
+								invalid.IdempotencyKey = "invalid-release-" + strings.ReplaceAll(release.name, " ", "-")
+								if release.missing {
+									invalid.Data.LeaseID = "missing-lease"
+								} else {
+									invalid.Data.FencingToken++
+								}
+								response := performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, invalid)
+								if response.Code < 400 || response.Code >= 500 {
+									t.Fatalf("invalid release authority accepted: %d %s", response.Code, response.Body.String())
+								}
+								if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+									attempt, err := reader.Attempt(t.Context(), event.Data.AttemptID)
+									if err == nil && (attempt.Sequence != nextSequence-1 || attempt.CleanupAcknowledgedAt != nil) {
+										t.Fatal("invalid release authority changed attempt acknowledgment")
+									}
 									return err
 								}); err != nil {
 									t.Fatal(err)
 								}
 							}
-							failure, err := leaseReleaseFailure(t.Context(), tx, data, clock.Now())
-							if err != nil {
-								t.Fatal(err)
-							}
+							failure := nativeLeaseReleaseFailure(payload.Reason, clock.Now())
 							if failure.Error != "attempt lease was released before the attempt finished; release reason unavailable (lease expired, replaced or its runner was revoked)" || failure.ErrorClass != "lease_released" || failure.Stage != "lease_release" || !failure.ObservedAt.Equal(clock.Now()) {
 								t.Fatalf("missing release cause changed: %+v", failure)
 							}
 						})
 					}
 				}
-				ack := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "terminated"}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: event.Data.AttemptID, RunID: event.Data.RunID, LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: event.Data.PolicyID, Identity: event.Data.Identity, Sequence: event.Data.Sequence + 1, Outcome: "cancelled"}}
 				for _, invalid := range []string{"fence", "owner", "success", "evidence"} {
 					stale := ack
 					stale.IdempotencyKey = "rejected-" + invalid
@@ -266,14 +286,11 @@ func TestNativeSourceTransfer(t *testing.T) {
 				for range 2 {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, ack), http.StatusOK)
 				}
-				var status, raw string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT status, COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&status, &raw); err != nil {
-					t.Fatal(err)
-				}
-				var acknowledged tracker.NativeRunData
-				if err := decodeRunDetail(f.service.runDetailContext(t.Context()), f.service.database.reader, raw, &acknowledged); err != nil {
-					t.Fatal(err)
-				}
+				response := performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/attempts/"+event.Data.AttemptID, f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var acknowledged tracker.NativeAttempt
+				decodeHubResponse(t, response, &acknowledged)
+				status := acknowledged.Status
 				if failure := acknowledged.TerminalFailure; status != "cancelled" || failure == nil || failure.ErrorClass != "lease_released" || failure.Stage != "lease_release" || !strings.HasSuffix(failure.Error, "release reason: cancelled") || failure.ObservedAt.IsZero() {
 					t.Fatalf("cancelled attempt ended without its release cause: status=%s failure=%+v", status, failure)
 				}
@@ -283,7 +300,24 @@ func TestNativeSourceTransfer(t *testing.T) {
 				edited := performHubAPIRequest(t, f.service, http.MethodPatch, itemPath, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "human-hold"}, ExpectedRevision: f.issue.Revision, Labels: &labels})
 				requireNativeStatus(t, edited, http.StatusOK)
 				decodeHubResponse(t, edited, &f.issue)
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET dispatchable=0 WHERE project_id=? AND detent_state=?", f.project.ID, f.issue.State); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					record, err := w.ProjectRecord(t.Context(), f.project.ID)
+					if err != nil {
+						return err
+					}
+					found := false
+					for i := range record.States {
+						if record.States[i].Name == f.issue.State {
+							record.States[i].Dispatchable = false
+							found = true
+						}
+					}
+					if !found {
+						return errors.New("held workflow state missing")
+					}
+					_, err = w.UpdateProjectRecord(t.Context(), record)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -350,9 +384,14 @@ func TestNativeSourceTransfer(t *testing.T) {
 						t.Fatalf("released interrupted source lacks terminal evidence: %q", failure.Message)
 					}
 				}
-				var destination string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT recovery_runner_id FROM issues WHERE native_id=?", f.issue.WorkItemID).Scan(&destination); err != nil || destination != "" {
-					t.Fatalf("refusal changed owner: %q %v", destination, err)
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					row, err := reader.WorkItem(t.Context(), f.project.ID, f.issue.WorkItemID)
+					if err == nil && row.RecoveryRunnerID != "" {
+						t.Fatalf("refusal changed owner: %q", row.RecoveryRunnerID)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
 				}
 				return
 			}
@@ -376,9 +415,38 @@ func TestNativeSourceTransfer(t *testing.T) {
 			if replay.Body.String() != response.Body.String() {
 				t.Fatal("duplicate transfer changed receipt")
 			}
-			var audited int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND json_extract(data_json,'$.operation')='source_recovery'", f.issue.WorkItemID).Scan(&audited); err != nil || audited != 1 {
-				t.Fatalf("duplicate audit events: %d %v", audited, err)
+			audited := 0
+			after := int64(0)
+			content := eventstore.NewContent(f.service.runDetailStore())
+			for {
+				var events []eventstore.Event
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					var err error
+					events, err = reader.HistoryEvents(t.Context(), f.project.ID, f.issue.WorkItemID, after, corestore.MaxPageSize)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				for _, row := range events {
+					event, err := content.Event(t.Context(), row)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if event.Data.Operation == "source_recovery" {
+						audited++
+					}
+				}
+				if len(events) < corestore.MaxPageSize {
+					break
+				}
+				next := events[len(events)-1].Sequence
+				if next <= after {
+					t.Fatal("source audit cursor did not advance")
+				}
+				after = next
+			}
+			if audited != 1 {
+				t.Fatalf("duplicate audit events: %d", audited)
 			}
 			if test.advanced {
 				input.Code.SHA256 = strings.Repeat("a", 64)
@@ -402,10 +470,14 @@ func TestNativeSourceTransfer(t *testing.T) {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
 				}
 				for _, bounded := range []bool{false, true} {
-					resumed, err := f.service.readNativeRecovery(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), bounded)
-					if err != nil {
-						t.Fatal(err)
+					path := itemPath + "?view=recovery"
+					if bounded {
+						path += "&projection=bounded"
 					}
+					response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var resumed tracker.NativeRecovery
+					decodeHubResponse(t, response, &resumed)
 					if newer.ID == version.ID || resumed.SourceVersionID != "" || resumed.Change == nil || resumed.Change.VersionID != newer.ID {
 						t.Fatalf("stale transfer still overrides current source: selected=%q current=%+v", resumed.SourceVersionID, resumed.Change)
 					}
@@ -413,13 +485,18 @@ func TestNativeSourceTransfer(t *testing.T) {
 						t.Fatalf("new publication lost dirty checkpoint custody: %+v", resumed.SourceAttempt())
 					}
 				}
-				var storedVersion, storedRunner string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT recovery_version_id,recovery_runner_id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?", f.project.OrganizationID, f.project.ID, f.issue.WorkItemID).Scan(&storedVersion, &storedRunner); err != nil || storedVersion != version.ID || storedRunner != b.binding.RunnerID {
-					t.Fatalf("recovery read changed retained transfer: version=%q runner=%q error=%v", storedVersion, storedRunner, err)
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					row, err := reader.WorkItem(t.Context(), f.project.ID, f.issue.WorkItemID)
+					if err == nil && (row.RecoveryVersionID != version.ID || row.RecoveryRunnerID != b.binding.RunnerID) {
+						t.Fatalf("recovery read changed retained transfer: version=%q runner=%q", row.RecoveryVersionID, row.RecoveryRunnerID)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
 				}
 				return
 			}
-			current, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}, string(f.issue.WorkItemID))
+			current, err := f.service.readWorkItem(t.Context(), analyticsTestScope(t, f.nativeFixture), string(f.issue.WorkItemID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -434,7 +511,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 				if !reflect.DeepEqual(retained, historical) {
 					t.Fatal("transfer rewrote historical outcome or checkpoint")
 				}
-				stored, err := readChangeVersion(f.service.runDetailContext(t.Context()), f.service.database.db, version.ChangeID, version.ID)
+				stored, err := f.service.readExactChangeVersionRecord(t.Context(), analyticsTestScope(t, f.nativeFixture), string(f.issue.WorkItemID), version.ChangeID, version.ID)
 				if err != nil || !reflect.DeepEqual(stored, version) {
 					t.Fatalf("transfer replaced immutable source version: %v", err)
 				}

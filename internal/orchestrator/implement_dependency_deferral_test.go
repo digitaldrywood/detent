@@ -165,10 +165,6 @@ func TestCompletedDependencyWaitPreservesOperatorStops(t *testing.T) {
 }
 
 func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name          string
@@ -205,17 +201,8 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 			unrelated.Identifier = "digitaldrywood/detent#1"
 			tracker := fakehub.New(fakehub.Config{Stateful: true, Issues: []connector.Issue{issue, blocker, unrelated}})
 			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, MaxConcurrentAgents: 1, PrioritizeUnblockers: true, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Merging", "Rework", "In Progress", "Todo"}})
-			path := filepath.Join(t.TempDir(), "detent.db")
-			backend, err := store.Open(ctx, store.Config{Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := backend.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			attempts := backend.(store.WorkAttemptStore)
+			backend := newRuntimeFixture()
+			attempts := backend
 			attemptID, err := attempts.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: workAttemptWorkerType(issue, runpkg.RunModeImplement), Lane: issue.State, StartedAt: now.Add(-time.Minute)})
 			if err != nil {
 				t.Fatal(err)
@@ -252,13 +239,6 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 			if contents, err := os.ReadFile(savedPath); err != nil || string(contents) != "saved implementation" {
 				t.Fatalf("saved workspace changed: %q, %v", contents, err)
 			}
-			if err := backend.Close(); err != nil {
-				t.Fatal(err)
-			}
-			backend, err = store.Open(ctx, store.Config{Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
 			if tt.blockerClosed {
 				if err := tracker.UpdateIssueState(ctx, blocker.ID, "Done"); err != nil {
 					t.Fatal(err)
@@ -271,7 +251,7 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 				tracker = fakehub.New(fakehub.Config{Stateful: true, Issues: []connector.Issue{current[0], blocker, unrelated}})
 			}
 			runner := newWorkerHostRunner()
-			o = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: backend.(store.WorkAttemptStore), globalDispatchGate: globalGate, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 1)}
+			o = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: backend, globalDispatchGate: globalGate, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 1)}
 			state = newState(cfg)
 			candidates := []connector.Issue{current[0], unrelated, blocker}
 			if tt.blockerClosed || tt.nativeRemoved {
@@ -452,21 +432,13 @@ func TestHistoricalDependencyDeferralUsesCurrentProseRefs(t *testing.T) {
 }
 
 func TestDependencyDeferralEvidenceAndReleaseAcrossRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	ctx := t.Context()
-	path := filepath.Join(t.TempDir(), "detent.db")
 	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, TerminalStates: []string{"Done"}})
 	issue := implementProgressIssueWithoutPR()
 	history := implementProgressDependencyDeferralHistoryAttempt(1, "digitaldrywood/detent#134", "Todo")
-	backend, err := store.Open(ctx, store.Config{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	attempts := backend.(store.WorkAttemptStore)
+	backend := newRuntimeFixture()
+	attempts := backend
 	id, err := attempts.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: issue.State, StartedAt: history.CompletedAt.Add(-time.Minute)})
 	if err != nil {
 		t.Fatal(err)
@@ -476,9 +448,6 @@ func TestDependencyDeferralEvidenceAndReleaseAcrossRestart(t *testing.T) {
 	}
 	o := &Orchestrator{cfg: cfg, workAttempts: attempts}
 	o.recordSchedulerDecision(ctx, nil, history.CompletedAt.Add(time.Minute), dispatchPlanDecision{Issue: issue, Selected: true}, string(store.SchedulerDecisionResultSelected), "selected")
-	if err := backend.Close(); err != nil {
-		t.Fatal(err)
-	}
 	for _, tt := range []struct {
 		name, state   string
 		wantCandidate bool
@@ -487,17 +456,9 @@ func TestDependencyDeferralEvidenceAndReleaseAcrossRestart(t *testing.T) {
 		{name: "restart releases completed dependency", state: "Done", wantCandidate: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			reopened, err := store.Open(ctx, store.Config{Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() {
-				if err := reopened.Close(); err != nil {
-					t.Error(err)
-				}
-			}()
-			o := &Orchestrator{cfg: cfg, workAttempts: reopened.(store.WorkAttemptStore), connector: hydratingDispatchConnector{blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#134", State: tt.state}}}}
-			reader := reopened.(store.IssueSchedulerDecisionStore)
+			reopened := backend
+			o := &Orchestrator{cfg: cfg, workAttempts: reopened, connector: hydratingDispatchConnector{blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#134", State: tt.state}}}}
+			reader := reopened
 			service := explain.New(explain.Dependencies{Scheduler: reader})
 			query := explain.Query{ProjectID: "detent", IssueID: issue.ID}
 			if tt.wantCandidate {

@@ -11,10 +11,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -23,21 +23,29 @@ import (
 
 func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	repository := projectRecordPostgres(t)
+	org := tracker.OrganizationID("org_security")
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", Slug: "example-org", CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}); err != nil {
+			return err
+		}
+		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "org_provider", BootstrapSubject: "user_owner", Deployment: "origin", PublicURL: "http://127.0.0.1:7777"})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.RunDetails = &memoryRunDetails{}
 		cfg.SecretKeys = secretTestKeys(t, "1", "1")
 		cfg.AccessRepository = repository
 		cfg.TenantRepository = repository
 	})
-	org := tracker.OrganizationID("org_security")
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", Slug: "example-org", CreatedAt: f.service.config.now()}); err != nil {
+		project, err := w.ProjectRecord(t.Context(), f.project)
+		if err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "org_provider"}); err != nil {
-			return err
-		}
-		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: f.project, Name: "Ra", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()})
+		project.Core.Name, project.Core.Slug = "Ra", "example-project"
+		project.States = nativeFixtureStates()
+		_, err = w.UpdateProjectRecord(t.Context(), project)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -143,10 +151,9 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	f.service.outbox.stop()
-	sqliteReader := f.service.database.reader
-	f.service.database.reader = nil
-	defer func() { f.service.database.reader = sqliteReader }()
+	if f.service.outbox != nil {
+		f.service.outbox.stop()
+	}
 	boardURL := f.base + "/work-items?include=board&limit=1"
 	refreshSearch := func(t *testing.T) {
 		t.Helper()
@@ -444,7 +451,6 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	for _, query := range []string{"archived=invalid", "open=invalid", "priority=invalid"} {
 		requireNativeStatus(t, f.request(t, other, http.MethodGet, f.base+"/work-items?include=board&"+query, nil), http.StatusUnprocessableEntity)
 	}
-	f.service.database.reader = sqliteReader
 	preferences := f.base + "/work-view-preference"
 	missingPreference := f.request(t, owner, http.MethodGet, preferences, nil)
 	requireNativeStatus(t, missingPreference, http.StatusOK)
@@ -477,10 +483,6 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		t.Fatalf("shared owner state leaked=%+v", shared)
 	}
 	requireNativeStatus(t, f.request(t, other, http.MethodDelete, base+"/"+created.ID, nil), http.StatusNotFound)
-	var sqliteCount int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM hosted_work_views)+(SELECT count(*) FROM hosted_work_view_preferences)").Scan(&sqliteCount); err != nil || sqliteCount != 0 {
-		t.Fatalf("SQLite view writes=%d error=%v", sqliteCount, err)
-	}
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.DeleteAccessProjectGrant(t.Context(), other.identity.Subject, f.project)
 	}); err != nil {
@@ -493,9 +495,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	workingSetURL := "/api/v2/organizations/org_security/work-board?" + url.Values{"project": {string(f.project)}, "state": {string(workingSet)}}.Encode()
-	f.service.database.reader = nil
 	deniedWorkingSet := f.request(t, other, http.MethodGet, workingSetURL, nil)
-	f.service.database.reader = sqliteReader
 	if deniedWorkingSet.Code != http.StatusForbidden && deniedWorkingSet.Code != http.StatusNotFound {
 		t.Fatalf("revoked working-set access status=%d", deniedWorkingSet.Code)
 	}

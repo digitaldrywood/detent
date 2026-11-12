@@ -46,33 +46,34 @@ type Conversation struct {
 }
 
 type Message struct {
-	OrganizationID   tracker.OrganizationID
-	ConversationID   string
-	ID               string
-	Sequence         int64
-	Role             conversation.Role
-	Kind             conversation.MessageKind
-	Text             string
-	Data             json.RawMessage
-	Delivery         conversation.Delivery
-	AttemptID        string
-	ThreadID         string
-	TurnID           string
-	ProviderItemID   string
-	Actor            conversation.Actor
-	CommandKey       string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	ContentReference string
-	Revision         int64
-	TextBytes        int64
-	StoredTextBytes  int64
-	ToolName         *string
-	ToolItemID       *string
-	ToolStatus       *string
-	OperatorActionID *string
-	OperatorAgent    *string
-	OperatorResult   *string
+	OrganizationID         tracker.OrganizationID
+	ConversationID         string
+	ID                     string
+	Sequence               int64
+	Role                   conversation.Role
+	Kind                   conversation.MessageKind
+	Text                   string
+	Data                   json.RawMessage
+	Delivery               conversation.Delivery
+	AttemptID              string
+	ThreadID               string
+	TurnID                 string
+	ProviderItemID         string
+	Actor                  conversation.Actor
+	CommandKey             string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	ContentReference       string
+	Revision               int64
+	TextBytes              int64
+	StoredTextBytes        int64
+	StoredTextBytesUnknown bool
+	ToolName               *string
+	ToolItemID             *string
+	ToolStatus             *string
+	OperatorActionID       *string
+	OperatorAgent          *string
+	OperatorResult         *string
 }
 
 type Question struct {

@@ -67,6 +67,32 @@ func TestRegistryMappingAndGenerations(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM platform.organization_events`).Scan(&events); err != nil || events != 4 {
 		t.Fatalf("events=%d err=%v", events, err)
 	}
+	t.Run("readable organization slugs", func(t *testing.T) {
+		db := template.Database(t)
+		r := repository(t, db, testConfig(t))
+		create := func(id, name, want string) {
+			t.Helper()
+			input := Organization{ID: tracker.OrganizationID(id), ProviderID: "provider_" + id, Name: name, Endpoint: "unix:/example/" + id + ".sock", Generation: 1}
+			if changed, err := r.Register(t.Context(), input); err != nil || !changed {
+				t.Fatalf("register %s changed=%v error=%v", id, changed, err)
+			}
+			stored, err := r.Organization(t.Context(), input.ID)
+			if err != nil || stored.Slug != want {
+				t.Fatalf("organization %s slug=%q want=%q error=%v", id, stored.Slug, want, err)
+			}
+		}
+		create("org_initial_first", "Example Organization", "example-organization")
+		create("org_initial_second", "Example Organization", "example-organization-2")
+		for _, route := range []string{"work", "settings", "login", "projects", "organizations", "organization", "api", "app", "auth", "chat", "reports", "activity", "diagnostics", "fleet", "support", "invite", "logout", "health", "metrics", "static", "webhooks", "design-system", "setup", "usage", "billing", "account", "platform"} {
+			t.Run(route, func(t *testing.T) {
+				create("org_reserved_"+route, route, route+"-organization")
+				create("org_repeated_"+route, route, route+"-organization-2")
+			})
+		}
+		create("org_final_example", "Example Organization", "example-organization-3")
+		create("org_empty_name", "!!!", "organization-organization-3")
+	})
+
 }
 
 func TestConcurrentRegistryRegistrationIsIdempotent(t *testing.T) {

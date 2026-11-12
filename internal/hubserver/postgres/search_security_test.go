@@ -358,6 +358,7 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 }
 
 type searchPlanNode struct {
+	Alias        string           `json:"Alias"`
 	Index        string           `json:"Index Name"`
 	Relation     string           `json:"Relation Name"`
 	Rows         float64          `json:"Actual Rows"`

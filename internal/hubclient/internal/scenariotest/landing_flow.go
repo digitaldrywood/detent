@@ -493,7 +493,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.admin.IntakeSource(t.Context(), created.WorkItemID, tracker.GitHubIntake{Mutation: nativeMutationKey(), Snapshot: backend.snapshot(hubserver.GitHubImportRequest{Stage: "issue"})}); err != nil {
+		if _, err := h.admin.IntakeSource(t.Context(), created.WorkItemID, tracker.GitHubIntake{Mutation: nativeMutationKey(), Snapshot: backend.snapshot(hubserver.GitHubImportRequest{})}); err != nil {
 			t.Fatal(err)
 		}
 		confirmIssueContract(t, h.admin, string(created.WorkItemID))

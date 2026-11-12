@@ -22,6 +22,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -128,12 +132,35 @@ func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
 				if err != nil || view.ExpiresAt != formatHubTime(issued.ExpiresAt) {
 					t.Fatalf("response expiry = %q, provider expiry = %v: %v", view.ExpiresAt, issued.ExpiresAt, err)
 				}
-				var storedExpiry string
-				if err := service.database.db.QueryRowContext(t.Context(), "SELECT expires_at FROM hosted_invitations WHERE id=?", view.ID).Scan(&storedExpiry); err != nil || storedExpiry != view.ExpiresAt {
+				var stored accessstore.Invitation
+				err = service.accessRead(t.Context(), service.accessOrganization(), func(r tenantstore.Reader) error {
+					var err error
+					stored, err = r.AccessInvitation(t.Context(), view.ID)
+					return err
+				})
+				storedExpiry := formatHubTime(stored.ExpiresAt)
+				if err != nil || storedExpiry != view.ExpiresAt {
 					t.Fatalf("stored expiry = %q, response expiry = %q: %v", storedExpiry, view.ExpiresAt, err)
 				}
 				if legacy {
-					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE hosted_invitations SET expires_at='' WHERE id=?", view.ID); err != nil {
+					expires := time.Date(9999, time.December, 31, 23, 59, 59, 999999000, time.UTC)
+					result, err := hostedPostgresAdmin(t, service).ExecContext(t.Context(), "UPDATE hosted_invitations SET expires_at=$3 WHERE organization_id=$1 AND id=$2 AND expires_at=$4", service.accessOrganization(), view.ID, expires, stored.ExpiresAt)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+						t.Fatalf("historical invitation expiry rows=%d: %v", rows, err)
+					}
+					if err := service.accessRead(t.Context(), service.accessOrganization(), func(r tenantstore.Reader) error {
+						row, err := r.AccessInvitation(t.Context(), view.ID)
+						if err != nil {
+							return err
+						}
+						if !row.ExpiresAt.Equal(expires) {
+							return errors.New("historical invitation expiry not preserved")
+						}
+						return nil
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -141,7 +168,14 @@ func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
 			}
 			for _, releaseSeat := range []bool{false, true} {
 				if releaseSeat {
-					if _, err := service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_member_reservations"); err != nil {
+					if err := service.accessWrite(t.Context(), service.accessOrganization(), func(w tenantstore.Writer) error {
+						for _, invitation := range created {
+							if err := w.DeleteAccessMemberReservation(t.Context(), invitation.Email); err != nil {
+								return err
+							}
+						}
+						return nil
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -193,9 +227,9 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 			}
 		})
 	}
-	var seats int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_member_reservations WHERE email = 'pending@example.test'").Scan(&seats); err != nil || seats != 1 {
-		t.Fatalf("reserved seats = %d: %v", seats, err)
+	seats := f.invitationSeats(t, "pending@example.test")
+	if seats != 1 {
+		t.Fatalf("reserved seats = %d", seats)
 	}
 	path := browserHostedOrganizationBase + "/members/invitations/" + url.PathEscape(created.ID)
 	for _, action := range []string{"resend", "revoke"} {
@@ -211,12 +245,19 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 				if id != created.ID || gotAction != action {
 					t.Fatalf("provider invitation action = %s %s", gotAction, id)
 				}
-				var pending, held int
-				if err := f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND accepted_user_id=''", id).Scan(&pending); err != nil {
-					t.Fatal(err)
-				}
-				if err := f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_member_reservations WHERE email=?", created.Email).Scan(&held); err != nil || pending != 1 || held != 1 {
-					t.Fatalf("provider called after local removal: pending=%d held=%d err=%v", pending, held, err)
+				var invitation accessstore.Invitation
+				var reservation accessstore.MemberReservation
+				err := f.service.accessRead(ctx, f.service.accessOrganization(), func(r tenantstore.Reader) error {
+					var err error
+					invitation, err = r.AccessInvitation(ctx, id)
+					if err != nil {
+						return err
+					}
+					reservation, err = r.AccessMemberReservation(ctx, created.Email)
+					return err
+				})
+				if err != nil || invitation.ID != id || invitation.AcceptedUserID != "" || reservation.Email != created.Email {
+					t.Fatalf("provider called after local removal: pending=%+v held=%+v err=%v", invitation, reservation, err)
 				}
 				return auth.ErrHostedIdentity
 			}
@@ -227,8 +268,8 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 			if calls != 1 || len(members.Invitations) != 1 || members.Invitations[0].ID != created.ID {
 				t.Fatalf("failed provider action: calls=%d invitations=%#v", calls, members.Invitations)
 			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_member_reservations WHERE email=?", created.Email).Scan(&seats); err != nil || seats != 1 {
-				t.Fatalf("failed provider action released seat: %d %v", seats, err)
+			if seats = f.invitationSeats(t, created.Email); seats != 1 {
+				t.Fatalf("failed provider action released seat: %d", seats)
 			}
 		})
 	}
@@ -236,9 +277,14 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 	called := false
 	f.provider.invitationDelivery = func(ctx context.Context, id, action string) error {
 		called = true
-		var pending int
-		if err := f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=?", id).Scan(&pending); err != nil || pending != 1 || action != "revoke" {
-			t.Fatalf("revoke called after local deletion: pending=%d action=%s err=%v", pending, action, err)
+		var pending accessstore.Invitation
+		err := f.service.accessRead(ctx, f.service.accessOrganization(), func(r tenantstore.Reader) error {
+			var err error
+			pending, err = r.AccessInvitation(ctx, id)
+			return err
+		})
+		if err != nil || pending.ID != id || action != "revoke" {
+			t.Fatalf("revoke called after local deletion: pending=%+v action=%s err=%v", pending, action, err)
 		}
 		return nil
 	}
@@ -257,8 +303,8 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 	if len(members.Invitations) != 0 {
 		t.Fatalf("revoked invitation is still pending: %#v", members.Invitations)
 	}
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_member_reservations WHERE email = 'pending@example.test'").Scan(&seats); err != nil || seats != 0 {
-		t.Fatalf("revocation kept %d reserved seats: %v", seats, err)
+	if seats = f.invitationSeats(t, "pending@example.test"); seats != 0 {
+		t.Fatalf("revocation kept %d reserved seats", seats)
 	}
 	if response := f.page(t, "", "/invite?invitation_token="+url.QueryEscape(created.ID)); response.Code != http.StatusForbidden {
 		t.Fatalf("revoked invitation link status = %d", response.Code)
@@ -267,8 +313,8 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 
 func TestHostedProjectsAPI(t *testing.T) {
 	t.Parallel()
-	f := newBrowserHostedFixture(t, true)
-	guard := installWriterReadGuard(t, f.service)
+	f, guard := newWriterGuardHostedFixture(t, true)
+	installWriterReadGuard(t, f.service, guard)
 	for _, test := range []struct {
 		account  string
 		projects []string
@@ -313,7 +359,11 @@ func TestHostedProjectsAPI(t *testing.T) {
 		t.Fatalf("creator has no write grant on %s: %#v", created.ID, projects)
 	}
 	var manageRunner bool
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT manage_runner FROM hosted_project_grants WHERE project_id = ?", created.ID).Scan(&manageRunner); err != nil || !manageRunner {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), created.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		grant, err := r.AccessProjectGrant(t.Context(), "user_browser_owner", created.ID)
+		manageRunner = grant.ManageRunner
+		return err
+	}); err != nil || !manageRunner {
 		t.Fatalf("owner-created project runner management = %v, %v; want granted", manageRunner, err)
 	}
 	browserHostedDecode(t, f.api(t, "viewer", http.MethodGet, browserHostedOrganizationBase+"/projects", nil, http.StatusOK), &projects)
@@ -454,8 +504,22 @@ func (failingInviteProvider) Invite(context.Context, string, string, string, str
 
 func (f *browserHostedFixture) invitationSeats(t *testing.T, email string) int {
 	t.Helper()
-	var seats int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_member_reservations WHERE email = ?", email).Scan(&seats); err != nil {
+	seats := 0
+	err := f.service.accessRead(t.Context(), f.service.accessOrganization(), func(r tenantstore.Reader) error {
+		reservation, err := r.AccessMemberReservation(t.Context(), email)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if reservation.Email != email {
+			return errors.New("reservation email changed")
+		}
+		seats = 1
+		return nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	return seats
@@ -527,10 +591,26 @@ func TestHostedInvitationIdempotency(t *testing.T) {
 		if err := f.service.hostedAudit(mutation.WithContext(t.Context(), m), session.Identity, "succeeded", "invite_member", f.project, http.StatusCreated); err != nil {
 			t.Fatal(err)
 		}
-		var summary string
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT mutation_json FROM hosted_audit WHERE event='succeeded' ORDER BY id DESC LIMIT 1").Scan(&summary); err != nil {
+		var auditID int64
+		if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT id FROM hosted_audit WHERE organization_id=$1 AND event='succeeded' AND route='invite_member' ORDER BY id DESC LIMIT 1", f.service.accessOrganization()).Scan(&auditID); err != nil {
 			t.Fatal(err)
 		}
+		var audit accessstore.Audit
+		if err := f.service.accessRead(t.Context(), f.service.accessOrganization(), func(r tenantstore.Reader) error {
+			var err error
+			audit, err = r.AccessAudit(t.Context(), auditID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if audit.Mutation == nil || audit.Mutation.Validate(string(f.service.accessOrganization())) != nil {
+			t.Fatalf("audit mutation reference=%+v", audit.Mutation)
+		}
+		raw, err := f.service.runDetailStore().ReadDetail(t.Context(), string(f.service.accessOrganization()), *audit.Mutation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		summary := string(raw)
 		for _, secret := range []string{"untrusted-actor", "untrusted-org", "secret-business-key", "credential-invitation-support-billing-sensitive-sentinel"} {
 			if strings.Contains(summary, secret) {
 				t.Fatalf("audit leaked %s", secret)
@@ -570,9 +650,20 @@ func TestHostedInvitationFailureKeepsHeldSeat(t *testing.T) {
 			f.service.config.Hosted.Provider = failingInviteProvider{f.provider}
 			f.api(t, "owner", http.MethodPost, path, map[string]any{"email": "seat@example.test", "role": "member", "idempotency_key": "failed"}, http.StatusServiceUnavailable)
 			f.api(t, "owner", http.MethodPost, path, map[string]any{"email": "seat@example.test", "role": "member", "idempotency_key": "failed"}, http.StatusConflict)
-			var pending string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT response_json FROM native_commands WHERE command_key='failed'").Scan(&pending); err != nil || pending != hostedPendingCommand {
-				t.Fatalf("uncertain invitation receipt=%q %v", pending, err)
+			var pending eventstore.Receipt
+			err := f.service.accessRead(t.Context(), f.service.accessOrganization(), func(r tenantstore.Reader) error {
+				owner, err := r.AccessMember(t.Context(), "user_browser_owner")
+				if err != nil {
+					return err
+				}
+				pending, err = r.Receipt(t.Context(), owner.PrincipalID, "POST "+path, "failed")
+				return err
+			})
+			if err != nil || !pending.ResponseClaimed || !pending.ResponsePending {
+				t.Fatalf("uncertain invitation receipt=%+v %v", pending, err)
+			}
+			if _, err := eventstore.NewContent(f.service.runDetailStore()).Receipt(t.Context(), pending); !errors.Is(err, mutation.ErrUncertain) {
+				t.Fatalf("uncertain invitation response=%v", err)
 			}
 			if got := f.invitationSeats(t, "seat@example.test"); got != test.seats {
 				t.Fatalf("seats = %d, want %d", got, test.seats)
@@ -617,7 +708,7 @@ func TestScopeHostUsage(t *testing.T) {
 func TestHostedFleetHostUsageScope(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", f.service.config.Hosted.OrganizationID+"/"+f.project); err != nil {
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2", f.service.accessOrganization(), f.project); err != nil {
 		t.Fatal(err)
 	}
 	organization := browserHostedOrganizationBase
@@ -654,7 +745,11 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 	response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", credential, tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: second.WorkItemID, MachineID: binding.MachineID, SessionID: "second-run", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 	requireNativeStatus(t, response, http.StatusOK)
 	var reporterPrincipal string
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", "user_browser_viewer").Scan(&reporterPrincipal); err != nil {
+	if err := f.service.accessRead(t.Context(), f.service.accessOrganization(), func(r tenantstore.Reader) error {
+		member, err := r.AccessMember(t.Context(), "user_browser_viewer")
+		reporterPrincipal = member.PrincipalID
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	checks := runnerauth.LocalChecks{Checkout: "failed", Setup: "failed", Doctor: "pending", Provider: "pending", CheckoutMessage: "Cannot clone https://github.com/acme/private.git", CheckoutFix: "gh auth login"}
@@ -678,12 +773,21 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 				if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_viewer", test.role); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET role=? WHERE user_id=?", test.role, "user_browser_viewer"); err != nil {
+				if err := f.service.accessWrite(t.Context(), f.service.accessOrganization(), func(w tenantstore.Writer) error {
+					member, err := w.AccessMember(t.Context(), "user_browser_viewer")
+					if err != nil {
+						return err
+					}
+					member.Role = test.role
+					return w.UpdateAccessMember(t.Context(), member)
+				}); err != nil {
 					t.Fatal(err)
 				}
 				if test.allProjects {
 					requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_viewer"}, "project": {f.privateProject}}), http.StatusSeeOther)
-				} else if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", "user_browser_viewer", f.privateProject); err != nil {
+				} else if err := f.service.accessWrite(t.Context(), f.service.accessOrganization(), func(w tenantstore.Writer) error {
+					return w.DeleteAccessProjectGrant(t.Context(), "user_browser_viewer", tracker.ProjectID(f.privateProject))
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -691,11 +795,15 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 			if test.ownIssue {
 				actor.PrincipalID = reporterPrincipal
 			}
-			encoded, err := json.Marshal(actor)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=? WHERE native_id=?", string(encoded), second.WorkItemID); err != nil {
+			if err := f.service.accessWrite(t.Context(), f.service.accessOrganization(), func(w tenantstore.Writer) error {
+				item, err := w.WorkItem(t.Context(), tracker.ProjectID(f.privateProject), tracker.NativeWorkItemID(second.WorkItemID))
+				if err != nil {
+					return err
+				}
+				item.ActorKind, item.ActorPrincipalID = &actor.Kind, &actor.PrincipalID
+				_, err = w.UpdateWorkItem(t.Context(), item)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -779,15 +887,16 @@ func TestHostedInvitationKeyClaim(t *testing.T) {
 			status: http.StatusConflict, code: "idempotency_in_progress", invitations: 0,
 			prepare: func(t *testing.T, f *browserHostedFixture) {
 				var actor string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id = 'user_browser_owner'").Scan(&actor); err != nil {
+				if err := f.service.accessRead(t.Context(), f.service.accessOrganization(), func(r tenantstore.Reader) error {
+					member, err := r.AccessMember(t.Context(), "user_browser_owner")
+					actor = member.PrincipalID
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
-				hash, err := hostedCommand{input: struct{ Email, Role string }{"claim@example.test", "member"}}.hash()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "org_browser_preview", actor, "POST "+path, "claim", hash, hostedPendingCommand, formatHubTime(time.Now())); err != nil {
-					t.Fatal(err)
+				command := hostedCommand{actor: actor, operation: "POST " + path, key: "claim", input: struct{ Email, Role string }{"claim@example.test", "member"}}
+				if claimed, response, err := f.service.claimHostedOperation(t.Context(), command); err != nil || !claimed || len(response) != 0 {
+					t.Fatalf("interrupted command claim=%t response=%q: %v", claimed, response, err)
 				}
 			},
 		},
@@ -795,14 +904,14 @@ func TestHostedInvitationKeyClaim(t *testing.T) {
 			name:   "a reservation failure before inviting releases the key so the same key succeeds",
 			status: http.StatusCreated, invitations: 1,
 			prepare: func(t *testing.T, f *browserHostedFixture) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_invitation_seat BEFORE INSERT ON hosted_member_reservations BEGIN SELECT RAISE(ABORT, 'fixture reservation failure'); END`); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `CREATE FUNCTION reject_invitation_seat() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture reservation failure'; END $$; CREATE TRIGGER reject_invitation_seat BEFORE INSERT ON hosted_member_reservations FOR EACH ROW EXECUTE FUNCTION reject_invitation_seat()`); err != nil {
 					t.Fatal(err)
 				}
 				f.api(t, "owner", http.MethodPost, path, body, http.StatusServiceUnavailable)
 				if got := f.providerInvitations(); got != 0 {
 					t.Fatalf("reservation failure sent %d provider invitations", got)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `DROP TRIGGER reject_invitation_seat`); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `DROP TRIGGER reject_invitation_seat ON hosted_member_reservations; DROP FUNCTION reject_invitation_seat()`); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -878,7 +987,11 @@ func TestClaimHostedCommandIsExclusive(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
 	var actor string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id = 'user_browser_owner'").Scan(&actor); err != nil {
+	if err := f.service.accessRead(t.Context(), f.service.accessOrganization(), func(r tenantstore.Reader) error {
+		member, err := r.AccessMember(t.Context(), "user_browser_owner")
+		actor = member.PrincipalID
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	command := hostedCommand{actor: actor, operation: "POST /claim", key: "exclusive", input: "same"}

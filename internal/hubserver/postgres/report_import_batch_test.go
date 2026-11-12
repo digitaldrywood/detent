@@ -188,7 +188,11 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 		change.LandedHeadSHA = &version.HeadSHA
 		change.LandedMergeSHA = &receipt.MergeSHA
 		change.LandedBaseRef = &receipt.BaseRef
-		landings := []postgres.ReportLandingImport{{Change: change, Receipt: receipt}}
+		frozen, err := content.PrepareVersionLanding(ctx, eventstore.VersionLanding{OrganizationID: org, ProjectID: "prj_1", WorkItemID: "wi_1", ChangeID: change.ID, VersionID: version.ID}, tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: receipt.MergeSHA, BaseRef: receipt.BaseRef, Method: "merge", Actor: historyActor(), LandedAt: historyAt(), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 1, IssueBody: "Frozen batch contract", Criteria: []string{"Preserved criterion"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		landings := []postgres.ReportLandingImport{{Change: change, Receipt: receipt, Frozen: frozen}}
 
 		counter := &reportCountingTracer{}
 		countedPool := tracedFeaturePool(t, pool, counter)
@@ -298,5 +302,216 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 		if first != "bulk_event_000" || latest != "bulk_event_099" || outcome != "bulk_event_000" {
 			t.Fatalf("attempt order=%s/%s/%s", first, latest, outcome)
 		}
+		t.Run(string(org)+"/same hour current writes preserve immutable import replay", func(t *testing.T) {
+			lease := claimLease(t, repository, org, leaseClaim(2))
+			if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.RecordAttempt(ctx, leasestore.AttemptEvent{ID: "attempt_same_hour", Fence: leaseFence(lease), RunID: "run_same_hour", Sequence: 1, Status: "running", StartedAt: historyAt(), PayloadObjectKey: ref.Key})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, imported := range usage {
+				imported.ProjectID = "prj_2"
+				imported.WorkItemID = "wi_2"
+				imported.AttemptID = "attempt_same_hour"
+				if err := repository.ImportReportUsageFact(ctx, imported); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			record := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_2", WorkItemID: "wi_2", AttemptID: "attempt_same_hour", Period: now.Truncate(time.Hour), Provider: "example", Model: "same-hour-model", Input: 100, Cost: 1, Currency: "USD"}, UpdatedAt: now}
+			if err := repository.ImportReportUsageFact(ctx, record); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.VerifyReportUsageImport(ctx, org, "attempt_same_hour", strings.Repeat("a", 64), 101); err != nil {
+				t.Fatal(err)
+			}
+			command := reportstore.AttemptUsage{OrganizationID: org, ProjectID: "prj_2", WorkItemID: "wi_2", AttemptID: "attempt_same_hour", LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, Sequence: 1, ReceivedAt: now, Currency: "USD", Totals: []reportstore.AttemptUsageTotal{{Provider: "example", Model: "same-hour-model", Input: 250, ReportedCost: new(2.5)}}}
+			if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.(reportstore.UsageWriter).RecordAttemptUsage(ctx, command)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if err := repository.ImportReportUsageFact(ctx, record); err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.VerifyReportUsageImport(ctx, org, "attempt_same_hour", strings.Repeat("a", 64), 101); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var historical, current int64
+			var historicalCost, currentCost float64
+			if err := admin.QueryRowContext(ctx, `SELECT sum(input) FILTER(WHERE usage_origin='import'),sum(cost_estimate) FILTER(WHERE usage_origin='import'),sum(input) FILTER(WHERE usage_origin='current'),sum(cost_estimate) FILTER(WHERE usage_origin='current') FROM attempt_usage WHERE organization_id=$1 AND attempt_id='attempt_same_hour' AND period=$2 AND provider='example' AND model='same-hour-model' AND currency='USD'`, org, record.Period).Scan(&historical, &historicalCost, &current, &currentCost); err != nil {
+				t.Fatal(err)
+			}
+			if historical != 100 || historicalCost != 1 || current != 150 || currentCost != 1.5 || historical+current != 250 || historicalCost+currentCost != 2.5 {
+				t.Fatalf("same hour origin fidelity=%d/%v + %d/%v", historical, historicalCost, current, currentCost)
+			}
+			query := reportstore.AnalyticsUsageQuery{ProjectID: "prj_2", From: record.Period, To: record.Period.Add(time.Hour), Limit: 1}
+			read := func() reportstore.AnalyticsUsagePage {
+				t.Helper()
+				var page reportstore.AnalyticsUsagePage
+				if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					page, err = r.(reportstore.AnalyticsUsageReader).ReadAnalyticsUsagePage(ctx, query)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return page
+			}
+			head := read()
+			if len(head.Items) != 1 || head.Items[0].Input != 150 || head.Items[0].Cost != 1.5 || head.Next.Origin != "current" {
+				t.Fatalf("current origin head=%+v", head)
+			}
+			query.After = head.Next
+			tail := read()
+			if len(tail.Items) != 1 || tail.Items[0].Input != 100 || tail.Items[0].Cost != 1 || !tail.Next.Period.IsZero() {
+				t.Fatalf("import origin continuation=%+v", tail)
+			}
+		})
+		t.Run(string(org)+"/currency ties retain the usage continuation", func(t *testing.T) {
+			period := historyAt().Add(200 * time.Hour)
+			for _, currency := range []string{"EUR", "USD"} {
+				record := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: period, Provider: "example", Model: "currency-seek", Input: 7, Cost: 2, Currency: currency}, UpdatedAt: historyAt()}
+				if err := repository.ImportReportUsageFact(ctx, record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := admin.ExecContext(ctx, `UPDATE attempt_usage SET currency='usd' WHERE organization_id=$1 AND attempt_id='attempt_bulk' AND period=$2 AND provider='example' AND model='currency-seek' AND currency='USD'`, org, period)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if count, err := result.RowsAffected(); err != nil || count != 1 {
+				t.Fatalf("legacy currency rows=%d error=%v", count, err)
+			}
+			last := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: period, Provider: "example", Model: "currency-tail", Input: 11, Cost: 3, Currency: "USD"}, UpdatedAt: historyAt()}
+			if err := repository.ImportReportUsageFact(ctx, last); err != nil {
+				t.Fatal(err)
+			}
+			query := reportstore.AnalyticsUsageQuery{ProjectID: "prj_1", From: period, To: period.Add(time.Hour), Limit: 1}
+			read := func() reportstore.AnalyticsUsagePage {
+				t.Helper()
+				var page reportstore.AnalyticsUsagePage
+				if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					page, err = r.(reportstore.AnalyticsUsageReader).ReadAnalyticsUsagePage(ctx, query)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return page
+			}
+			head := read()
+			if len(head.Items) != 0 || head.Examined != 2 || head.Next.Source != 1 || head.Next.SourceKey != "EUR" || !head.Partial {
+				t.Fatalf("currency head=%+v", head)
+			}
+			query.After = head.Next
+			tail := read()
+			if len(tail.Items) != 1 || tail.Items[0].Currency != "usd" || tail.Items[0].Input != 7 || tail.Items[0].Cost != 2 || tail.Examined != 2 || tail.Next.SourceKey != "usd" {
+				t.Fatalf("currency tail=%+v", tail)
+			}
+			query.After = tail.Next
+			lastPage := read()
+			if len(lastPage.Items) != 1 || lastPage.Items[0].Model != "currency-tail" || lastPage.Items[0].Input != 11 || lastPage.Items[0].Cost != 3 || !lastPage.Next.Period.IsZero() {
+				t.Fatalf("legacy currency continuation=%+v", lastPage)
+			}
+		})
+		t.Run(string(org)+"/current usage preserves historical totals", func(t *testing.T) {
+			historical := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: usage[0].Period, Provider: "example", Model: "example-model", Input: 50, CachedInput: 4, Output: 5, Cost: 2, Currency: "EUR"}, UpdatedAt: historyAt()}
+			for range 2 {
+				if err := repository.ImportReportUsageFact(ctx, historical); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			for _, tc := range []struct {
+				name                  string
+				input, cached, output int64
+				cost                  float64
+				queued                bool
+			}{
+				{name: "plain", input: 6000, cached: 220, output: 350, cost: 150},
+				{name: "queued", input: 7000, cached: 240, output: 400, cost: 175, queued: true},
+				{name: "replay", input: 7000, cached: 240, output: 400, cost: 175, queued: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					command := reportstore.AttemptUsage{OrganizationID: org, ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, Sequence: 1, ReceivedAt: now, Currency: "USD", Totals: []reportstore.AttemptUsageTotal{{Provider: "example", Model: "example-model", Input: tc.input, CachedInput: tc.cached, Output: tc.output, ReportedCost: new(tc.cost)}}}
+					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						apply := func(w tenantstore.Writer) error {
+							return w.(reportstore.UsageWriter).RecordAttemptUsage(t.Context(), command)
+						}
+						if !tc.queued {
+							return apply(w)
+						}
+						facts := w.(interface {
+							WithRunnerEventFacts(context.Context, eventstore.RunCommand, func(tenantstore.Writer) error) error
+						})
+						return facts.WithRunnerEventFacts(t.Context(), eventstore.RunCommand{Project: "prj_1", WorkItem: "wi_1", LeaseID: lease.LeaseID, AttemptID: "attempt_bulk"}, apply)
+					}); err != nil {
+						t.Fatal(err)
+					}
+					var input, cached, output int64
+					var cost float64
+					if err := admin.QueryRowContext(t.Context(), `SELECT input,cached_input,output,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND attempt_id='attempt_bulk' AND period=$2 AND provider='example' AND model='example-model' AND currency='USD'`, org, now.Truncate(time.Hour)).Scan(&input, &cached, &output, &cost); err != nil {
+						t.Fatal(err)
+					}
+					if input != tc.input-5100 || cached != tc.cached-204 || output != tc.output-305 || cost != tc.cost-125 {
+						t.Fatalf("historical delta=%d/%d/%d/%v want=%d/%d/%d/%v", input, cached, output, cost, tc.input-5100, tc.cached-204, tc.output-305, tc.cost-125)
+					}
+				})
+			}
+			var input int64
+			var cost float64
+			if err := admin.QueryRowContext(ctx, `SELECT input,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND attempt_id='attempt_bulk' AND period=$2 AND provider='example' AND model='example-model' AND currency='EUR'`, org, historical.Period).Scan(&input, &cost); err != nil {
+				t.Fatal(err)
+			}
+			if input != 50 || cost != 2 {
+				t.Fatalf("second-currency import changed=%d/%v", input, cost)
+			}
+			unknown := billingCostObservation(t, org, "prj_1", "unknown_baseline", "attempt_bulk", "runner_api", now.Add(-time.Hour), now, 1000000)
+			unknown.Observation.AttemptID, unknown.Observation.WorkItemID = "attempt_bulk", "wi_1"
+			unknown.Observation.Model, unknown.Observation.Input, unknown.Observation.Coverage = "unknown-model", 100, "complete"
+			unknown.ReceivedAt = now
+			raw, err := json.Marshal(unknown.Observation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref, err := objects.StoreDetail(ctx, string(org), raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unknown.Reference = billingstore.AuditReferenceFromArchive(ref)
+			if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.RecordBillingCosts(ctx, []billingstore.CostObservation{unknown}); err != nil {
+					return err
+				}
+				u := w.(reportstore.UsageWriter)
+				if err := u.RefreshReportUsage(ctx, []billingstore.CostObservation{unknown}); err != nil {
+					return err
+				}
+				return u.RecordAttemptUsage(ctx, reportstore.AttemptUsage{OrganizationID: org, ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, Sequence: 1, ReceivedAt: now, Currency: "USD", Totals: []reportstore.AttemptUsageTotal{{Provider: unknown.Observation.Provider, Model: "unknown-model", Input: 200}}})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var guessed int
+			if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM attempt_usage WHERE organization_id=$1 AND attempt_id='attempt_bulk' AND model='unknown-model'`, org).Scan(&guessed); err != nil {
+				t.Fatal(err)
+			}
+			if guessed != 0 {
+				t.Fatalf("unknown historical baseline became %d hourly facts", guessed)
+			}
+			if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				page, err := r.(reportstore.AnalyticsUsageReader).ReadAnalyticsUsagePage(ctx, reportstore.AnalyticsUsageQuery{ProjectID: "prj_1", From: now.Truncate(time.Hour), To: now.Truncate(time.Hour).Add(time.Hour), Limit: 1000})
+				if err == nil && !page.Partial {
+					t.Fatal("unknown baseline reported complete usage")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+
 	}
 }

@@ -3,11 +3,16 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -65,14 +70,67 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
 		}
 	}()
-	if a.service.config.TenantRepository != nil {
-		if name == operatortool.ListChanges {
-			return a.readChangeListRecords(ctx, args)
-		}
+	if a.service.config.TenantRepository == nil {
 		return operatortool.ChangeResult{}, operatortool.ErrServiceUnavailable
 	}
-
-	return operatortool.ChangeResult{}, operatortool.ErrServiceUnavailable
+	switch name {
+	case operatortool.ListChanges:
+		return a.readChangeListRecords(ctx, args)
+	case operatortool.ListWorkItemPullRequests, operatortool.GetChangeReviewPolicy, operatortool.ArtifactServices, operatortool.ArtifactReferences, operatortool.GetArtifactReference:
+		scope, err := a.authorized(ctx, args, false)
+		if err != nil {
+			return operatortool.ChangeResult{}, err
+		}
+		value = a.result(scope, args)
+		switch name {
+		case operatortool.ListWorkItemPullRequests:
+			value.PullRequests, err = a.service.readWorkItemPullRequests(ctx, scope, args.ItemID, "")
+		case operatortool.GetChangeReviewPolicy:
+			var rules tracker.ChangeReviewPolicy
+			rules, err = a.service.changeReviewPolicyRecord(ctx, scope)
+			if err == nil {
+				value.Policy = &rules
+			}
+		case operatortool.ArtifactServices:
+			value.Services, err = a.service.artifactServicesCommand(ctx, scope)
+		case operatortool.ArtifactReferences:
+			value.Artifacts, err = a.service.readArtifactReferences(ctx, scope, args.ItemID)
+		case operatortool.GetArtifactReference:
+			var reference artifact.Reference
+			reference, err = a.service.artifactReferenceCommand(ctx, scope, args.ItemID, args.ArtifactID, args.Revision, a.service.config.now())
+			if err == nil {
+				value.Artifacts = []artifact.Reference{reference}
+			}
+		}
+		if err != nil {
+			return operatortool.ChangeResult{}, hubSafeChangeError(err)
+		}
+		return value, nil
+	case operatortool.GetChange, operatortool.GetChangeVersion:
+		scope, err := a.authorized(ctx, args, false)
+		if err != nil {
+			return operatortool.ChangeResult{}, err
+		}
+		scope.action = name
+		ctx = a.service.archiveContext(ctx, scope, args.ArchiveURL)
+		defer func() { value.Archive = nativeArchiveDescriptor(ctx) }()
+		value = a.result(scope, args)
+		if name == operatortool.GetChange {
+			value, err = a.service.readBoundedChangeRecord(ctx, scope, args, value)
+		} else {
+			var version tracker.ChangeVersion
+			version, err = a.service.readExactChangeVersionRecord(ctx, scope, args.ItemID, args.ChangeID, args.VersionID)
+			if err == nil {
+				value.Version = &version
+			}
+		}
+		if err != nil && errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return operatortool.ChangeResult{}, operatortool.ErrAccessDenied
+		}
+		return value, err
+	default:
+		return operatortool.ChangeResult{}, operatortool.ErrServiceUnavailable
+	}
 }
 
 func changeLimit(args operatortool.ChangeArguments) int {
@@ -85,7 +143,7 @@ func changeLimit(args operatortool.ChangeArguments) int {
 func (a hubChangeApplication) MutateChange(ctx context.Context, name string, args operatortool.ChangeArguments) (operatortool.ChangeResult, error) {
 	ctx = a.service.contentContext(ctx)
 	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-		ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{encoder: content.encoder, call: content.call, store: content.store, register: content.register, query: content.query})
+		ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{encoder: content.encoder, call: content.call, store: content.store, register: content.register, readOrganization: content.readOrganization, readReference: content.readReference, query: content.query})
 	}
 	scope, err := a.authorized(ctx, args, name != operatortool.ArtifactAccess)
 	if err != nil {
@@ -128,6 +186,30 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 			return result, err
 		}
 		result.WorkItemState = stringValue(item.WorkflowStateName)
+		result, err = s.readBoundedChangeRecord(ctx, scope, args, result)
+		if err != nil {
+			return result, err
+		}
+	case operatortool.DiscussChange:
+		request := tracker.DiscussChange{Mutation: command, VersionID: args.VersionID, Body: args.Body, Escape: args.Escape}
+		result.Receipt, err = s.changeRecordEvidenceCommand(ctx, scope, args.ItemID, args.ChangeID, http.MethodPost+" "+result.URL+"/discussion", "discussion", args.VersionID, "", request)
+		if err != nil {
+			return result, err
+		}
+	case operatortool.ArtifactAccess:
+		result.Receipt, err = a.artifactAccessReceipt(ctx, scope, args)
+		if err != nil {
+			return result, err
+		}
+		grant, err := s.artifactReadGrantCommand(ctx, scope, args.ItemID, args.ArtifactID, args.Revision, s.config.now())
+		if err != nil {
+			return result, err
+		}
+		access, err := operatortool.DownloadResult(grant)
+		if err != nil {
+			return result, err
+		}
+		result.Access = &access
 	case operatortool.ReviewChange:
 		if scope.actor().Kind != "human" {
 			return result, operatortool.ErrServiceUnavailable
@@ -144,4 +226,82 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		return result, operatortool.ErrServiceUnavailable
 	}
 	return result, nil
+}
+
+func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope nativeScope, args operatortool.ChangeArguments) (json.RawMessage, error) {
+	s := a.service
+	if strings.TrimSpace(args.RequestID) == "" || len(args.RequestID) > 128 {
+		return nil, operatortool.ErrInvalidArguments
+	}
+	reference, err := s.artifactReferenceCommand(ctx, scope, args.ItemID, args.ArtifactID, args.Revision, s.config.now())
+	if err != nil {
+		return nil, err
+	}
+	if reference.SHA256 != args.SHA256 {
+		return nil, operatortool.ErrAccessDenied
+	}
+	if reference.Availability != "available" {
+		return nil, artifact.ErrExpired
+	}
+	hash, err := nativeCommandHash(args)
+	if err != nil {
+		return nil, err
+	}
+	operation := "operator artifact access/" + args.ProjectID + "/" + args.ItemID + "/" + args.ArtifactID
+	if raw, found, err := s.changeRecordReceipt(ctx, scope, operation, args.RequestID, hash); err != nil || found {
+		return raw, err
+	}
+	raw, err := json.Marshal(reference)
+	if err != nil {
+		return nil, err
+	}
+	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: args.RequestID, RequestHash: hash, CreatedAt: s.config.now()}, raw)
+	if err != nil {
+		return nil, err
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, w, scope, false); err != nil {
+			return err
+		}
+		item, err := w.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(args.ItemID))
+		if err != nil {
+			return err
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+			return nativeNotFound()
+		}
+		current, err := w.ArtifactReference(ctx, scope.project, item.NativeID, args.ArtifactID, args.Revision)
+		if err != nil {
+			return err
+		}
+		if current != reference {
+			return corestore.ErrRevisionConflict
+		}
+		binding, err := w.ArtifactService(ctx, scope.project, reference.ServiceID)
+		if err != nil {
+			return err
+		}
+		if !artifact.ValidOrigin(binding.Origin) {
+			return artifact.ErrMissing
+		}
+		if !s.config.now().Before(reference.ExpiresAt) {
+			return artifact.ErrExpired
+		}
+		existing, err := w.Receipt(ctx, scope.credential.ID, operation, args.RequestID)
+		if err == nil {
+			if existing.RequestHash != hash {
+				return nativeConflict(0)
+			}
+			return nil
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		_, err = w.PutReceipt(ctx, receipt)
+		return err
+	})
+	if err != nil {
+		return nil, projectRecordError(err)
+	}
+	return raw, nil
 }

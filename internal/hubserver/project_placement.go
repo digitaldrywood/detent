@@ -2,10 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -13,6 +10,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -50,137 +54,203 @@ type placementSnapshot struct {
 	resolver     *runner.BoardIdentityResolver
 }
 
-func readPlacementPolicy(ctx context.Context, q nativeQueryer, scope nativeScope) (policy.Placement, int, error) {
-	var raw string
-	var ceiling int
-	err := q.QueryRowContext(ctx, `SELECT placement_json,max_runners FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&raw, &ceiling)
-	if errors.Is(err, sql.ErrNoRows) {
+func readPlacementPolicy(ctx context.Context, r tenantstore.Reader) (policy.Placement, int, error) {
+	owner, ok := r.(postgres.SpriteReader)
+	if !ok {
+		return policy.Placement{}, 0, workItemStorageUnavailable()
+	}
+	row, err := owner.SpritePool(ctx)
+	if errors.Is(err, corestore.ErrNotFound) {
 		return policy.Placement{Mode: "blended"}, 0, nil
 	}
 	if err != nil {
 		return policy.Placement{}, 0, err
 	}
-	var placement policy.Placement
-	if err := json.Unmarshal([]byte(raw), &placement); err != nil {
-		return placement, 0, err
-	}
-	return placement.Resolved(), ceiling, placement.Validate()
+	placement := policy.Placement{Mode: row.PlacementMode, TodoThreshold: int(row.TodoThreshold), OverflowSlots: int(row.OverflowSlots), MaxSpriteSlots: int(row.MaxSpriteSlots)}
+	return placement.Resolved(), int(row.MaxRunners), placement.Validate()
 }
 
-func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, joining ...string) (int, error) {
-	rows, err := q.QueryContext(ctx, `SELECT l.machine_id,l.session_id,l.lease_id,COALESCE(lr.runner_id,''),`+nativeLandingCapacityProject+`,m.sprite_name,m.hostname,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END
- FROM leases l JOIN issues i ON i.id=l.issue_id JOIN machines m ON m.id=l.machine_id
- LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id `+nativeLandingCapacityJoins+`
- WHERE i.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?) AND (m.sprite_name=m.hostname OR m.machine_facts_ready IS NULL)`, scope.organization, formatHubTime(now))
-	if err != nil {
-		return 0, err
+func readPlacementSpriteUsage(ctx context.Context, r tenantstore.Reader, scope nativeScope, now time.Time, joining ...string) (int, error) {
+	owner, ok := r.(postgres.SpriteReader)
+	if !ok {
+		return 0, workItemStorageUnavailable()
 	}
-	defer rows.Close()
-	groups := map[string]bool{}
-
-	type landingUsageRow struct {
-		machine                         tracker.MachineID
-		session, lease, runner, project string
-		name                            *string
-		hostname                        string
-		legacy                          sql.NullString
-	}
-	var landingRows []landingUsageRow
-	for rows.Next() {
-		var value landingUsageRow
-		if err := rows.Scan(&value.machine, &value.session, &value.lease, &value.runner, &value.project, &value.name, &value.hostname, &value.legacy); err != nil {
-			return 0, err
-		}
-		landingRows = append(landingRows, value)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, err
-	}
-	if err := rows.Close(); err != nil {
-		return 0, err
-	}
-	for _, value := range landingRows {
-
-		machine, session, lease, runner, project := value.machine, value.session, value.lease, value.runner, value.project
-
-		project, err = resolveLandingProject(ctx, q, project, false)
-		if err != nil {
-			return 0, err
-		}
-		facts, err := resolveMachineSpriteFacts(machineSpriteFacts{Name: value.name}, value.legacy)
-		if err != nil {
-			return 0, err
-		}
-		if facts.Name != nil && *facts.Name == value.hostname {
-			groups[landingLeaseCapacityKey(machine, project, session, runner, lease)] = true
-		}
-	}
+	group := ""
 	if len(joining) > 0 && joining[0] != "" {
-		delete(groups, joining[0]+"/"+scope.credential.Runner.RunnerID)
+		group = joining[0] + "/" + scope.credential.Runner.RunnerID
 	}
-	return len(groups), rows.Err()
+	return owner.SpriteLeaseUsage(ctx, now, group)
 }
 
-func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) ([]placementRunner, error) {
-	rows, err := q.QueryContext(ctx, `SELECT r.id, r.enrollment_id, m.sprite_name,m.sprite_woken_at,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.organization_id=? AND r.removed_at IS NULL AND (?='' OR r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.id`, scope.organization, scope.project, scope.organization, scope.project)
+func readSpriteMembers(ctx context.Context, owner postgres.SpriteReader) ([]postgres.SpriteMember, error) {
+	result := []postgres.SpriteMember{}
+	after := ""
+	for {
+		page, err := owner.SpriteMembers(ctx, after, corestore.MaxPageSize)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, page...)
+		if len(page) < corestore.MaxPageSize {
+			return result, nil
+		}
+		next := page[len(page)-1].Name
+		if next <= after {
+			return nil, corestore.ErrInvalidPage
+		}
+		after = next
+	}
+}
+
+func readPlacementRunners(ctx context.Context, r tenantstore.Reader, scope nativeScope, now time.Time) ([]placementRunner, error) {
+	reader, ok := r.(runnerstore.RoutingPageReader)
+	if !ok {
+		return nil, workItemStorageUnavailable()
+	}
+	urgent, err := r.RunnerUrgentUpdate(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	type identity struct{ id, enrollment, name, woke string }
-	var identities []identity
-	for rows.Next() {
-		var id identity
-		var facts machineSpriteFacts
-		var legacy sql.NullString
-		if err := rows.Scan(&id.id, &id.enrollment, &facts.Name, &facts.WokenAt, &legacy); err != nil {
-			return nil, err
+	result := []placementRunner{}
+	for offset := 0; ; offset += corestore.MaxPageSize {
+		var page []runnerstore.RoutingRecord
+		var err error
+		if scope.project == "" {
+			page, err = reader.RunnerRoutingRecords(ctx, corestore.MaxPageSize, offset, now)
+		} else {
+			page, err = reader.RunnerProjectRoutingRecords(ctx, scope.project, corestore.MaxPageSize, offset, now)
 		}
-		facts, err = resolveMachineSpriteFacts(facts, legacy)
 		if err != nil {
 			return nil, err
 		}
-		id.name, id.woke = spriteFactValue(facts.Name), spriteFactValue(facts.WokenAt)
-		identities = append(identities, id)
+		for _, record := range page {
+			if scope.project != "" {
+				allowed, err := spriteAllocationRunnerAllowedRecord(ctx, r, scope, record)
+				if err != nil {
+					return nil, err
+				}
+				if !allowed {
+					continue
+				}
+			}
+			runner := runnerFromRoutingRecord(record, now, urgent)
+			current := placementRunner{Runner: runner, Enrollment: record.Record.Identity.EnrollmentID, Sprite: record.Record.Machine.SpriteName == runner.Hostname && validSpritesSlug(record.Record.Machine.SpriteName)}
+			current.Paused = current.Sprite && now.Sub(runner.LastHeartbeatAt) >= spriteRunnerIdle
+			woke := record.Record.Machine.SpriteWokenAt
+			current.Pending = current.Paused && woke != nil && !now.Before(*woke) && now.Sub(*woke) < time.Minute
+			if current.Pending && runner.Health != "revoked" && runner.Health != "expired" {
+				current.Health, current.ConnectionHealth = "online", "online"
+			}
+			result = append(result, current)
+		}
+		if len(page) < corestore.MaxPageSize {
+			return result, nil
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+}
+
+type placementIssueSource struct {
+	candidate claimstore.Candidate
+	item      corestore.WorkItem
+	version   eventstore.CollaborationVersion
+	admitted  bool
+}
+
+type placementSource struct {
+	project           projectstore.Record
+	policy            policystore.Revision
+	policyFound       bool
+	models            policystore.OrganizationModels
+	placement         policy.Placement
+	ceiling           int
+	runners           []placementRunner
+	spriteUsed        int
+	items             []placementIssueSource
+	members           []postgres.SpriteMember
+	allocationManaged bool
+}
+
+func (s *Service) readPlacementSource(ctx context.Context, scope nativeScope, now time.Time) (placementSource, error) {
+	var source placementSource
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return source, workItemStorageUnavailable()
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	var runners []placementRunner
-	for _, id := range identities {
-		r, err := readRunner(ctx, q, scope.organization, id.id, now)
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		source.project, err = r.ProjectRecord(ctx, scope.project)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if scope.project != "" {
-			allowed, err := spriteAllocationRunnerAllowed(ctx, q, scope, r.MachineID)
+		source.placement, source.ceiling, err = readPlacementPolicy(ctx, r)
+		if err != nil {
+			return err
+		}
+		source.runners, err = readPlacementRunners(ctx, r, scope, now)
+		if err != nil {
+			return err
+		}
+		source.spriteUsed, err = readPlacementSpriteUsage(ctx, r, scope, now)
+		if err != nil {
+			return err
+		}
+		source.policy, err = r.ProjectPolicy(ctx, scope.project)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		source.policyFound = true
+		source.models, err = r.OrganizationModels(ctx)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		owner, ok := r.(postgres.SpriteReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		source.members, err = readSpriteMembers(ctx, owner)
+		if err != nil {
+			return err
+		}
+		_, err = owner.SpriteAllocation(ctx, scope.project)
+		source.allocationManaged = err == nil
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		query := claimstore.CandidateQuery{ProjectID: scope.project, Scope: string(scope.project), AvailableAt: now, Limit: corestore.MaxPageSize}
+		for {
+			page, err := r.CandidatePage(ctx, query)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			if !allowed {
-				continue
+			for _, candidate := range page.Items {
+				item, err := r.WorkItem(ctx, scope.project, candidate.WorkItemID)
+				if err != nil {
+					return err
+				}
+				version, err := r.CollaborationVersion(ctx, string(item.NativeID), item.Revision)
+				if err != nil {
+					return err
+				}
+				_, err = r.BillingMonthlyAdmission(ctx, tracker.WorkItemID(candidate.ID))
+				admitted := err == nil
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				source.items = append(source.items, placementIssueSource{candidate: candidate, item: item, version: version, admitted: admitted})
 			}
-		}
-		current := placementRunner{Runner: r, Enrollment: id.enrollment, Sprite: id.name == r.Hostname && validSpritesSlug(id.name)}
-		current.Paused = current.Sprite && now.Sub(r.LastHeartbeatAt) >= spriteRunnerIdle
-		var at time.Time
-		if id.woke != "" {
-			at, err = parseTimeValue(id.woke)
-			if err != nil {
-				return nil, err
+			if len(page.Items) == 0 {
+				return nil
 			}
+			if page.Next == query.After {
+				return corestore.ErrInvalidCursor
+			}
+			query.After = page.Next
 		}
-		current.Pending = current.Paused && !at.IsZero() && !now.Before(at) && now.Sub(at) < time.Minute
-		if current.Pending && r.Health != "revoked" && r.Health != "expired" {
-			current.Health, current.ConnectionHealth = "online", "online"
-		}
-		runners = append(runners, current)
-	}
-	return runners, nil
+	})
+	return source, err
 }
 
 type placementCapacity struct {
@@ -242,112 +312,80 @@ func (c *placementCapacity) available(r placementRunner, project tracker.Project
 	return free
 }
 
-func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, selected ...tenantstore.Repository) (placementSnapshot, error) {
-	return readPlacementSnapshotWithCapacity(ctx, q, scope, now, overrides, newPlacementCapacity(), make(map[string]bool), selected...)
+func (s *Service) readPlacementSnapshot(ctx context.Context, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate) (placementSnapshot, error) {
+	return s.readPlacementSnapshotWithCapacity(ctx, scope, now, overrides, newPlacementCapacity(), make(map[string]bool))
 }
 
-func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, localCapacity *placementCapacity, counted map[string]bool, selected ...tenantstore.Repository) (placementSnapshot, error) {
+func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, localCapacity *placementCapacity, counted map[string]bool) (placementSnapshot, error) {
 	var result placementSnapshot
-	placement, ceiling, err := readPlacementPolicy(ctx, q, scope)
+	source, err := s.readPlacementSource(ctx, scope, now)
 	if err != nil {
 		return result, err
 	}
-	result.Policy = placement
+	placement, ceiling := source.placement, source.ceiling
+	result.Policy, result.Runners, result.SpriteUsed = placement, source.runners, source.spriteUsed
 	result.Items = make(map[tracker.WorkItemID]providercapacity.Requirement)
 	result.Local = make(map[tracker.WorkItemID]int)
-	result.Runners, err = readPlacementRunners(ctx, q, scope, now)
-	if err != nil {
-		return result, err
-	}
-	result.SpriteUsed, err = readPlacementSpriteUsage(ctx, q, scope, now)
-	if err != nil {
-		return result, err
-	}
-	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
-	if err != nil {
-		return result, err
-	}
-	if !found {
+	if !source.policyFound {
 		result.Reason = "No approved project policy; compatible Todo demand is unavailable"
 		return result, nil
 	}
-	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
+	descriptor, err := eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, source.policy)
 	if err != nil {
 		return result, err
 	}
-	result.Requirements = approval.Policy.Requirements
-	workflow.Config.Plan.Enabled = approval.Policy.Gates.PlanEnabled
-	resolver, err := readProjectIdentityResolver(ctx, q, scope, workflow.Config)
+	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), descriptor)
+	if err != nil {
+		return result, err
+	}
+	result.Requirements = descriptor.Requirements
+	workflow.Config.Plan.Enabled = descriptor.Gates.PlanEnabled
+	selection, err := s.projectRecordModel(ctx, source.project, source.models)
+	if err != nil {
+		return result, err
+	}
+	workflow.Config.Agents.ModelSelection = selection.Effective
+	resolver, err := runner.NewBoardIdentityResolver(workflow.Config, selector.Context{})
 	if err != nil {
 		return result, err
 	}
 	result.resolver = resolver
-	query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), AvailableAt: now, Limit: 100}
-	var ids []tracker.WorkItemID
-	for {
-		page, err := nativeCandidateIDs(ctx, q, query, nil, nil, []string{"todo"}, nil, nil, nil, nil)
-		if err != nil {
-			return result, err
-		}
-		ids = append(ids, page...)
-		if len(page) < query.Limit {
-			break
-		}
-		query.After = page[len(page)-1]
-	}
 	exposure := budget.CostExposure{SpriteInfrastructure: true, RunnerAPI: workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered}
-	budgetDecision, err := checkMonthlyBudget(ctx, q, scope, exposure, false, now, selected...)
+	decision, err := checkMonthlyBudget(ctx, nil, scope, exposure, false, now, s.config.TenantRepository)
 	if err != nil {
 		return result, err
 	}
-	if !budgetDecision.Allowed {
-		query.After = 0
-		var continuations []tracker.WorkItemID
-		for {
-			page, err := nativeCandidateIDs(ctx, q, query, nil, nil, nil, nil, nil, nil, nil)
-			if err != nil {
-				return result, err
-			}
-			for _, id := range page {
-				admitted, err := monthlyIssueAdmitted(ctx, q, id)
-				if err != nil {
-					return result, err
-				}
-				if !admitted {
-					continue
-				}
-				decision, err := checkMonthlyBudget(ctx, q, scope, exposure, true, now, selected...)
-				if err != nil {
-					return result, err
-				}
-				if decision.Allowed {
-					continuations = append(continuations, id)
-				}
-			}
-			if len(page) < query.Limit {
-				break
-			}
-			query.After = page[len(page)-1]
-		}
-		ids = continuations
+	continuation, err := checkMonthlyBudget(ctx, nil, scope, exposure, true, now, s.config.TenantRepository)
+	if err != nil {
+		return result, err
 	}
-	localAssigned := make(map[tracker.WorkItemID]bool)
-	for _, id := range ids {
-		var native tracker.NativeWorkItemID
-		if err := q.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE id=?`, id).Scan(&native); err != nil {
-			return result, err
+	var ids []tracker.WorkItemID
+	issues := map[tracker.WorkItemID]tracker.NativeIssue{}
+	for _, row := range source.items {
+		if decision.Allowed && !strings.EqualFold(row.candidate.State, "Todo") {
+			continue
 		}
-		issue, _, err := readNativeIssue(ctx, q, scope, string(native))
+		if !decision.Allowed && (!continuation.Allowed || !row.admitted || slices.Contains([]string{"blocked", "backlog", "cancelled"}, strings.ToLower(row.candidate.State))) {
+			continue
+		}
+		issue, err := s.hydrateCanonicalWorkItemRecord(ctx, row.item, row.version)
 		if err != nil {
 			return result, err
 		}
+		id := tracker.WorkItemID(row.item.ID)
+		ids = append(ids, id)
+		issues[id] = issue
+	}
+	localAssigned := make(map[tracker.WorkItemID]bool)
+	for _, id := range ids {
+		issue := issues[id]
 		identity, err := resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
 		if err != nil {
 			continue
 		}
 		requirement := providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}
 		for _, candidate := range overrides {
-			if candidate.WorkItemID == native && candidate.Revision == issue.Revision {
+			if candidate.WorkItemID == issue.WorkItemID && candidate.Revision == issue.Revision {
 				requirement = candidate.Requirement
 			}
 		}
@@ -410,29 +448,23 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 		}
 	}
 	bootstrapPending := 0
-	rows, err := q.QueryContext(ctx, `SELECT enrollment_id,state FROM organization_sprite_members WHERE organization_id=? AND allocation_project_id=CASE WHEN EXISTS(SELECT 1 FROM project_sprite_allocations WHERE organization_id=? AND project_id=?) THEN ? ELSE '' END AND state IN ('bootstrapping','enrolled')`, scope.organization, scope.organization, scope.project, scope.project)
-	if err != nil {
-		return result, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var enrollment, state string
-		if err := rows.Scan(&enrollment, &state); err != nil {
-			return result, err
+	for _, member := range source.members {
+		owner := ""
+		if source.allocationManaged {
+			owner = string(scope.project)
 		}
+		if member.AllocationProjectID != owner || member.State != "bootstrapping" && member.State != "enrolled" {
+			continue
+		}
+		enrollment, state := member.EnrollmentID, member.State
 		if state == "enrolled" && slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Enrollment == enrollment && len(r.ProviderCapacity) > 0 }) {
 			continue
 		}
-		if !counted[enrollment] && !slices.ContainsFunc(result.Runners, func(r placementRunner) bool {
-			return r.Enrollment == enrollment && r.Used > 0
-		}) {
+		if !counted[enrollment] && !slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Enrollment == enrollment && r.Used > 0 }) {
 			counted[enrollment] = true
 			result.Pending++
 			bootstrapPending++
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return result, err
 	}
 	result.SpriteTarget = max(result.ReadyTodo-result.LocalFree, 0)
 	if limit := placement.SpriteLimit(); limit > 0 {
@@ -514,127 +546,98 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 	return result, nil
 }
 
-func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time, selected tenantstore.Repository, overrides []tracker.NativeCapacityCandidate, joining ...string) (bool, string, error) {
-	if explanationRead(ctx) {
-		return explanationPlacementAllowed(ctx, q, scope, machine, id)
-	}
-	if allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, machine, id); err != nil || !allowed {
-		return allowed, reason, err
-	}
-	allowed, err := spriteAllocationRunnerAllowed(ctx, q, scope, machine)
-	if err != nil {
-		return false, "", err
-	}
-	if !allowed {
-		return false, "Project Sprite allocation excludes this runner", nil
-	}
-	placement, _, err := readPlacementPolicy(ctx, q, scope)
-	if err != nil {
-		return false, "", err
-	}
-	facts, err := readMachineSpriteFacts(ctx, q, scope.organization, machine)
-	if err != nil {
-		return false, "", err
-	}
-	name := spriteFactValue(facts.Name)
-	var hostname string
-	if err := q.QueryRowContext(ctx, `SELECT hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&hostname); err != nil {
-		return false, "", err
-	}
-	sprite := name == hostname && validSpritesSlug(name)
-	if !sprite {
-		return placement.Mode != "sprites_only", "Resolved placement " + placement.Mode + " governs local eligibility", nil
-	}
-	used, err := readPlacementSpriteUsage(ctx, q, scope, now, joining...)
-	if err != nil {
-		return false, "", err
-	}
-	if limit := placement.SpriteLimit(); limit > 0 {
-		if used >= limit {
-			return false, "Configured maximum Sprite concurrency is full", nil
-		}
-	}
-	if placement.Mode != "local_first" {
-		return true, "Resolved placement " + placement.Mode + " permits Sprite runners", nil
-	}
-	snapshot, err := readPlacementSnapshot(ctx, q, scope, now, overrides, selected)
-	if err != nil {
-		return false, "", err
-	}
-	snapshot.SpriteUsed = used
-	if snapshot.Local[id] > 0 {
-		return false, "Local-first placement has compatible free local capacity", nil
-	}
-	_, ready := snapshot.Items[id]
-	if !ready && snapshot.resolver != nil {
-		var issue connector.Issue
-		var native tracker.NativeWorkItemID
-		var revision tracker.Revision
-		var labels string
-		if err := q.QueryRowContext(ctx, `SELECT i.native_id,i.revision,i.title,i.body,i.labels_json,w.detent_state FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id WHERE i.id=? AND i.organization_id=? AND i.project_id=?`, id, scope.organization, scope.project).Scan(&native, &revision, &issue.Title, &issue.Description, &labels, &issue.State); err != nil {
-			return false, "", err
-		}
-		if err := json.Unmarshal([]byte(labels), &issue.Labels); err != nil {
-			return false, "", err
-		}
-		identity, err := snapshot.resolver.Identity(issue)
-		if err != nil {
-			return false, "Configured provider requirement is unavailable", nil
-		}
-		requirement := providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}
-		for _, candidate := range overrides {
-			if candidate.WorkItemID == native && candidate.Revision == revision {
-				requirement = candidate.Requirement
-			}
-		}
-		for _, r := range snapshot.Runners {
-			if !r.Sprite && newPlacementCapacity().available(r, scope.project, snapshot.Requirements, requirement, now, false) > 0 {
-				return false, "Local-first placement has compatible free local capacity", nil
-			}
-		}
-		ready = !strings.EqualFold(issue.State, "Todo") && snapshot.ReadyTodo >= placement.TodoThreshold && snapshot.SpriteUsed < placement.OverflowSlots
-	}
-	allowed = ready && snapshot.ReadyTodo >= placement.TodoThreshold && snapshot.SpriteUsed < placement.SpriteLimit()
-	reason := snapshot.Reason
-	if allowed {
-		reason = "Local-first overflow is eligible for this candidate"
-	}
-	return allowed, fmt.Sprintf("%s: ready Todo=%d, threshold=%d, local free=%d, Sprite used=%d, overflow slots=%d", reason, snapshot.ReadyTodo, placement.TodoThreshold, snapshot.LocalFree, snapshot.SpriteUsed, placement.OverflowSlots), nil
-}
-
-func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, selected ...tenantstore.Repository) (placementSnapshot, error) {
+func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope nativeScope, now time.Time) (placementSnapshot, error) {
 	result := placementSnapshot{Items: make(map[tracker.WorkItemID]providercapacity.Requirement), Local: make(map[tracker.WorkItemID]int)}
-	placement, _, err := readPlacementPolicy(ctx, q, scope)
+	var placement policy.Placement
+	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		var err error
+		placement, _, err = readPlacementPolicy(ctx, r)
+		return err
+	})
 	if err != nil {
 		return result, err
 	}
 	result.Policy = placement
-	rows, err := q.QueryContext(ctx, `SELECT id FROM projects p WHERE organization_id=? AND profile='native' ORDER BY EXISTS(SELECT 1 FROM project_sprite_allocations a WHERE a.organization_id=p.organization_id AND a.project_id=p.id) DESC,scheduling_rank,id`, scope.organization)
+	var projects []corestore.Project
+	managed := map[tracker.ProjectID]bool{}
+	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		owner, ok := r.(postgres.SpriteReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		allocationAfter := tracker.ProjectID("")
+		for {
+			page, err := owner.SpriteAllocations(ctx, allocationAfter, corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			for _, allocation := range page {
+				managed[allocation.ProjectID] = true
+			}
+			if len(page) < corestore.MaxPageSize {
+				break
+			}
+			next := page[len(page)-1].ProjectID
+			if next <= allocationAfter {
+				return corestore.ErrInvalidCursor
+			}
+			allocationAfter = next
+		}
+		after := tracker.ProjectID("")
+		for {
+			page, err := r.Projects(ctx, after, corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			for _, project := range page {
+				if project.Profile == "native" && project.DeletedAt == nil {
+					projects = append(projects, project)
+				}
+			}
+			if len(page) < corestore.MaxPageSize {
+				return nil
+			}
+			next := page[len(page)-1].ID
+			if next <= after {
+				return corestore.ErrInvalidCursor
+			}
+			after = next
+		}
+	})
 	if err != nil {
 		return result, err
 	}
-	defer rows.Close()
-	var projects []tracker.ProjectID
-	for rows.Next() {
-		var id tracker.ProjectID
-		if err := rows.Scan(&id); err != nil {
-			return result, err
+	slices.SortStableFunc(projects, func(a, b corestore.Project) int {
+		if managed[a.ID] != managed[b.ID] {
+			if managed[a.ID] {
+				return -1
+			}
+			return 1
 		}
-		projects = append(projects, id)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return result, err
-	}
+		if a.SchedulingRank < b.SchedulingRank {
+			return -1
+		}
+		if a.SchedulingRank > b.SchedulingRank {
+			return 1
+		}
+		return strings.Compare(string(a.ID), string(b.ID))
+	})
+
 	capacity := newPlacementCapacity()
 	counted := make(map[string]bool)
 	for _, project := range projects {
 		projectScope := scope
-		projectScope.project = project
-		snapshot, err := readPlacementSnapshotWithCapacity(ctx, q, projectScope, now, nil, capacity, counted, selected...)
+		projectScope.project = project.ID
+		snapshot, err := s.readPlacementSnapshotWithCapacity(ctx, projectScope, now, nil, capacity, counted)
 		if err != nil {
 			return result, err
 		}
-		allocation, err := readProjectSpriteAllocation(ctx, q, projectScope)
+		var allocation projectSpriteAllocation
+		err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+			var err error
+			allocation, _, err = projectSpriteAllocationRecord(ctx, r, projectScope)
+			return err
+		})
 		if err != nil {
 			return result, err
 		}
@@ -654,7 +657,11 @@ func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, sco
 			}
 		}
 	}
-	result.SpriteUsed, err = readPlacementSpriteUsage(ctx, q, scope, now)
+	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		var err error
+		result.SpriteUsed, err = readPlacementSpriteUsage(ctx, r, scope, now)
+		return err
+	})
 	if err != nil {
 		return result, err
 	}
@@ -666,13 +673,4 @@ func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, sco
 	}
 	result.Provisionable = max(result.SpriteTarget-result.SpriteFree-result.Pending, 0)
 	return result, nil
-}
-
-func readProjectIdentityResolver(ctx context.Context, q nativeQueryer, scope nativeScope, cfg config.Config) (*runner.BoardIdentityResolver, error) {
-	selection, err := readCloudModelSelection(ctx, q, scope)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Agents.ModelSelection = selection.Effective
-	return runner.NewBoardIdentityResolver(cfg, selector.Context{})
 }

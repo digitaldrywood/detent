@@ -2,14 +2,12 @@ package cli
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -95,7 +93,7 @@ func TestCheckDoctorWorkflowLintStaticLandmines(t *testing.T) {
 				ID:       "alpha",
 				Workflow: "WORKFLOW.md",
 				Workdir:  workdir,
-			}, tt.cfg, "", doctorWorkflowDefaultTokenThreshold, "", tt.deps)
+			}, tt.cfg, "", doctorWorkflowDefaultTokenThreshold, tt.deps)
 			if len(checks) != 1 {
 				t.Fatalf("checks = %#v, want one warning", checks)
 			}
@@ -154,7 +152,7 @@ func TestCheckDoctorWorkflowLintWarnsForPathFilteredRequiredCheck(t *testing.T) 
 				ID:       "alpha",
 				Workflow: "WORKFLOW.md",
 				Workdir:  workdir,
-			}, cfg, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{})
+			}, cfg, "", doctorWorkflowDefaultTokenThreshold, doctorDeps{})
 
 			if !tt.wantWarning {
 				if len(checks) != 0 {
@@ -198,7 +196,7 @@ func TestCheckDoctorWorkflowLintWarnsForUnconfiguredLabelGatedRequiredCheck(t *t
 		ID:       "alpha",
 		Workflow: "WORKFLOW.md",
 		Workdir:  workdir,
-	}, cfg, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{})
+	}, cfg, "", doctorWorkflowDefaultTokenThreshold, doctorDeps{})
 
 	if len(checks) != 1 {
 		t.Fatalf("checks = %#v, want one warning", checks)
@@ -259,7 +257,7 @@ func TestCheckDoctorWorkflowLintAcceptsConfiguredLabelGatedRequiredCheck(t *test
 				ID:       "alpha",
 				Workflow: "WORKFLOW.md",
 				Workdir:  workdir,
-			}, cfg, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{})
+			}, cfg, "", doctorWorkflowDefaultTokenThreshold, doctorDeps{})
 
 			if tt.wantWarning {
 				if len(checks) != 1 || !strings.Contains(checks[0].Detail, tt.wantDetail) {
@@ -434,7 +432,7 @@ Prompt
 	checks := checkDoctorWorkflowLint(context.Background(), "alpha", globalconfig.Project{
 		ID:       "alpha",
 		Workflow: "WORKFLOW.md",
-	}, workflow.Config, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{})
+	}, workflow.Config, "", doctorWorkflowDefaultTokenThreshold, doctorDeps{})
 	if len(checks) != 1 {
 		t.Fatalf("checks = %#v, want one inert agent budget warning", checks)
 	}
@@ -469,7 +467,7 @@ Prompt
 	checks := checkDoctorWorkflowLint(context.Background(), "alpha", globalconfig.Project{
 		ID:       "alpha",
 		Workflow: "WORKFLOW.md",
-	}, workflow.Config, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{})
+	}, workflow.Config, "", doctorWorkflowDefaultTokenThreshold, doctorDeps{})
 	if len(checks) != 1 {
 		t.Fatalf("checks = %#v, want one inert top-level budget warning", checks)
 	}
@@ -494,7 +492,7 @@ func TestCheckDoctorWorkflowLintCleanWorkflowIsQuiet(t *testing.T) {
 		ID:       "alpha",
 		Workflow: "WORKFLOW.md",
 		Workdir:  workdir,
-	}, cfg, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{
+	}, cfg, "", doctorWorkflowDefaultTokenThreshold, doctorDeps{
 		resolveCommandInDir: func(context.Context, string, []string, string) (string, error) {
 			return "/usr/bin/make", nil
 		},
@@ -577,392 +575,6 @@ func TestProbeDoctorShipSkillChecksEnablementCacheAndVersion(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestCheckDoctorWorkflowRuntimeLintFindsWaitDeadlockAndCeilingDeaths(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
-	db := openDoctorWorkflowLintDB(t)
-	insertSchedulerDecision := func(at time.Time) {
-		t.Helper()
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			"alpha", "digitaldrywood/detent#1174", "Todo", "skipped", "artifact_gate_wait_status", 0, at.Format(time.RFC3339Nano)); err != nil {
-			t.Fatalf("insert scheduler decision: %v", err)
-		}
-	}
-	insertSchedulerDecision(now.Add(-20 * time.Minute))
-	insertSchedulerDecision(now.Add(-time.Minute))
-	for index := range 5 {
-		errorMessage := ""
-		totalTokens := int64(12_000_000 + index*100_000)
-		if index < 2 {
-			totalTokens = int64(16_100_000 + index*100_000)
-			errorMessage = fmt.Sprintf("session token ceiling exceeded: total_tokens=%d ceiling_tokens=16000000 source=max_session_tokens", totalTokens)
-		}
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, ?, ?)`,
-			"alpha", "agent", now.Add(-time.Duration(index)*time.Hour).Format(time.RFC3339Nano), errorMessage, fmt.Sprintf(`{"total_tokens":%d}`, totalTokens)); err != nil {
-			t.Fatalf("insert work attempt: %v", err)
-		}
-	}
-	for index := range 10 {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, '', ?)`,
-			"alpha", "merge", now.Add(-time.Duration(index)*time.Minute).Format(time.RFC3339Nano), `{"total_tokens":25000000}`); err != nil {
-			t.Fatalf("insert merge work attempt: %v", err)
-		}
-	}
-
-	cfg := workflowconfig.Default()
-	cfg.Gate.Kind = gate.KindArtifact
-	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-	cfg.Polling.IntervalMS = 60_000
-	cfg.Agent.MaxSessionTokens = 16_000_000
-	checks := checkDoctorWorkflowRuntimeLint(context.Background(), "alpha", "/repo/WORKFLOW.md", "/runtime/detent.db", cfg, doctorDeps{
-		openSQLiteReadOnly: func(context.Context, string) (doctorTelemetryStore, error) { return db, nil },
-		now:                func() time.Time { return now },
-	})
-	if len(checks) != 2 {
-		t.Fatalf("checks = %#v, want wait-status and ceiling warnings", checks)
-	}
-	wait := checks[0]
-	for _, want := range []string{"/repo/WORKFLOW.md", "attempt==0", "artifact_gate_wait_status", "digitaldrywood/detent#1174", "20m0s", "2 skips"} {
-		if !strings.Contains(wait.Detail, want) {
-			t.Fatalf("wait Detail = %q, want containing %q", wait.Detail, want)
-		}
-	}
-	ceiling := checks[1]
-	for _, want := range []string{"max_session_tokens=16000000", "2 of 5", "40%", "token_ceiling_exceeded", "max observed tokens=16200000", "each death re-burns the full ceiling", "#1221"} {
-		if !strings.Contains(ceiling.Detail, want) {
-			t.Fatalf("ceiling Detail = %q, want containing %q", ceiling.Detail, want)
-		}
-	}
-	if !strings.Contains(ceiling.Hint, "retry re-burns the full configured cap") {
-		t.Fatalf("ceiling Hint = %q, want retry-cost assumption", ceiling.Hint)
-	}
-}
-
-func TestDoctorWaitStatusIncidentsPreservesContinuousWaitSemantics(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	now := time.Date(2026, 8, 18, 14, 0, 0, 0, time.UTC)
-	type decision struct {
-		project string
-		lane    string
-		result  string
-		reason  string
-		attempt int
-		at      time.Time
-	}
-	tests := []struct {
-		name      string
-		decisions []decision
-		wantLane  string
-		wantFirst time.Time
-		wantCount int64
-	}{
-		{
-			name: "continuous wait follows latest lane",
-			decisions: []decision{
-				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-20 * time.Minute)},
-				{project: "alpha", lane: "In Progress", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-time.Minute)},
-			},
-			wantLane:  "In Progress",
-			wantFirst: now.Add(-20 * time.Minute),
-			wantCount: 2,
-		},
-		{
-			name: "latest non-wait decision clears incident",
-			decisions: []decision{
-				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-20 * time.Minute)},
-				{project: "alpha", lane: "In Progress", result: "selected", attempt: 1, at: now.Add(-time.Minute)},
-			},
-		},
-		{
-			name: "reset excludes earlier skips",
-			decisions: []decision{
-				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-23 * time.Minute)},
-				{project: "alpha", lane: "In Progress", result: "selected", attempt: 1, at: now.Add(-22 * time.Minute)},
-				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-20 * time.Minute)},
-				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-time.Minute)},
-			},
-			wantLane:  "Todo",
-			wantFirst: now.Add(-20 * time.Minute),
-			wantCount: 2,
-		},
-		{
-			name: "other project decisions are isolated",
-			decisions: []decision{
-				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-20 * time.Minute)},
-				{project: "alpha", lane: "Todo", result: "skipped", reason: "artifact_gate_wait_status", at: now.Add(-time.Minute)},
-				{project: "beta", lane: "In Progress", result: "selected", attempt: 1, at: now},
-			},
-			wantLane:  "Todo",
-			wantFirst: now.Add(-20 * time.Minute),
-			wantCount: 2,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			db := openDoctorWorkflowLintDB(t)
-			for _, decision := range tt.decisions {
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-					decision.project, "digitaldrywood/detent#1878", decision.lane, decision.result, decision.reason, decision.attempt, decision.at.Format(time.RFC3339Nano)); err != nil {
-					t.Fatalf("insert scheduler decision: %v", err)
-				}
-			}
-
-			cfg := workflowconfig.Default()
-			cfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-			cfg.Polling.IntervalMS = 60_000
-			incidents, err := doctorWaitStatusIncidents(context.Background(), db, "alpha", cfg, now)
-			if err != nil {
-				t.Fatalf("doctorWaitStatusIncidents() error = %v", err)
-			}
-			if tt.wantCount == 0 {
-				if len(incidents) != 0 {
-					t.Fatalf("incidents = %#v, want none", incidents)
-				}
-				return
-			}
-			if len(incidents) != 1 {
-				t.Fatalf("incidents = %#v, want one", incidents)
-			}
-			incident := incidents[0]
-			if incident.Lane != tt.wantLane || !incident.FirstSkipAt.Equal(tt.wantFirst) || incident.SkipCount != tt.wantCount {
-				t.Fatalf("incident = %#v, want lane %q first %s count %d", incident, tt.wantLane, tt.wantFirst, tt.wantCount)
-			}
-		})
-	}
-}
-
-func TestDoctorWaitStatusIncidentsQueryUsesBoundedPlan(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	db := openDoctorWorkflowLintDB(t)
-	if _, err := db.ExecContext(t.Context(), `CREATE INDEX scheduler_decisions_project_at_idx ON scheduler_decisions(project_id, decision_at DESC, id DESC)`); err != nil {
-		t.Fatalf("create scheduler decision index: %v", err)
-	}
-	cutoff := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
-	rows, err := db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+doctorWaitStatusIncidentsQuery, "alpha", cutoff, "alpha", cutoff)
-	if err != nil {
-		t.Fatalf("EXPLAIN QUERY PLAN error = %v", err)
-	}
-	defer rows.Close()
-
-	details := make([]string, 0)
-	for rows.Next() {
-		var id int
-		var parent int
-		var unused int
-		var detail string
-		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
-			t.Fatalf("scan query plan: %v", err)
-		}
-		details = append(details, detail)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read query plan: %v", err)
-	}
-	plan := strings.Join(details, "\n")
-	if strings.Count(plan, "USING INDEX scheduler_decisions_project_at_idx") < 2 {
-		t.Fatalf("query plan = %q, want two indexed project/time scans", plan)
-	}
-	if !strings.Contains(plan, "USING INTEGER PRIMARY KEY") {
-		t.Fatalf("query plan = %q, want latest-decision primary-key lookup", plan)
-	}
-	if strings.Contains(plan, "MATERIALIZE ranked") || strings.Contains(plan, "TEMP B-TREE FOR ORDER BY") {
-		t.Fatalf("query plan = %q, want no full-history window materialization", plan)
-	}
-}
-
-func TestCheckDoctorWorkflowRuntimeLintCleanHistoryIsQuiet(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
-	db := openDoctorWorkflowLintDB(t)
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"alpha", "digitaldrywood/detent#1", "Todo", "skipped", "artifact_gate_wait_status", 0, now.Add(-20*time.Minute).Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("insert scheduler decision: %v", err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"alpha", "digitaldrywood/detent#1", "In Progress", "selected", "", 1, now.Add(-10*time.Minute).Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("insert scheduler reset decision: %v", err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"alpha", "digitaldrywood/detent#1", "Todo", "skipped", "artifact_gate_wait_status", 0, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("insert current scheduler decision: %v", err)
-	}
-	for index := range 5 {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, '', ?)`,
-			"alpha", "agent", now.Add(-time.Duration(index)*time.Hour).Format(time.RFC3339Nano), `{"total_tokens":12000000}`); err != nil {
-			t.Fatalf("insert work attempt: %v", err)
-		}
-	}
-	cfg := workflowconfig.Default()
-	cfg.Gate.Kind = gate.KindArtifact
-	cfg.Agent.MaxSessionTokens = 16_000_000
-	checks := checkDoctorWorkflowRuntimeLint(context.Background(), "alpha", "/repo/WORKFLOW.md", "/runtime/detent.db", cfg, doctorDeps{
-		openSQLiteReadOnly: func(context.Context, string) (doctorTelemetryStore, error) { return db, nil },
-		now:                func() time.Time { return now },
-	})
-	if len(checks) != 0 {
-		t.Fatalf("checks = %#v, want clean history to be quiet", checks)
-	}
-}
-
-func TestCheckDoctorWorkflowRuntimeLintTracksWaitIncidentAcrossLaneChange(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
-	db := openDoctorWorkflowLintDB(t)
-	for _, decision := range []struct {
-		lane string
-		at   time.Time
-	}{
-		{lane: "Todo", at: now.Add(-20 * time.Minute)},
-		{lane: "In Progress", at: now.Add(-time.Minute)},
-	} {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			"alpha", "digitaldrywood/detent#1174", decision.lane, "skipped", "artifact_gate_wait_status", 0, decision.at.Format(time.RFC3339Nano)); err != nil {
-			t.Fatalf("insert scheduler decision: %v", err)
-		}
-	}
-
-	cfg := workflowconfig.Default()
-	cfg.Gate.Kind = gate.KindArtifact
-	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-	cfg.Polling.IntervalMS = 60_000
-	checks := checkDoctorWorkflowRuntimeLint(context.Background(), "alpha", "/repo/WORKFLOW.md", "/runtime/detent.db", cfg, doctorDeps{
-		openSQLiteReadOnly: func(context.Context, string) (doctorTelemetryStore, error) { return db, nil },
-		now:                func() time.Time { return now },
-	})
-	if len(checks) != 1 {
-		t.Fatalf("checks = %#v, want one continuous wait-status warning", checks)
-	}
-	for _, want := range []string{"digitaldrywood/detent#1174", "In Progress", "20m0s", "2 skips"} {
-		if !strings.Contains(checks[0].Detail, want) {
-			t.Fatalf("Detail = %q, want containing %q", checks[0].Detail, want)
-		}
-	}
-}
-
-func TestCheckDoctorWorkflowRuntimeLintIgnoresDeathsBelowRaisedCap(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
-	db := openDoctorWorkflowLintDB(t)
-	for index := range 5 {
-		errorMessage := ""
-		totalTokens := int64(12_000_000)
-		if index < 2 {
-			totalTokens = int64(16_100_000 + index*100_000)
-			errorMessage = fmt.Sprintf("session token ceiling exceeded: total_tokens=%d ceiling_tokens=16000000 source=max_session_tokens", totalTokens)
-		} else if index == 2 {
-			totalTokens = 40_000_000
-		}
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, ?, ?)`,
-			"alpha", "agent", now.Add(-time.Duration(index)*time.Hour).Format(time.RFC3339Nano), errorMessage, fmt.Sprintf(`{"total_tokens":%d}`, totalTokens)); err != nil {
-			t.Fatalf("insert work attempt: %v", err)
-		}
-	}
-
-	cfg := workflowconfig.Default()
-	cfg.Agent.MaxSessionTokens = 32_000_000
-	checks := checkDoctorWorkflowRuntimeLint(context.Background(), "alpha", "/repo/WORKFLOW.md", "/runtime/detent.db", cfg, doctorDeps{
-		openSQLiteReadOnly: func(context.Context, string) (doctorTelemetryStore, error) { return db, nil },
-		now:                func() time.Time { return now },
-	})
-	if len(checks) != 0 {
-		t.Fatalf("checks = %#v, want old lower-cap deaths to stay quiet after remediation", checks)
-	}
-}
-
-func TestDoctorWorkflowCapRecommendationStatesRetryCostAssumption(t *testing.T) {
-	t.Parallel()
-
-	cfg := workflowconfig.Default()
-	findings := doctorWorkflowOptimizationFindings("alpha", "/repo/WORKFLOW.md", cfg, doctorWorkflowOptimizationMetrics{
-		SessionCount:        3,
-		MedianSessionTokens: 1_000_000,
-	})
-	for _, finding := range findings {
-		if finding.RuleID != doctorWorkflowRuleNoSessionTokenBrake {
-			continue
-		}
-		if !strings.Contains(finding.Detail, doctorWorkflowCapRetryCostAssumption) || finding.Evidence["retry_cost_assumption"] != doctorWorkflowCapRetryCostAssumption {
-			t.Fatalf("finding = %#v, want retry-cost assumption in detail and evidence", finding)
-		}
-		return
-	}
-	t.Fatalf("findings = %#v, want %s", findings, doctorWorkflowRuleNoSessionTokenBrake)
-}
-
-func openDoctorWorkflowLintDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Errorf("db.Close() error = %v", err)
-		}
-	})
-	statements := []string{
-		`CREATE TABLE scheduler_decisions (
-  id INTEGER PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  issue_id TEXT,
-  identifier TEXT,
-  issue_url TEXT,
-  lane TEXT,
-  result TEXT,
-  reason TEXT,
-  attempt_number INTEGER,
-  decision_at TEXT NOT NULL
-)`,
-		`CREATE TABLE work_attempts (
-  id INTEGER PRIMARY KEY,
-  project_id TEXT NOT NULL,
-	worker_type TEXT NOT NULL,
-  completed_at TEXT,
-  error_message TEXT,
-  metrics_json TEXT NOT NULL DEFAULT '{}'
-)`,
-	}
-	for _, statement := range statements {
-		if _, err := db.ExecContext(t.Context(), statement); err != nil {
-			t.Fatalf("create workflow lint table: %v", err)
-		}
-	}
-	return db
 }
 
 func TestCheckDoctorGateCommandMissingCIOptIn(t *testing.T) {

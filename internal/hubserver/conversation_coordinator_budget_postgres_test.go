@@ -213,8 +213,8 @@ func TestCoordinatorProjectBudgetPostgres(t *testing.T) {
 				probe := &coordinatorBudgetReadRepository{Repository: original}
 				f.service.config.TenantRepository = probe
 				t.Cleanup(func() { f.service.config.TenantRepository = original })
-				if f.service.database.reader != nil {
-					t.Fatal("budget fixture unexpectedly has a legacy SQL reader")
+				if f.service.database.postgres == nil || f.service.config.TenantRepository == nil {
+					t.Fatal("required PostgreSQL fixture owners are not configured")
 				}
 				value, err := tools.screenRead(ctx, record, call)
 				want := monthlyBudgetSettings{Revision: 1, Policy: policy}

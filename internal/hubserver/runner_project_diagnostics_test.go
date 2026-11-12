@@ -3,14 +3,16 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -49,22 +56,16 @@ func TestRunnerAdmissionReportsPublishOnePayloadPerIssue(t *testing.T) {
 			ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Counts: map[string]int{}, Unavailable: map[string]string{}, Admissions: admissions,
 		}}
 		var before, after int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_content_objects").Scan(&before); err != nil {
+		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_objects").Scan(&before); err != nil {
 			t.Fatal(err)
 		}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_content_objects").Scan(&after); err != nil {
+		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_objects").Scan(&after); err != nil {
 			t.Fatal(err)
 		}
 		registered[test.name] = after - before
-		var data tracker.CollaborationData
-		var raw string
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT "+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&raw); err != nil {
-			t.Fatalf("%s: one decision: %v", test.name, err)
-		}
-		if err := decodeRunHistory(f.service.runDetailContext(t.Context()), f.service.database.reader, raw, &data); err != nil {
-			t.Fatal(err)
-		}
+		_, event := readDiagnosticFixtureDecision(t, f, issue)
+		data := event.Data
 		if want := test.predicates[len(test.predicates)-1]; data.Decision == nil || data.Decision.Reason != want {
 			t.Fatalf("%s: decision=%+v, want latest %q", test.name, data.Decision, want)
 		}
@@ -76,7 +77,7 @@ func TestRunnerAdmissionReportsPublishOnePayloadPerIssue(t *testing.T) {
 
 func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "admission-history")
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC) }}), "", "admission-history")
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	r.enroll(t)
 	first, second := f.create(t, "First delivery"), f.create(t, "Second delivery")
@@ -99,14 +100,8 @@ func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 	post()
 	call := hostedContextProtocol(t, f.service, changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID)), "http")
 	for i, issue := range []tracker.NativeIssue{first, second} {
-		var data tracker.CollaborationData
-		var raw, eventID string
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id,"+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&eventID, &raw); err != nil {
-			t.Fatal(err)
-		}
-		if err := decodeRunHistory(f.service.runDetailContext(t.Context()), f.service.database.reader, raw, &data); err != nil {
-			t.Fatal(err)
-		}
+		record, event := readDiagnosticFixtureDecision(t, f, issue)
+		data, eventID := event.Data, record.ID
 		want := view.Diagnostics.Admissions[i].Predicate
 		if data.Decision == nil || data.Decision.Reason != want || data.Decision.Outcome != "skipped" || data.Decision.RunnerID != r.binding.RunnerID || data.Decision.WorkItemRevision != issue.Revision || !data.Decision.At.Equal(now) {
 			t.Fatalf("persisted decision = %+v", data.Decision)
@@ -128,32 +123,24 @@ func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 	view.Diagnostics.Admissions[0].ObservedAt = now.Add(-time.Second)
 	post()
 	var count int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type='scheduler.decision'").Scan(&count); err != nil || count != 2 {
+	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type='scheduler.decision'").Scan(&count); err != nil || count != 2 {
 		t.Fatalf("repeated or mismatched observations changed history: count=%d error=%v", count, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	for _, stage := range []string{"legacy", "converted"} {
-		if stage == "legacy" {
-			restoreLegacyCollaborationPayloads(t, f.service, scope)
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET analytics_projection_version=NULL,scheduler_outcome=NULL,scheduler_reason='',scheduler_source='',scheduler_runner_id='' WHERE organization_id=? AND project_id=? AND type='scheduler.decision'`, scope.organization, scope.project); err != nil {
-				t.Fatal(err)
-			}
-		} else if err := f.service.convertSchedulerDecisions(t.Context()); err != nil {
-			t.Fatal(err)
+	for _, issue := range []tracker.NativeIssue{first, second} {
+		record, event := readDiagnosticFixtureDecision(t, f, issue)
+		if event.Data.Decision == nil || event.Data.Decision.RunnerID != r.binding.RunnerID || event.Data.Decision.Outcome != "skipped" {
+			t.Fatalf("scheduler selection: %+v", event)
 		}
-		for _, issue := range []tracker.NativeIssue{first, second} {
-			event, err := latestNativeRuntimeEvent(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), "scheduler.decision", "skipped")
-			if err != nil || event.Data.Decision == nil || event.Data.Decision.RunnerID != r.binding.RunnerID {
-				t.Fatalf("%s scheduler selection: %+v %v", stage, event, err)
-			}
-			raw, err := previousSchedulingDecision(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), *event.Data.Decision)
-			if err != nil || raw == "" {
-				t.Fatalf("%s scheduler deduplication: %s %v", stage, raw, err)
-			}
-			newer, err := hasNewerRunnerDecision(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), r.binding.RunnerID, now.Add(-time.Second))
-			if err != nil || !newer {
-				t.Fatalf("%s newer decision: %v %v", stage, newer, err)
-			}
+		var previous eventstore.Event
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			previous, err = reader.(eventstore.SchedulerDecisionReader).SchedulerDecision(t.Context(), f.project.ID, issue.WorkItemID, record.ID)
+			return err
+		}); err != nil || previous.ID != record.ID || previous.PayloadSHA256 != record.PayloadSHA256 {
+			t.Fatalf("scheduler deduplication: %+v %v", previous, err)
+		}
+		if !record.RecordedAt.After(now.Add(-time.Second)) || !event.Data.Decision.At.Equal(now) {
+			t.Fatalf("newer decision: %+v", event)
 		}
 	}
 
@@ -161,7 +148,9 @@ func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 
 func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	var logs bytes.Buffer
-	f := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	var clock atomic.Int64
+	clock.Store(time.Now().UTC().Truncate(time.Microsecond).UnixNano())
+	f := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewTextHandler(&logs, nil)), Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
 	r.enroll(t)
 	now := f.service.config.now()
@@ -213,13 +202,14 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	}
 
 	var accepted int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type LIKE 'run.%'").Scan(&accepted); err != nil || accepted != 0 {
+	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type LIKE 'run.%'").Scan(&accepted); err != nil || accepted != 0 {
 		t.Fatalf("rejected event fabricated history: %d %v", accepted, err)
 	}
 
 	view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now, Diagnostics: &runnerauth.ProjectDiagnostics{ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Records: []runnerauth.DiagnosticAttempt{{Key: "local:5", IssueID: "wi_unmatched", LocalAttemptID: 5, Membership: []string{"durable_active"}, NativeAttemptID: event.Data.AttemptID, HostOperation: "append.run.observed", OperationPending: true, OperationObservedAt: now, LatestErrorCode: "invalid_request", LatestError: rejection.Rejection.DiagnosticError(), Unavailable: map[string]string{"native_attempt_id": "unrecorded"}}}, Admissions: []runnerauth.DiagnosticAdmission{{IssueID: "wi_ready", ObservedAt: now, Result: "skipped", Predicate: "project_capacity_full", Unavailable: map[string]string{}}}, Counts: map[string]int{"durable_active": 1}, Unavailable: map[string]string{"running_build": "unavailable"}}}
 	post := func() {
 		t.Helper()
+		clock.Add(int64(time.Second))
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
 	}
 	view.ObservedAt = now.Add(-10 * time.Second)
@@ -231,60 +221,51 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 		})
 	}
 	post()
-	var stored runnerauth.ProjectConfiguration
-	var storedJSON string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(project_configuration_json, ?) FROM runner_identities WHERE id = ?", "$."+jsonPathKey(view.ProjectID), r.binding.RunnerID).Scan(&storedJSON); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal([]byte(storedJSON), &stored); err != nil || len(stored.Diagnostics.Records) != 1 {
-		t.Fatalf("stored diagnostics retained historical records: %s, %v", storedJSON, err)
+	storedState, stored := readDiagnosticFixtureState(t, f, r.binding.RunnerID)
+	if stored.Diagnostics == nil || len(stored.Diagnostics.Records) != 1 {
+		t.Fatalf("stored diagnostics retained historical records: %+v", stored)
 	}
 	t.Run("expires after preparation", func(t *testing.T) {
-		originalClock := f.service.database.now
-		defer func() { f.service.database.now = originalClock }()
-		received := now
-		f.service.database.now = func() time.Time { return received }
-		view.Diagnostics.Records[1].LeaseExpiresAt = now.Add(time.Second)
+		preparedAt := f.service.config.now()
+		view.Diagnostics.Records[1].LeaseExpiresAt = preparedAt.Add(time.Second)
 		defer func() { view.Diagnostics.Records[1].LeaseExpiresAt = now.Add(-time.Hour) }()
 		view.Paused = true
-		advanced := false
-		timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-			if strings.HasPrefix(query, "SELECT r.routing_facts_ready,CASE WHEN r.routing_facts_ready IS NULL OR c.runner_id IS NOT NULL THEN r.routing_settings_json END") {
-				received = now.Add(3 * time.Second)
-				advanced = true
-			}
-		}}
+		var prepared, advanced atomic.Bool
+		timed := func(ctx context.Context) context.Context {
+			return postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, query string) {
+				if strings.HasPrefix(query, "SELECT request_id,request_operation,") {
+					prepared.Store(true)
+				}
+				if query == "COMMIT" && prepared.Load() && advanced.CompareAndSwap(false, true) {
+					clock.Store(preparedAt.Add(3 * time.Second).UnixNano())
+				}
+			})
+		}
 		request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
 		response := httptest.NewRecorder()
-		f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+		f.service.Handler().ServeHTTP(response, request.WithContext(timed(request.Context())))
 		requireNativeStatus(t, response, http.StatusOK)
-		if !advanced {
+		if !advanced.Load() {
 			t.Fatal("clock did not advance after preparation")
 		}
-		var raw, digest string
-		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT json_extract(r.project_configuration_json, ?), o.snapshot_digest
-FROM runner_identities r JOIN runner_project_observations o ON o.runner_id = r.id AND o.organization_id = r.organization_id
-WHERE r.id = ? AND o.project_id = ?`, "$."+jsonPathKey(view.ProjectID), r.binding.RunnerID, view.ProjectID).Scan(&raw, &digest); err != nil {
-			t.Fatal(err)
-		}
-		var snapshot runnerauth.ProjectConfiguration
-		if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
-			t.Fatal(err)
-		}
+		state, snapshot := readDiagnosticFixtureState(t, f, r.binding.RunnerID)
 		if snapshot.Diagnostics == nil || len(snapshot.Diagnostics.Records) != 1 || snapshot.Diagnostics.Records[0].Key != "local:5" {
-			t.Fatalf("stored diagnostics retained expired record: %s", raw)
+			t.Fatalf("stored diagnostics retained expired record: %+v", snapshot)
 		}
 		if !snapshot.Paused {
 			t.Fatal("stored configuration lost simultaneous pause change")
 		}
-		projected, err := readRunnerBoardProjection(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, r.binding.RunnerID, "wi_unmatched")
-		if err != nil || projected.Diagnostics == nil || len(projected.Diagnostics.Records) != 1 || projected.Diagnostics.Records[0].Key != "local:5" {
-			t.Fatalf("typed diagnostics disagree with stored snapshot: %+v %v", projected.Diagnostics, err)
+		response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID+"&issue_id=wi_unmatched", r.redemption.Credential, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var projected runnerauth.DiagnosticPage
+		decodeHubResponse(t, response, &projected)
+		if len(projected.Records) != 1 || projected.Records[0].Key != "local:5" {
+			t.Fatalf("typed diagnostics disagree with stored snapshot: %+v", projected)
 		}
-		var expired int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM runner_project_diagnostic_attempts WHERE organization_id=? AND runner_id=? AND project_id=? AND record_key<>?`, f.project.OrganizationID, r.binding.RunnerID, f.project.ID, "local:5").Scan(&expired); err != nil || expired != 0 {
-			t.Fatalf("typed diagnostics retained expired records: %d %v", expired, err)
+		if len(state.Attempts) != 1 || state.Attempts[0].RecordKey != "local:5" {
+			t.Fatalf("typed diagnostics retained expired records: %+v", state.Attempts)
 		}
+		digest := state.Observation.SnapshotDigest
 		wantDigest, err := projectConfigurationDigest(snapshot)
 		if err != nil {
 			t.Fatal(err)
@@ -300,29 +281,39 @@ WHERE r.id = ? AND o.project_id = ?`, "$."+jsonPathKey(view.ProjectID), r.bindin
 		if runtimeFresh {
 			view.Diagnostics.RuntimeObservedAt = view.Diagnostics.ObservedAt
 		}
+		clock.Add(int64(time.Second))
 		received := f.service.config.now()
-		updates := 0
-		timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-			if strings.HasPrefix(query, "UPDATE runner_identities") && strings.Contains(query, "project_configuration_json") {
-				updates++
-			}
-		}}
+		beforeState, _ := readDiagnosticFixtureState(t, f, r.binding.RunnerID)
+		var traceMu sync.Mutex
+		statements, payloadUpdates := 0, 0
+		timed := func(ctx context.Context) context.Context {
+			return postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, query string) {
+				traceMu.Lock()
+				defer traceMu.Unlock()
+				statements++
+				query = strings.ToUpper(strings.TrimSpace(query))
+				for strings.HasPrefix(query, "--") {
+					_, query, _ = strings.Cut(query, "\n")
+					query = strings.TrimSpace(query)
+				}
+				if strings.HasPrefix(query, "UPDATE RUNNER_PROJECT_CONFIGURATIONS") && strings.Contains(strings.SplitN(query, "WHERE", 2)[0], "PAYLOAD_OBJECT_KEY=") {
+					payloadUpdates++
+				}
+			})
+		}
 		request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
 		response := httptest.NewRecorder()
-		f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+		f.service.Handler().ServeHTTP(response, request.WithContext(timed(request.Context())))
 		requireNativeStatus(t, response, http.StatusOK)
-		if updates != 0 {
-			t.Fatalf("configuration updates = %d, want 0", updates)
+		traceMu.Lock()
+		observedStatements, observedPayloadUpdates := statements, payloadUpdates
+		traceMu.Unlock()
+		if observedStatements == 0 || observedPayloadUpdates != 0 {
+			t.Fatalf("configuration trace: statements=%d, payload updates=%d, want observed statements and 0 payload updates", observedStatements, observedPayloadUpdates)
 		}
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT json_extract(project_configuration_json, ?) FROM runner_identities WHERE id = ?", "$."+jsonPathKey(view.ProjectID), r.binding.RunnerID).Scan(&storedJSON); err != nil {
-			t.Fatal(err)
-		}
-		stored = runnerauth.ProjectConfiguration{}
-		if err := json.Unmarshal([]byte(storedJSON), &stored); err != nil {
-			t.Fatal(err)
-		}
-		if err := overlayProjectConfigurationObservation(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, r.binding.RunnerID, &stored); err != nil {
-			t.Fatal(err)
+		storedState, stored = readDiagnosticFixtureState(t, f, r.binding.RunnerID)
+		if storedState.Configuration.PayloadObjectKey != beforeState.Configuration.PayloadObjectKey || storedState.Configuration.PayloadSHA256 != beforeState.Configuration.PayloadSHA256 || storedState.Command.Observation != beforeState.Command.Observation {
+			t.Fatal("telemetry-only heartbeat rewrote configuration payload")
 		}
 		if stored.ObservedAt.Before(received) || !stored.Diagnostics.ObservedAt.Equal(view.Diagnostics.ObservedAt) || !stored.Diagnostics.RuntimeObservedAt.Equal(view.Diagnostics.RuntimeObservedAt) {
 			t.Fatalf("stored freshness = %+v", stored)
@@ -479,10 +470,10 @@ WHERE r.id = ? AND o.project_id = ?`, "$."+jsonPathKey(view.ProjectID), r.bindin
 		})
 	}
 	var versions, published int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM change_versions WHERE change_id=?", change.ID).Scan(&versions); err != nil || versions != 0 {
+	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM change_versions WHERE change_id=$1", change.ID).Scan(&versions); err != nil || versions != 0 {
 		t.Fatalf("rejected version was accepted: %d %v", versions, err)
 	}
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='change.version_published'", issue.WorkItemID).Scan(&published); err != nil || published != 0 {
+	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=$1 AND type='change.version_published'", issue.WorkItemID).Scan(&published); err != nil || published != 0 {
 		t.Fatalf("rejected version fabricated history: %d %v", published, err)
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodGet, changePath+"/"+change.ID, f.token, nil)
@@ -494,10 +485,7 @@ WHERE r.id = ? AND o.project_id = ?`, "$."+jsonPathKey(view.ProjectID), r.bindin
 	}
 	view.Diagnostics.Records[0] = original
 	post()
-	var before string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT project_configuration_json || routing_settings_json || cast(revision AS TEXT) || last_heartbeat_at FROM runner_identities WHERE id = ?", r.binding.RunnerID).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
+	before, _ := readDiagnosticFixtureState(t, f, r.binding.RunnerID)
 	for range 2 {
 		page, err := call(ctx, args)
 		if err != nil || page.Status != "available" || len(page.Admissions) != 1 || page.NextCursor == "" {
@@ -510,9 +498,9 @@ WHERE r.id = ? AND o.project_id = ?`, "$."+jsonPathKey(view.ProjectID), r.bindin
 			t.Fatalf("next=%+v err=%v", page, err)
 		}
 	}
-	var after string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT project_configuration_json || routing_settings_json || cast(revision AS TEXT) || last_heartbeat_at FROM runner_identities WHERE id = ?", r.binding.RunnerID).Scan(&after); err != nil || before != after {
-		t.Fatalf("read mutated runner: %v", err)
+	after, _ := readDiagnosticFixtureState(t, f, r.binding.RunnerID)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("read mutated runner configuration, identity or diagnostics")
 	}
 	connection := operatortool.CurrentConnection(ctx)
 	resolve := connection.Resolve
@@ -547,7 +535,7 @@ WHERE r.id = ? AND o.project_id = ?`, "$."+jsonPathKey(view.ProjectID), r.bindin
 	if err != nil || page.Status != "unavailable" || page.Unavailable["snapshot"] == "" {
 		t.Fatalf("older=%+v %v", page, err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", formatHubTime(now.Add(-runnerauth.HeartbeatTimeout-time.Minute)), r.binding.RunnerID); err != nil {
+	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = $1 WHERE id = $2 AND organization_id=$3", now.Add(-runnerauth.HeartbeatTimeout-time.Minute), r.binding.RunnerID, f.project.OrganizationID); err != nil {
 		t.Fatal(err)
 	}
 	page, err = call(ctx, args)
@@ -557,7 +545,7 @@ WHERE r.id = ? AND o.project_id = ?`, "$."+jsonPathKey(view.ProjectID), r.bindin
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-diagnostics")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreign.base+"/runner-diagnostics", foreign.token, nil), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreign.base+"/runner-diagnostics", r.redemption.Credential, nil), http.StatusNotFound)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = ?", formatHubTime(now), r.binding.RunnerID); err != nil {
+	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = $1 WHERE id = (SELECT token_id FROM runner_identities WHERE id=$2 AND organization_id=$3)", now, r.binding.RunnerID, f.project.OrganizationID); err != nil {
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID, r.redemption.Credential, nil), http.StatusUnauthorized)
@@ -612,4 +600,64 @@ func TestRunnerProjectDiagnosticsIsolationPlatform(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), want)
 		})
 	}
+}
+
+func readDiagnosticFixtureDecision(t *testing.T, f nativeFixture, issue tracker.NativeIssue) (eventstore.Event, tracker.CollaborationEvent) {
+	t.Helper()
+	var record eventstore.Event
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		record, err = reader.(eventstore.WorkflowTransitionReader).LatestSchedulerDecision(t.Context(), f.project.ID, issue.WorkItemID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	event, err := eventstore.NewContent(f.service.runDetailStore()).Event(t.Context(), record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record, event
+}
+
+type diagnosticFixtureState struct {
+	Identity      runnerstore.Identity
+	Configuration postgres.ConfigurationProject
+	Command       postgres.ConfigurationCommand
+	Observation   runnerstore.ProjectObservation
+	Attempts      []runnerstore.ProjectDiagnosticAttempt
+}
+
+func readDiagnosticFixtureState(t *testing.T, f nativeFixture, runnerID string) (diagnosticFixtureState, runnerauth.ProjectConfiguration) {
+	t.Helper()
+	var state diagnosticFixtureState
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		state.Identity, err = reader.RunnerIdentity(t.Context(), runnerID)
+		if err != nil {
+			return err
+		}
+		owner := reader.(postgres.ConfigurationReader)
+		state.Configuration, err = owner.ConfigurationProject(t.Context(), runnerID, f.project.ID)
+		if err != nil {
+			return err
+		}
+		state.Command, err = owner.ConfigurationCommand(t.Context(), runnerID, f.project.ID)
+		if err != nil {
+			return err
+		}
+		state.Observation, state.Attempts, err = reader.RunnerProjectObservation(t.Context(), runnerID, f.project.ID, "")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var reported runnerauth.ProjectConfiguration
+	if state.Command.Observation.Key == "" {
+		t.Fatal("runner configuration observation payload missing")
+	}
+	if err := f.service.readConfigurationPayload(t.Context(), f.project.OrganizationID, state.Command.Observation, &reported); err != nil {
+		t.Fatal(err)
+	}
+	reported.ObservedAt = state.Observation.ObservedAt
+	reported.Diagnostics = state.Observation.Diagnostics
+	return state, reported
 }

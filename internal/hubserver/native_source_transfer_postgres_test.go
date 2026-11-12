@@ -2,23 +2,29 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -28,9 +34,9 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-func sourceTransferPostgresFixture(t *testing.T) *Service {
+func sourceTransferPostgresFixture(t *testing.T) (*Service, *sql.DB) {
 	t.Helper()
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &verifiedAttemptDetails{}
 	var logs bytes.Buffer
@@ -57,7 +63,7 @@ func sourceTransferPostgresFixture(t *testing.T) *Service {
 			t.Fatal(err)
 		}
 		err = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: string(org), Local: true, CreatedAt: now}); err != nil {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: string(org), CreatedAt: now}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org)}); err != nil {
@@ -89,11 +95,11 @@ func sourceTransferPostgresFixture(t *testing.T) *Service {
 			t.Fatal(err)
 		}
 	}
-	return service
+	return service, admin
 }
 
 func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
-	service := sourceTransferPostgresFixture(t)
+	service, admin := sourceTransferPostgresFixture(t)
 	for _, org := range []string{"org_first", "org_second"} {
 		service.config.Hosted.OrganizationID = org
 		for _, tc := range []struct {
@@ -130,6 +136,300 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 		}
 		response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(org)+"/projects/project/work-items/item/source-recovery", string(org)+"_token", sourceTransferRequest{Mutation: tracker.Mutation{IdempotencyKey: "active source"}, ExpectedRevision: 1, VersionID: "version"})
 		requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+		t.Run(string(org)+"/source projection", func(t *testing.T) {
+			itemPath := "/api/v2/organizations/" + string(org) + "/projects/project/work-items/item"
+			read := func(t *testing.T) sourceRecoveryView {
+				t.Helper()
+				response := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/source-recovery", string(org)+"_token", nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var current sourceRecoveryView
+				decodeHubResponse(t, response, &current)
+				return current
+			}
+			parity := func(t *testing.T, current sourceRecoveryView) {
+				t.Helper()
+				response := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/explanation", string(org)+"_token", nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var explanation struct {
+					Runtime *tracker.NativeRuntimeEvidence `json:"native_runtime"`
+				}
+				decodeHubResponse(t, response, &explanation)
+				if explanation.Runtime == nil || explanation.Runtime.SourceRecovery == nil {
+					t.Fatal("existing explanation lost source ownership or waiting reason")
+				}
+				got := explanation.Runtime.SourceRecovery
+				if slices.Contains(explanation.Runtime.Unavailable, "source_recovery_projection") {
+					t.Fatal("successful source projection retained unavailable marker")
+				}
+				if current.SourceMachineID != "machine" || current.SourceRunnerID != "" || current.SourceRunnerName != "example" || current.VersionID != "version" {
+					t.Fatalf("source ownership differs from seeded owners: %+v", current)
+				}
+				wantReason := "Finish or cancel work on the source runner and release its lease before transfer; expiry or an unreachable owner does not prove quiescence"
+				if current.Quiesced {
+					wantReason = "Verified retained source can be restored before continuing; workflow, human and delivery holds remain in force"
+				}
+				if current.Reason != wantReason {
+					t.Fatalf("source reason=%q want=%q", current.Reason, wantReason)
+				}
+				if got.AttemptID != current.AttemptID || got.SourceRunnerName != current.SourceRunnerName || got.Quiesced != current.Quiesced || got.Reason != current.Reason || got.VersionID != current.VersionID || got.HeadSHA != current.HeadSHA || got.BaseSHA != current.BaseSHA || got.Available != current.Available || len(got.Destinations) != 0 || got.DestinationsNext != "" {
+					t.Fatalf("explanation source projection differs: got=%+v want=%+v", got, current)
+				}
+			}
+			parity(t, view)
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				attempt, err := w.Attempt(t.Context(), "attempt")
+				if err != nil {
+					return err
+				}
+				_, err = w.Release(t.Context(), leasestore.Fence{LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, "completed")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			seed := func(id string, checkpoint tracker.NativeCheckpoint) (leasestore.Attempt, attachment.ArchiveReference) {
+				t.Helper()
+				var lease leasestore.Lease
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					item, err := w.WorkItem(t.Context(), "project", "item")
+					if err != nil {
+						return err
+					}
+					lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: "machine", SessionID: id, LeaseID: "lease_" + id, TTL: time.Hour})
+					if err != nil {
+						return err
+					}
+					return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: org, ProjectID: "project", LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: hubTestPolicy().ID, BoundAt: lease.AcquiredAt})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				content := eventstore.NewContent(service.runDetailStore())
+				raw, err := json.Marshal(checkpointPayload{Checkpoint: &checkpoint})
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkpointRef, err := service.runDetailStore().StoreDetail(t.Context(), string(org), raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var attempts []leasestore.AttemptEvent
+				var events []eventstore.Event
+				for sequence, kind := range []string{"run.started", "run.checkpointed", "run.finished"} {
+					status := "running"
+					run := tracker.NativeRunData{AttemptID: id, RunID: "run_" + id, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "machine", PolicyID: hubTestPolicy().ID, Sequence: int64(sequence + 1), Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example", Model: "example"}}
+					if sequence == 1 {
+						run.Handoff = &checkpoint
+					}
+					if sequence == 2 {
+						status, run.Outcome = "succeeded", "succeeded"
+					}
+					raw, err := json.Marshal(run)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ref, err := service.runDetailStore().StoreDetail(t.Context(), string(org), raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					event := leasestore.AttemptEvent{ID: id, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: run.RunID, Sequence: run.Sequence, Status: status, StartedAt: lease.AcquiredAt, PayloadObjectKey: ref.Key, PayloadReference: ref}
+					if sequence == 1 {
+						event.CheckpointObjectKey, event.CheckpointReference, event.CheckpointPreservesSource = &checkpointRef.Key, checkpointRef, new(checkpoint.PreservesSource())
+					}
+					attempts = append(attempts, event)
+					raw, err = json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("event_%s_%d", id, sequence), OrganizationID: org, ProjectID: "project", AggregateID: "item", Type: kind, Actor: tracker.Actor{Kind: "machine", PrincipalID: "machine"}, SchemaVersion: 1, RecordedAt: lease.AcquiredAt.Add(time.Duration(sequence) * time.Microsecond), Data: tracker.CollaborationData{Run: &run}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					stored, err := content.PrepareEvent(t.Context(), org, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					events = append(events, stored)
+				}
+				var saved leasestore.Attempt
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					for i, event := range attempts {
+						var err error
+						saved, err = w.RecordAttempt(t.Context(), event)
+						if err != nil {
+							return err
+						}
+						if _, err := w.AppendEvent(t.Context(), events[i]); err != nil {
+							return err
+						}
+					}
+					_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "completed")
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return saved, checkpointRef
+			}
+			preserving := tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "unpushed", HeadSHA: view.HeadSHA, Availability: "available", Storage: "local_only", ExternalEffect: "none", EffectState: "none"}
+			source, sourceRef := seed("attempt_preserving", preserving)
+			clean := preserving
+			clean.WorktreeState = "clean"
+			var latest leasestore.Attempt
+			var latestRef attachment.ArchiveReference
+			for i := range 101 {
+				latest, latestRef = seed(fmt.Sprintf("attempt_clean_%03d", i), clean)
+			}
+			current := read(t)
+			if current.AttemptID != source.ID || current.VersionID != "version" || !current.Available || !current.Quiesced || current.HeadSHA != view.HeadSHA {
+				t.Fatalf("newer clean checkpoints hid exact source: %+v", current)
+			}
+			parity(t, current)
+			for _, unknown := range []struct {
+				name       string
+				attempt    leasestore.Attempt
+				reference  attachment.ArchiveReference
+				checkpoint tracker.NativeCheckpoint
+			}{
+				{"newer unclassified checkpoint", latest, latestRef, clean},
+				{"unclassified preserving checkpoint", source, sourceRef, preserving},
+			} {
+				t.Run(unknown.name, func(t *testing.T) {
+					t.Cleanup(func() {
+						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+						defer cancel()
+						if err := service.config.TenantRepository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+							owner, ok := w.(leasestore.CheckpointSourceWriter)
+							if !ok {
+								return nativeRunEventStorageUnavailable()
+							}
+							return owner.SetCheckpointSource(ctx, leasestore.CheckpointSourceFact{AttemptID: unknown.attempt.ID, IssueID: unknown.attempt.IssueID, Sequence: unknown.attempt.Sequence, CheckpointObjectKey: unknown.reference.Key, PreservesSource: unknown.checkpoint.PreservesSource()})
+						}); err != nil {
+							t.Errorf("restore classified checkpoint: %v", err)
+						}
+					})
+					result, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE organization_id=$1 AND id=$2 AND checkpoint_object_key=$3 AND sequence=$4`, org, unknown.attempt.ID, unknown.reference.Key, unknown.attempt.Sequence)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if count, err := result.RowsAffected(); err != nil || count != 1 {
+						t.Fatalf("legacy unknown row count=%d err=%v", count, err)
+					}
+					response := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/source-recovery", string(org)+"_token", nil)
+					requireNativeStatus(t, response, http.StatusServiceUnavailable)
+					var failure apiErrorResponse
+					decodeHubResponse(t, response, &failure)
+					if failure.Code != "not_ready" {
+						t.Fatalf("unknown checkpoint misclassified: code=%s", failure.Code)
+					}
+					response = performHubAPIRequest(t, service, http.MethodPost, itemPath+"/source-recovery", string(org)+"_token", sourceTransferRequest{Mutation: tracker.Mutation{IdempotencyKey: unknown.name}, ExpectedRevision: current.Revision, VersionID: current.VersionID})
+					requireNativeStatus(t, response, http.StatusServiceUnavailable)
+					decodeHubResponse(t, response, &failure)
+					if failure.Code != "not_ready" {
+						t.Fatalf("unknown transfer misclassified: code=%s", failure.Code)
+					}
+					response = performHubAPIRequest(t, service, http.MethodGet, itemPath+"/explanation", string(org)+"_token", nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var explanation struct {
+						Runtime *tracker.NativeRuntimeEvidence `json:"native_runtime"`
+					}
+					decodeHubResponse(t, response, &explanation)
+					if explanation.Runtime == nil || explanation.Runtime.SourceRecovery != nil || !slices.Contains(explanation.Runtime.Unavailable, "source_recovery_projection") || explanation.Runtime.Issue.WorkItemID != "item" || explanation.Runtime.Attempt == nil || explanation.Runtime.Attempt.AttemptID != latest.ID {
+						t.Fatalf("unknown optional source destroyed runtime evidence: %+v", explanation.Runtime)
+					}
+					response = performHubAPIRequest(t, service, http.MethodGet, itemPath+"/runtime", string(org)+"_token", nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var runtime tracker.NativeRuntimeEvidence
+					decodeHubResponse(t, response, &runtime)
+					if runtime.SourceRecovery != nil || runtime.Attempt == nil || runtime.Attempt.AttemptID != latest.ID {
+						t.Fatalf("ordinary runtime acquired source dependency: %+v", runtime)
+					}
+
+				})
+				parity(t, read(t))
+			}
+			var sourceKey string
+			if err := service.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				version, err := r.Version(t.Context(), "change", "version")
+				sourceKey = version.SourceObjectKey
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			originalStore := service.config.RunDetails
+			for _, outage := range []struct {
+				name   string
+				err    error
+				status int
+				code   string
+			}{
+				{"storage", artifact.ErrStorage, http.StatusServiceUnavailable, "storage_unreachable"},
+				{"unclassified", errors.New("temporary source read failed"), http.StatusInternalServerError, "native_operation_failed"},
+			} {
+				t.Run("source outage/"+outage.name, func(t *testing.T) {
+					intercepted := &changeReadInterceptionStore{DetailStore: originalStore, key: sourceKey}
+					service.config.RunDetails = struct {
+						attachment.DetailStore
+						attachment.CanonicalDetailStore
+					}{intercepted, originalStore.(attachment.CanonicalDetailStore)}
+					t.Cleanup(func() { service.config.RunDetails = originalStore })
+					fail := func(context.Context) error { return outage.err }
+					intercepted.afterRead = fail
+					response := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/runtime", string(org)+"_token", nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var runtime tracker.NativeRuntimeEvidence
+					decodeHubResponse(t, response, &runtime)
+					if runtime.SourceRecovery != nil || runtime.Attempt == nil || runtime.Attempt.AttemptID != latest.ID || intercepted.afterRead == nil {
+						t.Fatal("ordinary runtime read the optional source bundle or lost its attempt")
+					}
+					response = performHubAPIRequest(t, service, http.MethodGet, itemPath+"/explanation", string(org)+"_token", nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var explanation struct {
+						Runtime *tracker.NativeRuntimeEvidence `json:"native_runtime"`
+					}
+					decodeHubResponse(t, response, &explanation)
+					if explanation.Runtime == nil || explanation.Runtime.SourceRecovery != nil || !slices.Contains(explanation.Runtime.Unavailable, "source_recovery_projection") || explanation.Runtime.Attempt == nil || explanation.Runtime.Attempt.AttemptID != latest.ID || intercepted.afterRead != nil {
+						t.Fatalf("source outage changed authoritative evidence: %+v", explanation.Runtime)
+					}
+					intercepted.afterRead = fail
+					response = performHubAPIRequest(t, service, http.MethodGet, itemPath+"/source-recovery", string(org)+"_token", nil)
+					requireNativeStatus(t, response, outage.status)
+					var failure apiErrorResponse
+					decodeHubResponse(t, response, &failure)
+					if failure.Code != outage.code || strings.Contains(response.Body.String(), "No verified Hub source") || intercepted.afterRead != nil {
+						t.Fatalf("source outage became absent source: code=%s", failure.Code)
+					}
+				})
+			}
+			for _, condition := range []string{"missing", "corrupt"} {
+				t.Run("source object/"+condition, func(t *testing.T) {
+					details := originalStore.(*verifiedAttemptDetails)
+					details.mu.Lock()
+					original := bytes.Clone(details.data[sourceKey])
+					if len(original) == 0 {
+						details.mu.Unlock()
+						t.Fatal("canonical source object missing before removal")
+					}
+					delete(details.data, sourceKey)
+					if condition == "corrupt" {
+						details.data[sourceKey] = []byte("invalid source bytes")
+					}
+					details.mu.Unlock()
+					t.Cleanup(func() { details.mu.Lock(); details.data[sourceKey] = original; details.mu.Unlock() })
+					response := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/source-recovery", string(org)+"_token", nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var unavailable sourceRecoveryView
+					decodeHubResponse(t, response, &unavailable)
+					if unavailable.Available || unavailable.AttemptID != source.ID || unavailable.Reason != "No verified Hub source is available for recovery" {
+						t.Fatalf("invalid source was accepted or lost ownership: %+v", unavailable)
+					}
+					response = performHubAPIRequest(t, service, http.MethodGet, itemPath+"/explanation", string(org)+"_token", nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var explanation struct {
+						Runtime *tracker.NativeRuntimeEvidence `json:"native_runtime"`
+					}
+					decodeHubResponse(t, response, &explanation)
+					if explanation.Runtime == nil || explanation.Runtime.SourceRecovery != nil || !slices.Contains(explanation.Runtime.Unavailable, "source_recovery_projection") || explanation.Runtime.Attempt == nil || explanation.Runtime.Attempt.AttemptID != latest.ID {
+						t.Fatalf("unavailable source destroyed remaining evidence: %+v", explanation.Runtime)
+					}
+				})
+			}
+			parity(t, read(t))
+
+		})
 	}
 
 	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/org_second/projects/project/work-items/item/source-recovery", "org_first_token", sourceTransferRequest{Mutation: tracker.Mutation{IdempotencyKey: "foreign"}, ExpectedRevision: 1})
@@ -188,7 +488,10 @@ func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.Organizatio
 		if err != nil {
 			return err
 		}
-		run := tracker.NativeRunData{AttemptID: "attempt", RunID: "run", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "machine", Sequence: 1}
+		if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: org, ProjectID: "project", LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: policy.ID, BoundAt: lease.AcquiredAt}); err != nil {
+			return err
+		}
+		run := tracker.NativeRunData{PolicyID: policy.ID, AttemptID: "attempt", RunID: "run", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "machine", Sequence: 1}
 		event, err := content.PrepareEvent(t.Context(), org, marshal(tracker.CollaborationEvent{ID: "event", OrganizationID: org, ProjectID: "project", AggregateID: "item", Type: "run.observed", Actor: tracker.Actor{Kind: "machine", PrincipalID: "machine"}, SchemaVersion: 1, RecordedAt: now, Data: tracker.CollaborationData{Run: &run}}))
 		if err != nil {
 			return err
@@ -234,7 +537,7 @@ func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.Organizatio
 }
 
 func TestPostgresSourceTransferCommitsAndReplays(t *testing.T) {
-	s := sourceTransferPostgresFixture(t)
+	s, _ := sourceTransferPostgresFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
 			s.config.Hosted.OrganizationID = string(org)

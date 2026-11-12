@@ -11,66 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func rebuildTestAnalyticsRollups(t testing.TB, s *Service, scope nativeScope) {
-	t.Helper()
-	convertTestAnalyticsProjections(t, s)
-	tx, err := s.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	if err := rebuildAnalyticsRollups(t.Context(), tx, scope, s.config.now()); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func commitTestAnalytics(t *testing.T, s *Service, write func(*sql.Tx)) {
-	t.Helper()
-	tx, err := s.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	write(tx)
-	if err := s.database.commit(t.Context(), tx); err != nil {
-		t.Fatal(err)
-	}
-	drainTestAnalytics(t, s)
-}
-
-func drainTestAnalytics(t *testing.T, s *Service) {
-	t.Helper()
-	convertTestAnalyticsProjections(t, s)
-	for {
-		more, err := s.database.drainAnalyticsDirty(t.Context(), s.config.now())
-		if err != nil {
-			t.Log(err)
-		}
-		if !more {
-			return
-		}
-	}
-}
-
-func projectTestAnalytics(t *testing.T, s *Service, tx *sql.Tx) {
-	t.Helper()
-	for {
-		if err := s.database.projectAnalyticsBatch(t.Context(), tx, s.config.now(), analyticsBackfillBatch); err != nil {
-			t.Fatal(err)
-		}
-		var more bool
-		if err := tx.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty)").Scan(&more); err != nil {
-			t.Fatal(err)
-		}
-		if !more {
-			return
-		}
-	}
-}
-
 func assertAnalyticsJSONEqual(t *testing.T, want, got any) {
 	t.Helper()
 	wantJSON, err := json.Marshal(want)
@@ -150,29 +90,6 @@ func TestAnalyticsAttemptProjectionFields(t *testing.T) {
 		pipeline := stored.Runtime.Landing.Gate.Pipeline
 		if pipeline == nil || pipeline.Dropped != 2 || len(pipeline.Timings) != 1 || pipeline.Timings[0].Stage != "rebase" {
 			t.Fatalf("nested pipeline evidence lost: %+v", pipeline)
-		}
-	}
-}
-
-func convertTestAnalyticsProjections(t testing.TB, s *Service) {
-	t.Helper()
-	ctx := s.runDetailContext(t.Context())
-	for {
-		if err := s.convertActivityProjections(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.convertSchedulerDecisions(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.database.convertAnalyticsProjections(ctx); err != nil {
-			t.Fatal(err)
-		}
-		var more bool
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM collaboration_events WHERE analytics_projection_version IS NULL) OR EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE projection_version IS NULL) OR EXISTS(SELECT 1 FROM native_attempts WHERE report_projection_version IS NULL)").Scan(&more); err != nil {
-			t.Fatal(err)
-		}
-		if !more {
-			return
 		}
 	}
 }

@@ -5,14 +5,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func seedHubMachine(t *testing.T, service *Service, machineID tracker.MachineID, now time.Time) {
+func seedHubMachine(t *testing.T, service *Service, organization tracker.OrganizationID, machineID tracker.MachineID) {
 	t.Helper()
-	if _, err := service.database.db.ExecContext(t.Context(), `
-INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at)
-VALUES (?, ?, ?, 1, 'test', ?, ?, ?)`, machineID, machineID, machineID, formatHubTime(now), formatHubTime(now), formatHubTime(now)); err != nil {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: string(machineID), Hostname: string(machineID), DisplayName: string(machineID), Capacity: 1, Version: "test"})
+	}); err != nil {
 		t.Fatalf("insert machine %s: %v", machineID, err)
 	}
 }

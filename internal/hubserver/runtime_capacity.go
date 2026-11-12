@@ -1,171 +1,95 @@
 package hubserver
 
 import (
-	"context"
-	"errors"
-	"strings"
+	"slices"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readRuntimeRunners(ctx context.Context, query nativeQueryer, scope nativeScope, now time.Time) ([]runnerauth.Runner, bool, error) {
-	limit := 100
-	truncated := false
-	if explanationRead(ctx) {
-		limit = 16
-	}
-	runnerWhere := ` WHERE r.organization_id = ? AND r.removed_at IS NULL AND EXISTS
-(SELECT 1 FROM token_grants g WHERE g.token_id = r.token_id AND g.organization_id = r.organization_id AND g.project_id = ?)`
-	statement := runnerIdentitySelect + runnerWhere + ` ORDER BY CASE WHEN r.id = ? THEN 0 ELSE 1 END, r.id LIMIT ?`
-	args := []any{scope.organization, scope.project, scope.credential.Runner.RunnerID, limit + 1}
-	if explanationRead(ctx) {
-		candidates, err := query.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id=? ORDER BY id LIMIT 17", scope.organization)
-		if err != nil {
-			return nil, false, err
+func runtimeProviderCapacity(snapshot runnerstore.RuntimeProviderSnapshot) providerCapacitySnapshot {
+	result := providerCapacitySnapshot{truncated: snapshot.OwnersTruncated || snapshot.CandidatesTruncated, groups: map[string][]scopedProviderAccount{}}
+	for _, report := range snapshot.Reports {
+		if !report.CapacityOwner {
+			continue
 		}
-		defer candidates.Close()
-		ids := []any{}
-		for candidates.Next() {
-			var id string
-			if err := candidates.Scan(&id); err != nil {
-				return nil, false, err
+		result.reports = append(result.reports, scopedProviderAccount{runnerID: report.RunnerID, Report: report.Report})
+	}
+	for _, lease := range snapshot.Leases {
+		if lease.Reservation == nil {
+			continue
+		}
+		reservation := *lease.Reservation
+		if reservation.Backend == "git" && reservation.Role == "merge" {
+			group := landingCapacityKey(lease.MachineID, lease.CapacityProject, lease.SessionID)
+			if group != "" {
+				group += "/" + lease.RunnerID
+				account := scopedProviderAccount{runnerID: lease.RunnerID, Report: reservation.Report}
+				if slices.ContainsFunc(result.groups[group], func(other scopedProviderAccount) bool { return sharedProviderAccount(account, other) }) {
+					continue
+				}
+				result.groups[group] = append(result.groups[group], account)
 			}
-			ids = append(ids, id)
 		}
-		if err := errors.Join(candidates.Err(), candidates.Close()); err != nil {
-			return nil, false, err
-		}
-		truncated = len(ids) > limit
-		ids = ids[:min(len(ids), limit)]
-		statement = "SELECT * FROM (" + runnerIdentitySelect + runnerWhere + " AND r.id=?) UNION ALL SELECT * FROM (" + runnerIdentitySelect + runnerWhere + " AND r.id IN (" + placeholders(len(ids)) + ") AND r.id<>? ORDER BY r.id)"
-		args = []any{scope.organization, scope.project, scope.credential.Runner.RunnerID, scope.organization, scope.project}
-		args = append(args, ids...)
-		args = append(args, scope.credential.Runner.RunnerID)
+		result.reservations = append(result.reservations, scopedProviderReservation{runnerID: lease.RunnerID, Reservation: reservation})
 	}
+	return result
+}
 
-	items, err := readRunnerIdentityBatch(ctx, query, statement, args, now, false)
-	if err != nil {
-		return nil, false, err
-	}
-	truncated = truncated || len(items) > limit
-	if len(items) > limit {
-		items = items[:limit]
-	}
-	runners := []runnerauth.Runner{}
-	reports := make(map[string][]providercapacity.Report)
-	hosts := make(map[tracker.MachineID]int)
-	var machines []any
-	for _, item := range items {
-		r := item.runner
-		runners = append(runners, r)
-		reports[r.RunnerID] = item.reports
-		if _, found := hosts[r.MachineID]; !found {
-			hosts[r.MachineID] = 0
-			machines = append(machines, r.MachineID)
-		}
-	}
-
-	if len(runners) == 0 {
-		return runners, truncated, nil
-	}
-	leaseStatement := `SELECT l.machine_id, coalesce(lr.runner_id, ''), l.expires_at, l.session_id, l.lease_id, coalesce(i.project_id, ''), ` + nativeLandingCapacityProject + `
-FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id ` + nativeLandingCapacityJoins + `
-WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS NULL AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(?)`
-	leaseArgs := append(append([]any(nil), machines...), formatHubTime(now), formatHubTime(now))
-	if explanationRead(ctx) {
-		leaseStatement = `SELECT l.machine_id,coalesce(lr.runner_id,''),l.expires_at,l.session_id,l.lease_id,coalesce(i.project_id,''),''
-FROM leases l INDEXED BY health_active_host JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
-WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS NULL AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(?) ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT 1025`
-		leaseArgs = append(append([]any(nil), machines...), formatHubTime(now), formatHubTime(now))
-	}
-	rows, err := query.QueryContext(ctx, leaseStatement, leaseArgs...)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	used := make(map[tracker.MachineID]map[string]int)
-	projects := make(map[string]map[tracker.ProjectID]int)
-	hostSlots := make(map[string]bool)
-	runnerSlots := make(map[string]bool)
-	type landingUsageRow struct {
-		machine                                      tracker.MachineID
-		runner, expiry, session, lease, batchProject string
-		project                                      tracker.ProjectID
-	}
-	var landingRows []landingUsageRow
-	leaseCount := 0
-	for rows.Next() {
-		leaseCount++
-		if explanationRead(ctx) && leaseCount > 1024 {
-			truncated = true
-			break
-		}
-		var value landingUsageRow
-		if err := rows.Scan(&value.machine, &value.runner, &value.expiry, &value.session, &value.lease, &value.project, &value.batchProject); err != nil {
-			return nil, false, err
-		}
-		if explanationRead(ctx) && strings.HasPrefix(value.session, "landing/") {
-			truncated = true
-		}
-		landingRows = append(landingRows, value)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, false, err
-	}
-	for _, value := range landingRows {
-		machine, runner, expiry, session, lease, project, batchProject := value.machine, value.runner, value.expiry, value.session, value.lease, value.project, value.batchProject
-
-		end, err := parseTimeValue(expiry)
-		if err != nil {
-			return nil, false, err
-		}
-		batchProject, err = resolveLandingProject(ctx, query, batchProject, false)
-		if err != nil {
-			return nil, false, err
-		}
-		if end.After(now) {
-			key := landingCapacityKey(machine, batchProject, session)
+func runtimeRunnersFromSnapshot(snapshot runnerstore.RuntimeCapacitySnapshot, scope nativeScope, now time.Time) []runnerauth.Runner {
+	providers := runtimeProviderCapacity(snapshot.Providers)
+	result := make([]runnerauth.Runner, 0, len(snapshot.Records))
+	for _, record := range snapshot.Records {
+		runner := record.Runner
+		runner.ProjectUsed = map[tracker.ProjectID]int{}
+		hostSlots, runnerSlots := map[string]bool{}, map[string]bool{}
+		for _, lease := range snapshot.Leases {
+			if lease.MachineID != runner.MachineID {
+				continue
+			}
+			key := landingCapacityKey(lease.MachineID, lease.CapacityProject, lease.SessionID)
 			if key == "" {
-				key = lease
+				key = string(lease.Lease.ID)
 			}
 			if !hostSlots[key] {
-				hosts[machine]++
+				runner.HostUsed++
 				hostSlots[key] = true
 			}
-			if used[machine] == nil {
-				used[machine] = make(map[string]int)
-			}
-			if !runnerSlots[runner+"/"+key] {
-				used[machine][runner]++
-				if projects[runner] == nil {
-					projects[runner] = make(map[tracker.ProjectID]int)
-				}
-				projects[runner][project]++
-				runnerSlots[runner+"/"+key] = true
+			if lease.RunnerID == runner.RunnerID && !runnerSlots[key] {
+				runner.Used++
+				runner.ProjectUsed[lease.Lease.ProjectID]++
+				runnerSlots[key] = true
 			}
 		}
+		for _, report := range record.Reports {
+			runner.ProviderCapacity = append(runner.ProviderCapacity, providers.view(runner.RunnerID, report, now))
+		}
+		result = append(result, runner)
 	}
-	var provider providerCapacitySnapshot
-	for _, r := range runners {
-		if len(reports[r.RunnerID]) > 0 {
-			provider, err = readProviderCapacitySnapshot(ctx, query, scope.organization, now)
-			if err != nil {
-				return nil, false, err
-			}
-			break
+	return result
+}
+
+func runtimeLandingCapacity(snapshot runnerstore.RuntimeProviderSnapshot, project tracker.ProjectID) (bool, int) {
+	if snapshot.OwnersTruncated || snapshot.CandidatesTruncated {
+		return false, nativeLandingCapacityUnknown
+	}
+	used, capacity := 0, 0
+	for _, lease := range snapshot.Leases {
+		if lease.Lease.ProjectID != project || lease.LandingCapacity <= 0 && lease.WorkflowState != "Merging" {
+			continue
+		}
+		used++
+		if lease.LandingCapacity > 0 && (capacity == 0 || int(lease.LandingCapacity) < capacity) {
+			capacity = int(lease.LandingCapacity)
 		}
 	}
-	truncated = truncated || provider.truncated
-	for i := range runners {
-		r := &runners[i]
-		r.HostUsed, r.Used = hosts[r.MachineID], used[r.MachineID][r.RunnerID]
-		r.ProjectUsed = projects[r.RunnerID]
-		for _, report := range reports[r.RunnerID] {
-			r.ProviderCapacity = append(r.ProviderCapacity, provider.view(r.RunnerID, report, now))
-		}
+	if capacity > 0 && used >= capacity {
+		return false, capacity
 	}
-	return runners, truncated, nil
+	if used > 0 {
+		return false, nativeLandingCapacityUnknown
+	}
+	return true, 0
 }

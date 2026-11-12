@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func TestHostedBillingCheckoutFailures(t *testing.T) {
@@ -120,11 +120,14 @@ func TestHostedBillingCheckoutFailures(t *testing.T) {
 				}
 				var before, after hostedCheckout
 				readIntent := func(intent *hostedCheckout) {
-					var raw string
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", "org_browser_preview").Scan(&raw); err != nil {
-						t.Fatal(err)
-					}
-					if err := json.Unmarshal([]byte(raw), intent); err != nil {
+					if err := f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+						account, err := r.BillingAccount(t.Context())
+						if err != nil {
+							return err
+						}
+						*intent = hostedCheckout{Key: account.Checkout.Key, PriceID: account.Checkout.PriceID, ExpiresAt: account.Checkout.ExpiresAt, Session: account.Checkout.Session}
+						return nil
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}

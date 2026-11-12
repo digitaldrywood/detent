@@ -1,10 +1,6 @@
 package hubserver
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -58,77 +54,6 @@ func finiteUsageCost(value float64) bool {
 type runnerUsageObservation struct {
 	kind        string
 	observation costObservation
-}
-
-func validateRunnerUsageCosts(ctx context.Context, q nativeQueryer, scope nativeScope, request tracker.NativeRunEvent, prices UsageConfig, now time.Time) error {
-	_, _, observations, err := runnerUsageObservations(ctx, q, scope, request, prices, &now)
-	if err != nil {
-		return err
-	}
-	for i := range observations {
-		observation := &observations[i].observation
-		if err := normalizeCostObservation(observation, now); err != nil {
-			return err
-		}
-		for _, prior := range observations[:i] {
-			previous := prior.observation
-			if observation.Provider == previous.Provider && observation.Metric == previous.Metric && observation.From.Before(previous.To) && previous.From.Before(observation.To) {
-				return nativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
-			}
-		}
-	}
-	return nil
-}
-
-func runnerUsageObservations(ctx context.Context, q nativeQueryer, scope nativeScope, request tracker.NativeRunEvent, prices UsageConfig, newAttemptAt *time.Time) (string, string, []runnerUsageObservation, error) {
-	if request.Type != "run.finished" || len(request.Data.Usage) == 0 {
-		return "", "", nil, nil
-	}
-	var organization, project, item, started, ended, runnerID, machineID, placement string
-	var legacy sql.NullString
-	err := q.QueryRowContext(ctx, `SELECT a.organization_id,a.project_id,a.work_item_id,a.started_at,a.updated_at,coalesce(lr.runner_id,''),coalesce(a.machine_id,''),CASE WHEN a.usage_facts_ready IS NULL THEN COALESCE(NULLIF(a.payload_object_key,''),a.data_json) END FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.id=?`, request.Data.AttemptID).Scan(&organization, &project, &item, &started, &ended, &runnerID, &machineID, &legacy)
-	if errors.Is(err, sql.ErrNoRows) {
-		if newAttemptAt == nil {
-			return "", "", nil, nil
-		}
-		organization, project = string(scope.organization), string(scope.project)
-		started = formatHubTime(*newAttemptAt)
-	} else if err != nil {
-		return "", "", nil, fmt.Errorf("read usage attribution: %w", err)
-	}
-	if newAttemptAt != nil {
-		ended = formatHubTime(*newAttemptAt)
-	}
-	if legacy.Valid {
-		var data tracker.NativeRunData
-		if err := decodeRunDetail(ctx, q, legacy.String, &data); err != nil {
-			return "", "", nil, err
-		}
-		machineID = string(data.MachineID)
-	}
-	facts, factErr := readMachineSpriteFacts(ctx, q, tracker.OrganizationID(organization), tracker.MachineID(machineID))
-	placement = "unknown"
-	if factErr == nil {
-		placement = "local"
-		if facts.Name != nil {
-			placement = "sprite"
-		}
-	} else if !errors.Is(factErr, sql.ErrNoRows) {
-		return "", "", nil, factErr
-	}
-	if organization != string(scope.organization) || project != string(scope.project) {
-		return "", "", nil, nativePublicInvalid("Usage preserves the attempt's original organization and project")
-	}
-	from, err := parseTimeValue(started)
-	if err != nil {
-		return "", "", nil, err
-	}
-	to, err := parseTimeValue(ended)
-	if err != nil {
-		return "", "", nil, err
-	}
-	observations, err := buildRunnerUsageObservations(request, prices, runnerUsageFacts{WorkItemID: item, RunnerID: runnerID, MachineID: machineID, Placement: placement, StartedAt: from, EndedAt: to})
-	return organization, project, observations, err
 }
 
 type runnerUsageFacts struct {
@@ -203,47 +128,6 @@ func buildRunnerUsageObservations(request tracker.NativeRunEvent, prices UsageCo
 		observations = append(observations, runnerUsageObservation{kind: kind, observation: o})
 	}
 	return observations, nil
-}
-
-func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.NativeRunEvent, prices UsageConfig, now time.Time) error {
-	organization, project, observations, err := runnerUsageObservations(ctx, tx, scope, request, prices, nil)
-	if err != nil {
-		return err
-	}
-	for _, usage := range observations {
-		kind, o := usage.kind, usage.observation
-		var previous costObservation
-		if kind == "incremental" {
-			var raw string
-			err := tx.QueryRowContext(ctx, `SELECT observation_json FROM usage_cost_observations WHERE organization_id=? AND provider=? AND provider_account=? AND source_id=? AND period_start=? AND period_end=? ORDER BY revision DESC LIMIT 1`, organization, o.Provider, o.ProviderAccount, o.SourceID, o.From.UTC().Format(costTimeLayout), o.To.UTC().Format(costTimeLayout)).Scan(&raw)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-			if err == nil {
-				if err := decodeStorageJSON(ctx, []byte(raw), &previous); err != nil {
-					return err
-				}
-			}
-		}
-		recorded, err := recordCostObservation(ctx, tx, organization, project, o, now)
-		if err != nil {
-			return err
-		}
-		if recorded && kind == "incremental" {
-			var cost, oldCost float64
-			if o.EstimatedAmountMicros != nil {
-				cost = float64(*o.EstimatedAmountMicros) / 1e6
-			}
-			if previous.EstimatedAmountMicros != nil {
-				oldCost = float64(*previous.EstimatedAmountMicros) / 1e6
-			}
-			delta := tracker.NativeUsage{Input: o.Input - previous.Input, CachedInput: o.CachedInput - previous.CachedInput, Output: o.Output - previous.Output, CostEstimate: cost - oldCost}
-			if err := updateAttemptUsageSummary(ctx, tx, scope, request.Data.AttemptID, delta); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func nativeUsageCorrection(previous, next tracker.NativeRunData) bool {

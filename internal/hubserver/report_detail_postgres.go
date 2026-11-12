@@ -86,6 +86,7 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential apiCr
 	var costs map[reportstore.CostKey]float64
 	var costAvailable bool
 	var usage postgresReportUsage
+	var completionCosts map[reportstore.CompletionCostItem]reportstore.CompletionCostFact
 	var priorRecorded bool
 	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
 		store, ok := reader.(reportstore.Reader)
@@ -150,6 +151,11 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential apiCr
 		}
 		costs, costAvailable = usage.Costs, usage.CostsAvailable
 
+		completionCosts, err = readPostgresReportCompletionCosts(ctx, reader, query, facts, w, prior, compare)
+		if err != nil {
+			return err
+		}
+
 		return err
 	})
 	if err != nil {
@@ -160,11 +166,22 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential apiCr
 	applyPostgresReportLandings(&out, landings, w, prior, compare)
 	applyPostgresReportQuality(&out, history, landings, escapes, facts, w, prior)
 	applyPostgresReportFailures(&out, attempts, w, prior, compare)
+	trackingPartial, err := s.populatePostgresReportTracking(ctx, credential, projects, attempts, w, &out)
+	if err != nil {
+		return hostedReportsReport{}, err
+	}
+	if trackingPartial {
+		out.Unavailable = append(out.Unavailable, "failure_tracking_partial")
+		out.Analytics.Unavailable = append(out.Analytics.Unavailable, "failure_tracking_partial")
+		out.Analytics.Partial = true
+	}
+
 	if usage.UsageAvailable {
 		if err := applyPostgresReportUsage(&out, facts, attempts, usage.Facts, w, prior, compare); err != nil {
 			return hostedReportsReport{}, err
 		}
 	}
+	applyPostgresReportCompletionCosts(&out, facts, completionCosts, w, prior, compare)
 	if openFactsAvailable {
 		out.OpenWork, out.Unavailable = postgresReportOpenWork(openFacts, w.To, out.Unavailable)
 	}

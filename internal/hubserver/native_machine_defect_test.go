@@ -27,21 +27,24 @@ import (
 func TestNativeReleaseStabilizationOccurrences(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
-	credential, _, err := f.service.authenticateAPIToken(t.Context(), testHubAdminToken, "", "")
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	selected := tracker.ProjectID(issueorigin.DetentCloudProjectID)
-	for _, statement := range []string{
-		"INSERT INTO projects (id, organization_id, name, profile, states_json, require_dependencies, created_at, github_repository_enabled) SELECT ?, organization_id, 'release-reporting', profile, states_json, require_dependencies, created_at, github_repository_enabled FROM projects WHERE id = ?",
-		"INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) SELECT ?, source_name, detent_state, terminal, dispatchable, created_at, updated_at FROM workflow_states WHERE project_id = ?",
-	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement, selected, f.project.ID); err != nil {
-			t.Fatal(err)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
 		}
+		states := append(record.States, tracker.NativeState{Name: "Backlog"})
+		_, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.project.OrganizationID, ID: selected, Name: "release-reporting", Profile: record.Core.Profile}, States: states, Settings: record.Settings})
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 	for _, project := range []tracker.ProjectID{selected, f.project.ID} {
-		scope := nativeScope{organization: f.project.OrganizationID, project: project, credential: credential}
+		scope := nativeScope{organization: f.project.OrganizationID, project: project, credential: credential, action: operatortool.FileIssue}
 		seedNativeFixturePolicy(t, f.service, string(scope.organization)+"/"+string(project))
 		file := func(series, key string) tracker.NativeIssue {
 			t.Helper()
@@ -49,21 +52,18 @@ func TestNativeReleaseStabilizationOccurrences(t *testing.T) {
 			origin := issueorigin.Origin{Kind: "worker", Instance: "runner", Source: key, Fingerprint: issueorigin.Fingerprint("go-test:example/pkg:TestOne")}
 			if series != "" {
 				body += "\nRelease stabilization: `" + series + "`\n"
-				origin = issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/digitaldrywood/detent/actions/runs/1/attempts/1", Fingerprint: issueorigin.ReleaseStabilizationFingerprint(series)}
+				origin = issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/example-org/example-project/actions/runs/1/attempts/1", Fingerprint: issueorigin.ReleaseStabilizationFingerprint(series)}
 			}
-			request := tracker.CreateIssue{Title: "Scheduled repair", Body: issueorigin.Stamp(body, origin), State: "Todo", Priority: new(1)}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: "Scheduled repair", Body: issueorigin.Stamp(body, origin), State: "Todo", Priority: new(1)}
+			raw, err := f.service.executeWorkItemRecordMutation(t.Context(), scope, nativeCommandOptions{OperationID: "release-stabilization-fixture", Feature: "collaboration"}, request.Mutation, request, "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = tx.Rollback() }()
-			issue, err := reportNativeMachineIssueTx(t.Context(), tx, scope, request, f.service.config.now())
-			if err != nil {
+			var issue tracker.NativeIssue
+			if err := json.Unmarshal(raw, &issue); err != nil {
 				t.Fatal(err)
 			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
+			operatorRefreshSearch(t, f)
 			return issue
 		}
 		repair := file("", "repair")

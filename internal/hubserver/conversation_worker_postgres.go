@@ -627,15 +627,27 @@ func updatePGWorkerMessage(ctx context.Context, writer tenantstore.Writer, messa
 	return appendPGConversationEvent(ctx, writer, message.OrganizationID, message.ConversationID, conversation.EventCommandReceipt, command.Receipt, now)
 }
 
+var errConversationTurnSnapshotMoved = errors.New("conversation changed after the turn event snapshot")
+
 func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string, request conversationTurnEventsRequest) error {
-	c, s := r.service, r.service.server
-	ctx := e.Request().Context()
-	scope := nativeRequestScope(e)
+	s := r.service.server
 	request.BatchKey = strings.TrimSpace(request.BatchKey)
 	if len(request.Events) > conversationMaxTurnEvents || len(request.BatchKey) > conversation.MaxCommandKeyBytes {
 		return s.nativeAPIError(e, nativePublicInvalid("The turn event batch exceeds its limit"))
 	}
 	now := s.config.now()
+	for {
+		err := r.turnEventsPostgresAttempt(e, id, request, now)
+		if !errors.Is(err, errConversationTurnSnapshotMoved) {
+			return err
+		}
+	}
+}
+
+func (r *conversationWorkerRouter) turnEventsPostgresAttempt(e echo.Context, id string, request conversationTurnEventsRequest, now time.Time) error {
+	c, s := r.service, r.service.server
+	ctx := e.Request().Context()
+	scope := nativeRequestScope(e)
 	var current conversationRecord
 	var storedSequence int64
 	var foundBatch bool
@@ -720,7 +732,7 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 			}
 		}
 		if stored.Revision != current.Revision || stored.EventSequence != current.EventSeq || stored.Execution.Owner != current.Execution.Owner {
-			return conversationStale("The conversation changed before the event batch was committed")
+			return errConversationTurnSnapshotMoved
 		}
 		if err := registerPreparedConversationObjects(ctx, writer, scope.organization, plan.prepared, now); err != nil {
 			return err
@@ -771,6 +783,9 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 		record = conversationRecordFromStore(latest)
 		return nil
 	})
+	if errors.Is(err, errConversationTurnSnapshotMoved) {
+		return err
+	}
 	if err != nil {
 		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, translateConversationError(err)))
 	}
@@ -961,6 +976,10 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope nati
 			questionOwner.ThreadID = event.ThreadID
 		}
 		question := conversationstore.Question{OrganizationID: scope.organization, ConversationID: record.ID, Question: conversation.Question{ID: conversationQuestionID(ctx), ConversationID: record.ID, MessageID: message.ID, Status: conversation.QuestionPending, Owner: questionOwner, Prompts: event.Prompts, ExpiresAt: timePtr(now.Add(questionTimeout)), CreatedAt: now, UpdatedAt: now}, RequestID: strings.TrimSpace(event.RequestID)}
+		question, err = preparedPGConversationQuestion(ctx, question)
+		if err != nil {
+			return err
+		}
 		if err := writer.UpsertQuestion(ctx, question); err != nil {
 			return err
 		}

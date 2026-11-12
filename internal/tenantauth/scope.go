@@ -14,6 +14,7 @@ var ErrDenied = accessstore.ErrDenied
 var ErrUnavailable = errors.New("tenant authority storage is unavailable")
 
 type RequestIdentity struct {
+	Local               bool
 	Organization        tracker.OrganizationID
 	CredentialHash      string
 	RenewalRunner       string

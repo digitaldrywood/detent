@@ -42,6 +42,7 @@ type GitHubImportRecord struct {
 }
 
 type GitHubImportReader interface {
+	GitHubImportForWorkItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (GitHubImport, error)
 	GitHubImportForIssue(context.Context, tracker.ProjectID, int64) (GitHubImport, error)
 	GitHubImport(context.Context, tracker.ProjectID, string) (GitHubImport, error)
 }
@@ -60,4 +61,5 @@ type GitHubImportRecordReader interface {
 type GitHubImportRecordWriter interface {
 	GitHubImportRecordReader
 	CreateGitHubImportRecord(context.Context, GitHubImportRecord) error
+	ResetCurrentGitHubImportDependencies(context.Context, tracker.ProjectID, string) error
 }

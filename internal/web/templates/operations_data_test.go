@@ -2,11 +2,8 @@ package templates
 
 import "testing"
 
-func TestOperationsShellAndMetrics(t *testing.T) {
+func TestOperationsNumber(t *testing.T) {
 	t.Parallel()
-	if got := eventsPath(DashboardShellData{ActiveNav: "operations"}); got != "/events?nav=operations" {
-		t.Fatalf("events path: %s", got)
-	}
 	for _, tc := range []struct {
 		name  string
 		value *float64

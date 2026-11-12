@@ -86,6 +86,7 @@ func TestPostgresArtifactCatalogJourney(t *testing.T) {
 		cfg.Hosted.WorkOSOrganizationID = "provider_" + string(org)
 		cfg.SecretKeys = secretTestKeys(t, "1", "1")
 		cfg.Clock = now
+		seedHostedStartup(t, cfg)
 		open := func() *Service {
 			service, err := Open(t.Context(), cfg)
 			if err != nil {
@@ -100,7 +101,6 @@ func TestPostgresArtifactCatalogJourney(t *testing.T) {
 			return service
 		}
 		hub := open()
-		seedStartupOrganization(t, hub.config.TenantRepository, org)
 		projects := []catalogJourneyProject{{id: tracker.ProjectID(artifact.NewID("prj"))}, {id: tracker.ProjectID(artifact.NewID("prj"))}}
 		publishers := []*catalogJourneyPublisher{{id: artifact.NewID("credential"), token: artifact.NewID("token"), serviceID: artifact.NewID("service"), mode: "customer"}, {id: artifact.NewID("credential"), token: artifact.NewID("token"), serviceID: artifact.NewID("service"), mode: "hosted"}}
 		for _, publisher := range publishers {

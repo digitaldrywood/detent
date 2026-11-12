@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,6 +36,7 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 	const sourceBody = "Complete source issue body. "
 	const sourceContract = "\n## Acceptance criteria\nPreserve the imported source.\n## Must not break\nExisting project work.\n## How we know it worked\nVerify imported data."
 	const adminToken = "isolated-batch-import-administrator-token"
+	const minimumMaintenanceWake = 900 * time.Millisecond
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -42,6 +44,17 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 	privateKey := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	var graphQLRequests, installationRequests, tokenRequests atomic.Int64
 	pageSizes := make(chan int, 4)
+	var sweepMu sync.Mutex
+	var sweepReads []int
+	const issuePrefix = "/repos/" + repository + "/issues/"
+	sourceIssueBody := strings.Repeat(sourceBody, 100) + sourceContract
+	sourceLabels := func(number int) []map[string]string {
+		lane := "detent:backlog"
+		if number%3 == 0 {
+			lane = "detent:todo"
+		}
+		return []map[string]string{{"name": "bug"}, {"name": "phase:one"}, {"name": lane}}
+	}
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var response any
@@ -98,15 +111,11 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 			}
 			nodes := []any{}
 			for number := offset + 1; number <= min(offset+100, total); number++ {
-				lane := "detent:backlog"
-				if number%3 == 0 {
-					lane = "detent:todo"
-				}
 				nodes = append(nodes, map[string]any{
 					"id": fmt.Sprintf("I_%d", number), "number": number, "url": fmt.Sprintf("https://github.com/%s/issues/%d", repository, number),
-					"title": fmt.Sprintf("Source issue %d", number), "body": (strings.Repeat(sourceBody, 100) + sourceContract), "closed": false,
+					"title": fmt.Sprintf("Source issue %d", number), "body": sourceIssueBody, "closed": false,
 					"createdAt": "2020-01-01T00:00:00Z", "updatedAt": "2021-01-01T00:00:00Z", "author": map[string]string{"login": "source-user"},
-					"labels":   map[string]any{"nodes": []any{map[string]string{"name": "bug"}, map[string]string{"name": "phase:one"}, map[string]string{"name": lane}}},
+					"labels":   map[string]any{"nodes": sourceLabels(number)},
 					"comments": map[string]any{"totalCount": 1, "nodes": []any{map[string]any{"id": fmt.Sprintf("C_%d", number), "body": "Complete source comment", "createdAt": "2020-01-01T00:00:00Z", "updatedAt": "2021-01-01T00:00:00Z", "author": map[string]string{"login": "comment-user"}}}, "pageInfo": map[string]bool{"hasNextPage": false}},
 				})
 			}
@@ -121,15 +130,31 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 			}
 			response = map[string]any{"data": map[string]any{"repository": map[string]any{"nameWithOwner": repository, "issues": map[string]any{"totalCount": total, "nodes": nodes, "pageInfo": map[string]any{"hasNextPage": cursor != "", "endCursor": cursor}}}}}
 		default:
-			t.Errorf("unexpected source request: %s %s", request.Method, request.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			return
+			number, err := strconv.Atoi(strings.TrimPrefix(request.URL.Path, issuePrefix))
+			if !strings.HasPrefix(request.URL.Path, issuePrefix) || err != nil || number < 1 || number > total {
+				t.Errorf("unexpected source request: %s %s", request.Method, request.URL.Path)
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if request.Method != http.MethodGet || request.Header.Get("Authorization") != "Bearer fixture-installation-token" {
+				t.Error("linked issue reconciliation did not use the installation token")
+			}
+			sweepMu.Lock()
+			sweepReads = append(sweepReads, number)
+			sweepMu.Unlock()
+			response = map[string]any{
+				"id": number, "node_id": fmt.Sprintf("I_%d", number), "number": number, "html_url": fmt.Sprintf("https://github.com/%s/issues/%d", repository, number),
+				"title": fmt.Sprintf("Source issue %d", number), "body": sourceIssueBody, "state": "open",
+				"created_at": "2020-01-01T00:00:00Z", "updated_at": "2021-01-01T00:00:00Z", "user": map[string]string{"login": "source-user"},
+				"labels": sourceLabels(number),
+			}
 		}
 		if err := json.NewEncoder(w).Encode(response); err != nil {
 			t.Error(err)
 		}
 	}))
 	t.Cleanup(source.Close)
+	opened := time.Now()
 	transport := NewAppTransport(connectorgithub.InstallationTokenConfig{Endpoint: source.URL + "/graphql", AppID: "123", PrivateKey: privateKey, HTTPClient: source.Client()})
 	service, err := openGitHubService(t, hubserver.Config{InitialAdminToken: []byte(adminToken), ImportBackend: NewImporter(transport), ReconcileBackend: NewReconciler(transport), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
@@ -211,6 +236,16 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 	if graphQLRequests.Load() != 4 || installationRequests.Load() != 1 || tokenRequests.Load() != 1 {
 		t.Fatalf("source requests: GraphQL=%d installation=%d token=%d", graphQLRequests.Load(), installationRequests.Load(), tokenRequests.Load())
 	}
+	sweepMu.Lock()
+	sweep := slices.Clone(sweepReads)
+	sweepMu.Unlock()
+	if budget := int(time.Since(opened)/minimumMaintenanceWake) + 1; len(sweep) > budget {
+		t.Fatalf("linked issue reconciliation reads=%d exceed one per maintenance wake budget=%d", len(sweep), budget)
+	}
+	slices.Sort(sweep)
+	if len(slices.Compact(slices.Clone(sweep))) != len(sweep) {
+		t.Fatalf("linked issue reconciliation reread an issue within one sweep: %v", sweep)
+	}
 	for _, want := range []int{100, 100, 100, 85} {
 		select {
 		case got := <-pageSizes:
@@ -235,9 +270,9 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 		} else {
 			backlog++
 		}
-		if issue.State != want || !slices.Equal(issue.Labels, []string{"bug", "phase:one"}) || issue.Body != (strings.Repeat(sourceBody, 100)+sourceContract) || issue.LinkedSource == nil || issue.LinkedSource.Status != "complete" || issue.Provenance == nil || issue.Provenance.ExternalID != fmt.Sprintf("I_%d", item.Number) {
+		if issue.State != want || !slices.Equal(issue.Labels, []string{"bug", "phase:one"}) || issue.Body != sourceIssueBody || issue.LinkedSource == nil || issue.LinkedSource.Status != "complete" || issue.Provenance == nil || issue.Provenance.ExternalID != fmt.Sprintf("I_%d", item.Number) {
 			t.Fatalf("imported item=%+v issue=%+v", item, issue)
 		}
 	}
-	t.Logf("isolated_http_fixture issues=%d job_seconds=%.3f default_maintenance_seconds=%.0f graphql_pages=4 page_sizes=100,100,100,85 backlog=%d todo=%d labels=bug,phase:one live_github=false", total, elapsed.Seconds(), hubserver.DefaultWebhookMaintenanceInterval.Seconds(), backlog, todo)
+	t.Logf("isolated_http_fixture issues=%d job_seconds=%.3f default_maintenance_seconds=%.0f graphql_pages=4 page_sizes=100,100,100,85 linked_issue_sweep_reads=%d backlog=%d todo=%d labels=bug,phase:one live_github=false", total, elapsed.Seconds(), hubserver.DefaultWebhookMaintenanceInterval.Seconds(), len(sweep), backlog, todo)
 }

@@ -11,3 +11,6 @@ WHERE organization_id=$1 AND project_id=$2 AND id=$3 AND revision=$4 RETURNING *
 
 -- name: ReadGitHubImportForIssue :one
 SELECT * FROM github_imports WHERE organization_id=$1 AND project_id=$2 AND issue_number=$3;
+
+-- name: ReadGitHubImportForWorkItem :many
+SELECT * FROM github_imports WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND work_item_id<>'' ORDER BY id LIMIT 2;

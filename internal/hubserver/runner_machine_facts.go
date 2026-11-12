@@ -108,15 +108,6 @@ func writeRunnerRoutingFacts(ctx context.Context, tx *sql.Tx, runner string, set
 	return err
 }
 
-func writeAttemptUsageFacts(ctx context.Context, tx *sql.Tx, id string, data tracker.NativeRunData) error {
-	var peak, user, system, wall any
-	if usage := data.ProcessUsage; usage != nil {
-		peak, user, system, wall = usage.PeakMemoryBytes, usage.UserCPUSeconds, usage.SystemCPUSeconds, usage.WallSeconds
-	}
-	_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET machine_id=?,usage_facts_ready=1,process_peak_memory_bytes=?,process_user_cpu_seconds=?,process_system_cpu_seconds=?,process_wall_seconds=? WHERE id=?`, data.MachineID, peak, user, system, wall, id)
-	return err
-}
-
 func commandResponseFacts(raw string) (bool, string, error) {
 	return receiptstore.ResponseFacts([]byte(raw))
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -40,6 +42,21 @@ func TestNativeOwnerNegotiatesCapabilities(t *testing.T) {
 
 func TestNativeComposedAuthorizationClaimAndExecution(t *testing.T) {
 	h := newNativeChangeHub(t)
+	checkAccounting := func(checkpoint string) {
+		t.Helper()
+		h.seed(func(w tenantstore.Writer) error {
+			used, err := w.CollaborationBytes(t.Context())
+			if err != nil {
+				return fmt.Errorf("%s collaboration-byte read: %w", checkpoint, err)
+			}
+			if used < 0 {
+				return fmt.Errorf("%s collaboration-byte count is negative: %d", checkpoint, used)
+			}
+			t.Logf("attachment accounting checkpoint=%s used_bytes=%d", checkpoint, used)
+			return nil
+		})
+	}
+	checkAccounting("after_fixture")
 	identityPath := h.native.Transport().IdentityFile()
 	file, err := runnerauth.Load(identityPath)
 	if err != nil {
@@ -51,6 +68,17 @@ func TestNativeComposedAuthorizationClaimAndExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	transport := fixtureClient(client).requests.Load()
+	fixtureClient(client).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		response, err := transport.RoundTrip(request)
+		if err != nil {
+			t.Logf("failed Hub request method=%s path=%s status=0 transport_error=true", request.Method, request.URL.Path)
+		} else if response.StatusCode >= http.StatusBadRequest {
+			t.Logf("failed Hub request method=%s path=%s status=%d transport_error=false", request.Method, request.URL.Path, response.StatusCode)
+		}
+		return response, err
+	}))
+	t.Cleanup(func() { fixtureClient(client).requests.Store(transport) })
 	now := time.Now()
 	h.scheduler, err = newTestScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, Now: func() time.Time { return now }})
 	if err != nil {
@@ -168,6 +196,7 @@ func TestNativeComposedAuthorizationClaimAndExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
+	checkAccounting("before_execution_start")
 	if err = execution.Start(guarded, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
 		t.Fatal(err)
 	}

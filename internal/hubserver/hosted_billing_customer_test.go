@@ -15,6 +15,9 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type hostedCustomerProvider struct {
@@ -49,20 +52,11 @@ func (p *hostedCustomerProvider) CustomerOrganization(context.Context, string) (
 
 func newHostedCustomerFixture(t *testing.T, failures ...error) (*browserHostedFixture, *hostedCustomerProvider) {
 	t.Helper()
-	f, base := newHostedBillingFixture(t)
-	provider := &hostedCustomerProvider{hostedBillingProvider: base, failures: failures}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_billing_accounts"); err != nil {
-		t.Fatal(err)
-	}
-	cfg := *f.service.config.Hosted.Billing
-	cfg.CustomerID, cfg.Provider = "", provider
-	f.service.config.Hosted.Billing = &cfg
-	if err := f.service.config.Hosted.validate(); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.database.configureHostedBilling(t.Context(), f.service.config.Hosted); err != nil {
-		t.Fatal(err)
-	}
+	var provider *hostedCustomerProvider
+	f, _ := newHostedBillingFixture(t, func(cfg *HostedBillingConfig, base *hostedBillingProvider) {
+		provider = &hostedCustomerProvider{hostedBillingProvider: base, failures: failures}
+		cfg.CustomerID, cfg.Provider = "", provider
+	})
 	return f, provider
 }
 
@@ -77,18 +71,26 @@ func TestHostedBillingCreatesCustomerOnFirstPaidAction(t *testing.T) {
 	}
 	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/portal", url.Values{}), http.StatusConflict)
 	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusServiceUnavailable)
-	var state string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT state FROM hosted_billing_customer_intents").Scan(&state); err != nil || state != "pending" {
-		t.Fatalf("intent after uncertain response = %q %v", state, err)
+	var intent billingstore.CustomerIntent
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		intent, err = r.BillingCustomerIntent(t.Context())
+		return err
+	}); err != nil || intent.State != "pending" {
+		t.Fatalf("intent after uncertain response = %q %v", intent.State, err)
 	}
 	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusSeeOther)
 	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusSeeOther)
 	if len(provider.keys) != 2 || provider.keys[0] != provider.keys[1] || provider.keys[0] != "detent-customer-acct_fixture-test-org_browser_preview" {
 		t.Fatalf("customer creation keys = %v", provider.keys)
 	}
-	var customer, mode string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT customer_id, mode FROM hosted_billing_accounts").Scan(&customer, &mode); err != nil || customer != "cus_fixture" || mode != "test" {
-		t.Fatalf("binding = %q %q %v", customer, mode, err)
+	var account billingstore.Account
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		account, err = r.BillingAccount(t.Context())
+		return err
+	}); err != nil || account.Binding.CustomerID != "cus_fixture" || account.Mode != billing.ModeTest {
+		t.Fatalf("binding = %q %q %v", account.Binding.CustomerID, account.Mode, err)
 	}
 	live := *f.service.config.Hosted.Billing
 	live.Mode = billing.ModeLive
@@ -98,13 +100,15 @@ func TestHostedBillingCreatesCustomerOnFirstPaidAction(t *testing.T) {
 		t.Fatalf("test to live activation: %v", err)
 	}
 	var retired, bound int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM hosted_billing_retired WHERE customer_id = 'cus_fixture' AND mode = 'test'), (SELECT count(*) FROM hosted_billing_accounts)").Scan(&retired, &bound); err != nil || retired != 1 || bound != 0 {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM hosted_billing_retired WHERE organization_id=$1 AND customer_id='cus_fixture' AND mode='test'), (SELECT count(*) FROM hosted_billing_accounts WHERE organization_id=$1)", f.service.accessOrganization()).Scan(&retired, &bound); err != nil || retired != 1 || bound != 0 {
 		t.Fatalf("activation retired %d test bindings and kept %d active: %v", retired, bound, err)
 	}
 	if _, err := f.service.database.hostedBillingBinding(t.Context(), &live); !errors.Is(err, errHostedBillingUnbound) {
 		t.Fatalf("live mode reused the test customer: %v", err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_billing_accounts(organization_id,account_id,customer_id,mode) VALUES ('org_browser_preview','acct_fixture','cus_live','live')"); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetBillingAccount(t.Context(), billingstore.Account{OrganizationID: f.service.accessOrganization(), Binding: billing.Binding{OrganizationID: string(f.service.accessOrganization()), AccountID: "acct_fixture", CustomerID: "cus_live"}, Mode: billing.ModeLive, Status: "free"})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	back := live

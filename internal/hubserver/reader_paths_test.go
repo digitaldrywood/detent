@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -15,23 +14,34 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 type writerReadGuardKey struct{}
 
 type writerReadGuard struct {
-	mu         sync.Mutex
-	violations []string
-	queries    atomic.Int64
+	mu           sync.Mutex
+	violations   []string
+	queries      atomic.Int64
+	transactions atomic.Int64
+	readOnly     map[*pgx.Conn]bool
+	repository   *postgres.Repository
 }
 
 var writerReadAllowlist = map[string]string{
@@ -65,49 +75,111 @@ func (g *writerReadGuard) check(ctx context.Context, operation string) error {
 	return errors.New("read-only GET used the writer: " + message)
 }
 
-type guardedWriterConnector struct {
-	timedConnector
-	guard *writerReadGuard
-}
-
-func (c guardedWriterConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := c.timedConnector.Connect(ctx)
-	if err != nil {
-		return nil, err
+func (g *writerReadGuard) traceStatement(ctx context.Context, conn *pgx.Conn, query string) context.Context {
+	statement := strings.ToUpper(strings.TrimSpace(query))
+	if strings.HasPrefix(statement, "BEGIN") || strings.HasPrefix(statement, "START TRANSACTION") {
+		readOnly := strings.Contains(statement, " READ ONLY")
+		g.mu.Lock()
+		if g.readOnly == nil {
+			g.readOnly = make(map[*pgx.Conn]bool)
+		}
+		g.readOnly[conn] = readOnly
+		g.mu.Unlock()
+		if marked, _ := ctx.Value(writerReadGuardKey{}).(bool); marked && readOnly {
+			g.transactions.Add(1)
+		}
+		if !readOnly {
+			if err := g.check(ctx, "PostgreSQL read-write transaction"); err != nil {
+				canceled, cancel := context.WithCancel(ctx)
+				cancel()
+				return canceled
+			}
+		}
+		return ctx
 	}
-	return &guardedWriterConn{timedConn: conn.(*timedConn), guard: c.guard}, nil
-}
-
-type guardedWriterConn struct {
-	*timedConn
-	guard *writerReadGuard
-}
-
-func (c *guardedWriterConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	c.guard.queries.Add(1)
-	if err := c.guard.check(ctx, "query"); err != nil {
-		return nil, err
+	if statement == "COMMIT" || statement == "ROLLBACK" {
+		g.mu.Lock()
+		delete(g.readOnly, conn)
+		g.mu.Unlock()
+		return ctx
 	}
-	return c.timedConn.QueryContext(ctx, query, args)
-}
-
-func (c *guardedWriterConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	if err := c.guard.check(ctx, "transaction"); err != nil {
-		return nil, err
+	if marked, _ := ctx.Value(writerReadGuardKey{}).(bool); marked {
+		g.queries.Add(1)
+		g.mu.Lock()
+		readOnly := g.readOnly[conn]
+		g.mu.Unlock()
+		if !readOnly {
+			if err := g.check(ctx, "PostgreSQL query outside a read-only transaction"); err != nil {
+				canceled, cancel := context.WithCancel(ctx)
+				cancel()
+				return canceled
+			}
+		}
 	}
-	return c.timedConn.BeginTx(ctx, opts)
+	return ctx
 }
 
-func installWriterReadGuard(t *testing.T, s *Service) *writerReadGuard {
+func (g *writerReadGuard) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return g.traceStatement(ctx, conn, data.SQL)
+}
+
+func (g *writerReadGuard) TraceQueryEnd(_ context.Context, conn *pgx.Conn, _ pgx.TraceQueryEndData) {
+	if conn.PgConn().TxStatus() == 'I' {
+		g.mu.Lock()
+		delete(g.readOnly, conn)
+		g.mu.Unlock()
+	}
+}
+
+func (g *writerReadGuard) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	for _, query := range data.Batch.QueuedQueries {
+		ctx = g.traceStatement(ctx, conn, query.SQL)
+		if ctx.Err() != nil {
+			return ctx
+		}
+	}
+	return ctx
+}
+
+func (*writerReadGuard) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (g *writerReadGuard) TraceBatchEnd(_ context.Context, conn *pgx.Conn, _ pgx.TraceBatchEndData) {
+	if conn.PgConn().TxStatus() == 'I' {
+		g.mu.Lock()
+		delete(g.readOnly, conn)
+		g.mu.Unlock()
+	}
+}
+
+func installWriterReadGuard(t *testing.T, s *Service, guard *writerReadGuard) *writerReadGuard {
 	t.Helper()
-	guard := &writerReadGuard{}
-	original := s.database.db
-	pool := sql.OpenDB(guardedWriterConnector{timedConnector: timedConnector{dsn: sqliteWriterDSN(s.database.path, s.config.BusyTimeout, s.config.Hosted != nil), driver: original.Driver()}, guard: guard})
-	pool.SetMaxOpenConns(1)
-	s.database.db = pool
-	if s.conversations != nil {
-		s.conversations.store.db = pool
+	if guard == nil || guard.repository == nil || s.database.postgres != guard.repository || s.config.TenantRepository != guard.repository || s.config.AccessRepository != guard.repository || s.database.billingRepository != guard.repository || s.config.BillingRepository != guard.repository || s.requestMetrics == nil || s.requestMetrics.repository != guard.repository {
+		t.Fatal("read guard does not cover every actual PostgreSQL owner")
 	}
+	ctx := context.WithValue(t.Context(), writerReadGuardKey{}, true)
+	called := false
+	err := s.database.postgres.WriteTenant(ctx, s.database.hostedOrganization, corestore.Serving, func(tenantstore.Writer) error {
+		called = true
+		return nil
+	})
+	guard.mu.Lock()
+	violations := len(guard.violations)
+	guard.violations = nil
+	guard.mu.Unlock()
+	if err == nil || called || violations == 0 {
+		t.Fatalf("guard missed actual PostgreSQL writer: callback=%v violations=%d error=%v", called, violations, err)
+	}
+	if err := s.database.postgres.ReadTenant(ctx, s.database.hostedOrganization, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := r.AccessOrganization(ctx)
+		return err
+	}); err != nil {
+		t.Fatalf("guard refused actual PostgreSQL reader: %v", err)
+	}
+	if guard.queries.Load() == 0 || guard.transactions.Load() == 0 {
+		t.Fatal("guard did not observe actual PostgreSQL read-only transaction and query")
+	}
+	guard.queries.Store(0)
+	guard.transactions.Store(0)
 	s.echo.Pre(func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			if c.Request().Method == http.MethodGet {
@@ -116,27 +188,70 @@ func installWriterReadGuard(t *testing.T, s *Service) *writerReadGuard {
 			return next(c)
 		}
 	})
-	t.Cleanup(func() {
-		s.tokenUseWork.Wait()
-		s.database.db = original
-		if s.conversations != nil {
-			s.conversations.store.db = original
-		}
-		if err := pool.Close(); err != nil {
-			t.Error(err)
-		}
-	})
 	return guard
+}
+
+func newWriterGuardNativeFixture(t *testing.T) (nativeFixture, *writerReadGuard) {
+	t.Helper()
+	guard := &writerReadGuard{}
+	repository, _ := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
+		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, guard)
+	})
+	guard.repository = repository
+	service := openLocalPostgresHubTestService(t, repository, Config{SecretKeys: secretTestKeys(t, "1", "1")})
+	organization := nativeOrganization{ID: "org_first", Name: "Example organization", Slug: "example-first"}
+	seedPostgresHubAdmin(t, repository, service, organization)
+	service.localOrganization = string(organization.ID)
+	service.database.hostedOrganization = organization.ID
+	service.requestMetrics.organization = organization.ID
+	return newNativeFixture(t, service, organization.ID, "reader-guard"), guard
+}
+
+func newWriterGuardHostedFixture(t *testing.T, listen bool, configure ...func(*Config)) (*browserHostedFixture, *writerReadGuard) {
+	t.Helper()
+	guard := &writerReadGuard{}
+	open := func(t *testing.T, cfg Config) *Service {
+		t.Helper()
+		cfg = hostedPostgresConfig(t, cfg)
+		value, ok := projectRecordDatabases.Load(cfg.Postgres.Connection.Database)
+		if !ok {
+			t.Fatal("guarded hosted PostgreSQL fixture database is unavailable")
+		}
+		admin := value.(*sql.DB)
+		config := postgresStartupTemplate.NativeConfig(t, admin, cfg.Postgres.Connection.User, cfg.Postgres.Connection.Password)
+		config.MaxConns = int32(cfg.Postgres.Pool.MaxConnections)
+		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, guard)
+		pool, err := pgxpool.NewWithConfig(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repository, err := postgres.NewRepository(t.Context(), pool, cfg.Postgres.Pool)
+		if err != nil {
+			pool.Close()
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := repository.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		projectRecordDatabases.Store(repository, admin)
+		t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
+		guard.repository = repository
+		return openPostgresHubTestService(t, repository, cfg)
+	}
+	fixture := newBrowserHostedFixtureBackendWithService(t, true, "org_browser_preview", listen, open, configure...)
+	return fixture, guard
 }
 
 func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		f := newNativeFixture(t, nil, "", "reader-guard")
+		f, guard := newWriterGuardNativeFixture(t)
 		issue := f.create(t, "readable issue")
 		approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 		runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 		runner.enroll(t)
-		guard := installWriterReadGuard(t, f.service)
+		installWriterReadGuard(t, f.service, guard)
 		for _, suffix := range []string{"", "/onboarding", "/policy", "/labels", "/integration", "/actions", "/work-items", "/health/findings", "/runner-diagnostics", "/artifact-services", "/work-items/" + string(issue.WorkItemID), "/work-items/" + string(issue.WorkItemID) + "/comments", "/work-items/" + string(issue.WorkItemID) + "/runtime", "/work-items/" + string(issue.WorkItemID) + "/history", "/work-items/" + string(issue.WorkItemID) + "/attempts", "/work-items/" + string(issue.WorkItemID) + "/changes", "/work-items/" + string(issue.WorkItemID) + "/explanation", "/work-items/" + string(issue.WorkItemID) + "/pull-requests", "/work-items/" + string(issue.WorkItemID) + "/artifacts"} {
 			t.Run(suffix, func(t *testing.T) {
 				r := performHubAPIRequest(t, f.service, http.MethodGet, f.base+suffix, f.token, nil)
@@ -157,13 +272,16 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 		if len(guard.violations) > 0 {
 			t.Fatalf("writer reads: %s", strings.Join(guard.violations, "\n"))
 		}
+		if guard.queries.Load() == 0 || guard.transactions.Load() == 0 {
+			t.Fatal("GET matrix did not use traced PostgreSQL read-only transactions")
+		}
 	})
 	t.Run("hosted", func(t *testing.T) {
-		f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(cfg *Config) {
+		f, guard := newWriterGuardHostedFixture(t, false, func(cfg *Config) {
 			cfg.Hosted.EntitlementAdminToken = []byte(strings.Repeat("e", 32))
 			cfg.Hosted.EntitlementAdministrator = "test-operator"
 		})
-		guard := installWriterReadGuard(t, f.service)
+		installWriterReadGuard(t, f.service, guard)
 		for _, path := range []string{
 			"/projects", "/project-rank", "/members", "/fleet", "/plan", "/billing", "/secrets/" + flySpritesToken,
 			"/monthly-budget", "/model-selection", "/integrations/slack",
@@ -193,6 +311,9 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 		defer guard.mu.Unlock()
 		if len(guard.violations) > 0 {
 			t.Fatalf("writer reads: %s", strings.Join(guard.violations, "\n"))
+		}
+		if guard.queries.Load() == 0 || guard.transactions.Load() == 0 {
+			t.Fatal("GET matrix did not use traced PostgreSQL read-only transactions")
 		}
 	})
 }
@@ -292,10 +413,8 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"postTeamThread":                      "Appends one post and its request-supplied references, and updates only its thread and author's participant row atomically.",
 		"recordSpriteWakeFacts":               "The Sprite lifecycle owner atomically updates the candidate machine's wake result and matching typed facts.",
 		"populateRunnerFact":                  "Retention verifies one unchanged source row and writes that row's typed facts per transaction.",
-		"convertIssuePageFact":                "Writes one source-checked issue, event, board or version projection after decoding on the reader pool in the existing storage maintenance owner.",
 		"convertActivityAttempt":              "Backfills one attempt and its owned phase and duration projections after verifying its current source.",
 		"applyHealthProjection":               "Converts one source row after a conditional write fences its source and projection state.",
-		"writeTimeIndexRecord":                "Writes one historical timestamp and its durable cursor per retention transaction.",
 		"populateChangeColumn":                "Updates one owned typed projection after decoding and comparing its source through the reader pool.",
 		"populateClaimFact":                   "Populates at most 100 unknown claim projections from their source rows in the existing retention transaction owner.",
 		"convertAttemptLeaseOnce":             "Rechecks and terminalizes one superseded attempt and its lease on the existing storage conversion tick.",
@@ -360,7 +479,6 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"writeHostedRequestWindow":            "The existing request metrics owner publishes one aggregated HTTP usage window per short background transaction.",
 		"reserveHostedInvitationSeat":         "Reserves an invitation seat while checking the plan allowance.",
 		"commitNativeMutation":                "Runs a native mutation with authority, event and replay receipt in one transaction.",
-		"populateTimeIndex":                   "Populates one bounded chunk of typed timestamp facts and its cursor on the existing retention tick.",
 		"expireNativeRecords":                 "Deletes one bounded batch of expired native records on the existing maintenance tick.",
 		"publishStorageArchive":               "Commits one issue archive pointer and its bounded section metadata after rechecking the exact issue and conversation revisions.",
 		"retireStorageArchiveSections":        "Rechecks the archived issue before atomically retiring at most 500 copied rows and advancing their durable section cursor.",
@@ -368,7 +486,6 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"convertObjectPayloadRow":             "Replaces one verified payload with its typed reference and conversion progress after comparing the owned source row.",
 		"convertStorageAggregate":             "Commits one verified immutable reference and retires its owned inline row with the progress cursor after rechecking the aggregate and source snapshot.",
 		"compactAnalyticsSamplesWithClock":    "Deletes one bounded batch of skip samples already counted by hourly rollups, on the existing maintenance tick.",
-		"reclaimStorage":                      "Reclaims at most 128 free pages in one short transaction on the existing retention tick.",
 		"backfillChangeSource":                "Converts one legacy source representation after reader-pool validation on the existing maintenance tick.",
 		"populateChangeSession":               "Freezes one version session and its source attempt authority after incremental reader-pool history validation on the existing Change column tick.",
 		"backfillAnalyticsRollups":            "Projects one bounded batch of a project's work items and their positions on the existing maintenance tick.",
@@ -381,8 +498,6 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"adjustAICredits":                     "Writes the credit adjustment and its audit record.",
 		"revokePolicy":                        "Revokes the selected policy and its authority record.",
 		"commitProjectConfiguration":          "Writes runner configuration commands; inspection and preview use the reader.",
-		"rewrapSecret":                        "Rewraps one provider secret and records its audit using a compare-and-swap update.",
-		"secretMutation":                      "Applies the supplied secret mutation under current authority.",
 		"createPoolSpriteNamed":               "Reserves and records a new pool sprite and its enrollment.",
 		"deletePoolSprite":                    "Records removal of the pool sprite and its enrollment.",
 		"bootstrapPoolSprite":                 "Enrolls the bootstrapped member only while current intent still wants it.",
@@ -395,10 +510,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"commitRunnerTransaction":             "Applies a runner protocol mutation under current runner authority.",
 		"chargeRunnerRead":                    "Charges runner read consumption as an explicit accounting write.",
 		"persistRunnerUpdateCommand":          "Writes the selected runner update and its command receipt.",
-		"processSlackDelivery":                "Claims and records a Slack delivery attempt.",
 		"Claim":                               "Claims the work item and reserves its fenced lease.",
-		"renew":                               "Renews the fenced work lease.",
-		"releaseLeaseOnce":                    "Releases the fenced work lease and, when requested, cancels its owned attempt atomically.",
 		"appendEvent":                         "Writes the worker event and resulting work state.",
 		"tenantRequestMetrics.write":          "Persists request metrics in their independent database.",
 		"Service.beginProjectRecordAuthority": "Opens one project record mutation transaction after rechecking the caller's project, hosted and runner authority.",
@@ -477,105 +589,146 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 	}
 }
 
-func TestReadPoolExhaustionReturnsLoggedDeadline(t *testing.T) {
-	var logs hostedLogBuffer
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Logger: slog.New(slog.NewTextHandler(&logs, nil))})
-	f := newNativeFixture(t, service, "", "exhausted-readers")
-	connections := make([]*sql.Conn, 0, readerConnections)
-	for range readerConnections {
-		conn, err := service.database.reader.Conn(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		connections = append(connections, conn)
+type readPoolDeadlineKey struct{}
+
+type readPoolDeadlineTrace struct {
+	dispatchWaitPostgresTrace
+}
+
+func (p *readPoolDeadlineTrace) TraceAcquireStart(ctx context.Context, pool *pgxpool.Pool, data pgxpool.TraceAcquireStartData) context.Context {
+	ctx = p.dispatchWaitPostgresTrace.TraceAcquireStart(ctx, pool, data)
+	if arm, ok := ctx.Value(readPoolDeadlineKey{}).(func(context.Context) context.Context); ok {
+		return arm(ctx)
 	}
+	return ctx
+}
+
+func TestReadPoolExhaustionReturnsLoggedDeadline(t *testing.T) {
+	probe := &readPoolDeadlineTrace{}
+	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(config *pgxpool.Config) {
+		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, probe)
+	})
+	var logs hostedLogBuffer
+	service := openLocalPostgresHubTestService(t, repository, Config{
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)), SecretKeys: secretTestKeys(t, "1", "1"),
+	})
+	organization := nativeOrganization{ID: "org_first", Name: "Example organization", Slug: "example-first"}
+	seedPostgresHubAdmin(t, repository, service, organization)
+	service.localOrganization = string(organization.ID)
+	service.database.hostedOrganization = organization.ID
+	service.requestMetrics.organization = organization.ID
+	f := newNativeFixture(t, service, organization.ID, "exhausted-readers")
+	pool := probe.pool.Load()
+	if pool == nil || pool.Stat().MaxConns() != 3 {
+		t.Fatal("fixture did not expose its three-connection PostgreSQL pool")
+	}
+
+	var held []*pgxpool.Conn
 	release := func() {
-		for _, conn := range connections {
-			if err := conn.Close(); err != nil {
-				t.Error(err)
+		for _, conn := range held {
+			conn.Release()
+		}
+		held = nil
+	}
+	t.Cleanup(release)
+	var acquireCtx context.Context
+	var canceledBefore int64
+	saturate := true
+	handler := echo.New()
+	handler.GET(nativeBase+"/onboarding", func(c echo.Context) error {
+		if !saturate {
+			return service.getOnboardingPage(c)
+		}
+		ctx := c.Request().Context()
+		for range pool.Stat().MaxConns() {
+			conn, err := pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			held = append(held, conn)
+		}
+		stats := pool.Stat()
+		if stats.AcquiredConns() != stats.MaxConns() {
+			t.Fatalf("physical pool is not full: acquired=%d max=%d", stats.AcquiredConns(), stats.MaxConns())
+		}
+		canceledBefore = stats.CanceledAcquireCount()
+		ctx = context.WithValue(ctx, readPoolDeadlineKey{}, func(ctx context.Context) context.Context {
+			if acquireCtx == nil {
+				var cancel context.CancelFunc
+				acquireCtx, cancel = context.WithDeadline(ctx, time.Time{})
+				t.Cleanup(cancel)
+			}
+			return acquireCtx
+		})
+		c.SetRequest(c.Request().WithContext(ctx))
+		return service.getOnboardingPage(c)
+	}, service.requireAPIScope(apiScopeOperator, apiScopeWorker, apiScopeAdmin))
+
+	request := newHubAPIRequest(t, http.MethodGet, f.base+"/onboarding", f.token, nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request.WithContext(testenv.WaitContext(t, t.Context())))
+	if acquireCtx == nil {
+		t.Fatalf("request never reached physical acquire: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response.Code != http.StatusInternalServerError || !errors.Is(acquireCtx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("pool exhaustion response=%d acquire context=%v", response.Code, acquireCtx.Err())
+	}
+	canceledAfter := pool.Stat().CanceledAcquireCount()
+	if delta := canceledAfter - canceledBefore; delta != 1 {
+		t.Fatalf("canceled PostgreSQL acquires = %d, want 1", delta)
+	}
+	var deadlines int
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if !strings.Contains(line, "read_timeout_cause=read_deadline") {
+			continue
+		}
+		deadlines++
+		for _, field := range []string{"context deadline exceeded", "pool_full=true", "pool_in_use=3", "pool_max=3", "pool_canceled_acquires=" + strconv.FormatInt(canceledAfter, 10)} {
+			if !strings.Contains(line, field) {
+				t.Errorf("pool exhaustion log omitted %q: %s", field, line)
 			}
 		}
-		connections = nil
 	}
-	defer release()
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer cancel()
-	request := httptest.NewRequestWithContext(ctx, http.MethodGet, f.base+"/onboarding", nil)
-	request.Header.Set("Authorization", "Bearer "+f.token)
-	response := httptest.NewRecorder()
-	service.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusInternalServerError || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		t.Fatalf("pool exhaustion response=%d context=%v", response.Code, ctx.Err())
-	}
-	if !strings.Contains(logs.String(), "context deadline exceeded") || !strings.Contains(logs.String(), "read_timeout_cause=reader_pool_exhausted") {
-		t.Fatalf("pool exhaustion lost its cause: %s", logs.String())
-	}
-	if service.database.reader.Stats().WaitCount == 0 {
-		t.Fatal("request did not wait for the exhausted reader pool")
+	if deadlines != 1 {
+		t.Fatalf("logged deadline records = %d, want 1: %s", deadlines, logs.String())
 	}
 	release()
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, f.base+"/onboarding", f.token, nil), http.StatusOK)
+	saturate = false
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, newHubAPIRequest(t, http.MethodGet, f.base+"/onboarding", f.token, nil).WithContext(t.Context()))
+	requireNativeStatus(t, response, http.StatusOK)
 }
 
-func installReadQueryCounter(t *testing.T, d *database) *writerReadGuard {
-	t.Helper()
-	counter := &writerReadGuard{}
-	original := d.reader
-	pool := sql.OpenDB(guardedWriterConnector{timedConnector: timedConnector{dsn: sqliteReaderDSN(d.path, defaultBusyTimeout), driver: original.Driver()}, guard: counter})
-	pool.SetMaxOpenConns(readerConnections)
-	d.reader = pool
-	t.Cleanup(func() {
-		d.reader = original
-		if err := pool.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	return counter
+func installReadQueryCounter(config *pgxpool.Config) {
+	config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, entryKeyBoardTrace{})
 }
 
-type auditDeadlineConnector struct {
-	timedConnector
-	inserts, bounded *atomic.Int64
-}
+type auditDeadlineTrace struct{ inserts, bounded *atomic.Int64 }
 
-func (c auditDeadlineConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := c.timedConnector.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &auditDeadlineConn{timedConn: conn.(*timedConn), connector: c}, nil
-}
-
-type auditDeadlineConn struct {
-	*timedConn
-	connector auditDeadlineConnector
-}
-
-func (c *auditDeadlineConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if strings.Contains(query, "secret_audit") {
-		c.connector.inserts.Add(1)
+func (trace auditDeadlineTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "INSERT INTO organization_secret_audit") {
+		trace.inserts.Add(1)
 		if _, ok := ctx.Deadline(); ok {
-			c.connector.bounded.Add(1)
+			trace.bounded.Add(1)
 		}
 	}
-	return c.timedConn.ExecContext(ctx, query, args)
+	return ctx
 }
+
+func (auditDeadlineTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestSecretUseAuditIsNotBoundedByReadDeadline(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "audit-deadline")
+	var inserts, bounded atomic.Int64
+	repository, _ := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
+		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, auditDeadlineTrace{inserts: &inserts, bounded: &bounded})
+	})
+	service := openLocalPostgresHubTestService(t, repository, Config{SecretKeys: secretTestKeys(t, "1", "1")})
+	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org_first", Name: "org_first", Slug: "org-first"})
+	f := newNativeFixture(t, service, "org_first", "audit-deadline")
 	now := time.Now().UTC()
 	configureTestSlack(t, f, &now, true)
-	var inserts, bounded atomic.Int64
-	original := f.service.database.db
-	pool := sql.OpenDB(auditDeadlineConnector{timedConnector: timedConnector{dsn: sqliteWriterDSN(f.service.database.path, f.service.config.BusyTimeout, false), driver: original.Driver()}, inserts: &inserts, bounded: &bounded})
-	pool.SetMaxOpenConns(1)
-	f.service.database.db = pool
-	t.Cleanup(func() {
-		f.service.database.db = original
-		if err := pool.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	inserts.Store(0)
+	bounded.Store(0)
 	value, err := f.service.readSlackWebhook(t.Context(), f.project.OrganizationID, "test")
 	if err != nil || len(value) == 0 {
 		t.Fatalf("webhook read: %v", err)

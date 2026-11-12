@@ -529,7 +529,7 @@ func TestHostedMonthlyCostsAccess(t *testing.T) {
 		o.SourceID += project
 		q := float64(index + 1)
 		o.Quantity = &q
-		if _, err := recordTestCost(t, f.service.database.db, f.service.config.Hosted.OrganizationID, project, o, now); err != nil {
+		if _, err := recordPostgresTestCost(t, f.service.database, f.service.config.Hosted.OrganizationID, project, o, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -561,7 +561,9 @@ func TestHostedMonthlyCostsAccess(t *testing.T) {
 		t.Fatalf("organization ledger: %+v", organization)
 	}
 	f.usage(t, "viewer", browserHostedOrganizationBase+"/usage/monthly", http.StatusNotFound)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE project_id=? AND user_id=(SELECT user_id FROM hosted_members WHERE role='owner')", f.privateProject); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteAccessProjectGrant(t.Context(), "user_browser_owner", tracker.ProjectID(f.privateProject))
+	}); err != nil {
 		t.Fatal(err)
 	}
 	f.usage(t, "owner", browserHostedOrganizationBase+"/usage/monthly", http.StatusNotFound)

@@ -30,3 +30,6 @@ ON CONFLICT(organization_id,runner_id,project_id) DO UPDATE SET config_revision=
 -- name: ObserveConfigurationProject :one
 UPDATE runner_project_configurations SET observed_config_revision=sqlc.arg(config_revision),observed_policy_id=sqlc.arg(policy_id),observed_registered=sqlc.arg(registered),observed_paused=sqlc.arg(paused),observed_draining=sqlc.arg(draining),observed_at=sqlc.arg(observed_at)
 WHERE organization_id=sqlc.arg(organization_id) AND runner_id=sqlc.arg(runner_id) AND project_id=sqlc.arg(project_id) AND config_revision=sqlc.arg(config_revision) AND policy_id=sqlc.arg(policy_id) AND (observed_at IS NULL OR observed_at<=sqlc.arg(observed_at)) RETURNING *;
+
+-- name: ConfigurationProject :one
+SELECT * FROM runner_project_configurations WHERE organization_id=sqlc.arg(organization_id) AND runner_id=sqlc.arg(runner_id) AND project_id=sqlc.arg(project_id);

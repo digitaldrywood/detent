@@ -203,7 +203,7 @@ func (s *Service) pendingAccessInvitationFor(ctx context.Context, credential api
 }
 
 func (s *Service) createAccessInvitation(ctx context.Context, credential apiCredential, email, role string, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
-	if err := s.validateHostedInvitationGrants(ctx, nil, credential, email, grants); err != nil {
+	if err := s.validateHostedInvitationGrants(ctx, credential, email, grants); err != nil {
 		return hostedInvitationView{}, err
 	}
 	invitation, err := s.config.Hosted.Provider.Invite(ctx, credential.Hosted.OrganizationID, email, role, credential.Hosted.Subject)
@@ -316,7 +316,7 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential apiCred
 		return operatortool.ErrAccessDenied
 	}
 	if err := auth.RevokeInvitationID(ctx, s.config.Hosted.Provider, id); err != nil {
-		return err
+		return errors.Join(operatortool.ErrProviderUnavailable, err)
 	}
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}, true); err != nil {

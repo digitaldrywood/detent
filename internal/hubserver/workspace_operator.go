@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -99,7 +100,7 @@ func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer
 		if err != nil {
 			return err
 		}
-		_, err = w.readWorkspaceForActor(ctx, query, scope, r.ResourceID)
+		_, err = w.readOperatorWorkspaceForActor(ctx, scope, r.ResourceID)
 		return err
 	case "conversation":
 		if s.conversations == nil {
@@ -217,12 +218,28 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 	}
 	proposal := chat.Action{Kind: chat.ActionKind(call.Name), ProjectID: request.ProjectID, IssueID: resourceSelector(request), RequestID: request.RequestID, Arguments: arguments, Mutation: m}
 	if call.Name == "create_project_action_run" {
-		configured, err := readProjectAction(ctx, e.server.database.reader, scope, request.ActionID)
+		var record actionstore.Record
+		err := e.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			if err := e.server.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+				return err
+			}
+			owner, ok := reader.(actionstore.Reader)
+			if !ok {
+				return errWorkspaceOperationUnavailable
+			}
+			var err error
+			record, err = owner.ProjectAction(ctx, scope.project, request.ActionID)
+			return err
+		})
 		if err != nil {
 			return operatortool.Result{}, safeWorkspaceError(err)
 		}
-		if configured.Revision != int64(request.ExpectedRevision) {
+		if record.Action.Revision != int64(request.ExpectedRevision) {
 			return operatortool.Result{}, errWorkspaceOperationUnavailable
+		}
+		configured, err := e.server.hydrateActionRecord(ctx, scope, record)
+		if err != nil {
+			return operatortool.Result{}, safeWorkspaceError(err)
 		}
 		proposal.Title, proposal.Description = configured.Name, configured.Command
 	}
@@ -718,4 +735,35 @@ func boundedOperatorHistory(raw json.RawMessage, snapshot bool, err error) (json
 		return nil, &operatortool.ResultTooLargeError{SizeBytes: len(raw), LimitBytes: budget}
 	}
 	return raw, nil
+}
+
+func (w *workspaceService) readOperatorWorkspaceForActor(ctx context.Context, scope nativeScope, id string) (workspaceRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if workspacesession.ValidateID(id) != nil {
+		return workspaceRecord{}, nativeNotFound()
+	}
+	var row postgres.WorkspaceSession
+	err := w.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := w.server.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+			return err
+		}
+		project, err := reader.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		owner, ok := reader.(postgres.WorkspaceReader)
+		if !ok {
+			return workspaceUnavailable()
+		}
+		row, err = owner.WorkspaceSession(ctx, scope.project, id)
+		if err != nil {
+			return err
+		}
+		return workspaceReadableSubject(ctx, reader, scope, row.SubjectWorkItemID)
+	})
+	return workspaceTenantRecord(row), projectRecordError(err)
 }

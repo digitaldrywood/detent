@@ -109,7 +109,7 @@ func TestPostgresBootstrapWorkspaceCostAndTenantIsolation(t *testing.T) {
 			trace.statements.Store(0)
 			exchanges.Store(0)
 			ctx := context.WithValue(t.Context(), entryAuthBudgetContextKey{}, true)
-			payload, err := service.readPostgresAppBootstrap(ctx, apiCredential{Hosted: &auth.HostedIdentity{OrganizationID: "provider_" + org, Subject: org + "_owner"}, HostedRole: "owner"}, auth.Session{})
+			payload, err := service.readPostgresAppBootstrap(ctx, apiCredential{ID: org + "_owner", HostedMembership: org + "_owner", Hosted: &auth.HostedIdentity{OrganizationID: "provider_" + org, Subject: org + "_owner"}, HostedRole: "owner"}, auth.Session{})
 			if err != nil {
 				t.Fatal(err)
 			}

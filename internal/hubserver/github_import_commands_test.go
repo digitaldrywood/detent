@@ -19,7 +19,7 @@ import (
 
 func TestPostgresImportStarts(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := &Service{localOrganization: "org", database: &database{now: time.Now}, config: Config{ImportBackend: gitHubLifecycleImporter{}, TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now}}
+	service := &Service{localOrganization: "org", notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), database: &database{now: time.Now}, config: Config{ImportBackend: gitHubLifecycleImporter{}, TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now}}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org", Name: "Example", Slug: "example"})
 	service.config.Hosted = &HostedConfig{OrganizationID: "org"}
 	service.database.hostedOrganization = "org"
@@ -40,7 +40,7 @@ func TestPostgresImportStarts(t *testing.T) {
 		scope := nativeScope{organization: "org", project: project, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
 		request := startGitHubImportRequest{Mutation: tracker.Mutation{IdempotencyKey: "start"}, IssueNumber: 1}
 		options := nativeCommandOptions{OperationID: projectOperationID(scope, "POST", "/imports")}
-		raw, err := service.executeNativeMutation(t.Context(), scope, options, request.Mutation, request, service.startGitHubImportOperation(request))
+		raw, err := service.executeNativeMutation(t.Context(), scope, options, request.Mutation, request, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -52,7 +52,7 @@ func TestPostgresImportStarts(t *testing.T) {
 		if err != nil || got.ID != job.ID || got.Revision != 1 {
 			t.Fatalf("job=%+v err=%v", got, err)
 		}
-		replay, err := service.executeNativeMutation(t.Context(), scope, options, request.Mutation, request, service.startGitHubImportOperation(request))
+		replay, err := service.executeNativeMutation(t.Context(), scope, options, request.Mutation, request, nil)
 		if err != nil || string(replay) != string(raw) {
 			t.Fatalf("import replay=%s error=%v", replay, err)
 		}
@@ -225,6 +225,86 @@ func TestPostgresImportStarts(t *testing.T) {
 			t.Fatalf("source body=%q", issue.Body)
 		}
 	}
+
+	t.Run("delayed source edits retain their clock", func(t *testing.T) {
+		previousNow := service.config.now
+		t.Cleanup(func() { service.config.now = previousNow })
+		observed := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
+		service.config.now = func() time.Time { return observed }
+		for _, projectID := range []tracker.ProjectID{"historical_first", "historical_second"} {
+			scope := nativeScope{organization: "org", project: projectID}
+			var project projectstore.Record
+			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				var err error
+				project, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: projectID, Name: string(projectID), Slug: projectstore.Slug(string(projectID)), Profile: "github_compatible"}, States: nativeTriageStates(nativeFixtureStates())})
+				if err != nil {
+					return err
+				}
+				project.Settings.Repository = "example-org/" + string(projectID)
+				project, err = w.UpdateProjectRecord(t.Context(), project)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			page, err := (gitHubLifecycleImporter{}).FetchImportPage(t.Context(), GitHubImportRequest{Stage: "issue", Repository: project.Settings.Repository, IssueNumber: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			page.Issue.CreatedAt = observed.Add(-48 * time.Hour)
+			page.Issue.UpdatedAt = page.Issue.CreatedAt
+			job := GitHubImport{Stage: "issue", IssueNumber: 1}
+			var itemID tracker.NativeWorkItemID
+			for index := range 2 {
+				if index == 1 {
+					page.Issue.UpdatedAt = page.Issue.UpdatedAt.Add(24 * time.Hour)
+					page.Issue.Body = "Delayed historical edit"
+				}
+				plan, err := service.prepareHistoricalGitHubImport(t.Context(), scope, project, job, page)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					return applyHistoricalGitHubImport(t.Context(), w, project, plan)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				itemID = plan.item.NativeID
+				job.WorkItemID = string(itemID)
+				if !plan.issue.UpdatedAt.Equal(page.Issue.UpdatedAt) || !plan.issue.LastActivityAt.Equal(page.Issue.UpdatedAt) || plan.issue.UpdatedAt.Equal(observed) {
+					t.Fatalf("source clock replaced by observation time: source=%v issue=%+v", page.Issue.UpdatedAt, plan.issue)
+				}
+				if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					row, err := r.WorkItem(t.Context(), projectID, itemID)
+					if err != nil {
+						return err
+					}
+					if !row.LastActivityAt.Equal(page.Issue.UpdatedAt) {
+						return fmt.Errorf("delayed source activity=%v want %v", row.LastActivityAt, page.Issue.UpdatedAt)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				row, err := w.LockWorkItem(t.Context(), projectID, itemID)
+				if err != nil {
+					return err
+				}
+				row.Title = "Local title edit"
+				updated, err := w.UpdateWorkItem(t.Context(), row)
+				if err != nil {
+					return err
+				}
+				if !updated.LastActivityAt.After(observed) {
+					return fmt.Errorf("local edit reused historical source activity: %v", updated.LastActivityAt)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
 }
 
 var errGitHubRepairFixture = errors.New("example repository unavailable")

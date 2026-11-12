@@ -13,11 +13,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -280,8 +282,19 @@ func (r *Repository) importProjectPolicies(ctx context.Context, source CorePolic
 			break
 		}
 		for _, pointer := range page {
+			migrated, changed, err := historicalCloudPolicyPointer(ctx, source, tracker.ProjectID(pointer[0]), pointer[1])
+			if err != nil {
+				return revisionCount, currentCount, err
+			}
 			if err := r.transaction(ctx, source.OrganizationID, corestore.Background, false, func(s *session) error {
-				return s.ImportProjectPolicyCurrent(ctx, tracker.ProjectID(pointer[0]), pointer[1])
+				currentID := pointer[1]
+				if changed {
+					if err := s.ImportProjectPolicyRevision(ctx, migrated, true); err != nil {
+						return err
+					}
+					currentID = migrated.PolicyID
+				}
+				return s.ImportProjectPolicyCurrent(ctx, tracker.ProjectID(pointer[0]), currentID)
 			}); err != nil {
 				return revisionCount, currentCount, fmt.Errorf("import current project policy: %w", err)
 			}
@@ -387,3 +400,81 @@ func (r *Repository) importMonthlyBudgetLeases(ctx context.Context, source CoreP
 }
 
 var _ policystore.Writer = (*session)(nil)
+
+func historicalCloudPolicyPointer(ctx context.Context, source CorePolicyImportSource, project tracker.ProjectID, id string) (policystore.Revision, bool, error) {
+	if _, err := source.neutral.table("projects"); err != nil {
+		return policystore.Revision{}, false, nil
+	}
+	keys, err := source.neutral.TableKey("projects")
+	if err != nil || len(keys) != 1 || keys[0] != (NeutralImportKey{Column: "id", Kind: "text"}) {
+		return policystore.Revision{}, false, ErrNeutralImport
+	}
+	rawProject, err := source.neutral.Lookup(ctx, "projects", []string{string(project)})
+	if err != nil {
+		return policystore.Revision{}, false, err
+	}
+	var record projectstore.Record
+	var markdown, statesJSON string
+	if err := rawProject.Decode(map[string]any{"organization_id": &record.Core.OrganizationID, "id": &record.Core.ID, "profile": &record.Core.Profile, "workflow_source": &record.Core.WorkflowSource, "workflow_markdown": &markdown, "states_json": &statesJSON}); err != nil {
+		return policystore.Revision{}, false, err
+	}
+	if record.Core.OrganizationID != source.OrganizationID || record.Core.ID != project {
+		return policystore.Revision{}, false, corestore.ErrTenantMismatch
+	}
+	var states []tracker.NativeState
+	if json.Unmarshal([]byte(statesJSON), &states) != nil {
+		return policystore.Revision{}, false, eventstore.ErrInvalidRecord
+	}
+	after, changed, err := historicalCloudWorkflow(record, markdown, states)
+	if err != nil || !changed {
+		return policystore.Revision{}, false, err
+	}
+	scope := string(source.OrganizationID) + "/" + string(project)
+	rawPolicy, err := source.neutral.Lookup(ctx, "policy_revisions", []string{scope, id})
+	if err != nil {
+		return policystore.Revision{}, false, err
+	}
+	var encoded, actor, stamp string
+	if err := rawPolicy.Decode(map[string]any{"metadata_json": &encoded, "approved_by": &actor, "approved_at": &stamp}); err != nil {
+		return policystore.Revision{}, false, err
+	}
+	var descriptor policy.Descriptor
+	if json.Unmarshal([]byte(encoded), &descriptor) != nil || descriptor.ID != id {
+		return policystore.Revision{}, false, eventstore.ErrInvalidRecord
+	}
+	if descriptor.Workflow != nil || descriptor.Configuration == nil {
+		return policystore.Revision{}, false, nil
+	}
+	previous, err := workflowconfig.ParseHistoricalProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)})
+	if err != nil {
+		return policystore.Revision{}, false, err
+	}
+	if descriptor.Configuration.DefinitionDigest != previous.SourceHash {
+		return policystore.Revision{}, false, nil
+	}
+	approved, err := workflowconfig.ApplyNativePolicy(previous, descriptor)
+	if err != nil {
+		return policystore.Revision{}, false, err
+	}
+	current, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(after)})
+	if err != nil {
+		return policystore.Revision{}, false, err
+	}
+	approved.SourceHash = current.SourceHash
+	approved.Authored, approved.DefinitionSources = current.Authored, current.DefinitionSources
+	approved.Config.Tracker.Lanes = current.Config.Tracker.Lanes
+	updated, err := workflowconfig.ResolvePolicy(approved)
+	if err != nil {
+		return policystore.Revision{}, false, err
+	}
+	prepared, err := eventstore.NewContent(source.Objects).PrepareProjectPolicy(ctx, source.OrganizationID, updated)
+	if err != nil {
+		return policystore.Revision{}, false, err
+	}
+	prepared.ProjectID, prepared.ApprovedBy = project, actor
+	prepared.ApprovedAt, err = time.Parse(time.RFC3339Nano, stamp)
+	if err != nil || prepared.ApprovedAt.IsZero() || actor == "" {
+		return policystore.Revision{}, false, eventstore.ErrInvalidRecord
+	}
+	return prepared, true, nil
+}

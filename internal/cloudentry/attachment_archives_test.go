@@ -647,7 +647,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			}
 		}
 		for _, item := range items {
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_archive_sections(organization_id,project_id,work_item_id,archive_revision,section_id,attachment_id) SELECT organization_id,project_id,work_item_id,$1,$2,attachment_id FROM attachment_archive_references WHERE organization_id=$3 AND project_id=$4 AND work_item_id=$5 AND attachment_id=$6`, 1, "issue", org, project, item.WorkItemID, archiveID); err != nil {
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_archive_sections(organization_id,project_id,work_item_id,archive_revision,section_id,attachment_id,kind,subject_id,first_sequence,last_sequence,retirement_complete) SELECT organization_id,project_id,work_item_id,$1,$2,attachment_id,'revision',work_item_id,1,1,true FROM attachment_archive_references WHERE organization_id=$3 AND project_id=$4 AND work_item_id=$5 AND attachment_id=$6`, 1, "issue", org, project, item.WorkItemID, archiveID); err != nil {
 				t.Fatal(err)
 			}
 			access := base + "/work-items/" + string(item.WorkItemID) + "/archives/" + ref.SHA256 + "/access"

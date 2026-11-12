@@ -25,27 +25,27 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestNativeSearchExpressionsBound(t *testing.T) {
+func TestNativeSearchTermsBound(t *testing.T) {
 	terms := make([]string, 33)
 	want := make([]string, 32)
 	for index := range terms {
 		terms[index] = "term" + strconv.Itoa(index)
 		if index < len(want) {
-			want[index] = `"` + terms[index] + `"*`
+			want[index] = terms[index]
 		}
 	}
 	for _, test := range []struct {
 		name, query string
 		want        []string
 	}{
-		{"empty", "!!!", []string{`""`}},
-		{"normalized distinct terms", "Café CAFE café repo-path REPO", []string{`"café"*`, `"cafe"*`, `"repo"*`, `"path"*`}},
+		{"empty", "!!!", []string{}},
+		{"normalized distinct terms", "Café CAFE café repo-path REPO", []string{"cafe", "cafe", "repo", "path"}},
 		{"at cap", strings.Join(terms[:32], " "), want},
 		{"over cap", strings.Join(terms, " "), want},
 		{"duplicates do not consume cap", strings.Repeat("TERM0 ", 40) + strings.Join(terms, " "), want},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := nativeSearchExpressions(test.query); !slices.Equal(got, test.want) {
+			if got := searchstore.Terms(test.query); !slices.Equal(got, test.want) {
 				t.Fatalf("expressions=%v want=%v", got, test.want)
 			}
 		})

@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -37,7 +38,39 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 }
 
 func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope nativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments) (json.RawMessage, error) {
-	human := (scope.credential.Scope == apiScopeOperator || scope.credential.Scope == apiScopeAdmin) && scope.credential.Runner.RunnerID == "" && scope.actor().Kind == "human"
+	batchRouting := scope.integrationOwned && scope.integrationRepository != "" && scope.githubIntakeRevision != nil && scope.githubIntakeRevision.batchID != "" && scope.githubIntakeRevision.revision > 0 && scope.credential.Scope == apiScopeAdmin && scope.credential.Runner.RunnerID == "" && request.Reason == "user_requested" && request.State != "Cancelled" && stop == nil
+	if batchRouting {
+		batch, err := s.loadGitHubBatchRecord(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		actor := scope.actor()
+		if batch.ID != scope.githubIntakeRevision.batchID || batch.Revision != scope.githubIntakeRevision.revision || batch.Status != "importing" || batch.RequestedBy == nil || batch.RequestedBy.Kind != actor.Kind || batch.RequestedBy.PrincipalID != actor.PrincipalID || batch.Discovery.Repository != scope.integrationRepository {
+			return nil, runnerUnauthorized()
+		}
+		index := slices.IndexFunc(batch.Items, func(selected tracker.GitHubBatchItem) bool {
+			return string(selected.WorkItemID) == item && selected.Status == "pending"
+		})
+		if index < 0 {
+			return nil, runnerUnauthorized()
+		}
+		previewIndex := slices.IndexFunc(batch.Page.Issues, func(preview tracker.GitHubIssuePreview) bool { return preview.Number == batch.Items[index].Number })
+		if previewIndex < 0 {
+			return nil, eventstore.ErrInvalidRecord
+		}
+		project, err := s.readProjectRecord(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		destination, _, err := batchIssueDestination(project.States, batch, batch.Page.Issues[previewIndex])
+		if err != nil {
+			return nil, err
+		}
+		if destination != request.State {
+			return nil, runnerUnauthorized()
+		}
+	}
+	human := (scope.credential.Scope == apiScopeOperator || scope.credential.Scope == apiScopeAdmin) && scope.credential.Runner.RunnerID == "" && scope.actor().Kind == "human" || batchRouting
 	recordedRecovery := !human && request.Reason == "dependency_ready"
 	if !human && (scope.credential.Scope != apiScopeWorker || scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization || scope.credential.EntryKey != nil) {
 		return nil, runnerUnauthorized()
@@ -104,14 +137,18 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
-		if issue.Profile != "native" || issue.Archived || int64(request.ExpectedRevision) != row.Revision {
+		compatible := issue.Profile == "github_compatible" && human && !batchRouting
+		if issue.Profile == "native" && request.WorkflowLabel != "" {
+			return nil, nativePublicInvalid("Native workflow transitions do not accept a workflow label")
+		}
+		if compatible && strings.TrimSpace(request.WorkflowLabel) == "" {
+			return nil, nativePublicInvalid("Compatibility workflow transitions require an explicit workflow label")
+		}
+		if issue.Profile != "native" && !compatible || issue.Archived || int64(request.ExpectedRevision) != row.Revision {
 			return nil, nativeConflict(tracker.Revision(row.Revision))
 		}
 		var linkedSource *eventstore.LinkedSource
 		if human && issue.LinkedSource != nil {
-			if request.State == "Cancelled" {
-				return nil, workItemStorageUnavailable()
-			}
 			if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 				current, err := r.LinkedSource(ctx, scope.project, issue.WorkItemID)
 				linkedSource = &current
@@ -135,10 +172,10 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
-		if project.Core.Profile != "native" || project.Core.DeletedAt != nil {
+		if project.Core.Profile != issue.Profile || project.Core.DeletedAt != nil {
 			return nil, corestore.ErrNotFound
 		}
-		if human && linkedSource != nil && issue.LinkedSource.Status != "complete" && dispatchableProjectState(project, request.State) {
+		if human && !batchRouting && linkedSource != nil && issue.LinkedSource.Status != "complete" && dispatchableProjectState(project, request.State) {
 			return nil, nativeWorkflowInvalid("Linked source intake must complete before executable work")
 		}
 		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.credential.Scope); err != nil {
@@ -200,8 +237,8 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if human {
 			configuredProject = &project
 		}
-		var stopState string
-		policyRevision, policyFound, err := s.validateTenantTransitionIssueContract(ctx, scope, &issue, configuredProject, previousState, request, &stopState)
+		var stopState, workflowLabel string
+		policyRevision, policyFound, err := s.validateTenantTransitionIssueContract(ctx, scope, &issue, configuredProject, previousState, request, &stopState, &workflowLabel)
 		if err != nil {
 			return nil, err
 		}
@@ -290,6 +327,39 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				cancellation = prepared
 			}
 		}
+		var sourceCancellation *projectstore.GitHubOutbound
+		if human && linkedSource != nil && previousState != request.State && request.State == "Cancelled" {
+			base, _ := ctx.Value(linkedSourceURLKey{}).(string)
+			if s.config.Hosted != nil {
+				base = s.config.Hosted.PublicURL
+			}
+			if base != "" {
+				path, err := s.nativeIssueRecordBrowserPath(ctx, scope, item)
+				if err != nil {
+					return nil, err
+				}
+				_, repository, number, err := tracker.ParseGitHubIssueURL(linkedSource.URL)
+				if err != nil {
+					return nil, err
+				}
+				outbound, err := s.prepareNativeSourceSummary(ctx, scope, issue.WorkItemID, repository, number, "cancelled:"+strconv.FormatInt(int64(issue.Revision), 10), "Cancelled in Detent: "+strings.TrimRight(base, "/")+path, true, "not_planned")
+				if err != nil {
+					return nil, err
+				}
+				sourceCancellation = &outbound
+			}
+		}
+		var workflowOutbound *projectstore.GitHubOutbound
+		if compatible {
+			key, err := nativeCommandHash(struct{ Operation, ActorID, CommandKey string }{options.OperationID, scope.credential.ID, request.IdempotencyKey})
+			if err != nil {
+				return nil, err
+			}
+			workflowOutbound, err = s.prepareCompatibilityWorkflowLabel(ctx, scope, issue, project, workflowLabel, "workflow:"+key, now)
+			if err != nil {
+				return nil, err
+			}
+		}
 		var committed json.RawMessage
 		write := func(ctx context.Context, w tenantstore.Writer) error {
 			if human {
@@ -306,6 +376,14 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 				return err
+			}
+			if batchRouting {
+				if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+					return err
+				}
+				if err := s.requireGitHubPolicyRecord(ctx, w, scope); err != nil {
+					return err
+				}
 			}
 			currentProject, err := w.ProjectRecord(ctx, scope.project)
 			if err != nil {
@@ -381,7 +459,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				if stop != nil && (leaseErr != nil || lease.ReleasedAt != nil || !lease.ExpiresAt.After(s.config.now().UTC())) {
 					return tracker.ErrLeaseConflict
 				}
-				activeLease = leaseErr == nil && lease.ReleasedAt == nil && lease.ExpiresAt.After(s.config.now().UTC()) && cancellation == nil
+				activeLease = leaseErr == nil && lease.ReleasedAt == nil && lease.ExpiresAt.After(s.config.now().UTC()) && (cancellation == nil || cancellation.expired && !cancellation.expiresLease(lease))
 				if leaseErr == nil && (!unchanged || stop != nil) {
 					if err := s.settleHumanWorkflowLease(ctx, w, scope, lease, request, cancellation, stopState); err != nil {
 						return err
@@ -485,8 +563,29 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if _, err := w.CreateCollaborationVersion(ctx, newVersion); err != nil {
 				return err
 			}
+			if err := w.BindDoctorProposalIdentities(ctx, corestore.DoctorProposalIdentityBinding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: newVersion.WorkItemID, Revision: newVersion.Revision, VersionSHA256: newVersion.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(issue.Body)}); err != nil {
+				return err
+			}
 			if _, err := w.AppendEvent(ctx, event); err != nil {
 				return err
+			}
+			if workflowOutbound != nil {
+				owner, ok := w.(projectstore.GitHubOutboxWriter)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				if err := owner.EnqueueGitHubOutbound(ctx, *workflowOutbound); err != nil {
+					return err
+				}
+			}
+			if sourceCancellation != nil {
+				owner, ok := w.(projectstore.GitHubOutboxWriter)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				if err := owner.EnqueueGitHubOutbound(ctx, *sourceCancellation); err != nil {
+					return err
+				}
 			}
 			if _, err := w.PutReceipt(ctx, preparedReceipt); err != nil {
 				return err
@@ -588,7 +687,7 @@ func (s *Service) readTenantProjectRecord(ctx context.Context, scope nativeScope
 	return project, projectRecordError(err)
 }
 
-func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue, project *projectstore.Record, previousState string, request tracker.Transition, stopState *string) (policystore.Revision, bool, error) {
+func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue, project *projectstore.Record, previousState string, request tracker.Transition, stopState, workflowLabel *string) (policystore.Revision, bool, error) {
 	workflow := config.Workflow{Config: config.Default()}
 	var revision policystore.Revision
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -619,6 +718,23 @@ func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, sco
 			return policystore.Revision{}, false, policyMismatch(err.Error())
 		}
 	}
+	if workflowLabel != nil {
+		*workflowLabel = ""
+	}
+	if issue.Profile == "github_compatible" {
+		label, labelErr := approvedCompatibilityWorkflowLabel(workflow, found, request.State)
+		if request.WorkflowLabel != "" {
+			if labelErr != nil {
+				return revision, found, labelErr
+			}
+			if label != strings.TrimSpace(request.WorkflowLabel) {
+				return revision, found, nativePublicInvalid("Workflow label must match the approved target state mapping")
+			}
+		}
+		if labelErr == nil && workflowLabel != nil {
+			*workflowLabel = label
+		}
+	}
 	*stopState = workflow.Config.Agent.StopRun.TargetState
 	if project != nil {
 		if err := applyHumanWorkflowContract(issue, previousState, request, descriptor, workflow, s.config.now().UTC()); err != nil {
@@ -643,4 +759,32 @@ func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, sco
 		return revision, found, nativeWorkflowInvalid(strings.Join(evaluation.Missing, ", ") + ". File into Backlog/Triage to draft it first.")
 	}
 	return revision, found, nil
+}
+
+func approvedCompatibilityWorkflowLabel(workflow config.Workflow, found bool, state string) (string, error) {
+	label, mapped := workflow.Config.Tracker.StateMap.Map[state].(string)
+	label = strings.TrimSpace(label)
+	if !found || !workflow.Config.Tracker.StateMap.IsMap || !mapped || label == "" {
+		return "", nativePublicInvalid("Compatibility workflow transitions require an approved state-to-label mapping")
+	}
+	if len(label) > 200 || !utf8.ValidString(label) || strings.ContainsAny(label, "\r\n\x00") || !strings.HasPrefix(strings.ToLower(label), defaultLabelPrefix) {
+		return "", nativePublicInvalid("Workflow label must match the approved target state mapping")
+	}
+	return label, nil
+}
+
+func (s *Service) prepareCompatibilityWorkflowLabel(ctx context.Context, scope nativeScope, issue tracker.NativeIssue, project projectstore.Record, label, key string, now time.Time) (*projectstore.GitHubOutbound, error) {
+	repository, number, err := cutoverSourceReference(issue)
+	if err != nil || !project.Settings.RepositoryEnabled || !strings.EqualFold(repository, strings.TrimSpace(project.Settings.Repository)) {
+		return nil, nativePublicInvalid("Compatibility workflow transitions require an enabled matching repository source")
+	}
+	desired, err := json.Marshal(WorkflowLabelDesired{Label: label, ManagedPrefix: defaultLabelPrefix})
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, desired)
+	if err != nil {
+		return nil, err
+	}
+	return &projectstore.GitHubOutbound{ProjectID: scope.project, WorkItemID: issue.WorkItemID, Key: key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkflowLabel), CreatedAt: now, Payload: prepared, CoalesceKey: "managed-label:" + repository + ":" + string(issue.WorkItemID) + ":" + defaultLabelPrefix}, nil
 }

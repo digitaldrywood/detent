@@ -56,11 +56,10 @@ func TestPostgresCookieIssueLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	configureHumanWorkflowProject(t, f.service, "org_security", f.project)
-	originalDB, originalReader, originalPostgres := f.service.database.db, f.service.database.reader, f.service.database.postgres
-	f.service.database.db, f.service.database.reader = nil, nil
+	originalPostgres := f.service.database.postgres
 	f.service.database.postgres = repository.(*postgres.Repository)
 	t.Cleanup(func() {
-		f.service.database.db, f.service.database.reader, f.service.database.postgres = originalDB, originalReader, originalPostgres
+		f.service.database.postgres = originalPostgres
 	})
 	if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
 		state, err := r.(searchstore.DuplicateSourceReader).DuplicateSourceState(t.Context(), f.project)

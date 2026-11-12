@@ -12,6 +12,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestAttachmentArchiveQuotaAndRetention(t *testing.T) {
@@ -26,6 +28,8 @@ func TestAttachmentArchiveQuotaAndRetention(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
+			admin := hostedPostgresAdmin(t, f.service)
+			organization := f.service.accessOrganization()
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			items := []string{string(f.seedIssue(t, 1)), string(f.seedIssue(t, 2))}
 			ref, _, err := attachment.PrepareArchive("org_security", 1, strings.NewReader("archive data"))
@@ -33,7 +37,7 @@ func TestAttachmentArchiveQuotaAndRetention(t *testing.T) {
 				t.Fatal(err)
 			}
 			var before int64
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&before); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'", organization).Scan(&before); err != nil {
 				t.Fatal(err)
 			}
 			hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": before + ref.CompressedSize + test.allowanceDelta, "api_mutations": 1000})
@@ -66,10 +70,10 @@ func TestAttachmentArchiveQuotaAndRetention(t *testing.T) {
 			}
 			var used int64
 			var count int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'", organization).Scan(&used); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE kind='archive'").Scan(&count); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE organization_id=$1 AND kind='archive'", organization).Scan(&count); err != nil {
 				t.Fatal(err)
 			}
 			if test.status != http.StatusCreated {
@@ -91,17 +95,17 @@ func TestAttachmentArchiveQuotaAndRetention(t *testing.T) {
 				t.Fatalf("schema mutation=%d %s", response.Code, response.Body.String())
 			}
 			for _, item := range items {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM issues WHERE native_id=?", item); err != nil {
-					t.Fatal(err)
-				}
+				cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
+					return w.DeleteWorkItem(t.Context(), f.project, tracker.NativeWorkItemID(item))
+				})
 			}
 			if err := f.service.expireNativeRecords(t.Context(), time.Now().Add(365*24*time.Hour)); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE kind='archive' AND deleted_at IS NULL AND object_deleted_at IS NULL").Scan(&count); err != nil || count != 1 {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE organization_id=$1 AND kind='archive' AND deleted_at IS NULL AND object_deleted_at IS NULL", organization).Scan(&count); err != nil || count != 1 {
 				t.Fatalf("archive did not outlive its source: count=%d error=%v", count, err)
 			}
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_archive_references").Scan(&count); err != nil || count != 0 {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_archive_references WHERE organization_id=$1", organization).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("deleted source left references: count=%d error=%v", count, err)
 			}
 		})
@@ -117,6 +121,8 @@ func TestAttachmentArchiveConcurrentReservations(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
+			admin := hostedPostgresAdmin(t, f.service)
+			organization := f.service.accessOrganization()
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			items := []string{string(f.seedIssue(t, 1)), string(f.seedIssue(t, 2))}
 			refs := make([]attachment.ArchiveReference, len(items))
@@ -132,7 +138,7 @@ func TestAttachmentArchiveConcurrentReservations(t *testing.T) {
 				refs[index] = ref
 			}
 			var before int64
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&before); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'", organization).Scan(&before); err != nil {
 				t.Fatal(err)
 			}
 			hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": before + max(refs[0].CompressedSize, refs[1].CompressedSize), "api_mutations": 1000})
@@ -191,10 +197,10 @@ func TestAttachmentArchiveConcurrentReservations(t *testing.T) {
 			}
 			var used int64
 			var count int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil || used-before != charged {
+			if err := admin.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'", organization).Scan(&used); err != nil || used-before != charged {
 				t.Fatalf("reserved bytes=%d want=%d error=%v", used-before, charged, err)
 			}
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_archive_references").Scan(&count); err != nil || count != 0 {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_archive_references WHERE organization_id=$1", organization).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("reservation published references: count=%d error=%v", count, err)
 			}
 			var afterDeletion int64
@@ -204,10 +210,10 @@ func TestAttachmentArchiveConcurrentReservations(t *testing.T) {
 					t.Fatal("unverified reservation is readable")
 				}
 				if shared && index == 1 {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM issues WHERE native_id=?", item); err != nil {
-						t.Fatal(err)
-					}
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&afterDeletion); err != nil {
+					cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
+						return w.DeleteWorkItem(t.Context(), f.project, tracker.NativeWorkItemID(item))
+					})
+					if err := admin.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'", organization).Scan(&afterDeletion); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -229,7 +235,7 @@ func TestAttachmentArchiveConcurrentReservations(t *testing.T) {
 				if read.Code != http.StatusOK {
 					t.Fatalf("failed publication invalidated shared archive: %d %s", read.Code, read.Body.String())
 				}
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil || used != afterDeletion {
+				if err := admin.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'", organization).Scan(&used); err != nil || used != afterDeletion {
 					t.Fatalf("failed publication lost archive charge: used=%d error=%v", used, err)
 				}
 			}

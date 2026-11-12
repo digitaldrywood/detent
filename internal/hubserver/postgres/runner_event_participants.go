@@ -15,5 +15,5 @@ func (f *runnerEventSession) RunnerCompletionFacts() (eventstore.CollaborationVe
 	if !f.hasEvidence {
 		return eventstore.CollaborationVersion{}, false, nil
 	}
-	return eventstore.CollaborationVersion(f.completionVersion.value), true, f.completionVersion.err
+	return collaborationVersionRecord(f.completionVersion.value), true, f.completionVersion.err
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +13,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -39,9 +42,17 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			operatorSQL(t, f, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT 'prj_update_other',organization_id,'other',profile,states_json,created_at FROM projects WHERE id=?", f.project)
-			operatorSQL(t, f, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,'org_security','prj_update_other',1,1) ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=1,manage_runner=1", owner.identity.Subject)
-			operatorSQL(t, f, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,'org_security','prj_update_other') ON CONFLICT DO NOTHING", credential.ID)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: "prj_update_other", Name: "Other", Slug: "other", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_security", UserID: owner.identity.Subject, ProjectID: "prj_update_other", CanWrite: true, ManageRunner: true}); err != nil {
+					return err
+				}
+				return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: credential.ID, ProjectID: "prj_update_other"})
+			}); err != nil {
+				t.Fatal(err)
+			}
 			binding := runnerauth.NewBinding()
 			value, err := f.service.createRunnerEnrollmentCommand(t.Context(), nativeScope{organization: "org_security", credential: credential}, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60})
 			if err != nil {
@@ -99,14 +110,14 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 					}
 					requireNativeStatus(t, read(path), want)
 					f.grant(t, owner, true, true)
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=? WHERE token_hash=?", formatHubTime(time.Now().Add(-time.Minute)), apikey.HashToken(key.Token)); err != nil {
+					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=$1 WHERE organization_id=$2 AND token_hash=$3", f.service.config.now().Add(-time.Minute), "org_security", apikey.HashToken(key.Token)); err != nil {
 						t.Fatal(err)
 					}
 					requireNativeStatus(t, read(path), http.StatusNotFound)
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=NULL WHERE token_hash=?", apikey.HashToken(key.Token)); err != nil {
+					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=NULL WHERE organization_id=$1 AND token_hash=$2", "org_security", apikey.HashToken(key.Token)); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE token_hash=?", formatHubTime(time.Now()), apikey.HashToken(key.Token)); err != nil {
+					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2 AND token_hash=$3", f.service.config.now(), "org_security", apikey.HashToken(key.Token)); err != nil {
 						t.Fatal(err)
 					}
 					requireNativeStatus(t, read(path), http.StatusNotFound)
@@ -148,7 +159,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 		{name: "historical newer operator request retained", hub: "v1.2.4", runner: "1.2.1", prior: "applied", witnessed: true, wantVersion: "1.2.5", supported: true, manual: true, want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Version: "dev", RunnerReleaseClient: &runnerReleaseFixture{}})
+			service := newPostgresNativeService(t, Config{Version: "dev", RunnerReleaseClient: &runnerReleaseFixture{}})
 			f := newNativeFixture(t, service, "", "follow-hub")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
@@ -220,7 +231,11 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			}
 			snapshot := send()
 			if previous != nil {
-				stored, err := readRunner(t.Context(), service.database.db, f.project.OrganizationID, r.binding.RunnerID, service.config.now())
+				routingCredential0, routingStatus0, routingError0 := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+				if routingError0 != nil {
+					t.Fatalf("routing reader status=%d error=%v", routingStatus0, routingError0)
+				}
+				stored, err := service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential0}, r.binding.RunnerID)
 				if err != nil || stored.Update.Receipt.Status != "refused" || stored.Update.Receipt.Request != *previous {
 					t.Fatalf("lost historical refusal: %+v %v", stored.Update, err)
 				}
@@ -262,7 +277,11 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			if test.failed {
 				report.Receipt = &runnerauth.UpdateReceipt{Request: *request, Status: "refused", FailureReason: "Update download failed", ObservedAt: now}
 				send()
-				stored, err := readRunner(t.Context(), service.database.db, f.project.OrganizationID, r.binding.RunnerID, service.config.now())
+				routingCredential1, routingStatus1, routingError1 := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+				if routingError1 != nil {
+					t.Fatalf("routing reader status=%d error=%v", routingStatus1, routingError1)
+				}
+				stored, err := service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential1}, r.binding.RunnerID)
 				if err != nil || stored.UpdateView(service.config.now()).Status != "refused" || stored.Update.Receipt.FailureReason != "Update download failed" {
 					t.Fatalf("failed update not reported: %+v %v", stored.Update, err)
 				}
@@ -280,7 +299,11 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			report.Revision = report.BuildRevision()
 			send()
 			observedAt := service.config.now()
-			stored, err := readRunner(t.Context(), service.database.db, f.project.OrganizationID, r.binding.RunnerID, observedAt)
+			routingCredential2, routingStatus2, routingError2 := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if routingError2 != nil {
+				t.Fatalf("routing reader status=%d error=%v", routingStatus2, routingError2)
+			}
+			stored, err := service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential2}, r.binding.RunnerID)
 			if previous != nil && (err != nil || stored.Update.Receipt.PreviousFailure == nil || stored.Update.Receipt.PreviousFailure.Request != *previous || stored.Update.Receipt.PreviousFailure.FailureReason != "Requested update target is not applicable to the observed runner state") {
 				t.Fatalf("Hub lost refusal history without a runner cache: %+v %v", stored.Update, err)
 			}
@@ -350,7 +373,11 @@ func TestRunnerUpdateApplication(t *testing.T) {
 		{name: "stale build revision", staleBuild: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			repairRunner, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+			routingCredential3, routingStatus3, routingError3 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if routingError3 != nil {
+				t.Fatalf("routing reader status=%d error=%v", routingStatus3, routingError3)
+			}
+			repairRunner, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential3}, r.binding.RunnerID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -506,12 +533,16 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	request.IdempotencyKey = "absent-owner"
 	request.ExpectedRevision = view.Revision
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, request), http.StatusServiceUnavailable)
-	stored, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+	routingCredential4, routingStatus4, routingError4 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if routingError4 != nil {
+		t.Fatalf("routing reader status=%d error=%v", routingStatus4, routingError4)
+	}
+	stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential4}, r.binding.RunnerID)
 	if err != nil || len(stored.Leases) != 1 || stored.Leases[0].ID != active.ID {
 		t.Fatalf("active lease changed: %+v error=%v", stored.Leases, err)
 	}
 	var events int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE operation=?", "runner_update "+r.binding.RunnerID).Scan(&events); err != nil || events != 2 {
+	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_command_states WHERE organization_id=$1 AND operation=$2", f.project.OrganizationID, "runner_update "+r.binding.RunnerID).Scan(&events); err != nil || events != 2 {
 		t.Fatalf("audit count=%d error=%v", events, err)
 	}
 }

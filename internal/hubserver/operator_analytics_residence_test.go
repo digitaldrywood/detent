@@ -1,13 +1,21 @@
 package hubserver
 
 import (
+	"context"
+	"encoding/json"
 	"math"
+	"net/http"
 	"reflect"
 	"slices"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -37,40 +45,17 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 		}},
 		{id: "d", created: base, initial: "Triage"},
 	}
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return base }})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	states := []tracker.NativeState{}
-	for _, name := range []string{"Backlog", "Triage", "Todo", "In Progress", "Blocked", "Rework", "Human Review", "Merging", "Done"} {
-		states = append(states, tracker.NativeState{Name: name, Dispatchable: name == "Todo" || name == "In Progress" || name == "Rework" || name == "Merging", Terminal: name == "Done"})
-	}
-	if err := applyNativeProjectStates(t.Context(), tx, scope, states, base); err != nil {
-		t.Fatal(err)
-	}
+	details := &memoryRunDetails{}
+	f := newPostgresDefaultNativeFixture(t, Config{now: func() time.Time { return base }, RunDetails: details})
+	scope := analyticsResidenceTestScope(t, f)
 	ids := map[string]string{}
 	for _, fixture := range fixtures {
-		issue, err := createNativeIssueDraft(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: fixture.id, State: fixture.initial}, fixture.created, false, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ids[fixture.id] = string(issue.WorkItemID)
+		id := seedAnalyticsResidenceIssue(t, f, fixture.id, fixture.initial, fixture.created, false)
+		ids[fixture.id] = string(id)
 		for _, event := range fixture.events {
-			if event.kind == "workflow.transitioned" {
-				issue.State = event.data.ToState
-				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, event.kind, event.data, event.at)
-			} else {
-				err = appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), event.kind, event.data, event.at)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
+			appendAnalyticsResidenceTestEvent(t, f, id, event)
 		}
 	}
-	projectTestAnalytics(t, f.service, tx)
 	for _, test := range []struct {
 		name                      string
 		from, to                  int
@@ -88,15 +73,10 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			window := operatortool.AnalyticsWindow{From: at(test.from), To: at(test.to), Bucket: 12 * time.Hour}
-			report, err := readNativeAnalytics(t.Context(), tx, scope, operatortool.AnalyticsRequest{Limit: 10}, window)
+			report, err := readAnalyticsResidenceTestReport(t, t.Context(), f, details, scope, operatortool.AnalyticsRequest{Limit: 10}, window)
 			if err != nil {
 				t.Fatal(err)
 			}
-			projected, err := readNativeAnalytics(t.Context(), analyticsRollupReader{tx}, scope, operatortool.AnalyticsRequest{Limit: 10}, window)
-			if err != nil {
-				t.Fatal(err)
-			}
-			assertAnalyticsJSONEqual(t, report, projected)
 			residence := report.LaneResidence
 			for name, pair := range map[string][2]float64{"system": {residence.SystemTotal.Seconds, test.system * 3600}, "held": {residence.HeldTotal.Seconds, test.held * 3600}, "queue": {report.QueueTime.Seconds, test.queue * 3600}, "lead": {residence.LeadTotal.Seconds, test.lead * 3600}} {
 				if pair[0] != pair[1] {
@@ -164,7 +144,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 		offset, limit int
 	}{{"first page", 0, 2}, {"second page", 2, 2}} {
 		t.Run(test.name, func(t *testing.T) {
-			report, err := readNativeAnalytics(t.Context(), tx, scope, operatortool.AnalyticsRequest{Limit: test.limit, RowOffset: test.offset}, operatortool.AnalyticsWindow{From: base, To: at(24), Bucket: 12 * time.Hour})
+			report, err := readAnalyticsResidenceTestReport(t, t.Context(), f, details, scope, operatortool.AnalyticsRequest{Limit: test.limit, RowOffset: test.offset}, operatortool.AnalyticsWindow{From: base, To: at(24), Bucket: 12 * time.Hour})
 			if err != nil || len(report.LaneResidence.Issues.Items) != 2 || report.LaneResidence.Issues.Offset != test.offset || (report.LaneResidence.Issues.NextOffset != nil) != (test.offset == 0) || report.LaneResidence.SystemTotal.Seconds != 47*3600 {
 				t.Fatalf("page %#v error=%v", report.LaneResidence, err)
 			}
@@ -174,23 +154,15 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 
 func TestNativeAnalyticsResidencePopulation(t *testing.T) {
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	for _, kind := range []string{"issues", "events", "missing history"} {
+	for _, kind := range []string{"issues", "events", "missing history", "archived live filter"} {
 		t.Run(kind, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return base }})
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
+			details := &memoryRunDetails{}
+			f := newPostgresDefaultNativeFixture(t, Config{now: func() time.Time { return base }, RunDetails: details})
+			scope := analyticsResidenceTestScope(t, f)
 			window := operatortool.AnalyticsWindow{From: base, To: base.Add(time.Hour), Bucket: time.Hour}
 			if kind == "missing history" {
-				_, err := tx.ExecContext(t.Context(), `INSERT INTO issues(organization_id,project_id,number,workflow_state_id,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at)
-VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Todo'),'unrecorded','','open','','','',?,?)`, scope.organization, scope.project, scope.project, formatHubTime(base), formatHubTime(base))
-				if err != nil {
-					t.Fatal(err)
-				}
-				report, err := readNativeAnalytics(t.Context(), tx, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
+				seedAnalyticsResidenceIssue(t, f, "unrecorded", "Todo", base, true)
+				report, err := readAnalyticsResidenceTestReport(t, t.Context(), f, details, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -199,46 +171,61 @@ VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_stat
 				}
 				return
 			}
-			issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "population", State: "Todo"}, base)
-			if err != nil {
-				t.Fatal(err)
+			issue := seedAnalyticsResidenceIssue(t, f, "population", "Todo", base, false)
+			if kind == "archived live filter" {
+				gated := seedAnalyticsResidenceIssue(t, f, "gated", "Human Review", base, false)
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					row, err := w.WorkItem(t.Context(), scope.project, issue)
+					if err != nil {
+						return err
+					}
+					row.Archived = true
+					_, err = w.UpdateWorkItem(t.Context(), row)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				for _, live := range []bool{false, true} {
+					ctx := t.Context()
+					if live {
+						ctx = withAnalyticsLiveIssues(ctx)
+					}
+					report, err := readAnalyticsResidenceTestReport(t, ctx, f, details, scope, operatortool.AnalyticsRequest{Limit: 10}, window)
+					if err != nil {
+						t.Fatal(err)
+					}
+					present := slices.ContainsFunc(report.LaneResidence.Issues.Items, func(value operatortool.AnalyticsIssueResidence) bool { return value.WorkItemID == string(issue) })
+					if present == live || !slices.ContainsFunc(report.LaneResidence.Issues.Items, func(value operatortool.AnalyticsIssueResidence) bool { return value.WorkItemID == string(gated) }) {
+						t.Fatalf("archived present=%v live=%v issues=%d", present, live, len(report.LaneResidence.Issues.Items))
+					}
+				}
+				return
 			}
 			for i := range maxAnalyticsPopulation {
 				if kind == "issues" {
-					_, err = createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: strconv.Itoa(i), State: "Todo"}, base)
+					seedAnalyticsResidenceIssue(t, f, "population-"+strconv.Itoa(i), "Todo", base, false)
 				} else {
 					from, to := "Todo", "In Progress"
 					if i%2 == 1 {
 						from, to = to, from
 					}
-					err = appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: to}, base.Add(time.Duration(i+1)*time.Second))
-				}
-				if err != nil {
-					t.Fatal(err)
+					appendAnalyticsResidenceTestEvent(t, f, issue, analyticsResidenceEvent{at: base.Add(time.Duration(i+1) * time.Second), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: from, ToState: to}})
 				}
 			}
 			if kind == "events" {
-				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, base.Add(1001*time.Second)); err != nil {
-					t.Fatal(err)
-				}
+				appendAnalyticsResidenceTestEvent(t, f, issue, analyticsResidenceEvent{at: base.Add(1001 * time.Second), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}})
 			}
-			report, err := readNativeAnalytics(t.Context(), tx, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
+			report, err := readAnalyticsResidenceTestReport(t, t.Context(), f, details, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
 			if err != nil {
 				t.Fatal(err)
 			}
-			projectTestAnalytics(t, f.service, tx)
-			projected, err := readNativeAnalytics(t.Context(), analyticsRollupReader{tx}, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
-			if err != nil {
-				t.Fatal(err)
-			}
-			assertAnalyticsJSONEqual(t, report, projected)
 			residence := report.LaneResidence
 			population := "residence_" + kind
 			cursor := report.PopulationCursors[population]
 			if cursor == "" {
 				t.Fatal("missing residence continuation")
 			}
-			next, err := readNativeAnalytics(t.Context(), tx, scope, operatortool.AnalyticsRequest{Limit: 1, PopulationCursor: cursor}, window)
+			next, err := readAnalyticsResidenceTestReport(t, t.Context(), f, details, scope, operatortool.AnalyticsRequest{Limit: 1, PopulationCursor: cursor}, window)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -259,4 +246,118 @@ VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_stat
 			}
 		})
 	}
+}
+
+func analyticsResidenceTestScope(t *testing.T, f nativeFixture) nativeScope {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.States = nil
+		for _, name := range []string{"Backlog", "Triage", "Todo", "In Progress", "Blocked", "Rework", "Human Review", "Merging", "Done"} {
+			project.States = append(project.States, tracker.NativeState{Name: name, Terminal: name == "Done", Dispatchable: name == "Todo" || name == "In Progress" || name == "Rework" || name == "Merging"})
+		}
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("analytics authority status=%d error=%v", status, err)
+	}
+	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+}
+
+func seedAnalyticsResidenceIssue(t *testing.T, f nativeFixture, id, state string, at time.Time, unrecorded bool) tracker.NativeWorkItemID {
+	t.Helper()
+	item := tracker.NativeWorkItemID("residence-" + id)
+	var event eventstore.Event
+	if !unrecorded {
+		var err error
+		event, err = eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: item, Type: "issue.created", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: at, Data: tracker.CollaborationData{Revision: 1}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		number, err := w.NextWorkItemNumber(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		_, err = w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, NativeID: item, Number: number, Revision: 1, Title: id, WorkflowStateName: &state, CreatedAt: at, UpdatedAt: at, NativeCreatedAt: at, NativeUpdatedAt: at, LastActivityAt: at})
+		if err != nil {
+			return err
+		}
+		if unrecorded {
+			return nil
+		}
+		_, err = w.AppendEvent(t.Context(), event)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+func appendAnalyticsResidenceTestEvent(t *testing.T, f nativeFixture, id tracker.NativeWorkItemID, event analyticsResidenceEvent) {
+	t.Helper()
+	content := eventstore.NewContent(f.service.runDetailStore())
+	row, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: id, Type: event.kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: event.at, Data: event.data}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		current, err := w.WorkItem(t.Context(), f.project.ID, id)
+		if err != nil {
+			return err
+		}
+		if event.kind == "workflow.transitioned" {
+			current.WorkflowStateName = &event.data.ToState
+			current.NativeUpdatedAt = event.at
+			current.UpdatedAt = event.at
+			if _, err := w.UpdateWorkItem(t.Context(), current); err != nil {
+				return err
+			}
+		}
+		_, err = w.AppendEvent(t.Context(), row)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func historyTestJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func readAnalyticsResidenceTestReport(t *testing.T, ctx context.Context, f nativeFixture, details *memoryRunDetails, scope nativeScope, request operatortool.AnalyticsRequest, window operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
+	t.Helper()
+	previous := details.beforeRead
+	details.beforeRead = func(context.Context) error {
+		if held := f.service.config.TenantRepository.(*postgres.Repository).Stats().AcquiredConns(); held != 0 {
+			t.Fatalf("residence object read held %d database connections", held)
+		}
+		return nil
+	}
+	defer func() { details.beforeRead = previous }()
+	ctx, paging, err := analyticsPagingContext(ctx, request.PopulationCursor)
+	if err != nil {
+		return nativeAnalyticsProject{}, err
+	}
+	out := nativeAnalyticsProject{ProjectID: string(scope.project), Window: window, Unavailable: []string{}}
+	for from := window.From; from.Before(window.To); from = from.Add(window.Bucket) {
+		out.Digest = append(out.Digest, nativeAnalyticsBucket{From: from, To: minTime(from.Add(window.Bucket), window.To)})
+	}
+	err = f.service.projectNativeAnalyticsResidenceTenant(ctx, scope, request, &out)
+	out.PopulationCursors = paging.next
+	return out, err
 }

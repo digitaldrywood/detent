@@ -1,4 +1,4 @@
-package web_test
+package web
 
 import (
 	"bytes"
@@ -7,32 +7,60 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/web"
 )
+
+func TestNewServerConfiguresHTTPTimeouts(t *testing.T) {
+	t.Parallel()
+
+	server := newPrivateDashboardTestServer(t, Config{})
+	httpServer := server.echo.Server
+	if httpServer.ReadHeaderTimeout <= 0 {
+		t.Fatalf("ReadHeaderTimeout = %v, want positive duration", httpServer.ReadHeaderTimeout)
+	}
+	if httpServer.IdleTimeout <= 0 {
+		t.Fatalf("IdleTimeout = %v, want positive duration", httpServer.IdleTimeout)
+	}
+}
+
+func TestServerRegistersOnlyPublicOpenAPIRoute(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{Mode: ModeOnboarding}, Dependencies{})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	var apiRoutes []string
+	for _, route := range server.echo.Routes() {
+		if strings.HasPrefix(route.Path, "/api/v1/") {
+			apiRoutes = append(apiRoutes, route.Method+" "+route.Path)
+		}
+	}
+	if !slices.Equal(apiRoutes, []string{http.MethodGet + " " + openAPIPath}) {
+		t.Fatalf("API routes = %v, want only public OpenAPI route", apiRoutes)
+	}
+}
 
 func TestPrivateDashboardAccessEstablishesSession(t *testing.T) {
 	t.Parallel()
 
 	token := privateDashboardTestToken(1)
-	server, err := web.NewServer(web.Config{
+	server := newPrivateDashboardTestServer(t, Config{
 		GlobalConfig: globalconfig.Config{DashboardAccess: globalconfig.DashboardAccess{
 			Mode:  globalconfig.DashboardAccessModePrivateToken,
 			Token: token,
 		}},
-	}, testDeps(t))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
+	})
 
-	requestPrivateDashboard(t, server, http.MethodGet, "/", nil, http.StatusNotFound)
+	requestPrivateDashboard(t, server, http.MethodGet, "/test-read", nil, http.StatusNotFound)
 	requestPrivateDashboard(t, server, http.MethodGet, "/health", nil, http.StatusOK)
-	requestPrivateDashboard(t, server, http.MethodGet, "/?token=wrong", nil, http.StatusNotFound)
+	requestPrivateDashboard(t, server, http.MethodGet, "/test-read?token=wrong", nil, http.StatusNotFound)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "https://detent.example/?view=board&token="+url.QueryEscape(token), nil)
@@ -51,43 +79,7 @@ func TestPrivateDashboardAccessEstablishesSession(t *testing.T) {
 		t.Fatal("session cookie contains URL token")
 	}
 
-	requestPrivateDashboard(t, server, http.MethodGet, "/", cookie, http.StatusOK)
-	requestPrivateDashboard(t, server, http.MethodGet, "/api/v1/state", cookie, http.StatusOK)
-}
-
-func TestPrivateDashboardAccessComposesWithMagicLinkAuth(t *testing.T) {
-	t.Parallel()
-
-	token := privateDashboardTestToken(7)
-	deps := testDeps(t)
-	deps.Store = &webAuthStoreFixture{}
-	deps.MagicLinkSender = &webAuthSender{}
-	server, err := web.NewServer(web.Config{
-		DashboardURL: "http://detent.test",
-		GlobalConfig: globalconfig.Config{
-			DashboardAccess: globalconfig.DashboardAccess{
-				Mode:  globalconfig.DashboardAccessModePrivateToken,
-				Token: token,
-			},
-			Auth: globalconfig.Auth{
-				Mode:          globalconfig.AuthModeMagicLink,
-				AllowedEmails: []string{"operator@example.com"},
-				LinkTTL:       "15m",
-				SessionTTL:    "1h",
-			},
-		},
-	}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-
-	requestPrivateDashboard(t, server, http.MethodGet, "/login", nil, http.StatusNotFound)
-	privateCookie := establishPrivateDashboardSession(t, server, token)
-	protected := performWebAuthRequest(t, server, http.MethodGet, "/", "", privateCookie)
-	if protected.Code != http.StatusSeeOther || protected.Header().Get("Location") != "/login" {
-		t.Fatalf("protected response = %d Location %q, want redirect to login", protected.Code, protected.Header().Get("Location"))
-	}
-	requestPrivateDashboard(t, server, http.MethodGet, "/login", privateCookie, http.StatusOK)
+	requestPrivateDashboard(t, server, http.MethodGet, "/test-read", cookie, http.StatusNoContent)
 }
 
 func TestPrivateDashboardAccessEnforcesReadOnlyMode(t *testing.T) {
@@ -106,18 +98,12 @@ func TestPrivateDashboardAccessEnforcesReadOnlyMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			token := privateDashboardTestToken(byte(len(tt.name)))
-			server, err := web.NewServer(web.Config{
+			server := newPrivateDashboardTestServer(t, Config{
 				GlobalConfig: globalconfig.Config{DashboardAccess: globalconfig.DashboardAccess{
 					Mode:       globalconfig.DashboardAccessModePrivateToken,
 					Token:      token,
 					AllowWrite: tt.allowWrite,
 				}},
-			}, testDeps(t))
-			if err != nil {
-				t.Fatalf("NewServer() error = %v", err)
-			}
-			server.Echo().POST("/test-mutation", func(c echo.Context) error {
-				return c.NoContent(http.StatusNoContent)
 			})
 			cookie := establishPrivateDashboardSession(t, server, token)
 			requestPrivateDashboard(t, server, http.MethodPost, "/test-mutation", cookie, tt.want)
@@ -129,15 +115,12 @@ func TestPrivateDashboardCookieIsSecureBehindTLSProxy(t *testing.T) {
 	t.Parallel()
 
 	token := privateDashboardTestToken(7)
-	server, err := web.NewServer(web.Config{
+	server := newPrivateDashboardTestServer(t, Config{
 		GlobalConfig: globalconfig.Config{DashboardAccess: globalconfig.DashboardAccess{
 			Mode:  globalconfig.DashboardAccessModePrivateToken,
 			Token: token,
 		}},
-	}, testDeps(t))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
+	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://detent.internal/?token="+url.QueryEscape(token), nil)
 	server.Handler().ServeHTTP(rec, req)
@@ -154,50 +137,23 @@ func TestPrivateDashboardAccessRotationInvalidatesSession(t *testing.T) {
 		Mode:  globalconfig.DashboardAccessModePrivateToken,
 		Token: oldToken,
 	}}
-	server, err := web.NewServer(web.Config{
+	server := newPrivateDashboardTestServer(t, Config{
 		GlobalConfig:       cfg,
 		GlobalConfigSource: func() globalconfig.Config { return cfg },
-	}, testDeps(t))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
+	})
 	oldCookie := establishPrivateDashboardSession(t, server, oldToken)
-	requestPrivateDashboard(t, server, http.MethodGet, "/reports", oldCookie, http.StatusOK)
+	requestPrivateDashboard(t, server, http.MethodGet, "/test-read", oldCookie, http.StatusNoContent)
 
 	cfg.DashboardAccess.Token = newToken
-	requestPrivateDashboard(t, server, http.MethodGet, "/reports", oldCookie, http.StatusNotFound)
+	requestPrivateDashboard(t, server, http.MethodGet, "/test-read", oldCookie, http.StatusNotFound)
 	newCookie := establishPrivateDashboardSession(t, server, newToken)
-	requestPrivateDashboard(t, server, http.MethodGet, "/reports", newCookie, http.StatusOK)
+	requestPrivateDashboard(t, server, http.MethodGet, "/test-read", newCookie, http.StatusNoContent)
 }
 
-func TestPrivateDashboardWriteAccessAuthorizesDashboardAPI(t *testing.T) {
+func TestPrivateDashboardAccessDoesNotGateAPICredentials(t *testing.T) {
 	t.Parallel()
 
-	token := privateDashboardTestToken(6)
-	probe := &refreshProbe{}
-	deps := testDeps(t)
-	deps.Refresher = probe
-	server, err := web.NewServer(web.Config{
-		GlobalConfig: globalconfig.Config{DashboardAccess: globalconfig.DashboardAccess{
-			Mode:       globalconfig.DashboardAccessModePrivateToken,
-			Token:      token,
-			AllowWrite: true,
-		}},
-	}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-	cookie := establishPrivateDashboardSession(t, server, token)
-	requestPrivateDashboard(t, server, http.MethodPost, "/api/v1/refresh", cookie, http.StatusAccepted)
-	if probe.calls != 1 {
-		t.Fatalf("RequestRefresh() calls = %d, want 1", probe.calls)
-	}
-}
-
-func TestPrivateDashboardAccessDoesNotReplaceAPIAuthentication(t *testing.T) {
-	t.Parallel()
-
-	server, err := web.NewServer(web.Config{
+	server := newPrivateDashboardTestServer(t, Config{
 		GlobalConfig: globalconfig.Config{
 			APIToken: "detent_api_token",
 			DashboardAccess: globalconfig.DashboardAccess{
@@ -205,18 +161,16 @@ func TestPrivateDashboardAccessDoesNotReplaceAPIAuthentication(t *testing.T) {
 				Token: privateDashboardTestToken(4),
 			},
 		},
-	}, testDeps(t))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
+	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/test-read", nil)
 	req.Header.Set("Authorization", "Bearer detent_api_token")
 	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("API token status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("API token status = %d, want %d; body = %s", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
+	requestPrivateDashboard(t, server, http.MethodGet, "/api/v1/test-read", nil, http.StatusNotFound)
 }
 
 func TestPrivateDashboardTokenDoesNotLeakToLogs(t *testing.T) {
@@ -224,23 +178,35 @@ func TestPrivateDashboardTokenDoesNotLeakToLogs(t *testing.T) {
 
 	token := privateDashboardTestToken(5)
 	var logs bytes.Buffer
-	server, err := web.NewServer(web.Config{
+	server := newPrivateDashboardTestServer(t, Config{
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 		GlobalConfig: globalconfig.Config{DashboardAccess: globalconfig.DashboardAccess{
 			Mode:  globalconfig.DashboardAccessModePrivateToken,
 			Token: token,
 		}},
-	}, testDeps(t))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
+	})
 	requestPrivateDashboard(t, server, http.MethodGet, "/?token="+url.QueryEscape(token+"wrong"), nil, http.StatusNotFound)
 	if strings.Contains(logs.String(), token) {
 		t.Fatalf("logs leaked dashboard token: %s", logs.String())
 	}
 }
 
-func establishPrivateDashboardSession(t *testing.T, server *web.Server, token string) *http.Cookie {
+func newPrivateDashboardTestServer(t *testing.T, cfg Config) *Server {
+	t.Helper()
+	cfg.Mode = ModeOnboarding
+	cfg.LookupEnv = func(string) string { return "" }
+	server, err := NewServer(cfg, Dependencies{})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	noContent := func(c echo.Context) error { return c.NoContent(http.StatusNoContent) }
+	server.echo.GET("/test-read", noContent)
+	server.echo.GET("/api/v1/test-read", noContent)
+	server.echo.POST("/test-mutation", noContent)
+	return server
+}
+
+func establishPrivateDashboardSession(t *testing.T, server *Server, token string) *http.Cookie {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/?token="+url.QueryEscape(token), nil)
@@ -254,7 +220,7 @@ func establishPrivateDashboardSession(t *testing.T, server *web.Server, token st
 func privateDashboardCookie(t *testing.T, cookies []*http.Cookie) *http.Cookie {
 	t.Helper()
 	for _, cookie := range cookies {
-		if cookie.Name == "detent_private_dashboard" {
+		if cookie.Name == privateDashboardCookieName {
 			return cookie
 		}
 	}
@@ -262,7 +228,7 @@ func privateDashboardCookie(t *testing.T, cookies []*http.Cookie) *http.Cookie {
 	return nil
 }
 
-func requestPrivateDashboard(t *testing.T, server *web.Server, method string, path string, cookie *http.Cookie, want int) {
+func requestPrivateDashboard(t *testing.T, server *Server, method string, path string, cookie *http.Cookie, want int) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(method, path, nil)

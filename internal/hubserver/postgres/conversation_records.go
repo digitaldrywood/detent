@@ -51,7 +51,7 @@ func (s *session) ConversationByCreationKey(ctx context.Context, principal, key 
 const conversationSelect = `SELECT c.organization_id,c.project_id,c.id,c.creation_key,c.creation_hash,c.owner_principal_id,c.owner_subject,c.origin,c.title,c.visibility,c.status,
 c.subject_work_item_id,c.work_item_id,c.linked_at,c.revision,c.provider_thread_id,c.provider_thread_runner_id,c.provider_thread_origin,
 c.execution_json,c.event_seq,c.preferences_json,c.read_audience,c.created_at,c.updated_at,c.last_message_at,c.settled_at,c.archived,
-c.content_attachment_id,c.message_count,c.execution_continuation,c.compaction_through_sequence,c.compaction_scanned_sequence,c.compaction_content_id,c.compaction_content_scanned_sequence
+c.content_attachment_id,c.message_count,c.execution_continuation,c.compaction_through_sequence,c.compaction_scanned_sequence,c.compaction_content_id,c.compaction_content_scanned_sequence,c.execution_status,c.execution_lease_id,c.execution_settled,c.execution_attempt_id,c.execution_run_id,c.execution_fencing_token,c.execution_runner_id,c.execution_machine_id,c.execution_thread_id,c.execution_turn_id,c.execution_resume,c.execution_can_steer,c.execution_can_interrupt,c.execution_can_answer,c.execution_can_continue,c.execution_error,c.execution_updated_at,c.preference_model,c.preference_effort,c.preference_access
 FROM conversations c`
 
 func scanPGConversation(ctx context.Context, row interface{ Scan(...any) error }) (conversationstore.Conversation, error) {
@@ -59,11 +59,16 @@ func scanPGConversation(ctx context.Context, row interface{ Scan(...any) error }
 	var subject, workItem pgtype.Text
 	var linked, lastMessage, settled pgtype.Timestamptz
 	var execution, preferences []byte
+	var status, lease, attempt, run, runner, machine, thread, turn, resume, failure pgtype.Text
+	var executionSettled, steer, interrupt, answer, continuation pgtype.Bool
+	var fence pgtype.Int8
+	var executionAt pgtype.Timestamptz
+	var model, effort, access pgtype.Text
 	err := row.Scan(&record.OrganizationID, &record.ProjectID, &record.ID, &record.CreationKey, &record.CreationHash, &record.OwnerPrincipalID, &record.OwnerSubject, &record.Origin,
 		&record.Title, &record.Visibility, &record.Status, &subject, &workItem, &linked, &record.Revision,
 		&record.ProviderThreadID, &record.ProviderThreadRunnerID, &record.ProviderThreadOrigin, &execution, &record.EventSequence,
 		&preferences, &record.ReadAudience, &record.CreatedAt, &record.UpdatedAt, &lastMessage, &settled, &record.Archived,
-		&record.ContentReference, &record.MessageCount, &record.ExecutionContinuation, &record.Compaction.ThroughSequence, &record.Compaction.ScannedSequence, &record.Compaction.ContentReference, &record.Compaction.ContentScannedSequence)
+		&record.ContentReference, &record.MessageCount, &record.ExecutionContinuation, &record.Compaction.ThroughSequence, &record.Compaction.ScannedSequence, &record.Compaction.ContentReference, &record.Compaction.ContentScannedSequence, &status, &lease, &executionSettled, &attempt, &run, &fence, &runner, &machine, &thread, &turn, &resume, &steer, &interrupt, &answer, &continuation, &failure, &executionAt, &model, &effort, &access)
 	if err != nil {
 		return record, mapError(ctx, err)
 	}
@@ -89,6 +94,18 @@ func scanPGConversation(ctx context.Context, row interface{ Scan(...any) error }
 	}
 	if err := json.Unmarshal(preferences, &record.Preferences); err != nil {
 		return record, fmt.Errorf("decode conversation preferences: %w", err)
+	}
+	if attempt.Valid {
+		if !status.Valid || !executionSettled.Valid || !run.Valid || !fence.Valid || !runner.Valid || !machine.Valid || !thread.Valid || !turn.Valid || !resume.Valid || !steer.Valid || !interrupt.Valid || !answer.Valid || !continuation.Valid || !failure.Valid || !executionAt.Valid || executionAt.InfinityModifier != pgtype.Finite {
+			return record, errors.New("conversation execution metadata is incomplete")
+		}
+		record.Execution = conversation.Execution{Status: conversation.ExecutionStatus(status.String), Owner: conversation.Owner{AttemptID: attempt.String, RunID: run.String, LeaseID: lease.String, FencingToken: fence.Int64, RunnerID: runner.String, MachineID: machine.String, ThreadID: thread.String, TurnID: turn.String}, Resume: resume.String, Capabilities: conversation.Capabilities{Steer: steer.Bool, Interrupt: interrupt.Bool, Answer: answer.Bool, Continue: continuation.Bool}, Error: failure.String, Settled: executionSettled.Bool, UpdatedAt: executionAt.Time}
+	}
+	if model.Valid {
+		if !effort.Valid || !access.Valid {
+			return record, errors.New("conversation preferences metadata is incomplete")
+		}
+		record.Preferences = conversation.Preferences{Model: model.String, ReasoningEffort: effort.String, Access: access.String}
 	}
 	return record, nil
 }
@@ -326,9 +343,9 @@ func (s *session) Messages(ctx context.Context, id string, beforeSequence int64,
 	var rows pgx.Rows
 	var err error
 	if beforeSequence > 0 {
-		rows, err = s.db.Query(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND seq<$3 ORDER BY seq DESC LIMIT $4`, s.organization, id, beforeSequence, limit+1)
+		rows, err = s.db.Query(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),stored_text_bytes,tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND seq<$3 ORDER BY seq DESC LIMIT $4`, s.organization, id, beforeSequence, limit+1)
 	} else {
-		rows, err = s.db.Query(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 ORDER BY seq DESC LIMIT $3`, s.organization, id, limit+1)
+		rows, err = s.db.Query(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),stored_text_bytes,tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 ORDER BY seq DESC LIMIT $3`, s.organization, id, limit+1)
 	}
 	if err != nil {
 		return conversationstore.MessagePage{}, mapError(ctx, err)
@@ -408,7 +425,7 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 	if filter.Oldest {
 		order = "ASC"
 	}
-	query := `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE ` + strings.Join(conditions, " AND ") + fmt.Sprintf(" ORDER BY seq %s LIMIT $%d", order, len(args))
+	query := `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),stored_text_bytes,tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE ` + strings.Join(conditions, " AND ") + fmt.Sprintf(" ORDER BY seq %s LIMIT $%d", order, len(args))
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return conversationstore.MessagePage{}, mapError(ctx, err)
@@ -440,10 +457,12 @@ func scanPGMessage(row interface{ Scan(...any) error }) (conversationstore.Messa
 	var actor []byte
 	var actorKind, actorPrincipal pgtype.Text
 	var toolName, toolID, toolStatus, actionID, actionAgent, actionResult pgtype.Text
-	err := row.Scan(&m.OrganizationID, &m.ConversationID, &m.ID, &m.Sequence, &m.Role, &m.Kind, &m.Text, &m.Data, &m.Delivery, &m.AttemptID, &m.ThreadID, &m.TurnID, &m.ProviderItemID, &actor, &m.CommandKey, &m.CreatedAt, &m.UpdatedAt, &m.ContentReference, &m.Revision, &m.TextBytes, &m.StoredTextBytes, &toolName, &toolID, &toolStatus, &actionID, &actionAgent, &actionResult, &actorKind, &actorPrincipal)
+	var storedTextBytes pgtype.Int8
+	err := row.Scan(&m.OrganizationID, &m.ConversationID, &m.ID, &m.Sequence, &m.Role, &m.Kind, &m.Text, &m.Data, &m.Delivery, &m.AttemptID, &m.ThreadID, &m.TurnID, &m.ProviderItemID, &actor, &m.CommandKey, &m.CreatedAt, &m.UpdatedAt, &m.ContentReference, &m.Revision, &m.TextBytes, &storedTextBytes, &toolName, &toolID, &toolStatus, &actionID, &actionAgent, &actionResult, &actorKind, &actorPrincipal)
 	if err != nil {
 		return m, err
 	}
+	m.StoredTextBytes, m.StoredTextBytesUnknown = storedTextBytes.Int64, !storedTextBytes.Valid
 	if actorKind.Valid && actorKind.String != "" && actorPrincipal.Valid {
 		m.Actor.Kind, m.Actor.PrincipalID = conversation.ActorKind(actorKind.String), actorPrincipal.String
 	} else if err := json.Unmarshal(actor, &m.Actor); err != nil {
@@ -467,12 +486,12 @@ func pgStringPtr(value pgtype.Text) *string {
 }
 
 func (s *session) Message(ctx context.Context, conversationID, id string) (conversationstore.Message, error) {
-	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND id=$3`, s.organization, conversationID, id)
+	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),stored_text_bytes,tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND id=$3`, s.organization, conversationID, id)
 	return scanPGMessage(row)
 }
 
 func (s *session) MessageByCommandKey(ctx context.Context, conversationID, key string) (conversationstore.Message, bool, error) {
-	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND command_key=$3 ORDER BY seq LIMIT 1`, s.organization, conversationID, key)
+	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),stored_text_bytes,tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result,actor_kind,actor_principal_id FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND command_key=$3 ORDER BY seq LIMIT 1`, s.organization, conversationID, key)
 	message, err := scanPGMessage(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return conversationstore.Message{}, false, nil
@@ -607,19 +626,34 @@ func scanPGQuestion(ctx context.Context, row interface{ Scan(...any) error }) (c
 }
 
 func (s *session) Command(ctx context.Context, conversationID, key string) (conversationstore.Command, bool, error) {
-	var c conversationstore.Command
-	var receipt []byte
-	err := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,target_turn_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key=$3`, s.organization, conversationID, key).Scan(&c.OrganizationID, &c.ConversationID, &c.Key, &c.Kind, &c.RequestHash, &receipt, &c.CreatedAt, &c.UpdatedAt, &c.ContentReference, &c.TargetTurnID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	c, err := scanPGConversationCommand(ctx, s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,target_turn_id,receipt_status,receipt_key,receipt_kind,receipt_message_id,receipt_question_id,receipt_error_code,receipt_error_message,receipt_updated_at FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key=$3`, s.organization, conversationID, key))
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) {
 		return c, false, nil
 	}
-	if err != nil {
-		return c, false, mapError(ctx, err)
+	return c, err == nil, err
+}
+
+func scanPGConversationCommand(ctx context.Context, row interface{ Scan(...any) error }) (conversationstore.Command, error) {
+	var c conversationstore.Command
+	var receipt []byte
+	var status, key, kind, message, question, code, failure pgtype.Text
+	var updated pgtype.Timestamptz
+	if err := row.Scan(&c.OrganizationID, &c.ConversationID, &c.Key, &c.Kind, &c.RequestHash, &receipt, &c.CreatedAt, &c.UpdatedAt, &c.ContentReference, &c.TargetTurnID, &status, &key, &kind, &message, &question, &code, &failure, &updated); err != nil {
+		return c, mapError(ctx, err)
 	}
-	if err = json.Unmarshal(receipt, &c.Receipt); err != nil {
-		return c, false, fmt.Errorf("decode command receipt: %w", err)
+	if err := json.Unmarshal(receipt, &c.Receipt); err != nil {
+		return c, fmt.Errorf("decode command receipt: %w", err)
 	}
-	return c, true, nil
+	if key.Valid {
+		if !status.Valid || !kind.Valid || !message.Valid || !question.Valid || !updated.Valid || updated.InfinityModifier != pgtype.Finite || code.Valid != failure.Valid {
+			return c, errors.New("conversation receipt metadata is incomplete")
+		}
+		c.Receipt = conversation.Receipt{Key: key.String, Kind: conversation.CommandKind(kind.String), Status: conversation.Delivery(status.String), MessageID: message.String, QuestionID: question.String, UpdatedAt: updated.Time}
+		if code.Valid {
+			c.Receipt.Error = &conversation.ReceiptError{Code: code.String, Message: failure.String}
+		}
+	}
+	return c, nil
 }
 
 func (s *session) PendingCommands(ctx context.Context, conversationID, afterKey string, limit int) (conversationstore.CommandPage, error) {
@@ -640,20 +674,16 @@ func (s *session) pendingConversationCommands(ctx context.Context, conversationI
 		predicate = "kind='cancel' AND receipt_status='saved' ORDER BY key LIMIT $4"
 		args = []any{s.organization, conversationID, afterKey, limit + 1}
 	}
-	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,target_turn_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key>$3 AND `+predicate, args...)
+	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,target_turn_id,receipt_status,receipt_key,receipt_kind,receipt_message_id,receipt_question_id,receipt_error_code,receipt_error_message,receipt_updated_at FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key>$3 AND `+predicate, args...)
 	if err != nil {
 		return conversationstore.CommandPage{}, mapError(ctx, err)
 	}
 	defer rows.Close()
 	page := conversationstore.CommandPage{Items: make([]conversationstore.Command, 0, limit)}
 	for rows.Next() {
-		var command conversationstore.Command
-		var receipt []byte
-		if err := rows.Scan(&command.OrganizationID, &command.ConversationID, &command.Key, &command.Kind, &command.RequestHash, &receipt, &command.CreatedAt, &command.UpdatedAt, &command.ContentReference, &command.TargetTurnID); err != nil {
-			return page, mapError(ctx, err)
-		}
-		if err := json.Unmarshal(receipt, &command.Receipt); err != nil {
-			return page, fmt.Errorf("decode command receipt: %w", err)
+		command, err := scanPGConversationCommand(ctx, rows)
+		if err != nil {
+			return page, err
 		}
 		page.Items = append(page.Items, command)
 	}
@@ -792,7 +822,10 @@ func (s *session) CreateConversation(ctx context.Context, c conversationstore.Co
 	if err != nil {
 		return c, err
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO conversations (organization_id,id,creation_key,creation_hash,project_id,owner_principal_id,owner_subject,origin,title,visibility,status,subject_work_item_id,work_item_id,linked_at,revision,provider_thread_id,provider_thread_runner_id,provider_thread_origin,execution_json,execution_status,execution_lease_id,execution_settled,event_seq,preferences_json,read_audience,created_at,updated_at,last_message_at,settled_at,archived,content_attachment_id,execution_continuation) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,''),NULLIF($13,''),$14,$15,$16,$17,$18,$19,$20,NULLIF($21,''),$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)`, c.OrganizationID, c.ID, c.CreationKey, c.CreationHash, c.ProjectID, c.OwnerPrincipalID, c.OwnerSubject, c.Origin, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.Revision, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, c.EventSequence, string(preferences), c.ReadAudience, c.CreatedAt, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference, c.ExecutionContinuation)
+	if c.ContentReference != "" {
+		execution, preferences = []byte(`{}`), []byte(`{}`)
+	}
+	_, err = s.db.Exec(ctx, `INSERT INTO conversations (organization_id,id,creation_key,creation_hash,project_id,owner_principal_id,owner_subject,origin,title,visibility,status,subject_work_item_id,work_item_id,linked_at,revision,provider_thread_id,provider_thread_runner_id,provider_thread_origin,execution_json,execution_status,execution_lease_id,execution_settled,event_seq,preferences_json,read_audience,created_at,updated_at,last_message_at,settled_at,archived,content_attachment_id,execution_continuation,execution_attempt_id,execution_run_id,execution_fencing_token,execution_runner_id,execution_machine_id,execution_thread_id,execution_turn_id,execution_resume,execution_can_steer,execution_can_interrupt,execution_can_answer,execution_can_continue,execution_error,execution_updated_at,preference_model,preference_effort,preference_access) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,''),NULLIF($13,''),$14,$15,$16,$17,$18,$19,$20,NULLIF($21,''),$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49)`, c.OrganizationID, c.ID, c.CreationKey, c.CreationHash, c.ProjectID, c.OwnerPrincipalID, c.OwnerSubject, c.Origin, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.Revision, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, c.EventSequence, string(preferences), c.ReadAudience, c.CreatedAt, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference, c.ExecutionContinuation, c.Execution.Owner.AttemptID, c.Execution.Owner.RunID, c.Execution.Owner.FencingToken, c.Execution.Owner.RunnerID, c.Execution.Owner.MachineID, c.Execution.Owner.ThreadID, c.Execution.Owner.TurnID, c.Execution.Resume, c.Execution.Capabilities.Steer, c.Execution.Capabilities.Interrupt, c.Execution.Capabilities.Answer, c.Execution.Capabilities.Continue, c.Execution.Error, c.Execution.UpdatedAt, c.Preferences.Model, c.Preferences.ReasoningEffort, c.Preferences.Access)
 	if err != nil {
 		return c, mapError(ctx, err)
 	}
@@ -814,7 +847,10 @@ func (s *session) UpdateConversation(ctx context.Context, c conversationstore.Co
 	if err != nil {
 		return c, err
 	}
-	err = s.db.QueryRow(ctx, `UPDATE conversations SET owner_principal_id=$1,owner_subject=$2,title=$3,visibility=$4,status=$5,subject_work_item_id=NULLIF($6,''),work_item_id=NULLIF($7,''),linked_at=$8,revision=revision+1,provider_thread_id=$9,provider_thread_runner_id=$10,provider_thread_origin=$11,execution_json=$12,execution_status=$13,execution_lease_id=NULLIF($14,''),execution_settled=$15,preferences_json=$16,read_audience=$17,updated_at=$18,last_message_at=$19,settled_at=$20,archived=$21,content_attachment_id=$22,execution_continuation=$23 WHERE organization_id=$24 AND project_id=$25 AND id=$26 AND revision=$27 RETURNING revision,event_seq`, c.OwnerPrincipalID, c.OwnerSubject, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, string(preferences), c.ReadAudience, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference, c.ExecutionContinuation, c.OrganizationID, c.ProjectID, c.ID, expected).Scan(&c.Revision, &c.EventSequence)
+	if c.ContentReference != "" {
+		execution, preferences = []byte(`{}`), []byte(`{}`)
+	}
+	err = s.db.QueryRow(ctx, `UPDATE conversations SET owner_principal_id=$1,owner_subject=$2,title=$3,visibility=$4,status=$5,subject_work_item_id=NULLIF($6,''),work_item_id=NULLIF($7,''),linked_at=$8,revision=revision+1,provider_thread_id=$9,provider_thread_runner_id=$10,provider_thread_origin=$11,execution_json=$12,execution_status=$13,execution_lease_id=NULLIF($14,''),execution_settled=$15,preferences_json=$16,read_audience=$17,updated_at=$18,last_message_at=$19,settled_at=$20,archived=$21,content_attachment_id=$22,execution_continuation=$23,execution_attempt_id=$28,execution_run_id=$29,execution_fencing_token=$30,execution_runner_id=$31,execution_machine_id=$32,execution_thread_id=$33,execution_turn_id=$34,execution_resume=$35,execution_can_steer=$36,execution_can_interrupt=$37,execution_can_answer=$38,execution_can_continue=$39,execution_error=$40,execution_updated_at=$41,preference_model=$42,preference_effort=$43,preference_access=$44 WHERE organization_id=$24 AND project_id=$25 AND id=$26 AND revision=$27 RETURNING revision,event_seq`, c.OwnerPrincipalID, c.OwnerSubject, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, string(preferences), c.ReadAudience, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference, c.ExecutionContinuation, c.OrganizationID, c.ProjectID, c.ID, expected, c.Execution.Owner.AttemptID, c.Execution.Owner.RunID, c.Execution.Owner.FencingToken, c.Execution.Owner.RunnerID, c.Execution.Owner.MachineID, c.Execution.Owner.ThreadID, c.Execution.Owner.TurnID, c.Execution.Resume, c.Execution.Capabilities.Steer, c.Execution.Capabilities.Interrupt, c.Execution.Capabilities.Answer, c.Execution.Capabilities.Continue, c.Execution.Error, c.Execution.UpdatedAt, c.Preferences.Model, c.Preferences.ReasoningEffort, c.Preferences.Access).Scan(&c.Revision, &c.EventSequence)
 	if err != nil {
 		return c, updated(ctx, err)
 	}
@@ -914,6 +950,9 @@ func (s *session) UpsertQuestion(ctx context.Context, q conversationstore.Questi
 	if err != nil {
 		return err
 	}
+	if q.ContentReference != "" {
+		prompts, answers = []byte(`[]`), []byte(`{}`)
+	}
 	_, err = s.db.Exec(ctx, `INSERT INTO conversation_questions (organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (organization_id,conversation_id,id) DO UPDATE SET message_id=excluded.message_id,request_id=excluded.request_id,attempt_id=excluded.attempt_id,thread_id=excluded.thread_id,turn_id=excluded.turn_id,status=excluded.status,prompts_json=excluded.prompts_json,answers_json=excluded.answers_json,answered_by=excluded.answered_by,expires_at=excluded.expires_at,updated_at=excluded.updated_at,content_attachment_id=excluded.content_attachment_id`, q.OrganizationID, q.ConversationID, q.ID, q.MessageID, q.RequestID, q.Owner.AttemptID, q.Owner.ThreadID, q.Owner.TurnID, q.Status, string(prompts), string(answers), q.AnsweredBy, q.ExpiresAt, q.CreatedAt, q.UpdatedAt, q.ContentReference)
 	return mapError(ctx, err)
 }
@@ -929,7 +968,14 @@ func (s *session) ReserveCommand(ctx context.Context, c conversationstore.Comman
 	if err != nil {
 		return c, false, err
 	}
-	result, err := s.db.Exec(ctx, `INSERT INTO conversation_commands (organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,receipt_status,target_turn_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (organization_id,conversation_id,key) DO NOTHING`, c.OrganizationID, c.ConversationID, c.Key, c.Kind, c.RequestHash, string(receipt), c.CreatedAt, c.UpdatedAt, c.ContentReference, c.Receipt.Status, c.TargetTurnID)
+	var errorCode, errorMessage any
+	if c.Receipt.Error != nil {
+		errorCode, errorMessage = c.Receipt.Error.Code, c.Receipt.Error.Message
+	}
+	if c.ContentReference != "" {
+		receipt = []byte(`{}`)
+	}
+	result, err := s.db.Exec(ctx, `INSERT INTO conversation_commands (organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,receipt_status,target_turn_id,receipt_key,receipt_kind,receipt_message_id,receipt_question_id,receipt_error_code,receipt_error_message,receipt_updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (organization_id,conversation_id,key) DO NOTHING`, c.OrganizationID, c.ConversationID, c.Key, c.Kind, c.RequestHash, string(receipt), c.CreatedAt, c.UpdatedAt, c.ContentReference, c.Receipt.Status, c.TargetTurnID, c.Receipt.Key, c.Receipt.Kind, c.Receipt.MessageID, c.Receipt.QuestionID, errorCode, errorMessage, c.Receipt.UpdatedAt)
 	if err != nil {
 		return c, false, mapError(ctx, err)
 	}
@@ -955,7 +1001,14 @@ func (s *session) UpdateCommand(ctx context.Context, c conversationstore.Command
 	if err != nil {
 		return err
 	}
-	result, err := s.db.Exec(ctx, `UPDATE conversation_commands SET receipt_json=$1,receipt_status=$2,updated_at=$3,content_attachment_id=$4 WHERE organization_id=$5 AND conversation_id=$6 AND key=$7`, string(receipt), c.Receipt.Status, c.UpdatedAt, c.ContentReference, c.OrganizationID, c.ConversationID, c.Key)
+	var errorCode, errorMessage any
+	if c.Receipt.Error != nil {
+		errorCode, errorMessage = c.Receipt.Error.Code, c.Receipt.Error.Message
+	}
+	if c.ContentReference != "" {
+		receipt = []byte(`{}`)
+	}
+	result, err := s.db.Exec(ctx, `UPDATE conversation_commands SET receipt_json=$1,receipt_status=$2,updated_at=$3,content_attachment_id=$4,receipt_key=$8,receipt_kind=$9,receipt_message_id=$10,receipt_question_id=$11,receipt_error_code=$12,receipt_error_message=$13,receipt_updated_at=$14 WHERE organization_id=$5 AND conversation_id=$6 AND key=$7`, string(receipt), c.Receipt.Status, c.UpdatedAt, c.ContentReference, c.OrganizationID, c.ConversationID, c.Key, c.Receipt.Key, c.Receipt.Kind, c.Receipt.MessageID, c.Receipt.QuestionID, errorCode, errorMessage, c.Receipt.UpdatedAt)
 	if err != nil {
 		return mapError(ctx, err)
 	}

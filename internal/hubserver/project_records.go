@@ -19,13 +19,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func isProjectRecordCommand(input any) bool {
 	switch input.(type) {
-	case bindArtifactServiceRequest, createNativeProjectRequest, renameProjectRequest, updateProjectIntegrationRequest, deleteCloudProjectRequest, cloudModelSelectionRequest, cloudContentSettingsRequest:
+	case operatortool.HostedProjectCreateInput, bindArtifactServiceRequest, createNativeProjectRequest, renameProjectRequest, updateProjectIntegrationRequest, deleteCloudProjectRequest, cloudModelSelectionRequest, cloudContentSettingsRequest:
 		return true
 	}
 	return false
@@ -142,6 +144,17 @@ type authorizedProjectRecord struct {
 	organizationModels *policystore.OrganizationModels
 }
 
+func (s *Service) hiddenProjectDenial(ctx context.Context, r accessstore.Reader, scope nativeScope, denial error) error {
+	if scope.project == "" || scope.credential.Hosted == nil || scope.integrationRepository != "" || !errors.Is(denial, accessstore.ErrDenied) || errors.Is(denial, tenantauth.ErrUnavailable) {
+		return denial
+	}
+	scope.project, scope.action, scope.requireHostedAdmin = "", "", false
+	if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+		return denial
+	}
+	return nativeNotFound()
+}
+
 func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope nativeScope, write bool, includeModels bool) (authorizedProjectRecord, error) {
 	if s.config.AccessRepository == nil {
 		return authorizedProjectRecord{}, nativeNotFound()
@@ -149,7 +162,7 @@ func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope nativeS
 	var result authorizedProjectRecord
 	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, write); err != nil {
-			return err
+			return s.hiddenProjectDenial(ctx, r, scope, err)
 		}
 		var err error
 		result.Record, err = r.ProjectRecord(ctx, scope.project)
@@ -261,6 +274,17 @@ func (s *Service) projectRecordNative(ctx context.Context, record projectstore.R
 }
 
 func (s *Service) executeProjectRecordMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any) (json.RawMessage, error) {
+	hashInput := input
+	if request, ok := input.(operatortool.HostedProjectCreateInput); ok {
+		if s.config.Hosted == nil || scope.credential.Hosted == nil || !request.GrantAccess {
+			return nil, nativeNotFound()
+		}
+		states := HostedProjectStates()
+		if request.States != nil {
+			states = *request.States
+		}
+		input = createNativeProjectRequest{Mutation: command, Name: strings.TrimSpace(request.Name), States: states}
+	}
 	if _, ok := input.(bindArtifactServiceRequest); ok {
 		scope.requireHostedAdmin = true
 	}
@@ -280,7 +304,7 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	hash, err := nativeCommandHash(input)
+	hash, err := nativeCommandHash(hashInput)
 	if err != nil {
 		return nil, err
 	}
@@ -333,6 +357,10 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 		return nil, err
 	}
 	receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: options.OperationID, CommandKey: command.IdempotencyKey, RequestHash: hash}, raw)
+	if err != nil {
+		return nil, err
+	}
+	mutationAudit, err := s.prepareWorkItemMutationAudit(ctx, scope, options)
 	if err != nil {
 		return nil, err
 	}
@@ -407,6 +435,11 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 
 		if err != nil {
 			return err
+		}
+		if mutationAudit != nil {
+			if _, err := w.RecordAccessAudit(ctx, *mutationAudit); err != nil {
+				return err
+			}
 		}
 		_, err = w.PutReceipt(ctx, receipt)
 		return err
@@ -515,7 +548,7 @@ func (s *Service) planProjectRecordMutation(ctx context.Context, scope nativeSco
 		}
 		name := strings.TrimSpace(request.Name)
 		if name == "" || len(name) > 200 || request.ExpectedRevision <= 0 {
-			return current, nil, nativePublicInvalid("A project name of at most 200 bytes and a positive expected revision are required")
+			return current, nil, &nativeError{Code: "invalid_request", Message: "A project name of at most 200 bytes and a positive expected revision are required", status: http.StatusBadRequest, publicMessage: true}
 		}
 		if current.Settings.Revision != int64(request.ExpectedRevision) {
 			return current, nil, nativeConflict(tracker.Revision(current.Settings.Revision))
@@ -573,7 +606,13 @@ func (s *Service) getProjectRecord(c echo.Context) error {
 	}{project, config.DefaultReporterContracts()})
 }
 
-func isProjectCreation(input any) bool { _, ok := input.(createNativeProjectRequest); return ok }
+func isProjectCreation(input any) bool {
+	switch input.(type) {
+	case createNativeProjectRequest, operatortool.HostedProjectCreateInput:
+		return true
+	}
+	return false
+}
 
 func projectRecordRoute(path string) bool {
 	switch path {

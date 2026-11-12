@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,39 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func seedHostedArtifact(t *testing.T, f hostedSecurityFixture, deadlines ...time.Time) (artifact.Reference, string, string) {
-	t.Helper()
-	item := f.seedIssue(t, 1)
-	now := time.Now().UTC()
-	publisher := "artifact-publisher-token"
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES ('artifact-publisher','publisher',?,'fingerprint','worker',1,?,?)", apikey.HashToken(publisher), formatHubTime(now), formatHubTime(now)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES ('artifact-publisher','org_security',?)", f.project); err != nil {
-		t.Fatal(err)
-	}
-	binding := artifact.Binding{ServiceID: artifact.NewID("service"), Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: "artifact-publisher"}
-	raw, err := json.Marshal(binding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO artifact_services(organization_id,project_id,id,binding_json,publisher_token_id) VALUES ('org_security',?,?,?,'artifact-publisher')", f.project, binding.ServiceID, raw); err != nil {
-		t.Fatal(err)
-	}
-	ref := artifact.Reference{SchemaVersion: 1, Scope: artifact.Scope{OrganizationID: "org_security", ProjectID: string(f.project), WorkItemID: string(item)}, ServiceID: binding.ServiceID, ArtifactID: artifact.NewID("artifact"), ManifestID: artifact.NewID("manifest"), Revision: 1, SHA256: artifact.Digest([]byte("manifest")), Kind: "log", State: "partial", Availability: "available", Bytes: 100, Objects: 1, ExpiresAt: now.Add(time.Hour), ObservedAt: now}
-	if len(deadlines) > 0 {
-		ref.ExpiresAt = deadlines[0]
-	}
-	raw, err = json.Marshal(ref)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO artifact_references(organization_id,project_id,work_item_id,service_id,artifact_id,revision,manifest_id,reference_json) VALUES ('org_security',?,?,?,?,1,?,?)", f.project, item, binding.ServiceID, ref.ArtifactID, ref.ManifestID, raw); err != nil {
-		t.Fatal(err)
-	}
-	return ref, publisher, f.base + "/artifact-services/" + binding.ServiceID
-}
 
 func TestHostedArtifactReadPermissions(t *testing.T) {
 

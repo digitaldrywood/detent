@@ -444,11 +444,13 @@ func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T
 			requireNativeStatus(t, perform(http.MethodPost, path+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "block"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}), http.StatusOK)
 			workers := []string{f.worker(t, "first"), f.worker(t, "second")}
 			requests := make([]tracker.NativeClaim, len(workers))
+			runnerIDs := make([]string, len(workers))
 			for i, worker := range workers {
 				credential, status, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(worker), "", "")
 				if err != nil || status != http.StatusOK {
 					t.Fatalf("worker authentication status=%d: %v", status, err)
 				}
+				runnerIDs[i] = credential.Runner.RunnerID
 				machine := credential.Runner.MachineID
 				report := map[string]any{"id": machine, "hostname": "example", "display_name": "Example runner", "version": "v0.117.60", "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
 				requireNativeStatus(t, perform(http.MethodPost, f.base+"/machines/register", worker, report), http.StatusOK)
@@ -541,6 +543,12 @@ func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T
 				t.Fatalf("second runner refusal=%+v", interleaved)
 			}
 			assertDuplicate()
+			response = perform(http.MethodGet, path+"/history", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &history)
+			if len(history.Items) == 0 || history.Items[len(history.Items)-1].Data.Decision == nil || history.Items[len(history.Items)-1].Data.Decision.RunnerID != runnerIDs[1] {
+				t.Fatalf("identical first-runner polls replaced the latest second-runner decision: %+v", history)
+			}
 			requireNativeStatus(t, perform(http.MethodPost, f.base+"/work-items/"+string(blocker.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "unblock"}, ExpectedRevision: 1, State: "Done", Reason: "user_requested"}), http.StatusOK)
 			claimed := perform(http.MethodPost, f.base+"/claims", workers[0], requests[0])
 			requireNativeStatus(t, claimed, http.StatusOK)

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -342,6 +345,160 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(organization)+" typed payload authority", func(t *testing.T) {
+			execution := conversation.Execution{Status: conversation.ExecutionRunning, Owner: conversation.Owner{AttemptID: "attempt_" + string(organization), RunID: "run_" + string(organization), LeaseID: "lease_" + string(organization), FencingToken: 17, RunnerID: "runner_" + string(organization), MachineID: "machine_" + string(organization), ThreadID: "thread_" + string(organization), TurnID: "turn_" + string(organization)}, Resume: conversation.ResumeThread, Capabilities: conversation.Capabilities{Steer: true, Interrupt: true, Answer: true, Continue: true}, Error: "example prior failure", UpdatedAt: now}
+			preferences := conversation.Preferences{Model: "ExampleModel", ReasoningEffort: "high", Access: "full"}
+			record := conversationstore.Conversation{OrganizationID: organization, ProjectID: "prj_shared", ID: "conv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", OwnerPrincipalID: "owner", Origin: "user", Title: "typed payload", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Execution: execution, Preferences: preferences, ContentReference: contentIDs[organization], CreatedAt: now, UpdatedAt: now}
+			receipt := conversation.Receipt{Key: "receipt-identity", Kind: conversation.CommandInterrupt, Status: conversation.DeliveryFailed, MessageID: "msg-example", QuestionID: "question-example", Error: &conversation.ReceiptError{Code: "example_error", Message: "example failure"}, UpdatedAt: now}
+			command := conversationstore.Command{OrganizationID: organization, ConversationID: record.ID, Key: "command-identity", Kind: conversation.CommandMessage, RequestHash: "typed-hash", Receipt: receipt, CreatedAt: now, UpdatedAt: now, ContentReference: contentIDs[organization]}
+			if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+				var err error
+				record, err = w.CreateConversation(ctx, record)
+				if err != nil {
+					return err
+				}
+				_, inserted, err := w.ReserveCommand(ctx, command)
+				if err == nil && !inserted {
+					return errors.New("new typed receipt replayed")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+				got, err := r.Conversation(ctx, record.ProjectID, record.ID)
+				if err != nil {
+					return err
+				}
+				if !reflect.DeepEqual(got.Execution, execution) || got.Preferences != preferences {
+					t.Fatalf("typed execution/preferences changed: %+v", got)
+				}
+				stored, found, err := r.Command(ctx, record.ID, command.Key)
+				if err != nil {
+					return err
+				}
+				if !found || !reflect.DeepEqual(stored.Receipt, receipt) {
+					t.Fatalf("typed receipt changed: %+v, found=%v", stored, found)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			execution.Status, execution.Owner.FencingToken, execution.Error, execution.Capabilities, execution.Settled, execution.UpdatedAt = conversation.ExecutionWaitingInput, 18, "", conversation.Capabilities{Answer: true}, true, now.Add(time.Second)
+			record.Execution, record.UpdatedAt = execution, now.Add(time.Second)
+			oldRevision := record.Revision
+			receipt.Status, receipt.Error, receipt.MessageID, receipt.UpdatedAt = conversation.DeliveryDelivered, nil, "new-message", now.Add(time.Second)
+			command.Receipt, command.UpdatedAt = receipt, receipt.UpdatedAt
+			if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+				var err error
+				record, err = w.UpdateConversation(ctx, record, oldRevision)
+				if err != nil {
+					return err
+				}
+				return w.UpdateCommand(ctx, command)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.UpdateConversation(ctx, record, oldRevision); return err }); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Fatalf("stale hot authority update=%v", err)
+			}
+			if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+				got, err := r.Conversation(ctx, record.ProjectID, record.ID)
+				if err != nil {
+					return err
+				}
+				if got.Revision != oldRevision+1 || got.ContentReference != contentIDs[organization] || !reflect.DeepEqual(got.Execution, execution) {
+					t.Fatalf("hot authority was replaced by immutable older payload: %+v", got)
+				}
+				stored, found, err := r.Command(ctx, record.ID, command.Key)
+				if err != nil {
+					return err
+				}
+				if !found || stored.ContentReference != contentIDs[organization] || !reflect.DeepEqual(stored.Receipt, receipt) {
+					t.Fatalf("updated typed receipt changed: %+v", stored)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var executionJSON, preferencesJSON, receiptJSON string
+			if err := admin.QueryRowContext(ctx, `SELECT c.execution_json,c.preferences_json,r.receipt_json FROM conversations c JOIN conversation_commands r ON r.organization_id=c.organization_id AND r.conversation_id=c.id WHERE c.organization_id=$1 AND c.id=$2 AND r.key=$3`, organization, record.ID, command.Key).Scan(&executionJSON, &preferencesJSON, &receiptJSON); err != nil {
+				t.Fatal(err)
+			}
+			if executionJSON != "{}" || preferencesJSON != "{}" || receiptJSON != "{}" {
+				t.Fatalf("hot payload remained inline: %s / %s / %s", executionJSON, preferencesJSON, receiptJSON)
+			}
+			historical := conversation.Receipt{Key: "historical-receipt", Kind: conversation.CommandCancel, Status: conversation.DeliveryRejected, QuestionID: "historical-question", Error: &conversation.ReceiptError{Code: "historical_error", Message: "historical failure"}, UpdatedAt: now.Add(-time.Hour)}
+			raw, err := json.Marshal(historical)
+			if err != nil {
+				t.Fatal(err)
+			}
+			catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			importedID := "conv_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			sourceCopy := newNeutralBillingFixture(t, organization, "conversations", "conversation_messages", "conversation_questions", "conversation_commands", "conversation_events", "conversation_starts", "conversation_audience_events", "conversation_turn_batches", "conversation_tool_revisions", "message_references", "conversation_attachments", "conversation_attachment_blobs", "attachments")
+			at := historical.UpdatedAt.Format(time.RFC3339Nano)
+			sourceCopy.add(t, "conversations", map[string]any{"id": importedID, "organization_id": organization, "project_id": "prj_shared", "owner_principal_id": "owner", "origin": "user", "title": "Historical receipt", "visibility": "private", "status": "active", "execution_json": "{}", "created_at": at, "updated_at": at})
+			sourceCopy.add(t, "conversation_commands", map[string]any{"conversation_id": importedID, "key": "historical-command", "kind": string(conversation.CommandMessage), "request_hash": "historical-request", "receipt_json": string(raw), "receipt_status": string(historical.Status), "created_at": at, "updated_at": at})
+			source := postgres.ConversationHistoryImportSource{BundlePath: sourceCopy.seal(t), Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: newHistoryObjects(), Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
+			for range 2 {
+				result, err := repository.ImportConversationHistory(ctx, source)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.Rows != 2 {
+					t.Fatalf("historical receipt import rows=%d, want 2", result.Rows)
+				}
+			}
+			if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+				got, found, err := r.Command(ctx, importedID, "historical-command")
+				if err != nil {
+					return err
+				}
+				if !found || got.OrganizationID != organization || !reflect.DeepEqual(got.Receipt, historical) {
+					t.Fatalf("historical receipt changed: %+v", got)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var historicalJSON, typedKey string
+			if err := admin.QueryRowContext(ctx, `SELECT receipt_json,receipt_key FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key='historical-command'`, organization, importedID).Scan(&historicalJSON, &typedKey); err != nil {
+				t.Fatal(err)
+			}
+			var storedReceipt conversation.Receipt
+			if err := json.Unmarshal([]byte(historicalJSON), &storedReceipt); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(storedReceipt, historical) || typedKey != historical.Key {
+				t.Fatalf("historical receipt values or typed identity changed: %+v / %s", storedReceipt, typedKey)
+			}
+			if err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(verified *postgres.VerifiedNeutralImport) error {
+				row, err := verified.Lookup(ctx, "conversation_commands", []string{importedID, "historical-command"})
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(row.Values["receipt_json"].Data, raw) {
+					t.Fatal("verified historical receipt source bytes changed")
+				}
+				var snapshot, requestHash string
+				if err := admin.QueryRowContext(ctx, `SELECT snapshot_id,request_hash FROM conversation_history_import_rows WHERE organization_id=$1 AND source_table='conversation_commands' AND source_row_id=$2`, organization, row.SourceRowID).Scan(&snapshot, &requestHash); err != nil {
+					return err
+				}
+				if snapshot != verified.Identity().SourceSHA256 || !artifact.ValidHash(requestHash, 64) {
+					t.Fatalf("historical receipt verification changed: snapshot=%s request=%s", snapshot, requestHash)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+		})
+	}
+
 }
 
 func TestConversationMessageCountBackfillsAllTenants(t *testing.T) {
@@ -384,6 +541,83 @@ func TestConversationMessageCountBackfillsAllTenants(t *testing.T) {
 		var count int
 		if err := admin.QueryRowContext(t.Context(), `SELECT message_count FROM conversations WHERE organization_id=$1 AND id='count_conversation'`, organization).Scan(&count); err != nil || count != index+1 {
 			t.Errorf("organization=%s migrated count=%d want=%d error=%v", organization, count, index+1, err)
+		}
+	}
+}
+
+func TestMessageReadsReportUnknownLegacyStoredSize(t *testing.T) {
+	admin := template.Database(t)
+	seedCore(t, admin)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	organizations := []tracker.OrganizationID{"org_first", "org_second"}
+	for _, organization := range organizations {
+		seedTenantAccess(t, repository, organization)
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversations (organization_id,id,project_id,owner_principal_id,origin,visibility,status) VALUES ($1,'conv_sizes','prj_shared','first','user','private','active')`, organization); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversation_messages (organization_id,id,conversation_id,seq,role,kind,delivery,actor_kind,actor_principal_id,command_key,text_bytes,stored_text_bytes) VALUES ($1,'msg_legacy','conv_sizes',1,'assistant','text','completed','human','first','key_legacy',7,NULL),($1,'msg_empty','conv_sizes',2,'assistant','text','completed','human','first','key_empty',7,0),($1,'msg_current','conv_sizes',3,'assistant','text','completed','human','first','key_current',7,5)`, organization); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type size struct {
+		bytes   int64
+		unknown bool
+	}
+	want := map[string]size{"msg_legacy": {unknown: true}, "msg_empty": {}, "msg_current": {bytes: 5}}
+	for _, organization := range organizations {
+		for _, read := range []struct {
+			name string
+			run  func(tenantstore.Reader) ([]conversationstore.Message, error)
+		}{
+			{"page", func(r tenantstore.Reader) ([]conversationstore.Message, error) {
+				page, err := r.Messages(t.Context(), "conv_sizes", 0, 10)
+				return page.Items, err
+			}},
+			{"before", func(r tenantstore.Reader) ([]conversationstore.Message, error) {
+				page, err := r.Messages(t.Context(), "conv_sizes", 4, 10)
+				return page.Items, err
+			}},
+			{"by id", func(r tenantstore.Reader) ([]conversationstore.Message, error) {
+				var items []conversationstore.Message
+				for id := range want {
+					message, err := r.Message(t.Context(), "conv_sizes", id)
+					if err != nil {
+						return nil, err
+					}
+					items = append(items, message)
+				}
+				return items, nil
+			}},
+			{"by command key", func(r tenantstore.Reader) ([]conversationstore.Message, error) {
+				var items []conversationstore.Message
+				for _, key := range []string{"key_legacy", "key_empty", "key_current"} {
+					message, found, err := r.MessageByCommandKey(t.Context(), "conv_sizes", key)
+					if err != nil || !found {
+						return nil, fmt.Errorf("command key %s found=%t: %w", key, found, err)
+					}
+					items = append(items, message)
+				}
+				return items, nil
+			}},
+		} {
+			t.Run(string(organization)+"/"+read.name, func(t *testing.T) {
+				var items []conversationstore.Message
+				if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					items, err = read.run(r)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if len(items) != len(want) {
+					t.Fatalf("messages=%d, want %d", len(items), len(want))
+				}
+				for _, message := range items {
+					if got := (size{message.StoredTextBytes, message.StoredTextBytesUnknown}); got != want[message.ID] || message.OrganizationID != organization {
+						t.Errorf("message %s organization=%s stored size=%+v, want %+v", message.ID, message.OrganizationID, got, want[message.ID])
+					}
+				}
+			})
 		}
 	}
 }

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -38,7 +39,7 @@ func (s *session) selectedFleetRecords(ctx context.Context, project tracker.Proj
 	}
 	rows, err := s.db.Query(ctx, `SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.enrollment_id,r.scope,r.state,r.revision,r.tags,r.machine_use,r.isolation_tier,r.host_services,r.availability_timezone,r.availability_hard_deadline,r.operations,r.display_name,r.capacity_limit,r.reported_capacity,r.os,r.architecture,r.created_at,r.expires_at,r.last_heartbeat_at,
 coalesce(r.capacity_config_revision,''),coalesce(r.capacity_config_local_limit,0),coalesce(r.capacity_config_client_limit,0),coalesce(r.capacity_config_runtime_limit,0),coalesce(r.capacity_config_manageable,false),coalesce(r.capacity_config_constraint,''),r.capacity_config_observed_at,r.capacity_request_revision,r.capacity_request_limit,r.capacity_request_backend,
-m.hostname,m.capacity,m.routing_revision,m.version,m.sprite_name,m.display_name,e.created_by,coalesce(nullif(t.hosted_user_id,''),membership.user_id,''),credential.revoked_at IS NOT NULL,credential.created_at,credential.expires_at,
+m.hostname,m.capacity,m.routing_revision,m.version,m.sprite_name,m.sprite_woken_at,m.sprite_wake_failed_at,m.display_name,e.created_by,coalesce(nullif(t.hosted_user_id,''),membership.user_id,''),credential.revoked_at IS NOT NULL,credential.created_at,credential.expires_at,
 ARRAY(SELECT project_id FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id ORDER BY project_id),
 ARRAY(SELECT window_spec FROM runner_availability_windows w WHERE w.organization_id=r.organization_id AND w.runner_id=r.runner_id ORDER BY position),
 ARRAY(SELECT slot_key FROM runner_availability_window_slots w WHERE w.organization_id=r.organization_id AND w.runner_id=r.runner_id ORDER BY slot_key),
@@ -69,7 +70,7 @@ AND ($3='' OR (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHE
 		var capacity runnerauth.CapacityConfig
 		var application runnerauth.CapacityRequest
 		var observed, credentialExpires pgtype.Timestamptz
-		if err := rows.Scan(&identity.OrganizationID, &identity.RunnerID, &identity.MachineID, &identity.TokenID, &identity.EnrollmentID, &identity.Scope, &identity.State, &identity.Revision, &tags, &identity.MachineUse, &identity.IsolationTier, &services, &identity.Availability.Timezone, &identity.Availability.HardDeadline, &operations, &identity.DisplayName, &identity.CapacityLimit, &identity.ReportedCapacity, &identity.OS, &identity.Architecture, &identity.CreatedAt, &identity.ExpiresAt, &identity.LastHeartbeatAt, &capacity.Revision, &capacity.LocalLimit, &capacity.ClientLimit, &capacity.RuntimeLimit, &capacity.Manageable, &capacity.Constraint, &observed, &application.ExpectedConfigRevision, &application.Capacity, &application.Backend, &machine.Hostname, &machine.Capacity, &record.HostRevision, &machine.Version, &machine.SpriteName, &machine.DisplayName, &record.OwnerPrincipalID, &record.OwnerUserID, &record.CredentialRevoked, &record.CredentialCreatedAt, &credentialExpires, &projects, &windows, &slots, &slotValues, &limits, &limitValues, &ranks, &rankValues); err != nil {
+		if err := rows.Scan(&identity.OrganizationID, &identity.RunnerID, &identity.MachineID, &identity.TokenID, &identity.EnrollmentID, &identity.Scope, &identity.State, &identity.Revision, &tags, &identity.MachineUse, &identity.IsolationTier, &services, &identity.Availability.Timezone, &identity.Availability.HardDeadline, &operations, &identity.DisplayName, &identity.CapacityLimit, &identity.ReportedCapacity, &identity.OS, &identity.Architecture, &identity.CreatedAt, &identity.ExpiresAt, &identity.LastHeartbeatAt, &capacity.Revision, &capacity.LocalLimit, &capacity.ClientLimit, &capacity.RuntimeLimit, &capacity.Manageable, &capacity.Constraint, &observed, &application.ExpectedConfigRevision, &application.Capacity, &application.Backend, &machine.Hostname, &machine.Capacity, &record.HostRevision, &machine.Version, &machine.SpriteName, &machine.SpriteWokenAt, &machine.SpriteWakeFailedAt, &machine.DisplayName, &record.OwnerPrincipalID, &record.OwnerUserID, &record.CredentialRevoked, &record.CredentialCreatedAt, &credentialExpires, &projects, &windows, &slots, &slotValues, &limits, &limitValues, &ranks, &rankValues); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		if credentialExpires.Valid {
@@ -149,7 +150,7 @@ AND ($3='' OR (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHE
 }
 
 func (s *session) fleetProblemRecords(ctx context.Context, records []runnerstore.FleetRecord, indices map[string]int, ids []string) error {
-	rows, err := s.db.Query(ctx, `SELECT runner_id,code,project_id,subject,check_name,error_output,fix_command,message,fix_hint,reported_at,first_seen FROM runner_problem_reports WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id,code,project_id,subject,check_name`, s.organization, ids)
+	rows, err := s.db.Query(ctx, `SELECT runner_id,code,project_id,subject,check_name,error_output,fix_command,message,fix_hint,reported_at,first_seen,cached_capabilities FROM runner_problem_reports WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id,code,project_id,subject,check_name`, s.organization, ids)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -157,7 +158,7 @@ func (s *session) fleetProblemRecords(ctx context.Context, records []runnerstore
 	for rows.Next() {
 		var id string
 		var p runnerauth.Problem
-		if err := rows.Scan(&id, &p.Code, &p.ProjectID, &p.Subject, &p.Check, &p.ErrorOutput, &p.FixCommand, &p.Message, &p.FixHint, &p.ReportedAt, &p.FirstSeen); err != nil {
+		if err := rows.Scan(&id, &p.Code, &p.ProjectID, &p.Subject, &p.Check, &p.ErrorOutput, &p.FixCommand, &p.Message, &p.FixHint, &p.ReportedAt, &p.FirstSeen, &p.CachedCapabilities); err != nil {
 			return mapError(ctx, err)
 		}
 		record := &records[indices[id]]
@@ -202,4 +203,61 @@ func (s *session) fleetIsolationRecords(ctx context.Context, records []runnersto
 		records[indices[id]].Isolation[backend] = tiers
 	}
 	return mapError(ctx, rows.Err())
+}
+
+func (s *session) runtimeCapacityRunners(ctx context.Context, query runnerstore.RuntimeCapacityQuery, limit int, owners []string) ([]runnerstore.RuntimeCapacityRunner, error) {
+	rows, err := s.db.Query(ctx, `WITH capacity_runners AS MATERIALIZED (
+SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.scope,r.state,r.revision,r.tags,r.operations,r.capacity_limit,r.reported_capacity,r.last_heartbeat_at,r.expires_at FROM runner_identities r WHERE r.organization_id=$1 AND r.removed_at IS NULL
+AND (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=$2))
+AND ($5::text[] IS NULL OR r.runner_id=$4 OR r.runner_id=ANY($5))
+ORDER BY CASE WHEN r.runner_id=$4 THEN 0 ELSE 1 END,r.runner_id LIMIT $3
+)
+SELECT r.organization_id,r.runner_id,r.machine_id,r.scope,r.state,r.revision,r.tags,r.operations,r.capacity_limit,r.reported_capacity,r.last_heartbeat_at,r.expires_at,
+m.hostname,m.capacity,m.version,t.revoked_at IS NOT NULL,t.created_at,t.expires_at,
+ARRAY(SELECT project_id FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id ORDER BY project_id),
+ARRAY(SELECT project_id FROM runner_project_capacity_limits p WHERE p.organization_id=r.organization_id AND p.runner_id=r.runner_id ORDER BY project_id),
+ARRAY(SELECT capacity_limit FROM runner_project_capacity_limits p WHERE p.organization_id=r.organization_id AND p.runner_id=r.runner_id ORDER BY project_id),
+EXISTS(SELECT 1 FROM runner_problem_reports p WHERE p.organization_id=r.organization_id AND p.runner_id=r.runner_id)
+FROM capacity_runners r JOIN machines m ON m.organization_id=r.organization_id AND m.id=r.machine_id
+JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
+ORDER BY CASE WHEN r.runner_id=$4 THEN 0 ELSE 1 END,r.runner_id`, s.organization, query.ProjectID, limit+1, query.RunnerID, owners)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	records := []runnerstore.RuntimeCapacityRunner{}
+	for rows.Next() {
+		var record runnerstore.RuntimeCapacityRunner
+		runner := &record.Runner
+		var expires, created time.Time
+		var credentialExpires pgtype.Timestamptz
+		var revoked, problems bool
+		var grants, projects []string
+		var limits []int64
+		if err := rows.Scan(&runner.OrganizationID, &runner.RunnerID, &runner.MachineID, &runner.Scope, &runner.State, &runner.Revision, &runner.Tags, &runner.Operations, &runner.CapacityLimit, &runner.ReportedCapacity, &runner.LastHeartbeatAt, &expires, &runner.Hostname, &runner.HostCapacity, &record.MachineVersion, &revoked, &created, &credentialExpires, &grants, &projects, &limits, &problems); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		for _, project := range grants {
+			runner.ProjectIDs = append(runner.ProjectIDs, tracker.ProjectID(project))
+		}
+		runner.ProjectCapacityLimits = map[tracker.ProjectID]int{}
+		for i, project := range projects {
+			runner.ProjectCapacityLimits[tracker.ProjectID(project)] = int(limits[i])
+		}
+		runner.Health = "online"
+		switch {
+		case revoked:
+			runner.Health = "revoked"
+		case !expires.After(query.At) || query.At.Before(created) || credentialExpires.Valid && !credentialExpires.Time.After(query.At):
+			runner.Health = "expired"
+		case query.At.Before(runner.LastHeartbeatAt) || !query.At.Before(runner.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout)):
+			runner.Health = "offline"
+		}
+		runner.ConnectionHealth = runner.Health
+		if runner.Health == "online" && problems {
+			runner.Health = "needs_attention"
+		}
+		records = append(records, record)
+	}
+	return records, mapError(ctx, rows.Err())
 }

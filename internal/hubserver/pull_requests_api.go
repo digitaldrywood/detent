@@ -2,8 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,18 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-// Pull requests. The panel joins two halves the hub
-// already owns: its own change requests, which carry the native reviews and
-// checks, and the GitHub connector's projection of the pull request, which
-// carries state, draft, head, base and mergeability.
-//
-// The connector half is the `pull_requests` projection that the webhook ingest
-// and the reconciler maintain (`internal/hubgithub`). The hub itself holds no
-// per-project GitHub credential and, on a hosted hub, has no GitHub transport
-// at all, so this endpoint never calls GitHub: `?refresh=1` asks the
-// reconciler to re-fetch by queueing a hydration request, which is the only
-// way the hub can make the connector view newer.
 
 const (
 	// pullRequestViewTTL is how long an assembled view is served from memory
@@ -170,81 +156,39 @@ func (s *Service) projectConnector(ctx context.Context, query nativeQueryer, sco
 // of whether its GitHub tracker integration is enabled. Explicit native release
 // delivery verifies this binding without enabling that integration.
 func (s *Service) projectRepositoryBinding(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, bool, error) {
-	if s.config.TenantRepository != nil {
-		var project projectstore.Record
-		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			project, err = r.ProjectRecord(ctx, scope.project)
-			return err
-		}); err != nil {
-			return nil, 0, false, err
-		}
-		if project.Core.DeletedAt != nil || project.Core.Profile != "native" || !validCheckoutRepository(project.Settings.CheckoutRepository) {
-			return nil, 0, false, nil
-		}
-		verified, err := s.verifiedProjectCheckout(ctx, query, scope, project.Settings.CheckoutRepository, s.config.now().UTC())
-		if err != nil || !verified {
-			return nil, 0, false, err
-		}
-		return &pullRequestConnector{Provider: "github", Repository: project.Settings.CheckoutRepository}, 0, project.Settings.RepositoryEnabled, nil
-	}
-	var enabled bool
-	var repositoryID sql.NullInt64
-	var owner, name sql.NullString
-	var profile, checkout string
-	err := query.QueryRowContext(ctx, `SELECT p.github_repository_enabled, p.repository_id, r.github_owner, r.github_name, p.profile, p.checkout_repository
-FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id
-WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(&enabled, &repositoryID, &owner, &name, &profile, &checkout)
-	if err != nil {
+	var project projectstore.Record
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		project, err = r.ProjectRecord(ctx, scope.project)
+		return err
+	}); err != nil {
 		return nil, 0, false, err
 	}
-	if !repositoryID.Valid || !owner.Valid || !name.Valid {
-		if profile == "native" && validCheckoutRepository(checkout) {
-			verified, err := s.verifiedProjectCheckout(ctx, query, scope, checkout, time.Now().UTC())
-			if err != nil {
-				return nil, 0, false, err
-			}
-			if verified {
-				return &pullRequestConnector{Provider: "github", Repository: checkout}, 0, enabled, nil
-			}
-		}
-		return nil, 0, enabled, nil
+	if project.Core.DeletedAt != nil || project.Core.Profile != "native" || !validCheckoutRepository(project.Settings.CheckoutRepository) {
+		return nil, 0, false, nil
 	}
-	return &pullRequestConnector{Provider: "github", Repository: owner.String + "/" + name.String}, repositoryID.Int64, enabled, nil
-}
-
-func readConnectorPullRequest(ctx context.Context, query nativeQueryer, repositoryID int64, url string) (tracker.PullRequestSummary, time.Time, bool, error) {
-	var summary tracker.PullRequestSummary
-	var checksJSON, reviewsJSON, synchronized string
-	err := query.QueryRowContext(ctx, `SELECT github_number, title, url, github_state, draft, head_ref, head_sha, base_ref, base_sha,
-mergeable_state, checks_summary_json, reviews_summary_json, synchronized_at
-FROM pull_requests WHERE repository_id = ? AND url = ?`, repositoryID, url).Scan(
-		&summary.Number, &summary.Title, &summary.URL, &summary.State, &summary.Draft, &summary.HeadRef, &summary.HeadSHA,
-		&summary.BaseRef, &summary.BaseSHA, &summary.Merge.State, &checksJSON, &reviewsJSON, &synchronized)
-	if errors.Is(err, sql.ErrNoRows) {
-		return summary, time.Time{}, false, nil
+	verified, err := s.verifiedProjectCheckout(ctx, query, scope, project.Settings.CheckoutRepository, s.config.now().UTC())
+	if err != nil || !verified {
+		return nil, 0, false, err
 	}
-	if err != nil {
-		return summary, time.Time{}, false, fmt.Errorf("read connector pull request: %w", err)
-	}
-	if err := json.Unmarshal([]byte(checksJSON), &summary.Checks); err != nil {
-		return summary, time.Time{}, false, fmt.Errorf("decode connector checks summary: %w", err)
-	}
-	if err := json.Unmarshal([]byte(reviewsJSON), &summary.Reviews); err != nil {
-		return summary, time.Time{}, false, fmt.Errorf("decode connector reviews summary: %w", err)
-	}
-	fetched, err := parseTimeValue(synchronized)
-	if err != nil {
-		return summary, time.Time{}, false, fmt.Errorf("decode connector synchronized_at: %w", err)
-	}
-	return summary, fetched, true, nil
+	return &pullRequestConnector{Provider: "github", Repository: project.Settings.CheckoutRepository}, 0, project.Settings.RepositoryEnabled, nil
 }
 
 func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, item string, change tracker.ChangeRequest,
 	connector *pullRequestConnector, repositoryID int64, now time.Time) (pullRequestView, error) {
+	view, _, err := s.changePullRequestViewSource(ctx, scope, item, change, connector, repositoryID, now)
+	return view, err
+}
+
+func (s *Service) changePullRequestViewSource(ctx context.Context, scope nativeScope, item string, change tracker.ChangeRequest,
+	connector *pullRequestConnector, repositoryID int64, now time.Time) (pullRequestView, projectstore.GitHubPullRequestRefresh, error) {
+	target := projectstore.GitHubPullRequestRefresh{GitHubPullRequestRefreshKey: projectstore.GitHubPullRequestRefreshKey{ProjectID: scope.project, ChangeID: change.ID}, WorkItemID: tracker.NativeWorkItemID(item), RequestedAt: now}
+	if connector != nil {
+		target.Repository = strings.ToLower(connector.Repository)
+	}
 	detail, err := s.selectedChangeDetail(ctx, scope, item, change.ID, now)
 	if err != nil {
-		return pullRequestView{}, err
+		return pullRequestView{}, target, err
 	}
 	change = detail.Change
 	view := pullRequestView{
@@ -254,7 +198,7 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 	}
 	delivery, associated, err := s.readReleaseDeliveryRecord(ctx, scope, item)
 	if err != nil {
-		return view, err
+		return view, target, err
 	}
 	if associated && delivery.ChangeID == change.ID {
 		view.Number = delivery.PRNumber
@@ -269,6 +213,8 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 		}
 	}
 	if current != nil {
+		target.RequestedVersion = current.ID
+		target.RequestedHeadSHA = current.HeadSHA
 		view.Head.SHA, view.Base.SHA = current.HeadSHA, current.BaseSHA
 		view.Head.Repository = current.Repository
 		view.Author = current.Actor.PrincipalID
@@ -299,7 +245,58 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 		view.Reviews = append(view.Reviews, pullRequestReview{Author: review.Actor.PrincipalID, State: review.Decision, SubmittedAt: review.CreatedAt})
 	}
 	view.ReviewDecision = detail.Summary.NativeReview
-	return view, nil
+	target.Number = view.Number
+	if connector != nil && current != nil && view.Number > 0 && current.HeadSHA != "" {
+		var observation *projectstore.GitHubPullRequestObservation
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := s.authorizeBulkExportItem(ctx, r, scope, tracker.NativeWorkItemID(item)); err != nil {
+				return err
+			}
+			project, err := r.ProjectRecord(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			if project.Core.DeletedAt != nil || !project.Settings.RepositoryEnabled || !strings.EqualFold(project.Settings.CheckoutRepository, connector.Repository) {
+				return corestore.ErrRevisionConflict
+			}
+			live, err := r.Change(ctx, change.ID)
+			if err != nil {
+				return err
+			}
+			if live.ProjectID != scope.project || live.CurrentVersionID == nil || *live.CurrentVersionID != current.ID {
+				return corestore.ErrRevisionConflict
+			}
+			reader, ok := r.(projectstore.GitHubPullRequestRefreshReader)
+			if !ok {
+				return ErrPostgresFeatureUnavailable
+			}
+			row, err := reader.GitHubPullRequestRefresh(ctx, target.GitHubPullRequestRefreshKey)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if row.Observation != nil && row.Observation.Repository == target.Repository && row.Observation.HeadSHA == current.HeadSHA {
+				observation = row.Observation
+			}
+			return nil
+		})
+		if err != nil {
+			return view, target, err
+		}
+		if observation != nil {
+			view.State = observation.State
+			view.Draft = observation.Draft
+			view.Mergeable = pullRequestMergeable{}
+			if observation.Mergeable != nil {
+				view.Mergeable = pullRequestMergeable{Known: true, Value: *observation.Mergeable}
+			}
+			view.FetchedAt = observation.ObservedAt
+			view.Connector = &pullRequestConnector{Provider: "github", Repository: target.Repository, SynchronizedAt: observation.ObservedAt}
+		}
+	}
+	return view, target, nil
 }
 
 // externalPullRequestNumber reads the pull request number a change's GitHub
@@ -339,6 +336,9 @@ func (s *Service) listWorkItemPullRequests(c echo.Context) error {
 		return s.nativeAPIError(c, nativePublicInvalid("refresh accepts only 1"))
 	}
 	views, err := s.readWorkItemPullRequests(c.Request().Context(), nativeRequestScope(c), c.Param("item"), refresh)
+	if errors.Is(err, corestore.ErrRevisionConflict) {
+		return s.nativeAPIError(c, nativeConflict(0))
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -359,29 +359,43 @@ func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScop
 			if err := s.authorizeLinkedChangeView(readCtx, scope, item); err != nil {
 				return nil, err
 			}
-			return cached, nil
+			current, err := s.cachedPullRequestSourcesCurrent(readCtx, scope, cached)
+			if err != nil {
+				return nil, err
+			}
+			if current {
+				return cached, nil
+			}
+			s.pullRequests.invalidate(key)
 		}
 	} else if !s.pullRequests.allowRefresh(scope.organization, now) {
 		return nil, pullRequestRefreshLimited()
 	}
-	connector, repositoryID, err := s.projectConnector(readCtx, nil, scope)
+	connector, repositoryID, enabled, err := s.projectRepositoryBinding(readCtx, nil, scope)
 	if err != nil {
 		return nil, err
+	}
+	if !enabled {
+		connector = nil
 	}
 	changes, err := s.listChangeRecords(readCtx, scope, item)
 	if err != nil {
 		return nil, err
 	}
 	views := []pullRequestView{}
+	requests := make([]projectstore.GitHubPullRequestRefresh, 0, len(changes))
 	for _, change := range changes {
-		view, err := s.changePullRequestView(readCtx, scope, item, change, connector, repositoryID, now)
+		view, target, err := s.changePullRequestViewSource(readCtx, scope, item, change, connector, repositoryID, now)
 		if err != nil {
 			return nil, err
 		}
 		views = append(views, view)
+		if view.Number > 0 {
+			requests = append(requests, target)
+		}
 	}
 	if refresh == "1" && connector != nil {
-		if err := s.requestPullRequestHydration(ctx, repositoryID, views, now); err != nil {
+		if err := s.requestPullRequestHydration(ctx, scope, item, connector.Repository, requests); err != nil {
 			return nil, err
 		}
 	}
@@ -394,40 +408,107 @@ func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScop
 	return views, nil
 }
 
+func (s *Service) cachedPullRequestSourcesCurrent(ctx context.Context, scope nativeScope, views []pullRequestView) (bool, error) {
+	connected := false
+	for _, view := range views {
+		connected = connected || view.Connector != nil
+	}
+	if !connected {
+		return true, nil
+	}
+	connector, _, enabled, err := s.projectRepositoryBinding(ctx, nil, scope)
+	if err != nil {
+		return false, err
+	}
+	if !enabled || connector == nil {
+		return false, nil
+	}
+	current := true
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		for _, view := range views {
+			if view.Connector == nil {
+				continue
+			}
+			if !strings.EqualFold(view.Connector.Repository, connector.Repository) {
+				current = false
+				return nil
+			}
+			change, err := r.Change(ctx, view.ChangeID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				current = false
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if change.ProjectID != scope.project || change.CurrentVersionID == nil {
+				current = false
+				return nil
+			}
+			version, err := r.Version(ctx, change.ID, *change.CurrentVersionID)
+			if err != nil {
+				return err
+			}
+			if version.HeadSHA != view.Head.SHA {
+				current = false
+				return nil
+			}
+		}
+		return nil
+	})
+	return current, err
+}
+
 func (s *Service) authorizeLinkedChangeView(ctx context.Context, scope nativeScope, item string) error {
 	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.authorizeBulkExportItem(ctx, r, scope, tracker.NativeWorkItemID(item))
 	})
 }
 
-// requestPullRequestHydration asks the reconciler to re-fetch every pull
-// request the panel showed. The hub holds no GitHub credential of its own, so
-// this queue is the only way it can make the connector view newer; the request
-// is coalesced by the table's own uniqueness, so a burst of refreshes costs one
-// fetch.
-func (s *Service) requestPullRequestHydration(ctx context.Context, repositoryID int64, views []pullRequestView, now time.Time) error {
-	if repositoryID == 0 {
+func (s *Service) requestPullRequestHydration(ctx context.Context, scope nativeScope, item, repository string, requests []projectstore.GitHubPullRequestRefresh) error {
+	if len(requests) == 0 {
 		return nil
 	}
-	return s.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-		var fullName string
-		if err := tx.QueryRowContext(ctx, "SELECT github_owner || '/' || github_name FROM repositories WHERE id = ?", repositoryID).Scan(&fullName); err != nil {
-			return fmt.Errorf("read repository for pull request refresh: %w", err)
+	if len(requests) > corestore.MaxPageSize {
+		return corestore.ErrInvalidPage
+	}
+	if s.config.TenantRepository == nil || s.config.ReconcileBackend == nil {
+		return ErrPostgresFeatureUnavailable
+	}
+	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.authorizeBulkExportItem(ctx, w, scope, tracker.NativeWorkItemID(item)); err != nil {
+			return err
 		}
-		for _, view := range views {
-			if view.Number <= 0 {
-				continue
+		project, err := w.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.Core.DeletedAt != nil || project.Core.Profile != "native" || !project.Settings.RepositoryEnabled || !strings.EqualFold(project.Settings.CheckoutRepository, repository) {
+			return corestore.ErrRevisionConflict
+		}
+		for _, request := range requests {
+			if request.ProjectID != scope.project || request.WorkItemID != tracker.NativeWorkItemID(item) || request.Repository != strings.ToLower(repository) {
+				return corestore.ErrRevisionConflict
 			}
-			target := hydrationTarget{
-				RepositoryID: &repositoryID, RepositoryFullName: fullName,
-				ObjectKind: "pull_request", ObjectKey: strconv.Itoa(view.Number),
-				GitHubNumber: view.Number, HeadSHA: view.Head.SHA, Reason: "client_refresh",
-				Source: sourceStamp{UpdatedAt: view.UpdatedAt, Version: formatHubTime(now)},
-			}
-			if err := enqueueHydration(ctx, tx, "", target, now); err != nil {
+			current, err := w.Change(ctx, request.ChangeID)
+			if err != nil {
 				return err
 			}
+			if current.ProjectID != scope.project || current.CurrentVersionID == nil || *current.CurrentVersionID != request.RequestedVersion {
+				return corestore.ErrRevisionConflict
+			}
+			version, err := w.Version(ctx, current.ID, request.RequestedVersion)
+			if err != nil {
+				return err
+			}
+			if version.HeadSHA != request.RequestedHeadSHA {
+				return corestore.ErrRevisionConflict
+			}
 		}
-		return nil
+		writer, ok := w.(projectstore.GitHubPullRequestRefreshWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		return writer.RequestGitHubPullRequests(ctx, requests)
 	})
 }

@@ -44,8 +44,8 @@ func TestPostgresHostedOperationReceiptsPreservePendingAndReplay(t *testing.T) {
 		f.user(t, "first_receipt", "member", "first@example.test", "", ""),
 		f.user(t, "second_receipt", "member", "second@example.test", "", ""),
 	}
-	if service.database.db != nil || service.database.reader != nil || service.database.authReader != nil || service.database.claimReader != nil {
-		t.Fatal("receipt fixture retained a legacy database handle")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 	content := eventstore.NewContent(f.service.runDetailStore())
 	for _, user := range users {

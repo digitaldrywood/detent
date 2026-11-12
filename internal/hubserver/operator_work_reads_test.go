@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,17 +13,24 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -64,8 +72,12 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 	}
 	ctx := capture(f.token)
 	broader := capture(foreign.token)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json='[]' WHERE native_id=?", fault.WorkItemID); err != nil {
+	result, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, fault.WorkItemID)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("fault injection affected %d rows: %v", affected, err)
 	}
 	for _, transport := range []string{"stdio", "http"} {
 		t.Run(transport, func(t *testing.T) {
@@ -133,7 +145,7 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 								if err := json.Unmarshal(faults[0], &entry); err != nil {
 									t.Fatalf("fault log=%s: %v", faults[0], err)
 								}
-								if entry.Tool != tool || entry.CorrelationID == "" || !strings.Contains(entry.Error, "cannot unmarshal array") {
+								if entry.Tool != tool || entry.CorrelationID == "" || !strings.Contains(entry.Error, artifact.ErrIntegrity.Error()) {
 									t.Fatalf("lost fault context: %s", faults[0])
 								}
 								if want := test.want + " (reason_code service_unavailable, correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
@@ -399,7 +411,8 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	// Real application writes populate the reads; catches bypassing native scope,
 	// losing cursor pages, dropping reads from the combined command dispatcher,
 	// and leaking hidden relationship IDs in saved versions.
-	f := newNativeFixture(t, nil, "", "read-tools")
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: clock.Now}), "", "read-tools")
 	first := f.create(t, "needle first")
 	second := f.create(t, "needle second")
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign")
@@ -698,10 +711,8 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		}
 		oversizedBody := strings.Repeat("\x00", 64<<10)
 		t.Run("expired cursor", func(t *testing.T) {
-			now := f.service.config.now
-			expired := now().Add(2 * time.Hour)
-			f.service.config.now = func() time.Time { return expired }
-			defer func() { f.service.config.now = now }()
+			clock.Advance(2 * time.Hour)
+			defer clock.Advance(-2 * time.Hour)
 			_, err := call(operatortool.WorkComments, map[string]any{"project_id": string(f.project.ID), "reference": string(paged.WorkItemID), "cursor": firstCursor, "limit": 100})
 			var refusal *operatortool.RequestError
 			if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "expired") {
@@ -762,7 +773,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	var lease tracker.NativeLease
 	decodeHubResponse(t, response, &lease)
 	started := nativeStartedEvent(lease)
-	at := time.Now().UTC()
+	at := clock.Now()
 	started.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Generation: 27, Phase: "implementation", HeartbeatAt: at, Phases: []tracker.NativePhase{{Name: "implementation", StartedAt: at}}}
 	runtimePath := f.base + "/work-items/" + string(second.WorkItemID)
 	for _, test := range []struct {
@@ -980,13 +991,12 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if len(runtimeResult.Data.Attempt.Runtime.Activity.Spans) != 2 {
 		t.Fatal("API runtime omitted recorded spans")
 	}
-	clock := f.service.config.now
-	f.service.config.now = func() time.Time { return at.Add(2 * time.Minute) }
+	clock.Advance(2 * time.Minute)
 	result, err = call(operatortool.BoardSession, selectArgs)
 	if err != nil || !strings.Contains(string(result.Content), `"runtime_freshness":"expired"`) || !strings.Contains(string(result.Content), `"current":false`) {
 		t.Fatalf("stale runtime=%s %v", result.Content, err)
 	}
-	f.service.config.now = clock
+	clock.Advance(-2 * time.Minute)
 	finished := observed
 	finished.Type, finished.IdempotencyKey, finished.Data.Sequence, finished.Data.Outcome = "run.finished", "runtime-finished", 3, "succeeded"
 	finishedRuntime := runtime
@@ -1040,10 +1050,19 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if err != nil || json.Unmarshal(runResult.Content, &run) != nil || run.Attempt == nil || run.Attempt.ClaimReleasedAt == nil || run.Attempt.Current || !reflect.DeepEqual(run.Attempt.Finalization, projected.Finalization) || !reflect.DeepEqual(run.Attempt.Runtime.Completion, projected.Runtime.Completion) {
 		t.Fatalf("run projection lost host result or release evidence: %s %v", runResult.Content, err)
 	}
-	var decisionID string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision' ORDER BY sequence DESC LIMIT 1", f.project.OrganizationID, f.project.ID, second.WorkItemID).Scan(&decisionID); err != nil {
+	var decisionRecord eventstore.Event
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(eventstore.WorkflowTransitionReader)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		var err error
+		decisionRecord, err = reader.LatestSchedulerDecision(t.Context(), f.project.ID, second.WorkItemID)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
+	decisionID := decisionRecord.ID
 	decision := explanation.Eligibility.Latest
 	if decision == nil || decision.EvidenceID != decisionID || decision.Source != "native_claim" || decision.Outcome != "claimed" || !decision.Historical || explanation.Eligibility.Source != explain.SourceAvailable {
 		t.Fatalf("recorded claim history missing: %#v", explanation.Eligibility)
@@ -1211,7 +1230,16 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 			}
 		})
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE organization_id=? AND project_id=? AND token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", f.project.OrganizationID, f.project.ID, apikey.HashToken(f.token)); err != nil {
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("current token status=%d: %v", status, err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.AccessTokenGrant(t.Context(), credential.ID, f.project.ID); err != nil {
+			return err
+		}
+		return w.DeleteAccessTokenGrant(t.Context(), credential.ID, f.project.ID)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, tool := range []string{operatortool.ExplainItem, operatortool.BoardReceipt, operatortool.BoardSession} {
@@ -1230,18 +1258,81 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 }
 
 func TestOperatorArchivedWorkReads(t *testing.T) {
-	f := newAttemptDiffFixture(t)
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	details := &memoryRunDetails{}
+	var objectMu sync.Mutex
+	objects := make(map[string][]byte)
+	content := func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+		objectMu.Lock()
+		defer objectMu.Unlock()
+		if request.Write {
+			objects[request.Reference.Key] = bytes.Clone(request.Data)
+		}
+		data, found := objects[request.Reference.Key]
+		if !found {
+			return nil, artifact.ErrMissing
+		}
+		return bytes.Clone(data), nil
+	}
+	f := claimedAttemptDiffFixture(t, false, Config{now: clock.Now, RunDetails: details, Content: content})
+	f.start(t)
 	requireNativeStatus(t, f.post(t, f.request(1, tracker.AttemptDiffFile{Path: "first.go", Status: "added", Additions: 1, Patch: "+first"}, tracker.AttemptDiffFile{Path: "second.go", Status: "added", Additions: 1, Patch: "+second"})), http.StatusAccepted)
 	at := f.service.config.now()
-	f.service.config.now = func() time.Time { return at }
 	finished := tracker.NativeRunEvent{
 		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("event")}, Type: "run.finished", SchemaVersion: 1,
 		Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
 			LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded",
 			Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "completed", HeartbeatAt: at}},
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
-		f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, finished), http.StatusOK)
+	path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, finished), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/release", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+	current := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "archive-terminal"}, ExpectedRevision: current.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
+	clock.Advance(74 * time.Hour)
+	peer := newNativeFixture(t, f.service, f.project.OrganizationID, "archive-peer")
+	peerIssue := peer.create(t, "Unrelated archive peer")
+	var attempt leasestore.Attempt
+	var revision eventstore.CollaborationVersion
+	var events []eventstore.Event
+	var diff leasestore.AttemptDiff
+	var diffArchive artifactstore.ArchiveObject
+	var peerRevision eventstore.CollaborationVersion
+	var source corestore.WorkItem
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		attempt, err = r.Attempt(t.Context(), f.attempt)
+		if err != nil {
+			return err
+		}
+		revision, err = r.CollaborationVersion(t.Context(), string(f.issue.WorkItemID), 1)
+		if err != nil {
+			return err
+		}
+		diff, err = r.LatestAttemptDiff(t.Context(), f.project.ID, f.attempt, tracker.DiffSourceAttempt)
+		if err != nil {
+			return err
+		}
+		diffArchive, err = r.ArchiveObject(t.Context(), diff.ArchiveID)
+		if err != nil {
+			return err
+		}
+		events, err = r.HistoryEvents(t.Context(), f.project.ID, f.issue.WorkItemID, 0, 100)
+		if err != nil {
+			return err
+		}
+		source, err = r.WorkItem(t.Context(), f.project.ID, f.issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		peerRevision, err = r.CollaborationVersion(t.Context(), string(peerIssue.WorkItemID), int64(peerIssue.Revision))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 || len(events) >= 100 || events[len(events)-1].Sequence != source.EventSequence || attempt.PayloadObjectKey == "" || revision.PayloadObjectKey == "" || diffArchive.Reference.Key == "" {
+		t.Fatalf("incomplete canonical archive sources: events=%d sequence=%d attempt=%+v", len(events), source.EventSequence, attempt)
+	}
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	call := hostedContextProtocol(t, f.service, ctx, "stdio")
 	read := func(t *testing.T, name string, args map[string]any) []byte {
@@ -1261,20 +1352,21 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 	}
 	item := string(f.issue.WorkItemID)
 	cases := []struct {
-		name    string
-		args    map[string]any
-		fetches int
-		hot     []byte
+		name      string
+		args      map[string]any
+		fetches   int
+		objectKey string
+		hot       []byte
 	}{
-		{operatortool.WorkHistory, map[string]any{"reference": item, "limit": 1}, 1, nil},
-		{operatortool.WorkRuns, map[string]any{"reference": item}, 0, nil},
-		{operatortool.WorkAttemptReceipt, map[string]any{"reference": item, "native_attempt_id": f.attempt}, 1, nil},
-		{operatortool.WorkAttemptReceipt, map[string]any{"reference": item, "attempt_id": 42}, 1, nil},
-		{operatortool.WorkItem, map[string]any{"reference": item, "view": "recovery"}, 1, nil},
-		{operatortool.WorkVersion, map[string]any{"reference": item, "revision": 1}, 1, nil},
-		{operatortool.GetNativeRun, map[string]any{"work_item_id": item, "attempt_id": f.attempt}, 1, nil},
-		{operatortool.GetAttemptDiff, map[string]any{"work_item_id": item, "attempt_id": f.attempt, "limit": 1}, 1, nil},
-		{operatortool.GetWorkItemDiff, map[string]any{"work_item_id": item, "limit": 1}, 1, nil},
+		{operatortool.WorkHistory, map[string]any{"reference": item, "limit": 1}, 1, events[0].PayloadObjectKey, nil},
+		{operatortool.WorkRuns, map[string]any{"reference": item}, 0, attempt.PayloadObjectKey, nil},
+		{operatortool.WorkAttemptReceipt, map[string]any{"reference": item, "native_attempt_id": f.attempt}, 1, attempt.PayloadObjectKey, nil},
+		{operatortool.WorkAttemptReceipt, map[string]any{"reference": item, "attempt_id": 42}, 1, attempt.PayloadObjectKey, nil},
+		{operatortool.WorkItem, map[string]any{"reference": item, "view": "recovery"}, 1, attempt.PayloadObjectKey, nil},
+		{operatortool.WorkVersion, map[string]any{"reference": item, "revision": 1}, 1, revision.PayloadObjectKey, nil},
+		{operatortool.GetNativeRun, map[string]any{"work_item_id": item, "attempt_id": f.attempt}, 1, attempt.PayloadObjectKey, nil},
+		{operatortool.GetAttemptDiff, map[string]any{"work_item_id": item, "attempt_id": f.attempt, "limit": 1}, 1, diffArchive.Reference.Key, nil},
+		{operatortool.GetWorkItemDiff, map[string]any{"work_item_id": item, "limit": 1}, 1, diffArchive.Reference.Key, nil},
 	}
 	for i := range cases {
 		cases[i].hot = read(t, cases[i].name, cases[i].args)
@@ -1290,80 +1382,81 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 	}
 	args := map[string]any{"reference": item, "limit": 1, "cursor": history.Data.NextCursor}
 	cases = append(cases, struct {
-		name    string
-		args    map[string]any
-		fetches int
-		hot     []byte
-	}{operatortool.WorkHistory, args, 1, read(t, operatortool.WorkHistory, args)})
-	var lastEvent int64
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT max(sequence) FROM collaboration_events WHERE work_item_id=?", item).Scan(&lastEvent); err != nil {
+		name      string
+		args      map[string]any
+		fetches   int
+		objectKey string
+		hot       []byte
+	}{operatortool.WorkHistory, args, 1, events[1].PayloadObjectKey, read(t, operatortool.WorkHistory, args)})
+	allHistory := read(t, operatortool.WorkHistory, map[string]any{"reference": item, "limit": 100})
+	f.service.tokenUseWork.Wait()
+	if err := f.service.archiveClosedNativeIssuesTenant(t.Context(), f.project.OrganizationID, clock.Now()); err != nil {
 		t.Fatal(err)
 	}
-	allHistory := read(t, operatortool.WorkHistory, map[string]any{"reference": item, "limit": 100})
-	historyTable := archiveTestTable(t, f.service, "collaboration_events", "work_item_id=?", item)
-	objects := map[string][]byte{}
-	for _, part := range []struct {
-		kind, subject string
-		first, last   int64
-		tables        []attachment.ArchiveTable
-	}{
-		{"run", f.attempt, 0, 0, []attachment.ArchiveTable{
-			archiveTestTable(t, f.service, "native_attempts", "id=?", f.attempt),
-			archiveTestTable(t, f.service, "native_attempt_events", "attempt_id=?", f.attempt),
-			archiveTestTable(t, f.service, "attempt_diffs", "attempt_id=?", f.attempt),
-			archiveTestTable(t, f.service, "attempt_diff_files", "diff_id IN (SELECT id FROM attempt_diffs WHERE attempt_id=?)", f.attempt),
-		}},
-		{"revision", item, 1, 1, []attachment.ArchiveTable{archiveTestTable(t, f.service, "collaboration_versions", "record_id=?", item)}},
-		{"history", item, 1, lastEvent, []attachment.ArchiveTable{historyTable}},
-	} {
-		ref, data := publishTestSection(t, f.nativeFixture, item, part.kind, part.subject, part.first, part.last, part.tables...)
-		objects[ref.Key] = data
-	}
-	for _, statement := range []string{
-		`UPDATE native_attempts SET data_json=json_remove(data_json,'$.runtime')`,
-		`DELETE FROM attempt_diff_files`,
-		`DROP TRIGGER collaboration_versions_no_delete`,
-		`DELETE FROM collaboration_versions`,
-		`DROP TRIGGER collaboration_events_no_update`,
-		`UPDATE collaboration_events SET data_json='{}' WHERE type='issue.created'`,
-	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
-			t.Fatal(err)
+	var pointer attachmentstore.StorageArchivePointer
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		owner, ok := r.(attachmentstore.StorageArchiveReader)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
 		}
+		var err error
+		pointer, err = owner.StorageArchivePointer(t.Context(), f.project.ID, f.issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		retainedAttempt, err := r.Attempt(t.Context(), f.attempt)
+		if err != nil {
+			return err
+		}
+		retainedRevision, err := r.CollaborationVersion(t.Context(), item, 1)
+		if err != nil {
+			return err
+		}
+		retainedEvents, err := r.HistoryEvents(t.Context(), f.project.ID, f.issue.WorkItemID, 0, 100)
+		if err != nil {
+			return err
+		}
+		retainedDiff, err := r.LatestAttemptDiff(t.Context(), f.project.ID, f.attempt, tracker.DiffSourceAttempt)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(retainedAttempt, attempt) || !reflect.DeepEqual(retainedRevision, revision) || !reflect.DeepEqual(retainedEvents, events) || !reflect.DeepEqual(retainedDiff, diff) {
+			return errors.New("archival changed immutable run, revision, history or diff authority")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	fetches := 0
-	f.service.config.ArchiveReader = func(_ context.Context, ref attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
-		fetches++
-		return entryauthority.ArchiveResponse{Data: objects[ref.Key]}, nil
+	if pointer.Stamp.Revision != source.Revision || pointer.ThroughHistory != source.EventSequence || pointer.Root.Reference.SchemaVersion != 2 {
+		t.Fatalf("archive source stamp = %+v", pointer)
+	}
+	objectMu.Lock()
+	rootBytes := bytes.Clone(objects[pointer.Root.Reference.Key])
+	objectMu.Unlock()
+	var root attachmentstore.StorageArchiveDocument
+	if err := json.Unmarshal(archiveTestBytes(t, rootBytes), &root); err != nil || root.Kind != "root" || root.WorkItemID != f.issue.WorkItemID || root.Attempt == nil || root.Attempt.ID != f.attempt {
+		t.Fatalf("archive root lost source identity: %+v error=%v", root, err)
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			fetches = 0
+			details.mu.Lock()
+			details.keyReads = map[string]int{}
+			details.mu.Unlock()
 			archived := read(t, test.name, test.args)
 			assertArchiveGolden(t, test.hot, archived)
-			if fetches != test.fetches {
-				t.Fatalf("section fetches=%d want %d", fetches, test.fetches)
+			details.mu.Lock()
+			fetches, peerFetches := details.keyReads[test.objectKey], details.keyReads[peerRevision.PayloadObjectKey]
+			totalFetches := 0
+			for _, count := range details.keyReads {
+				totalFetches += count
+			}
+			details.keyReads = nil
+			details.mu.Unlock()
+			t.Logf("physical object reads=%d selected payload reads=%d", totalFetches, fetches)
+			if fetches != test.fetches || peerFetches != 0 {
+				t.Fatalf("selected payload fetches=%d want=%d peer=%d", fetches, test.fetches, peerFetches)
 			}
 		})
-	}
-
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_archive_sections WHERE work_item_id=? AND kind='history'", item); err != nil {
-		t.Fatal(err)
-	}
-	boundary := len(historyTable.Rows) / 2
-	for _, part := range []struct{ start, end int }{{0, boundary}, {boundary, len(historyTable.Rows)}} {
-		table := historyTable
-		table.Rows = table.Rows[part.start:part.end]
-		index := slices.Index(table.Columns, "sequence")
-		var first, last int64
-		if err := json.Unmarshal(table.Rows[0][index], &first); err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(table.Rows[len(table.Rows)-1][index], &last); err != nil {
-			t.Fatal(err)
-		}
-		ref, data := publishTestSection(t, f.nativeFixture, item, "history", item, first, last, table)
-		objects[ref.Key] = data
 	}
 	var want struct {
 		Data tracker.Page[tracker.CollaborationEvent] `json:"data"`
@@ -1371,33 +1464,53 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 	if err := json.Unmarshal(allHistory, &want); err != nil {
 		t.Fatal(err)
 	}
-	var events []tracker.CollaborationEvent
+	var traversed []tracker.CollaborationEvent
 	cursor := ""
 	pages := 0
+	limit := (len(want.Data.Items) + 1) / 2
 	for {
-		args := map[string]any{"reference": item, "limit": 100}
+		args := map[string]any{"reference": item, "limit": limit}
 		if cursor != "" {
 			args["cursor"] = cursor
 		}
-		fetches = 0
+		details.mu.Lock()
+		details.keyReads = map[string]int{}
+		details.mu.Unlock()
 		var page struct {
 			Data tracker.Page[tracker.CollaborationEvent] `json:"data"`
 		}
 		if err := json.Unmarshal(read(t, operatortool.WorkHistory, args), &page); err != nil {
 			t.Fatal(err)
 		}
-		if fetches != 1 || len(page.Data.Items) == 0 {
-			t.Fatalf("history page fetches=%d items=%d", fetches, len(page.Data.Items))
+		if len(page.Data.Items) == 0 {
+			t.Fatal("history page omitted retained events")
 		}
-		events = append(events, page.Data.Items...)
+		details.mu.Lock()
+		for _, event := range page.Data.Items {
+			index := slices.IndexFunc(events, func(record eventstore.Event) bool { return record.ID == event.ID })
+			if index < 0 || details.keyReads[events[index].PayloadObjectKey] != 1 {
+				details.mu.Unlock()
+				t.Fatalf("history did not fetch exact selected event %s once", event.ID)
+			}
+		}
+		if details.keyReads[peerRevision.PayloadObjectKey] != 0 {
+			details.mu.Unlock()
+			t.Fatal("history fetched a peer project's payload")
+		}
+		details.keyReads = nil
+		details.mu.Unlock()
+		traversed = append(traversed, page.Data.Items...)
 		pages++
 		if page.Data.NextCursor == "" {
 			break
 		}
+		if page.Data.NextCursor == cursor {
+			t.Fatal("history cursor did not advance")
+		}
 		cursor = page.Data.NextCursor
 	}
-	if pages != 2 || !reflect.DeepEqual(events, want.Data.Items) {
-		t.Fatal("section pagination changed history records or anchors")
+	if pages != 2 || !reflect.DeepEqual(traversed, want.Data.Items) {
+		t.Fatal("pagination changed history records or anchors")
 	}
 }
 

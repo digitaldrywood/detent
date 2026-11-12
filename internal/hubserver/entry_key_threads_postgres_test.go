@@ -33,6 +33,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	key := hostedSharedKey(38)
 	cfg := startupConfig(connection)
+	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	entryRevoked := false
@@ -51,7 +52,9 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	for _, org := range []tracker.OrganizationID{"org_startup", "org_other"} {
-		seedStartupOrganization(t, store.postgres, org)
+		binding := *cfg.Hosted
+		binding.OrganizationID, binding.WorkOSOrganizationID = string(org), "provider_"+string(org)
+		seedStartupOrganization(t, store.postgres, org, &binding)
 		if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			envelope, err := cfg.SecretKeys.Seal(bytes.Repeat([]byte{0x35}, 32), accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
 			if err != nil {
@@ -145,8 +148,8 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if service.database.reader != nil || service.database.db != nil {
-		t.Fatal("fixture must use PostgreSQL without the legacy database")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("fixture requires the PostgreSQL repository")
 	}
 	t.Run("hosted_service_grants", func(t *testing.T) {
 		for _, tc := range []struct {

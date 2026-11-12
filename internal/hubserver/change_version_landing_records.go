@@ -23,6 +23,18 @@ func (s *Service) hydrateChangeVersionWithRows(ctx context.Context, scope native
 	if err != nil {
 		return version, err
 	}
+	if frozen := row.FrozenLanding; frozen != nil {
+		if frozen.OrganizationID != scope.organization || frozen.ProjectID != scope.project || frozen.ChangeID != row.ChangeID || frozen.VersionID != row.ID || frozen.HeadSHA != row.HeadSHA {
+			return version, artifact.ErrIntegrity
+		}
+		selected := *frozen
+		selected.WorkItemID = item
+		landing, err := content.VersionLanding(ctx, selected)
+		if err != nil {
+			return version, err
+		}
+		version.LandingQuality = landing.Quality
+	}
 	request := tenantstore.ChangeVersionRequest{WorkItemID: item, Reference: tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}}
 	if captured == nil {
 		captured = &tenantstore.ChangeVersionRows{OrganizationID: scope.organization, ProjectID: scope.project, Request: request}

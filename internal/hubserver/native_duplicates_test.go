@@ -3,145 +3,102 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
-	"path/filepath"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
-	"unsafe"
 
-	"modernc.org/libc"
-	sqlite3 "modernc.org/sqlite/lib"
-
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type duplicateCostConnector struct {
-	timedConnector
-	steps *int64
-}
-
-func (c duplicateCostConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := c.timedConnector.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	measured := &duplicateCostConn{timedConn: conn.(*timedConn)}
-	callback := func(*libc.TLS, uintptr) int32 {
-		if measured.searching {
-			*c.steps += 100
-		}
-		return 0
-	}
-	raw := conn.(*timedConn).Conn
-	database := reflect.ValueOf(raw).Elem().FieldByName("db").Uint()
-	tls := libc.NewTLS()
-	sqlite3.Xsqlite3_progress_handler(tls, uintptr(database), 100, *(*uintptr)(unsafe.Pointer(&callback)), 0)
-	tls.Close()
-	measured.callback = callback
-	return measured, nil
-}
-
-type duplicateCostConn struct {
-	*timedConn
-	callback  func(*libc.TLS, uintptr) int32
-	searching bool
-}
-
-func (c *duplicateCostConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	c.searching = strings.Contains(query, "native_work_search_postings") || strings.Contains(query, "native_work_fts") || strings.Contains(query, "native_work_scoped_fts")
-	return c.timedConn.QueryContext(ctx, query, args)
-}
 
 func TestNativeDuplicateCandidateCrowding(t *testing.T) {
 	for _, crowd := range []string{"project", "organization", "archived", "invisible", "partial coverage", "eligible"} {
 		t.Run(crowd, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
-			target := f.create(t, "Separate issue context")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=?,actor_principal_id=? WHERE native_id=?", "", "visible-reporter", target.WorkItemID); err != nil {
-				t.Fatal(err)
-			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID,
-				credential: apiCredential{HostedRole: "reporter"}, sourceActor: &tracker.Actor{Kind: "human", PrincipalID: "visible-reporter"}}
+			target := f.createIndependent(t, "Separate issue context")
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(target.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "crowding-comment"}, Body: "Repository association deadlocks"})
 			requireNativeStatus(t, response, http.StatusOK)
-			partial := f.create(t, "Repository association")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='',actor_principal_id=? WHERE native_id=?", "visible-reporter", partial.WorkItemID); err != nil {
-				t.Fatal(err)
+			partial := f.createIndependent(t, "Repository association")
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("fixture credential=%d %v", status, err)
 			}
-			seed := target
-			if crowd == "project" || crowd == "organization" {
+			credential.HostedRole = "reporter"
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential, sourceActor: &target.Actor}
+			creator := f
+			if crowd == "project" || crowd == "organization" || crowd == "invisible" {
 				organization := f.project.OrganizationID
 				if crowd == "organization" {
-					organization = ""
+					organization += "_second"
 				}
-				foreign := newNativeFixture(t, f.service, organization, "foreign-crowding")
-				seed = foreign.create(t, "Repository association deadlocks")
+				creator = newNativeFixture(t, f.service, organization, "foreign-crowding")
+				if crowd == "invisible" {
+					foreign, _, err := f.service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(creator.token), "", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: foreign.ID, ProjectID: f.project.ID})
+					}); err != nil {
+						t.Fatal(err)
+					}
+					creator.project, creator.base = f.project, f.base
+				}
 			}
-			archived, principal := crowd == "archived", "visible-reporter"
-			if crowd == "invisible" {
-				principal = "another-reporter"
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
-SELECT 3 UNION ALL SELECT n+1 FROM seed WHERE n<127)
-INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id,archived)
-SELECT 'wi_crowd_'||i.project_id||'_'||seed.n,i.organization_id,i.project_id,seed.n,i.workflow_state_id,
-CASE WHEN ? THEN 'association' ELSE 'Repository association deadlocks' END,?,'','open','','','',i.created_at,i.updated_at,'human',?,?
-FROM seed CROSS JOIN issues i WHERE i.native_id=?`, crowd == "partial coverage", func() string {
+			for number := 3; number <= 127; number++ {
+				title := "Repository association deadlocks " + strconv.Itoa(number)
 				if crowd == "partial coverage" {
-					return "association"
+					title = "association " + strconv.Itoa(number)
 				}
-				return "Repository association deadlocks"
-			}(), principal, archived, seed.WorkItemID); err != nil {
-				t.Fatal(err)
+				item := creator.createIndependent(t, title)
+				if crowd == "archived" {
+					response := performHubAPIRequest(t, creator.service, http.MethodPost, creator.base+"/work-items/"+string(item.WorkItemID)+"/archive", creator.token, archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive-" + string(item.WorkItemID)}, ExpectedRevision: item.Revision})
+					requireNativeStatus(t, response, http.StatusOK)
+				}
 			}
-			var steps int64
-			pool := sql.OpenDB(duplicateCostConnector{timedConnector: timedConnector{driver: f.service.database.reader.Driver(), dsn: sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout)}, steps: &steps})
-			pool.SetMaxOpenConns(1)
-			t.Cleanup(func() {
-				if err := pool.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			for _, search := range []string{"repos associ deadlock", "repository association absent"} {
-				query, args, err := nativeIssueSelection(scope, url.Values{"q": {search}}, false)
-				if err != nil {
+			for _, org := range []tracker.OrganizationID{f.project.OrganizationID, creator.project.OrganizationID} {
+				refreshNativeDuplicateSearchFixture(t, f.service, org)
+			}
+			for _, text := range []string{"repos associ deadlock", "repository association absent"} {
+				ids := map[tracker.NativeWorkItemID]bool{}
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					hits, err := r.Search(t.Context(), searchstore.Query{Kind: "work", ProjectID: scope.project, Reporter: new(target.Actor.PrincipalID), Text: text, Limit: 200})
+					for _, hit := range hits {
+						ids[hit.Document.WorkItemID] = true
+					}
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
-				ids, err := nativePageIDs(t.Context(), pool, query, args...)
-				wantCount := 2
+				want := 2
 				if crowd == "eligible" || crowd == "partial coverage" {
-					wantCount = 127
+					want = 127
 				}
-				if err != nil || len(ids) != wantCount || !slices.Contains(ids, string(target.WorkItemID)) || !slices.Contains(ids, string(partial.WorkItemID)) {
-					t.Fatalf("search=%q ids=%v want %d matches err=%v", search, ids, wantCount, err)
+				if len(ids) != want || !ids[target.WorkItemID] || !ids[partial.WorkItemID] {
+					t.Fatalf("search=%q ids=%v want %d matches", text, ids, want)
 				}
 			}
 			if crowd == "eligible" {
 				return
 			}
-			for _, request := range []tracker.CreateIssue{
-				{Title: "Repository association deadlocks"},
-				{Title: "Separate observed symptom", Body: "Repository association deadlocks"},
-			} {
-				steps = 0
-				matches, err := resolveNativeDuplicates(t.Context(), pool, scope, request, f.service.config.now(), false)
-				t.Logf("crowd=%s title=%q steps=%d", crowd, request.Title, steps)
-				if steps == 0 || steps > 100000 {
-					t.Errorf("crowded duplicate search used %d VM steps, budget 100000", steps)
-				}
-				if err != nil || len(matches) != 2 || !slices.ContainsFunc(matches, func(hit possibleDuplicate) bool { return hit.WorkItemID == target.WorkItemID }) || !slices.ContainsFunc(matches, func(hit possibleDuplicate) bool { return hit.WorkItemID == partial.WorkItemID }) {
-					t.Errorf("request=%+v matches=%+v err=%v", request, matches, err)
+			for _, request := range []tracker.CreateIssue{{Title: "Repository association deadlocks"}, {Title: "Separate observed symptom", Body: "Repository association deadlocks"}} {
+				matches, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, request, false)
+				if err != nil || matches == nil || !matches.available || len(matches.matches) != 2 || !slices.ContainsFunc(matches.matches, func(hit possibleDuplicate) bool { return hit.WorkItemID == target.WorkItemID }) || !slices.ContainsFunc(matches.matches, func(hit possibleDuplicate) bool { return hit.WorkItemID == partial.WorkItemID }) {
+					t.Fatalf("request=%+v matches=%+v err=%v", request, matches, err)
 				}
 			}
 		})
@@ -152,138 +109,120 @@ func TestNativeSearchScopedCost(t *testing.T) {
 	for _, state := range []string{"ready", "rebuilding", "dirty"} {
 		t.Run(state, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
-			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-				t.Fatal(err)
-			}
-			target := f.create(t, "Repository association")
-			switch state {
-			case "rebuilding":
-				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts;
-UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
-					t.Fatal(err)
-				}
-			case "dirty":
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(target.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "dirty-cost-comment"}, Body: "Separate context"})
-				requireNativeStatus(t, response, http.StatusOK)
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_principal_id=? WHERE native_id=?", "updated-reporter", target.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-			}
+			target := f.createIndependent(t, "Repository association")
 			foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-search-cost")
-			seed := foreign.create(t, "Repository association deadlocks")
-			var steps int64
-			pool := sql.OpenDB(duplicateCostConnector{timedConnector: timedConnector{driver: f.service.database.reader.Driver(), dsn: sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout)}, steps: &steps})
-			pool.SetMaxOpenConns(1)
-			t.Cleanup(func() {
-				if err := pool.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			pending, pendingArgs := nativeSearchIndexPending(scope)
-			var incomplete bool
-			if err := pool.QueryRowContext(t.Context(), "SELECT "+pending, pendingArgs...).Scan(&incomplete); err != nil {
-				t.Fatal(err)
+			seed := foreign.createIndependent(t, "Repository association deadlocks")
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("fixture credential=%d %v", status, err)
 			}
-			if incomplete != (state != "ready") {
-				t.Fatalf("index incomplete=%t for state %s", incomplete, state)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			adminValue, ok := projectRecordDatabases.Load(f.service.database.postgres)
+			if !ok {
+				t.Fatal("fixture PostgreSQL administration connection unavailable")
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "CREATE VIRTUAL TABLE scoped_cost_vocabulary USING fts5vocab(native_work_scoped_fts,row)"); err != nil {
-				t.Fatal(err)
-			}
+			admin := adminValue.(*sql.DB)
 			count := 1
-			baselines := map[string]int64{}
 			scores := map[string]float64{}
 			for _, size := range []int{1, 300, 3000, 6000} {
 				t.Run(strconv.Itoa(size), func(t *testing.T) {
 					if size > count {
-						_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
-SELECT ? UNION ALL SELECT n+1 FROM seed WHERE n<?)
-INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id)
-SELECT 'wi_scoped_cost_'||seed.n,i.organization_id,i.project_id,seed.n,i.workflow_state_id,i.title,'Repository association deadlocks','','open','','','',i.created_at,i.updated_at,i.actor_kind,i.actor_principal_id
-FROM seed CROSS JOIN issues i WHERE i.native_id=?`, count+1, size, seed.WorkItemID)
-						if err != nil {
+						if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,project_id,native_id,number,revision,title,body_object_key,issue_contract_object_key,actor_kind,actor_principal_id,workflow_state_name,created_at,updated_at,native_created_at,native_updated_at,last_activity_at)
+SELECT organization_id,project_id,'wi_scoped_cost_'||n,n,1,title,body_object_key,issue_contract_object_key,actor_kind,actor_principal_id,workflow_state_name,created_at,updated_at,native_created_at,native_updated_at,last_activity_at FROM issues CROSS JOIN generate_series($1::bigint,$2::bigint) n WHERE organization_id=$3 AND project_id=$4 AND native_id=$5`, count+1, size, f.project.OrganizationID, foreign.project.ID, seed.WorkItemID); err != nil {
 							t.Fatal(err)
 						}
 						count = size
 					}
-					var postings int
-					prefix := strings.ToLower(nativeSearchScopes(scope, "")[0]) + "_"
-					if err := pool.QueryRowContext(t.Context(), "SELECT coalesce(sum(doc),0) FROM scoped_cost_vocabulary WHERE term>=? AND term<?", prefix+"repos", prefix+"repot").Scan(&postings); err != nil {
-						t.Fatal(err)
+					refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+					var indexed int
+					if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM search_documents WHERE organization_id=$1 AND project_id=$2 AND kind='issue' AND NOT placeholder AND indexed_revision=revision", f.project.OrganizationID, foreign.project.ID).Scan(&indexed); err != nil || indexed != size {
+						t.Fatalf("foreign index population=%d want=%d error=%v", indexed, size, err)
 					}
-					wantPostings := 1
-					if state == "rebuilding" {
-						wantPostings = 0
+					if state != "ready" {
+						response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(target.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "pending-cost-" + strconv.Itoa(size)}, ExpectedRevision: target.Revision, Labels: &[]string{"scope-marker-" + strconv.Itoa(size)}})
+						requireNativeStatus(t, response, http.StatusOK)
+						decodeHubResponse(t, response, &target)
+						if state == "dirty" {
+							response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(target.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "dirty-cost-comment-" + strconv.Itoa(size)}, Body: "Separate context"})
+							requireNativeStatus(t, response, http.StatusOK)
+						}
 					}
-					if postings != wantPostings {
-						t.Fatalf("scope-qualified repository prefix has %d postings, want %d", postings, wantPostings)
-					}
-					for _, mode := range []string{"issues", "duplicates", "prefix hits and coverage", "plain hits and coverage"} {
-						steps = 0
-						switch mode {
-						case "issues":
-							statement, args, err := nativeIssueSelection(scope, url.Values{"q": {"repos associ deadlock"}}, false)
+					for _, text := range []string{"repos associ deadlock", "repository repository association association"} {
+						if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+							hits, err := r.Search(t.Context(), searchstore.Query{Kind: "work", ProjectID: f.project.ID, Text: text, Limit: 100})
 							if err != nil {
-								t.Fatal(err)
+								return err
 							}
-							ids, err := nativePageIDs(t.Context(), pool, statement, args...)
-							if err != nil || !slices.Equal(ids, []string{string(target.WorkItemID)}) {
-								t.Fatalf("ids=%v err=%v", ids, err)
-							}
-						case "duplicates":
-							matches, err := resolveNativeDuplicates(t.Context(), pool, scope, tracker.CreateIssue{Title: "Repository association deadlocks"}, f.service.config.now(), false)
-							wantMatches := 1
-							if incomplete {
-								wantMatches = 0
-							}
-							if err != nil || len(matches) != wantMatches || (wantMatches > 0 && matches[0].WorkItemID != target.WorkItemID) {
-								t.Fatalf("matches=%v err=%v", matches, err)
-							}
-						default:
-							expressions := nativeSearchExpressions("repository repository association association")
-							if mode == "prefix hits and coverage" {
-								expressions = nativeSearchExpressions("repos associ")
-							} else {
-								for i := range expressions {
-									expressions[i] = strings.TrimSuffix(expressions[i], "*")
+							ids := map[tracker.NativeWorkItemID]bool{}
+							var score float64
+							for _, hit := range hits {
+								ids[hit.Document.WorkItemID] = true
+								score += hit.Score
+								if hit.Coverage != 2 {
+									t.Fatalf("hits=%+v want 2 covered terms", hits)
 								}
 							}
-							statement, args := nativeSearchHits(scope, "", expressions)
-							var hits, coverage int
-							var score float64
-							if err := pool.QueryRowContext(t.Context(), statement+"SELECT count(*),coalesce(sum(terms),0),coalesce(sum(search_score),0) FROM ranked WHERE hit=1", args...).Scan(&hits, &coverage, &score); err != nil {
-								t.Fatal(err)
-							}
-							if hits != 1 || coverage != 2 {
-								t.Fatalf("hits=%d coverage=%d, want 1 hit covering 2 terms", hits, coverage)
+							if len(ids) != 1 || !ids[target.WorkItemID] {
+								t.Fatalf("foreign population %d displaced scoped result: %+v", size, hits)
 							}
 							if size == 1 {
-								scores[mode] = score
+								scores[text] = score
 							}
-							if incomplete && score != scores[mode] {
-								t.Errorf("%s fallback score changed from %g to %g with foreign documents", mode, scores[mode], score)
+							if state != "ready" && score != scores[text] {
+								t.Fatalf("fallback score changed with foreign inventory: got=%v want=%v", score, scores[text])
 							}
+							reader := r.(searchstore.DuplicateSourceReader)
+							availability, err := reader.DuplicateSourceState(t.Context(), f.project.ID)
+							if err != nil {
+								return err
+							}
+							if availability.Ready != (state == "ready") {
+								t.Fatalf("index ready=%t for state %s", availability.Ready, state)
+							}
+							page, err := reader.DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: f.project.ID, Text: "Repository association deadlocks", Now: f.service.config.now()})
+							if state != "ready" {
+								if !errors.Is(err, searchstore.ErrIndexPending) {
+									t.Fatalf("incomplete duplicate source=%+v err=%v", page, err)
+								}
+								return nil
+							}
+							if err != nil {
+								return err
+							}
+							if len(page.Sources) != 1 || page.Sources[0].Document.WorkItemID != target.WorkItemID {
+								t.Fatalf("foreign population %d crowded duplicate source: %+v", size, page)
+							}
+							return nil
+						}); err != nil {
+							t.Fatal(err)
 						}
-						t.Logf("mode=%s foreign documents=%d VM steps=%d", mode, size, steps)
-						if steps == 0 && (!incomplete || mode != "duplicates") {
-							t.Fatal("search cost was not measured")
-						}
-						if size == 1 {
-							baselines[mode] = steps
-						}
-						growthBudget := int64(2000)
-						if incomplete {
-							growthBudget = 200
-						}
-						if steps > baselines[mode]+growthBudget {
-							t.Errorf("%s grew from %d to %d VM steps", mode, baselines[mode], steps)
-						}
+					}
+					duplicates, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, tracker.CreateIssue{Title: "Repository association deadlocks"}, false)
+					want := 1
+					if state != "ready" {
+						want = 0
+					}
+					if err != nil || duplicates == nil || len(duplicates.matches) != want || duplicates.available != (state == "ready") || want == 1 && duplicates.matches[0].WorkItemID != target.WorkItemID {
+						t.Fatalf("Hub duplicate outcome for state %s with %d indexed foreign issues: %+v error=%v", state, size, duplicates, err)
 					}
 				})
 			}
 		})
 	}
+}
+
+func refreshNativeDuplicateSearchFixture(t *testing.T, service *Service, organization tracker.OrganizationID) {
+	t.Helper()
+	for range 20000 {
+		more, err := searchstore.NewContent(service.runDetailStore()).RefreshOne(t.Context(), tenantSearchRepository{service.config.TenantRepository}, organization)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			return
+		}
+	}
+	t.Fatal("search fixture did not finish its bounded source population")
 }
 
 func TestNativeDuplicateFiling(t *testing.T) {
@@ -312,34 +251,38 @@ func TestNativeDuplicateFiling(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC).AddDate(0, 0, -test.closedDays)
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+			service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
 			f := newNativeFixture(t, service, "", "duplicates")
 			first := f.create(t, "Runner checkout deadlocks")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ? WHERE native_id = ?", "Checkout hangs during repository association"+issueContractTestSections, first.WorkItemID); err != nil {
-				t.Fatal(err)
-			}
+			body := "Checkout hangs during repository association" + issueContractTestSections
+			response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(first.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "candidate-body"}, ExpectedRevision: first.Revision, Body: &body})
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &first)
 			foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign")
 			foreign.create(t, test.title)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge = ? WHERE id = ?", test.enabled, f.project.ID); err != nil {
-				t.Fatal(err)
-			}
+			setNativeDuplicateChallengeFixture(t, f, test.enabled)
 			if test.closedDays != 0 {
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(first.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "close"}, ExpectedRevision: first.Revision, State: "Done", Reason: "user_requested"})
 				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &first)
 				now = now.AddDate(0, 0, test.closedDays)
 			}
 			if test.archived {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", first.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(first.WorkItemID)+"/archive", f.token, archiveRequest(first, "archive-candidate"))
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &first)
 			}
+			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "filing"}, Title: test.title, Body: test.body + issueContractTestSections, State: test.state}
 			searchTrace := installNativeBrowserPathFault(t, f.service)
 			searchTrace.observe.Store(true)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 			searchTrace.observe.Store(false)
 			if !test.enabled && (searchTrace.readerSearches.Load() != 0 || searchTrace.writerSearches.Load() != 0) {
 				t.Fatalf("disabled challenge searched: reader=%d writer=%d", searchTrace.readerSearches.Load(), searchTrace.writerSearches.Load())
+			}
+			if test.enabled && test.challenge && searchTrace.readerSearches.Load()+searchTrace.writerSearches.Load() == 0 {
+				t.Fatal("enabled challenge did not exercise the PostgreSQL search tracer")
 			}
 			wantStatus := http.StatusOK
 			if test.challenge {
@@ -356,10 +299,10 @@ func TestNativeDuplicateFiling(t *testing.T) {
 					t.Fatalf("lane refusal=%s", response.Body.String())
 				}
 				var issues, challenges int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&issues); err != nil {
+				if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&issues); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE project_id=?", f.project.ID).Scan(&challenges); err != nil {
+				if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&challenges); err != nil {
 					t.Fatal(err)
 				}
 				if issues != 1 || challenges != 0 {
@@ -381,7 +324,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 				t.Fatalf("challenge = %s", response.Body.String())
 			}
 			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id = ?", f.project.ID).Scan(&count); err != nil {
+			if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil {
 				t.Fatal(err)
 			}
 			if !test.challenge {
@@ -424,7 +367,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 					t.Fatalf("post-commit failure was not disclosed: failures=%d response=%s", fault.failures.Load(), response.Body.String())
 				}
 				fault.enabled.Store(false)
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil || count != 2 {
+				if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil || count != 2 {
 					t.Fatalf("confirmation or replay duplicated item: count=%d err=%v", count, err)
 				}
 			}
@@ -465,9 +408,8 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/tokens/"+credential.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": f.project.OrganizationID, "project_id": other.project.ID}), http.StatusNoContent)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge = 1 WHERE id = ?", f.project.ID); err != nil {
-		t.Fatal(err)
-	}
+	setNativeDuplicateChallengeFixture(t, f, true)
+	refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
 	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bound"}, Title: first.Title, Body: "Independent description" + issueContractTestSections, State: "Todo"}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 	requireNativeStatus(t, response, http.StatusConflict)
@@ -517,7 +459,7 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 	request.ChallengeToken, request.NotDuplicateOf = second.ChallengeToken, []int{first.Number}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request), http.StatusOK)
 	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id = ?", f.project.ID).Scan(&count); err != nil {
+	if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 3 {
@@ -538,12 +480,11 @@ func TestNativeDuplicateChallengeLifetime(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+			service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
 			f := newNativeFixture(t, service, "", "lifetime")
 			first := f.create(t, "Runner checkout deadlocks")
-			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
-				t.Fatal(err)
-			}
+			setNativeDuplicateChallengeFixture(t, f, true)
+			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "lifetime"}, Title: first.Title, Body: "Independent description" + issueContractTestSections, State: "Todo"}
 			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, request)
 			var challenge duplicateChallenge
@@ -556,7 +497,7 @@ func TestNativeDuplicateChallengeLifetime(t *testing.T) {
 			response = performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, request)
 			requireNativeStatus(t, response, test.want)
 			var count int
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
+			if err := conversationTestAdmin(t, service).QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil {
 				t.Fatal(err)
 			}
 			wantCount := 1
@@ -567,14 +508,14 @@ func TestNativeDuplicateChallengeLifetime(t *testing.T) {
 				t.Fatalf("issue count=%d, want %d", count, wantCount)
 			}
 			if test.want == http.StatusOK {
-				if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE token=?", challenge.ChallengeToken).Scan(&count); err != nil || count != 0 {
+				if err := conversationTestAdmin(t, service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE organization_id=$1 AND token=$2", f.project.OrganizationID, challenge.ChallengeToken).Scan(&count); err != nil || count != 0 {
 					t.Fatalf("consumed challenge retained: %d, %v", count, err)
 				}
 			}
 			if err := service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE token=?", challenge.ChallengeToken).Scan(&count); err != nil || count != 0 {
+			if err := conversationTestAdmin(t, service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE organization_id=$1 AND token=$2", f.project.OrganizationID, challenge.ChallengeToken).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("challenge survived cleanup: %d, %v", count, err)
 			}
 			if test.want == http.StatusOK {
@@ -629,87 +570,156 @@ func TestNativeDuplicateChallengeSettings(t *testing.T) {
 
 type nativeBrowserPathFault struct {
 	observe        atomic.Bool
-	statements     atomic.Int64
 	readerSearches atomic.Int64
 	writerSearches atomic.Int64
 	enabled        atomic.Bool
 	failures       atomic.Int64
 }
 
-type nativeBrowserPathConnector struct {
-	timedConnector
+type nativeDuplicateRecheckKey struct{}
+
+type nativeBrowserPathRepository struct {
+	*postgres.Repository
+	delegate    tenantstore.Repository
+	fault       *nativeBrowserPathFault
+	beforeWrite func()
+	writes      atomic.Int64
+}
+
+type nativeBrowserPathAuthorityRepository struct {
+	*nativeBrowserPathRepository
+	authority tenantauth.Reader
+}
+
+func (r *nativeBrowserPathAuthorityRepository) ReadTenantAuthority(ctx context.Context, input tenantauth.RequestIdentity) (tenantauth.Scope, error) {
+	return r.authority.ReadTenantAuthority(ctx, input)
+}
+
+func (r *nativeBrowserPathRepository) ReadRequest(ctx context.Context, organization tracker.OrganizationID, run func(context.Context) error) error {
+	return r.delegate.(tenantstore.RequestReader).ReadRequest(ctx, organization, run)
+}
+
+func (r *nativeBrowserPathRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.delegate.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(&nativeBrowserPathReader{Reader: reader, WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), DuplicateChallengeReader: reader.(corestore.DuplicateChallengeReader), DuplicateSourceReader: reader.(searchstore.DuplicateSourceReader), fault: r.fault})
+	})
+}
+
+type nativeBrowserPathReader struct {
+	tenantstore.Reader
+	tenantstore.WorkItemRelationshipBatchReader
+	corestore.DuplicateChallengeReader
+	searchstore.DuplicateSourceReader
+	fault       *nativeBrowserPathFault
+	sawWorkItem bool
+}
+
+func (r *nativeBrowserPathReader) WorkItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (corestore.WorkItem, error) {
+	value, err := r.Reader.WorkItem(ctx, project, item)
+	r.sawWorkItem = err == nil
+	return value, err
+}
+
+func (r *nativeBrowserPathReader) Project(ctx context.Context, project tracker.ProjectID) (corestore.Project, error) {
+	if r.sawWorkItem && r.fault.enabled.Load() {
+		r.fault.failures.Add(1)
+		return corestore.Project{}, errors.New("injected browser path read failure")
+	}
+	return r.Reader.Project(ctx, project)
+}
+
+func (f *nativeBrowserPathFault) queryContext(ctx context.Context, writer bool) context.Context {
+	return postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, statement string) {
+		if f.observe.Load() && strings.Contains(statement, "search_documents") {
+			if writer {
+				f.writerSearches.Add(1)
+			} else {
+				f.readerSearches.Add(1)
+			}
+		}
+	})
+}
+
+func (r *nativeBrowserPathReader) DuplicateSources(ctx context.Context, query searchstore.DuplicateSourceQuery) (searchstore.DuplicateSourcePage, error) {
+	return r.DuplicateSourceReader.DuplicateSources(r.fault.queryContext(ctx, false), query)
+}
+
+type nativeBrowserPathWriter struct {
+	tenantstore.Writer
+	tenantstore.WorkItemRelationshipBatchReader
+	corestore.DuplicateChallengeWriter
+	searchstore.DuplicateSourceWriter
+	searchstore.DuplicateSourceReader
 	fault *nativeBrowserPathFault
 }
 
-func (c nativeBrowserPathConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := c.timedConnector.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &nativeBrowserPathConn{timedConn: conn.(*timedConn), fault: c.fault}, nil
+func (w *nativeBrowserPathWriter) DuplicateSources(ctx context.Context, query searchstore.DuplicateSourceQuery) (searchstore.DuplicateSourcePage, error) {
+	return w.DuplicateSourceReader.DuplicateSources(w.fault.queryContext(ctx, true), query)
 }
 
-type nativeBrowserPathConn struct {
-	*timedConn
-	fault *nativeBrowserPathFault
+func (r *nativeBrowserPathRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.delegate.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
+		return read(&nativeBrowserPathReader{Reader: reader, WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), DuplicateChallengeReader: reader.(corestore.DuplicateChallengeReader), DuplicateSourceReader: reader.(searchstore.DuplicateSourceReader), fault: r.fault})
+	})
 }
 
-func (c *nativeBrowserPathConn) observe(query string) {
-	if !c.fault.observe.Load() {
-		return
-	}
-	if c.writer && c.inTx {
-		c.fault.statements.Add(1)
-	}
-	if strings.Contains(query, "native_work_fts") || strings.Contains(query, "native_work_scoped_fts") || strings.Contains(query, "group_concat(c.body") {
-		if c.writer {
-			c.fault.writerSearches.Add(1)
-		} else {
-			c.fault.readerSearches.Add(1)
+func (r *nativeBrowserPathRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	if ctx.Value(nativeDuplicateRecheckKey{}) == true {
+		r.writes.Add(1)
+		if before := r.beforeWrite; before != nil {
+			r.beforeWrite = nil
+			before()
 		}
 	}
-}
-
-func (c *nativeBrowserPathConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	c.observe(query)
-	return c.timedConn.ExecContext(ctx, query, args)
-}
-
-func (c *nativeBrowserPathConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	c.observe(query)
-	if !c.inTx && c.fault.enabled.Load() && strings.HasPrefix(query, "SELECT o.slug,p.slug,i.number FROM issues") {
-		c.fault.failures.Add(1)
-		return nil, errors.New("injected browser path read failure")
-	}
-	return c.timedConn.QueryContext(ctx, query, args)
+	return r.delegate.WriteTenant(ctx, org, workload, func(writer tenantstore.Writer) error {
+		return write(&nativeBrowserPathWriter{Writer: writer, WorkItemRelationshipBatchReader: writer.(tenantstore.WorkItemRelationshipBatchReader), DuplicateChallengeWriter: writer.(corestore.DuplicateChallengeWriter), DuplicateSourceWriter: writer.(searchstore.DuplicateSourceWriter), DuplicateSourceReader: writer.(searchstore.DuplicateSourceReader), fault: r.fault})
+	})
 }
 
 func installNativeBrowserPathFault(t *testing.T, s *Service) *nativeBrowserPathFault {
 	t.Helper()
 	fault := &nativeBrowserPathFault{}
-	for _, target := range []struct {
-		pool   **sql.DB
-		dsn    string
-		writer bool
-	}{
-		{&s.database.db, sqliteWriterDSN(s.database.path, s.config.BusyTimeout, s.config.Hosted != nil), true},
-		{&s.database.reader, sqliteReaderDSN(s.database.path, s.config.BusyTimeout), false},
-	} {
-		original := *target.pool
-		pool := sql.OpenDB(nativeBrowserPathConnector{timedConnector: timedConnector{dsn: target.dsn, driver: original.Driver(), writer: target.writer}, fault: fault})
-		if target.writer {
-			pool.SetMaxOpenConns(1)
-		}
-		*target.pool = pool
-		t.Cleanup(func() {
-			s.tokenUseWork.Wait()
-			*target.pool = original
-			if err := pool.Close(); err != nil {
-				t.Error(err)
-			}
-		})
+	original := s.config.TenantRepository
+	admin := conversationTestAdmin(t, s)
+	wrapped := &nativeBrowserPathRepository{Repository: s.database.postgres, delegate: original, fault: fault}
+	var installed tenantstore.Repository = wrapped
+	if authority, ok := original.(tenantauth.Reader); ok {
+		installed = &nativeBrowserPathAuthorityRepository{nativeBrowserPathRepository: wrapped, authority: authority}
 	}
+	s.config.TenantRepository = installed
+	projectRecordDatabases.Store(installed, admin)
+	t.Cleanup(func() {
+		s.tokenUseWork.Wait()
+		s.config.TenantRepository = original
+		projectRecordDatabases.Delete(installed)
+	})
 	return fault
+}
+
+func setNativeDuplicateChallengeFixture(t *testing.T, f nativeFixture, enabled bool) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.Settings.DuplicateChallenge = enabled
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func markNativeDuplicateSearchRebuildFixture(t *testing.T, f nativeFixture) {
+	t.Helper()
+	admin := conversationTestAdmin(t, f.service)
+	if _, err := admin.ExecContext(t.Context(), "DELETE FROM search_postings p USING search_documents d WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND d.organization_id=$1 AND d.project_id=$2", f.project.OrganizationID, f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), "INSERT INTO search_scope_refresh(organization_id,project_id,work_item_id,archived,principal_id) VALUES($1,$2,'',false,'') ON CONFLICT(organization_id,project_id,work_item_id) DO UPDATE SET after_id=''", f.project.OrganizationID, f.project.ID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestNativeDuplicateMCP(t *testing.T) {
@@ -731,9 +741,8 @@ func TestNativeDuplicateMCP(t *testing.T) {
 			for i := range 6 {
 				f.create(t, "Runner checkout stalls "+strconv.Itoa(i))
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
-				t.Fatal(err)
-			}
+			setNativeDuplicateChallengeFixture(t, f, true)
+			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
 			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 			credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
 			if err != nil {
@@ -766,9 +775,7 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
-					t.Fatal(err)
-				}
+				markNativeDuplicateSearchRebuildFixture(t, f)
 				raw := call("file_issue", args)
 				var filed tracker.NativeIssue
 				if err := json.Unmarshal(raw, &filed); err != nil || filed.WorkItemID == "" {
@@ -796,10 +803,10 @@ func TestNativeDuplicateMCP(t *testing.T) {
 						t.Fatalf("lane refusal=%s %s err=%v", refused.Result, refused.Error, err)
 					}
 					var issues, challenges int
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&issues); err != nil {
+					if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&issues); err != nil {
 						t.Fatal(err)
 					}
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE project_id=?", f.project.ID).Scan(&challenges); err != nil {
+					if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&challenges); err != nil {
 						t.Fatal(err)
 					}
 					if issues != 7 || challenges != 0 {
@@ -852,7 +859,7 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				}
 			}
 			var count int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil || count != 8 {
+			if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil || count != 8 {
 				t.Fatalf("confirmation or replay duplicated item: count=%d err=%v", count, err)
 			}
 			raw = call(operatortool.WorkRelationships, map[string]any{"reference": created.WorkItemID})
@@ -889,50 +896,105 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			first := f.create(t, "Runner checkout deadlocks")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=? WHERE id=?", change != "challenge enabled", f.project.ID); err != nil {
-				t.Fatal(err)
+			setNativeDuplicateChallengeFixture(t, f, change != "challenge enabled")
+			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("fixture credential=%d %v", status, err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			request := tracker.CreateIssue{Title: first.Title, Body: first.Body, State: "Todo"}
-			search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), false)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential, action: operatortool.FileIssue}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "candidate-recheck"}, Title: first.Title, Body: first.Body, State: "Todo"}
+			search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, request, false)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if change != "challenge enabled" && len(search.matches) != 1 {
 				t.Fatalf("matches=%+v", search.matches)
 			}
-			scope.duplicateSearch = search
+			prepared, _, err := f.service.prepareWorkItemRecordMutation(t.Context(), scope, nativeCommandOptions{OperationID: nativeIssueCreationOperation(scope), Feature: "collaboration"}, request.Mutation, request, "")
+			if err != nil || prepared.write == nil {
+				t.Fatalf("prepare current duplicate filing: %v", err)
+			}
 			switch change {
 			case "new issue":
-				seedArchiveIssues(t, f.service, scope, 1, "Todo")
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				f.createIndependent(t, "Separate mailbox failure")
 			case "edited candidate":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title='Separate mailbox failure',revision=revision+1 WHERE native_id=?", first.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				title := "Separate mailbox failure"
+				response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(first.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit-candidate"}, ExpectedRevision: first.Revision, Title: &title})
+				requireNativeStatus(t, response, http.StatusOK)
 			case "archived candidate":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", first.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(first.WorkItemID)+"/archive", f.token, archiveRequest(first, "archive-candidate"))
+				requireNativeStatus(t, response, http.StatusOK)
 			case "challenge enabled", "challenge disabled":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=? WHERE id=?", change == "challenge enabled", f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				setNativeDuplicateChallengeFixture(t, f, change == "challenge enabled")
 			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
+			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			err = f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, prepared.write)
+			if !errors.Is(err, corestore.ErrSerializationFailure) {
+				t.Fatalf("stale duplicate preparation was accepted: %v", err)
 			}
-			defer tx.Rollback()
-			challenge, err := challengeNativeIssueTx(t.Context(), tx, scope, request, f.service.config.now())
 			if change == "archived candidate" || change == "challenge disabled" {
-				if err != nil || challenge.ChallengeToken != "" || len(challenge.PossibleDuplicates) != 0 {
+				raw, err := f.service.createNativeIssueCommand(t.Context(), scope, request)
+				var challenge duplicateChallenge
+				if err != nil || json.Unmarshal(raw, &challenge) != nil || challenge.ChallengeToken != "" || len(challenge.PossibleDuplicates) != 0 {
 					t.Fatalf("challenge=%+v err=%v", challenge, err)
 				}
-			} else if !isNativeConflict(err) {
-				t.Fatalf("stale candidate err=%v", err)
+				var created tracker.NativeIssue
+				if json.Unmarshal(raw, &created) != nil || created.WorkItemID == "" || created.WorkItemID == first.WorkItemID {
+					t.Fatalf("current canonical filing did not create independent work: %s", raw)
+				}
+			} else if change == "challenge enabled" {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+				requireNativeStatus(t, response, http.StatusConflict)
+			}
+		})
+	}
+	for _, change := range []string{"archived candidate", "challenge disabled"} {
+		t.Run(change+" within one public call", func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			first := f.create(t, "Runner checkout deadlocks")
+			setNativeDuplicateChallengeFixture(t, f, true)
+			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("fixture credential=%d %v", status, err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential, action: operatortool.FileIssue}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "same-call-recheck"}, Title: first.Title, Body: first.Body, State: "Todo"}
+			installNativeBrowserPathFault(t, f.service)
+			repository := f.service.config.TenantRepository.(*nativeBrowserPathRepository)
+			repository.beforeWrite = func() {
+				if change == "archived candidate" {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(first.WorkItemID)+"/archive", f.token, archiveRequest(first, "archive-candidate"))
+					requireNativeStatus(t, response, http.StatusOK)
+				} else {
+					setNativeDuplicateChallengeFixture(t, f, false)
+				}
+				refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			}
+			ctx := context.WithValue(t.Context(), nativeDuplicateRecheckKey{}, true)
+			raw, err := f.service.createNativeIssueCommand(ctx, scope, request)
+			var challenge duplicateChallenge
+			if err != nil || json.Unmarshal(raw, &challenge) != nil || challenge.ChallengeToken != "" || len(challenge.PossibleDuplicates) != 0 {
+				t.Fatalf("one-call challenge=%+v err=%v", challenge, err)
+			}
+			var created tracker.NativeIssue
+			if json.Unmarshal(raw, &created) != nil || created.WorkItemID == "" || created.WorkItemID == first.WorkItemID || created.Title != first.Title || created.Body != first.Body {
+				t.Fatalf("one-call filing did not preserve independent work: %s", raw)
+			}
+			if repository.writes.Load() != 2 || repository.beforeWrite != nil {
+				t.Fatalf("one-call retry writes=%d pending mutation=%t", repository.writes.Load(), repository.beforeWrite != nil)
+			}
+			var items, challenges int
+			admin := conversationTestAdmin(t, f.service)
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&items); err != nil {
+				t.Fatal(err)
+			}
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&challenges); err != nil {
+				t.Fatal(err)
+			}
+			if items != 2 || challenges != 0 {
+				t.Fatalf("one-call filing items=%d challenges=%d", items, challenges)
 			}
 		})
 	}
@@ -941,24 +1003,19 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	owner := f.create(t, "Original failure")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	body := issueorigin.Stamp("Initial diagnostic", issueorigin.Origin{Kind: "worker", Fingerprint: "original-failure"})
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, owner.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	body := issueorigin.Stamp("Initial diagnostic"+issueContractTestSections, issueorigin.Origin{Kind: "worker", Fingerprint: "original-failure"})
+	path := f.base + "/work-items/" + string(owner.WorkItemID)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "duplicate-owner-body"}, ExpectedRevision: owner.Revision, Body: &body}), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "duplicate-owner-comment"}, Body: "internal/example/pool.go:23:4: undefined: capacity"}), http.StatusOK)
+	refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := insertNativeComment(t.Context(), tx, scope, owner, "internal/example/pool.go:23:4: undefined: capacity", nil, f.service.config.now()); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 	request := tracker.CreateIssue{Body: issueorigin.Stamp("internal/example/pool.go:31:2: undefined: capacity", issueorigin.Origin{Kind: "worker", Fingerprint: "later-failure"})}
-	search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), true)
-	if err != nil || len(search.matches) != 1 || search.matches[0].WorkItemID != owner.WorkItemID {
+	search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, request, true)
+	if err != nil || !search.available || len(search.matches) != 1 || search.matches[0].WorkItemID != owner.WorkItemID {
 		t.Fatalf("search=%+v err=%v", search, err)
 	}
 }
@@ -970,72 +1027,43 @@ func TestNativeDuplicatesIncompleteIndex(t *testing.T) {
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 				t.Fatal(err)
 			}
-			body := issueorigin.Stamp("Matching diagnostic", issueorigin.Origin{Kind: "worker", Fingerprint: "search-rebuild"})
+			body := issueorigin.Stamp("Matching diagnostic"+issueContractTestSections, issueorigin.Origin{Kind: "worker", Fingerprint: "search-rebuild"})
 			first := f.create(t, "Repository association deadlocks")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, first.WorkItemID); err != nil {
-				t.Fatal(err)
+			path := f.base + "/work-items/" + string(first.WorkItemID)
+			response := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "source-body"}, ExpectedRevision: first.Revision, Body: &body})
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &first)
+			setNativeDuplicateChallengeFixture(t, f, true)
+			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("fixture credential=%d %v", status, err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 			request := tracker.CreateIssue{Title: first.Title, Body: body}
 			for _, machine := range []bool{false, true} {
-				search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), machine)
+				search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, request, machine)
 				if err != nil || len(search.matches) != 1 {
 					t.Fatalf("complete index machine=%v search=%v err=%v", machine, search, err)
 				}
 			}
 			if state == "rebuild" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts;
-UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
-					t.Fatal(err)
-				}
+				markNativeDuplicateSearchRebuildFixture(t, f)
 			} else {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_work_search_dirty(issue_id,organization_id,project_id) SELECT id,organization_id,project_id FROM issues WHERE native_id=?`, first.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				labels := []string{"pending-index"}
+				response := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "dirty-index"}, ExpectedRevision: first.Revision, Labels: &labels})
+				requireNativeStatus(t, response, http.StatusOK)
 			}
-			prepared := map[bool]*nativeDuplicateSearch{}
 			for _, machine := range []bool{false, true} {
-				search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), machine)
-				if err != nil || len(search.matches) != 0 {
+				search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, request, machine)
+				if err != nil || search.available || len(search.matches) != 0 {
 					t.Fatalf("incomplete index machine=%v search=%v err=%v", machine, search, err)
 				}
-				prepared[machine] = search
-			}
-			for _, machine := range []bool{false, true} {
-				t.Run(strconv.FormatBool(machine), func(t *testing.T) {
-					for _, mode := range []string{"reader", "transaction", "prepared transaction"} {
-						scope := scope
-						if mode == "prepared transaction" {
-							scope.duplicateSearch = prepared[machine]
-						}
-						var matches []possibleDuplicate
-						var err error
-						if mode != "reader" {
-							tx, beginErr := f.service.database.db.BeginTx(t.Context(), nil)
-							if beginErr != nil {
-								t.Fatal(beginErr)
-							}
-							defer tx.Rollback()
-							matches, err = resolveNativeDuplicatesTx(t.Context(), tx, scope, request, f.service.config.now(), machine)
-							if rollbackErr := tx.Rollback(); rollbackErr != nil {
-								t.Fatal(rollbackErr)
-							}
-						} else {
-							matches, err = resolveNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), machine)
-						}
-						if err != nil || len(matches) != 0 {
-							t.Errorf("mode=%s matches=%v err=%v", mode, matches, err)
-						}
-					}
-				})
 			}
 			request.IdempotencyKey = "machine-file-during-rebuild"
 			request.Body += issueContractTestSections
 			request.State = "Todo"
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			var filed tracker.NativeIssue
 			decodeHubResponse(t, response, &filed)

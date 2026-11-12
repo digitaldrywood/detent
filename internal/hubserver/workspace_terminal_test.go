@@ -1,10 +1,9 @@
 package hubserver
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,8 +11,14 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
+	"reflect"
 )
 
 // The terminal channel on the hub.
@@ -384,14 +389,85 @@ func TestWorkspaceRelayRecordsATerminalSession(t *testing.T) {
 	// The relay session row references the recording, which is what the terminal contract
 	// asks for.
 	var artifact string
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT recording_artifact FROM workspace_relay_sessions WHERE workspace_id = ? AND recording_artifact != ''",
-		f.workspace).Scan(&artifact); err != nil {
+	if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
+		rows, err := reader.(postgres.RelayActionReader).RelaySessions(t.Context(), postgres.RelaySessionsInput{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkspaceID: f.workspace, Limit: 2})
+		if err == nil {
+			for _, row := range rows {
+				if row.RecordingArtifact != "" {
+					artifact = row.RecordingArtifact
+				}
+			}
+		}
+		return err
+	}); err != nil {
 		t.Fatalf("read recording_artifact: %v", err)
 	}
 	if !strings.Contains(artifact, "/terminal-recordings?relay_session=") {
 		t.Fatalf("recording_artifact = %q, want the listing for this connection", artifact)
 	}
+	t.Run("longer second teardown corrects the recording", func(t *testing.T) {
+		readUsage := func() int64 {
+			t.Helper()
+			var used int64
+			if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
+				var err error
+				used, err = reader.CollaborationBytes(t.Context())
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return used
+		}
+		initialUsage := readUsage()
+		state := &terminalStreamState{id: newNativeID("termrec"), workspaceID: f.workspace, organizationID: string(f.project.OrganizationID), projectID: string(f.project.ID), relaySessionID: recording.RelaySessionID, streamID: recording.StreamID + "-correction", principalID: recording.PrincipalID, subject: recording.Subject, isolation: recording.Isolation, supportReason: recording.SupportReason, startedAt: recording.StartedAt, cols: recording.Cols, rows: recording.Rows, recording: workspacesession.NewRecording(recording.Cols, recording.Rows, recording.StartedAt)}
+		state.recording.Append(workspacesession.AsciicastOutput, "first output", recording.StartedAt)
+		shorter := workspacesession.NewRecording(recording.Cols, recording.Rows, recording.StartedAt)
+		shorter.Append(workspacesession.AsciicastOutput, "first output", recording.StartedAt)
+		f.service.workspaces.finishTerminalRecording(t.Context(), state)
+		state.recording.Append(workspacesession.AsciicastOutput, "second output", recording.StartedAt.Add(time.Microsecond))
+		f.service.workspaces.finishTerminalRecording(t.Context(), state)
+		corrected := readTerminalRecordingsForTest(t, f, state.streamID)
+		if len(corrected) != 1 || corrected[0].Cast != state.recording.Cast() || corrected[0].Bytes != int64(len(state.recording.Cast())) || !strings.Contains(corrected[0].Cast, "second output") {
+			t.Fatalf("longer teardown was not retained: %+v", corrected)
+		}
+		beforeUsage := readUsage()
+		state.recording = shorter
+		f.service.workspaces.finishTerminalRecording(t.Context(), state)
+		if used := readUsage(); used != beforeUsage {
+			t.Fatalf("discarded recording charged bytes: got=%d want=%d", used, beforeUsage)
+		}
+		again := readTerminalRecordingsForTest(t, f, state.streamID)
+		if !reflect.DeepEqual(again, corrected) {
+			t.Fatalf("shorter teardown replaced complete recording: got=%+v want=%+v", again, corrected)
+		}
+		if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
+			row, err := reader.(postgres.RelayActionReader).TerminalRecording(t.Context(), f.project.ID, state.id)
+			if err != nil {
+				return err
+			}
+			used, err := reader.CollaborationBytes(t.Context())
+			if err != nil {
+				return err
+			}
+			if row.CastBytes <= 0 || used != initialUsage+row.CastBytes {
+				t.Fatalf("accepted recording charge=%d want=%d", used, initialUsage+row.CastBytes)
+			}
+			if row.Revision != 2 {
+				t.Fatalf("corrective recording revision=%d want2", row.Revision)
+			}
+			var count int
+			if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND owner_kind='workspace-terminal-recording' AND owner_id=$2", f.project.OrganizationID, actionstore.ArchiveOwnerID(f.project.ID, state.id)).Scan(&count); err != nil {
+				return err
+			}
+			if count != 1 {
+				t.Fatalf("corrective recording retained stale archive owners=%d want1", count)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 }
 
 // TestWorkspaceRelaySkipsRecordingWhenTheSettingIsOff covers
@@ -472,18 +548,25 @@ func TestTerminalRecordingAudience(t *testing.T) {
 // narrowed to one stream.
 func readTerminalRecordingsForTest(t *testing.T, f *relayFixture, stream string) []terminalRecordingRecord {
 	t.Helper()
-	recordings, err := readTerminalRecordings(t.Context(), f.service.database.db, f.workspace, "")
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stream == "" {
-		return recordings
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	rows, err := f.service.readRecordings(t.Context(), scope, f.workspace, "", 0)
+	if err != nil {
+		t.Fatal(err)
 	}
 	matched := []terminalRecordingRecord{}
-	for _, recording := range recordings {
-		if recording.StreamID == stream {
-			matched = append(matched, recording)
+	for _, row := range rows {
+		if stream != "" && row.StreamID != stream {
+			continue
 		}
+		recording, err := f.service.readRecording(t.Context(), scope, f.workspace, row.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		matched = append(matched, recording)
 	}
 	return matched
 }
@@ -544,16 +627,22 @@ func TestWorkspaceTerminalRecordingEndpoints(t *testing.T) {
 // member on an organization that runs terminals as the runner's own user.
 func TestRefuseTerminalGrantMatrix(t *testing.T) {
 	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
+	first := newNativeFixture(t, service, "", "First terminal grant project")
+	second := newNativeFixture(t, service, first.project.OrganizationID+"_second", "Second terminal grant project")
 
 	tests := []struct {
-		name      string
-		role      string
-		canWrite  bool
-		runners   bool
-		isolation string
-		enabled   bool
-		support   string
-		want      string
+		name            string
+		role            string
+		cachedRole      string
+		inactive, token bool
+		canWrite        bool
+		runners         bool
+		isolation       string
+		enabled         bool
+		support         string
+		want            string
 	}{
 		{
 			name: "a member with write and the runners grant may type",
@@ -567,6 +656,18 @@ func TestRefuseTerminalGrantMatrix(t *testing.T) {
 			name: "a viewer never does", role: "viewer", canWrite: true, runners: true,
 			isolation: workspacesession.IsolationContainer, enabled: true,
 			want: workspacesession.CodeForbidden,
+		},
+		{
+			name: "inactive member with write and runners", role: "member", canWrite: true, runners: true, inactive: true,
+			isolation: workspacesession.IsolationContainer, enabled: true, want: workspacesession.CodeForbidden,
+		},
+		{
+			name: "current viewer overrides cached owner", role: "viewer", cachedRole: "owner", canWrite: true, runners: true,
+			isolation: workspacesession.IsolationUser, enabled: true, want: workspacesession.CodeForbidden,
+		},
+		{
+			name: "operator token retains its proved scope", token: true,
+			isolation: workspacesession.IsolationUser, enabled: true,
 		},
 		{
 			name: "a member without the runners grant does not", role: "member", canWrite: true, runners: false,
@@ -611,73 +712,43 @@ func TestRefuseTerminalGrantMatrix(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for caseIndex, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f := newRelayFixture(t, withTerminal)
-			f.service.workspaces.config.Terminal.Enabled = tt.enabled
-			f.service.workspaces.config.Terminal.Isolation = tt.isolation
-			subject := "user_" + strings.Map(func(r rune) rune {
-				if r == ' ' {
-					return '_'
+			for _, f := range []nativeFixture{first, second} {
+				relay := &workspaceService{server: service, logger: service.config.Logger, config: WorkspaceConfig{Terminal: WorkspaceTerminalConfig{Enabled: tt.enabled, Isolation: tt.isolation}}}
+				subject := fmt.Sprintf("user_terminal_%02d", caseIndex)
+				principal := "principal_" + subject
+				if !tt.token {
+					if err := service.accessWrite(t.Context(), f.project.OrganizationID, func(w tenantstore.Writer) error {
+						if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: principal, Name: principal, Hash: apikey.HashToken(string(f.project.OrganizationID) + principal), Scope: "operator", NativeOnly: true, Kind: "personal", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+							return err
+						}
+						if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: f.project.OrganizationID, UserID: subject, Email: subject + "@example.test", MembershipID: "membership_" + subject, Role: tt.role, Active: !tt.inactive, PrincipalID: principal, CreatedAt: now, UpdatedAt: now}); err != nil {
+							return err
+						}
+						return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: f.project.OrganizationID, UserID: subject, ProjectID: f.project.ID, CanWrite: tt.canWrite, ManageRunner: tt.runners})
+					}); err != nil {
+						t.Fatal(err)
+					}
 				}
-				return r
-			}, tt.name)
-			seedTerminalGrant(t, f, subject, tt.role, tt.canWrite, tt.runners)
-
-			record := f.record(t)
-			connection := &relayConnection{
-				id: "relayconn_test", workspaceID: f.workspace, subject: subject,
-				sessionHash: "hash_" + subject, hostedRole: tt.role, supportReason: tt.support,
-			}
-			got := f.service.workspaces.refuseTerminal(t.Context(), record, connection, terminalOpenFrame())
-			if got != tt.want {
-				t.Fatalf("refuseTerminal() = %q, want %q", got, tt.want)
+				cachedRole := tt.cachedRole
+				if cachedRole == "" {
+					cachedRole = tt.role
+				}
+				record := workspaceRecord{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID}
+				connection := &relayConnection{id: "relayconn_test", subject: subject, hostedRole: cachedRole, supportReason: tt.support}
+				if !tt.token {
+					connection.sessionHash = "hash_" + subject
+				}
+				got := relay.refuseTerminal(t.Context(), record, connection, terminalOpenFrame())
+				if got != tt.want {
+					t.Fatalf("refuseTerminal() = %q, want %q", got, tt.want)
+				}
 			}
 		})
 	}
-}
-
-// seedTerminalGrant writes the membership and project grant a hosted person
-// would hold. It is written directly rather than through the grant endpoint
-// because what is under test is the per-frame gate's reading of those rows, and
-// a fixture that had to log somebody in to assert a boolean would be testing
-// the login.
-func seedTerminalGrant(t *testing.T, f *relayFixture, subject, role string, canWrite, runners bool) {
-	t.Helper()
-	now := formatHubTime(f.at())
-	// A member's principal is a token row, so one is written first: the schema
-	// keys a membership to the principal it acts as, and a seed that skipped it
-	// would be testing against a shape the hub cannot produce.
-	principal := "principal_" + subject
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		`INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'operator', ?, ?)`,
-		principal, "member-"+subject, terminalTestTokenHash(subject),
-		"fp_"+subject, now, now); err != nil {
-		t.Fatalf("seed principal: %v", err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		`INSERT INTO hosted_members (user_id, email, membership_id, role, active, principal_id, created_at, updated_at)
-VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
-		subject, subject+"@example.invalid", "membership_"+subject, role, principal, now, now); err != nil {
-		t.Fatalf("seed member: %v", err)
-	}
-	record := f.record(t)
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		`INSERT INTO hosted_project_grants (user_id, organization_id, project_id, can_write, manage_runner)
-VALUES (?, ?, ?, ?, ?)`,
-		subject, record.OrganizationID, record.ProjectID, boolToInt(canWrite), boolToInt(runners)); err != nil {
-		t.Fatalf("seed grant: %v", err)
-	}
-}
-
-// terminalTestTokenHash builds the 64-character hash the token table checks
-// for, distinct per subject so two seeded members never collide on it.
-func terminalTestTokenHash(subject string) string {
-	hash := sha256.Sum256([]byte(subject))
-	return hex.EncodeToString(hash[:])
 }
 
 func boolToInt(value bool) int {

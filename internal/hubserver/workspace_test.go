@@ -1,18 +1,30 @@
 package hubserver
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -41,24 +53,32 @@ type workspaceFixture struct {
 	issue   tracker.NativeIssue
 }
 
-func newWorkspaceFixture(t *testing.T, cfg *WorkspaceConfig) workspaceFixture {
+func newWorkspaceFixture(t *testing.T, cfg *WorkspaceConfig, clocks ...func() time.Time) workspaceFixture {
 	t.Helper()
 	if cfg == nil {
 		cfg = &WorkspaceConfig{Enabled: true}
 	}
-	f := newDefaultNativeFixture(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Workspace: cfg})
+	config := Config{Workspace: cfg}
+	if len(clocks) != 0 {
+		config.now = clocks[0]
+	}
+	f := newDefaultNativeFixture(t, config)
 	service := f.service
-	var ownerID string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = ?", "operator-native").Scan(&ownerID); err != nil {
+	credential, _, err := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken,
-		map[string]any{"name": "operator-workspace-other", "scope": "operator"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var token tokenResponse
-	decodeHubResponse(t, response, &token)
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken,
-		map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID}), http.StatusNoContent)
+	ownerID := credential.ID
+	token := tokenResponse{ID: newNativeID("credential"), Token: newNativeID("token")}
+	now := service.config.now().UTC().Truncate(time.Microsecond)
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "operator-workspace-other", Hash: apikey.HashToken(token.Token), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: token.ID, ProjectID: f.project.ID})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	descriptor := hubTestPolicy()
 	approveHubTestPolicy(t, service, f.base+"/policy", descriptor)
 	return workspaceFixture{nativeFixture: f, ownerID: ownerID, other: token.Token, otherID: token.ID,
@@ -103,8 +123,11 @@ func (f workspaceFixture) list(t *testing.T, query string) workspaceListResponse
 func (f workspaceFixture) item(t *testing.T, workspaceID string) string {
 	t.Helper()
 	var item string
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT work_item_id FROM workspace_items WHERE workspace_id = ?", workspaceID).Scan(&item); err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.(postgres.WorkspaceReader).WorkspaceDispatchItem(t.Context(), f.project.ID, workspaceID)
+		item = string(row.WorkItemID)
+		return err
+	}); err != nil {
 		t.Fatalf("read workspace item for %s: %v", workspaceID, err)
 	}
 	return item
@@ -112,12 +135,15 @@ func (f workspaceFixture) item(t *testing.T, workspaceID string) string {
 
 func (f workspaceFixture) itemClosed(t *testing.T, workspaceID string) bool {
 	t.Helper()
-	var closed sql.NullString
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT closed_at FROM workspace_items WHERE workspace_id = ?", workspaceID).Scan(&closed); err != nil {
-		t.Fatalf("read workspace item closure for %s: %v", workspaceID, err)
+	var closed bool
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.(postgres.WorkspaceReader).WorkspaceDispatchItem(t.Context(), f.project.ID, workspaceID)
+		closed = row.ClosedAt != nil
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
-	return closed.Valid
+	return closed
 }
 
 // occupancy reports the workspace's occupancy rows as (started, ended) pairs.
@@ -125,24 +151,20 @@ func (f workspaceFixture) itemClosed(t *testing.T, workspaceID string) bool {
 // traffic, so a missing or never-ended row is a billing bug, not a detail.
 func (f workspaceFixture) occupancy(t *testing.T, workspaceID string) (rows int, open int) {
 	t.Helper()
-	result, err := f.service.database.db.QueryContext(t.Context(),
-		"SELECT ended_at FROM workspace_occupancy WHERE workspace_id = ?", workspaceID)
-	if err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		entries, err := r.(postgres.WorkspaceReader).WorkspaceOccupancy(t.Context(), f.project.ID, workspaceID, 100)
+		if err != nil {
+			return err
+		}
+		rows = len(entries)
+		for _, entry := range entries {
+			if entry.EndedAt == nil {
+				open++
+			}
+		}
+		return nil
+	}); err != nil {
 		t.Fatalf("read workspace occupancy: %v", err)
-	}
-	defer func() { _ = result.Close() }()
-	for result.Next() {
-		var ended sql.NullString
-		if err := result.Scan(&ended); err != nil {
-			t.Fatalf("scan workspace occupancy: %v", err)
-		}
-		rows++
-		if !ended.Valid {
-			open++
-		}
-	}
-	if err := result.Err(); err != nil {
-		t.Fatalf("iterate workspace occupancy: %v", err)
 	}
 	return rows, open
 }
@@ -187,6 +209,52 @@ func (f workspaceFixture) attempt(t *testing.T, name string, running bool) strin
 // A workspace request carries the default surfaces and creates the dispatch
 // item that a runner -- and nothing else -- is meant to see.
 func TestWorkspaceRequestCreatesSessionAndDispatchItem(t *testing.T) {
+	t.Run("two subjects keep distinct sessions and dispatch items", func(t *testing.T) {
+		pair := newWorkspaceFixture(t, nil)
+		second := pair.create(t, "second workspace subject")
+		firstSession := pair.opened(t, pair.token, map[string]any{"work_item_id": string(pair.issue.WorkItemID)})
+		secondSession := pair.opened(t, pair.token, map[string]any{"work_item_id": string(second.WorkItemID)})
+		if firstSession.ID == secondSession.ID || firstSession.WorkItemID != string(pair.issue.WorkItemID) || secondSession.WorkItemID != string(second.WorkItemID) || firstSession.Ref != "" || secondSession.Ref != "" || firstSession.Revision != 1 || secondSession.Revision != 1 {
+			t.Fatalf("workspace subjects collided: first=%+v second=%+v", firstSession, secondSession)
+		}
+		if pair.item(t, firstSession.ID) == pair.item(t, secondSession.ID) {
+			t.Fatal("two workspaces shared one dispatch item")
+		}
+	})
+	t.Run("association failure rolls back session issue history and receipt", func(t *testing.T) {
+		failed := newWorkspaceFixture(t, nil)
+		admin := hostedPostgresAdmin(t, failed.service)
+		counts := func() [4]int64 {
+			t.Helper()
+			var result [4]int64
+			for index, table := range []string{"workspace_sessions", "issues", "collaboration_versions", "collaboration_events"} {
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE organization_id=$1 AND project_id=$2", failed.project.OrganizationID, failed.project.ID).Scan(&result[index]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return result
+		}
+		before := counts()
+		if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION reject_workspace_creation_link() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'workspace association refused'; END $$`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `CREATE TRIGGER reject_workspace_creation_link BEFORE INSERT ON workspace_items FOR EACH ROW EXECUTE FUNCTION reject_workspace_creation_link()`); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, failed.post(t, failed.token, map[string]any{"idempotency_key": "fail-link", "work_item_id": string(failed.issue.WorkItemID)}), http.StatusInternalServerError)
+		if after := counts(); after != before {
+			t.Fatalf("refused association leaked durable rows: before=%v after=%v", before, after)
+		}
+		if err := failed.service.config.TenantRepository.ReadTenant(t.Context(), failed.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.Receipt(t.Context(), failed.ownerID, nativeOperation(nativeScope{organization: failed.project.OrganizationID, project: failed.project.ID}, "POST", "/workspaces"), "fail-link")
+			if !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("failed workspace retained a receipt: %v", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
 	t.Parallel()
 	f := newWorkspaceFixture(t, nil)
 
@@ -378,7 +446,7 @@ func TestWorkspaceRequestIsIdempotentPerKey(t *testing.T) {
 			t.Fatalf("replay = %#v, want %s byte for byte", replayed, opened.ID)
 		}
 		if listing := f.list(t, ""); len(listing.Workspaces) != 1 {
-			t.Fatalf("a replay opened a second workspace: %#v", listing.Workspaces)
+			t.Fatalf("a replay opened a second workspace: %d", len(listing.Workspaces))
 		}
 	})
 
@@ -393,12 +461,23 @@ func TestWorkspaceRequestIsIdempotentPerKey(t *testing.T) {
 // this reader may see is not found rather than described.
 func TestWorkspaceReadsFilterAndScope(t *testing.T) {
 	t.Parallel()
-	f := newWorkspaceFixture(t, nil)
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	f := newWorkspaceFixture(t, nil, clock.Now)
 	other := f.create(t, "second-subject")
 	first := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
+	clock.Advance(time.Second)
 	second := f.opened(t, f.token, map[string]any{"work_item_id": string(other.WorkItemID)})
 
 	t.Run("listing filters by work item and by state", func(t *testing.T) {
+		if listing := f.list(t, ""); len(listing.Workspaces) != 2 || listing.Workspaces[0].ID != second.ID || listing.Workspaces[1].ID != first.ID {
+			t.Fatalf("listing is not newest first: %+v", listing.Workspaces)
+		}
+		if listing := f.list(t, "?work_item="+string(other.WorkItemID)+"&state=requested"); len(listing.Workspaces) != 1 || listing.Workspaces[0].ID != second.ID {
+			t.Fatalf("combined subject/state filter: %+v", listing.Workspaces)
+		}
+		if listing := f.list(t, "?work_item="+string(other.WorkItemID)+"&state=closed"); len(listing.Workspaces) != 0 {
+			t.Fatalf("combined subject/state filter returned wrong state: %+v", listing.Workspaces)
+		}
 		if listing := f.list(t, "?work_item="+string(other.WorkItemID)); len(listing.Workspaces) != 1 || listing.Workspaces[0].ID != second.ID {
 			t.Fatalf("work_item filter = %#v", listing.Workspaces)
 		}
@@ -455,10 +534,12 @@ func newWorkspaceRunnerFixture(t *testing.T) *workspaceRunnerFixture {
 	// are about.
 	r.redemption.Capacity = 8
 	r.enroll(t)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", r.redemption.Credential,
-		map[string]any{"id": r.binding.MachineID, "hostname": "customer-host", "display_name": "Runner",
-			"backend_isolation": r.redemption.BackendIsolation, "capacity": 8, "version": "test", "workspace_capabilities": workspaceTestCapabilities,
-			"workspace_isolation": workspacesession.IsolationContainer}), http.StatusOK)
+	report := map[string]any{"id": r.binding.MachineID, "hostname": "customer-host", "display_name": "Runner",
+		"backend_isolation": r.redemption.BackendIsolation, "capacity": 8, "version": "test", "workspace_capabilities": workspaceTestCapabilities,
+		"workspace_isolation": workspacesession.IsolationContainer}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", r.redemption.Credential, report), http.StatusOK)
+	report["capacity_configuration"] = runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, report), http.StatusOK)
 	return &workspaceRunnerFixture{workspaceFixture: f, runner: r}
 }
 
@@ -572,6 +653,189 @@ func TestWorkspaceWorkerBind(t *testing.T) {
 // The heartbeat renews the lease and carries the runner's report. It is the
 // one call that must not fail on disagreement: a heartbeat that errored would
 // also stop renewing, and the workspace would die of the argument.
+func TestWorkspaceWorkerSharesClaimLockOrder(t *testing.T) {
+	t.Parallel()
+	f := newWorkspaceRunnerFixture(t)
+	bound, lease := f.bound(t)
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.runner.redemption.Credential), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands, ok := f.service.config.TenantRepository.(interface {
+		WriteRunnerCommand(context.Context, tracker.OrganizationID, string, string, func(context.Context, tenantstore.Writer) error) error
+	})
+	if !ok {
+		t.Fatal("PostgreSQL runner command owner unavailable")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	runnerLocked, claimOrganization, releaseClaim := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	claimResult, claimDone := make(chan error, 1), make(chan struct{})
+	workerResult, workerDone := make(chan *httptest.ResponseRecorder, 1), make(chan struct{})
+	go func() {
+		defer close(claimDone)
+		claimResult <- commands.WriteRunnerCommand(ctx, f.project.OrganizationID, credential.ID, credential.Runner.RunnerID, func(ctx context.Context, w tenantstore.Writer) error {
+			close(runnerLocked)
+			select {
+			case <-claimOrganization:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if err := w.LockRelationshipGraph(ctx); err != nil {
+				return err
+			}
+			select {
+			case <-releaseClaim:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	}()
+	t.Cleanup(func() { cancel(); <-claimDone })
+	select {
+	case <-runnerLocked:
+	case err := <-claimResult:
+		t.Fatalf("claim runner lock: %v", err)
+	}
+	go func() {
+		defer close(workerDone)
+		request := newHubAPIRequest(t, http.MethodPost, f.base+"/workspaces/"+bound.Session.ID+"/worker/heartbeat", f.runner.redemption.Credential, workspaceHeartbeatRequest{workspaceWorkerIdentity: workspaceIdentity(lease), Capabilities: workspaceTestCapabilities, Isolation: workspacesession.IsolationContainer}).WithContext(ctx)
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request)
+		workerResult <- response
+	}()
+	t.Cleanup(func() { cancel(); <-workerDone })
+	admin := hostedPostgresAdmin(t, f.service)
+	testenv.WaitUntil(t, ctx, func() error {
+		select {
+		case response := <-workerResult:
+			t.Fatalf("workspace heartbeat returned before runner lock wait: status=%d body=%s", response.Code, response.Body.String())
+		default:
+		}
+		var waiting bool
+		if err := admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%runner_identities%')`).Scan(&waiting); err != nil {
+			return err
+		}
+		if !waiting {
+			return errors.New("workspace heartbeat has not reached runner identity lock")
+		}
+		return nil
+	})
+	close(claimOrganization)
+	close(releaseClaim)
+	if err := <-claimResult; err != nil {
+		t.Fatalf("claim organization lock: %v", err)
+	}
+	response := <-workerResult
+	requireNativeStatus(t, response, http.StatusOK)
+	if rows, open := f.occupancy(t, bound.Session.ID); rows != 1 || open != 1 {
+		t.Fatalf("concurrent claim changed occupancy: rows=%d open=%d", rows, open)
+	}
+}
+
+type workspaceTransitionTestWriter struct {
+	postgres.WorkspaceWriter
+	closingWrites   int
+	repeatedClosing error
+}
+
+func (w *workspaceTransitionTestWriter) UpdateWorkspaceSession(ctx context.Context, arg postgres.WorkspaceUpdate) (postgres.WorkspaceSession, error) {
+	if arg.State == workspacesession.StateClosing {
+		w.closingWrites++
+		if w.closingWrites > 1 {
+			return postgres.WorkspaceSession{}, w.repeatedClosing
+		}
+	}
+	return w.WorkspaceWriter.UpdateWorkspaceSession(ctx, arg)
+}
+
+func TestWorkspaceStateRejectsIllegalDetourWithoutCommitting(t *testing.T) {
+	t.Parallel()
+	f := newWorkspaceRunnerFixture(t)
+	for _, test := range []struct{ name, from, target string }{
+		{"starting cannot reach idle through closing", workspacesession.StateStarting, workspacesession.StateIdle},
+		{"closing cannot return to ready", workspacesession.StateClosing, workspacesession.StateReady},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bound, lease := f.bound(t)
+			var before postgres.WorkspaceSession
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				owner := w.(postgres.WorkspaceWriter)
+				var err error
+				before, err = owner.WorkspaceSession(t.Context(), f.project.ID, bound.Session.ID)
+				if err != nil {
+					return err
+				}
+				if before.State != test.from {
+					before, err = owner.UpdateWorkspaceSession(t.Context(), workspaceTenantUpdate(before, test.from, "", f.service.config.now()))
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			expires, released := f.leaseWindow(t, lease.ID)
+			repeated := errors.New("workspace repeated the closing detour")
+			err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				owner := &workspaceTransitionTestWriter{WorkspaceWriter: w.(postgres.WorkspaceWriter), repeatedClosing: repeated}
+				planned := before
+				planned.HeadSHA = "uncommitted-example-head"
+				_, err := updateWorkspaceState(t.Context(), owner, planned, before, test.target, "", f.service.config.now())
+				return err
+			})
+			var refusal *nativeError
+			if !errors.As(err, &refusal) || refusal.Code != "stale_execution" {
+				t.Fatalf("illegal target returned %v, want stale_execution", err)
+			}
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				after, err := r.(postgres.WorkspaceReader).WorkspaceSession(t.Context(), f.project.ID, bound.Session.ID)
+				if err != nil {
+					return err
+				}
+				if after.State != before.State || after.Revision != before.Revision || after.HeadSHA != before.HeadSHA || after.LeaseID != before.LeaseID || after.FencingToken != before.FencingToken {
+					t.Fatalf("illegal transition committed changes: before=%+v after=%+v", before, after)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if afterExpires, afterReleased := f.leaseWindow(t, lease.ID); !afterExpires.Equal(expires) || afterReleased != released {
+				t.Fatal("illegal transition changed the lease")
+			}
+			if f.itemClosed(t, bound.Session.ID) {
+				t.Fatal("illegal transition closed the dispatch association")
+			}
+			if rows, open := f.occupancy(t, bound.Session.ID); rows != 1 || open != 1 {
+				t.Fatalf("illegal transition changed occupancy: rows=%d open=%d", rows, open)
+			}
+		})
+	}
+}
+
+func TestWorkspaceWorkerRecoversWithOriginalLease(t *testing.T) {
+	t.Parallel()
+	f := newWorkspaceRunnerFixture(t)
+	for range 2 {
+		bound, lease := f.bound(t)
+		if err := f.service.workspaces.recoverOpenWorkspaces(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		recovered := f.read(t, bound.Session.ID)
+		if recovered.State != workspacesession.StateRequested || recovered.Reason != workspacesession.ReasonHubRestarted || recovered.RunnerID != bound.Session.RunnerID || recovered.MachineID != bound.Session.MachineID || recovered.Capabilities != nil {
+			t.Fatalf("recovery lost original owner: before=%+v after=%+v", bound.Session, recovered)
+		}
+		response := f.workerPost(t, bound.Session.ID, "bind", workspaceBindRequest{workspaceWorkerIdentity: workspaceIdentity(lease), Capabilities: workspaceTestCapabilities, Isolation: workspacesession.IsolationContainer})
+		requireNativeStatus(t, response, http.StatusOK)
+		var rebound workspaceBindResponse
+		decodeHubResponse(t, response, &rebound)
+		if rebound.Session.State != workspacesession.StateReady || rebound.Owner != bound.Owner {
+			t.Fatalf("restart bind replaced owner or failed to become ready: %+v", rebound)
+		}
+		if rows, open := f.occupancy(t, bound.Session.ID); rows != 1 || open != 1 {
+			t.Fatalf("rebind duplicated occupancy: rows=%d open=%d", rows, open)
+		}
+	}
+}
+
 func TestWorkspaceWorkerHeartbeat(t *testing.T) {
 	t.Parallel()
 	f := newWorkspaceRunnerFixture(t)
@@ -641,17 +905,16 @@ func TestWorkspaceWorkerHeartbeat(t *testing.T) {
 // first lease TTL has to look here and not at workspace_sessions.
 func (f *workspaceRunnerFixture) leaseWindow(t *testing.T, id tracker.LeaseID) (time.Time, bool) {
 	t.Helper()
-	var expires string
-	var released sql.NullString
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT expires_at, released_at FROM leases WHERE lease_id = ?", id).Scan(&expires, &released); err != nil {
+	var expires time.Time
+	var released bool
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.Lease(t.Context(), string(id))
+		expires, released = row.ExpiresAt, row.ReleasedAt != nil
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	expiresAt, err := parseTimeValue(expires)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return expiresAt, released.Valid
+	return expires, released
 }
 
 // setLeaseExpiry moves a lease's expiry to a known moment, so a renewal is
@@ -659,8 +922,8 @@ func (f *workspaceRunnerFixture) leaseWindow(t *testing.T, id tracker.LeaseID) (
 // for.
 func (f *workspaceRunnerFixture) setLeaseExpiry(t *testing.T, id tracker.LeaseID, at time.Time) {
 	t.Helper()
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE leases SET expires_at = ? WHERE lease_id = ?", formatHubTime(at), id); err != nil {
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(),
+		"UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '2 seconds'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 second'),expires_at=$1::timestamptz WHERE organization_id=$2 AND lease_id=$3", at, f.project.OrganizationID, id); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -788,9 +1051,9 @@ func TestWorkspaceWorkerUnbind(t *testing.T) {
 		// closing is the hub asking the runner to let go; it is reached by a
 		// sweep or a delete, neither of which leaves it there long enough for
 		// a test to observe, so the row is put there directly.
-		if _, err := f.service.database.db.ExecContext(t.Context(),
-			"UPDATE workspace_sessions SET state = 'closing', reason = ? WHERE id = ?",
-			workspacesession.ReasonClosedByActor, bind.Session.ID); err != nil {
+		if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(),
+			"UPDATE workspace_sessions SET state = 'closing', reason = $1 WHERE organization_id=$2 AND project_id=$3 AND id = $4",
+			workspacesession.ReasonClosedByActor, f.project.OrganizationID, f.project.ID, bind.Session.ID); err != nil {
 			t.Fatal(err)
 		}
 		requireNativeStatus(t, f.workerPost(t, bind.Session.ID, "unbind", workspaceUnbindRequest{
@@ -873,9 +1136,8 @@ func TestWorkspaceDeleteClosesSessionAndAccounting(t *testing.T) {
 // defect this whole change is about.
 func TestWorkspaceRequestWithNoRunnerFailsWithTheReasonOnTheResource(t *testing.T) {
 	t.Parallel()
-	// A request timeout short enough to expire between two lines, because no
-	// runner will ever claim this one: the fixture enrolls none.
-	f := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, RequestTimeout: time.Nanosecond})
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	f := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, RequestTimeout: time.Minute}, clock.Now)
 	opened := f.opened(t, f.token, map[string]any{
 		"work_item_id": string(f.issue.WorkItemID),
 		"requires":     []string{workspacesession.CapabilityFiles},
@@ -884,6 +1146,7 @@ func TestWorkspaceRequestWithNoRunnerFailsWithTheReasonOnTheResource(t *testing.
 		t.Fatalf("a new workspace = %#v, want requested", opened)
 	}
 
+	clock.Advance(time.Minute)
 	f.service.workspaces.sweep(t.Context())
 
 	failed := f.read(t, opened.ID)
@@ -929,9 +1192,9 @@ func TestWorkspaceRequestAfterThePreviousOneClosedIsAccepted(t *testing.T) {
 			name: "once the predecessor has expired and closed",
 			closeTo: func(t *testing.T, f *workspaceRunnerFixture, id string) string {
 				t.Helper()
-				if _, err := f.service.database.db.ExecContext(t.Context(),
-					"UPDATE workspace_sessions SET state = 'closed', reason = ? WHERE id = ?",
-					workspacesession.ReasonExpired, id); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(),
+					"UPDATE workspace_sessions SET state = 'closed', reason = $1 WHERE organization_id=$2 AND project_id=$3 AND id = $4",
+					workspacesession.ReasonExpired, f.project.OrganizationID, f.project.ID, id); err != nil {
 					t.Fatal(err)
 				}
 				return f.read(t, id).State
@@ -964,6 +1227,77 @@ func TestWorkspaceRequestAfterThePreviousOneClosedIsAccepted(t *testing.T) {
 // Every deadline of the workspace session contract that no request would ever reach on its own.
 // decideDeadline is pure, so the whole timing contract is a table rather than
 // a set of tests that sleep.
+func TestWorkspaceLifecycleUsesConfiguredTenant(t *testing.T) {
+	t.Parallel()
+	base := newDefaultNativeFixture(t, Config{})
+	clock := &leaseTestClock{value: base.service.config.now().UTC().Truncate(time.Microsecond)}
+	fixtures := []nativeFixture{base, newNativeFixture(t, base.service, "org_second", "Second project")}
+	services := make([]*workspaceService, 0, 2)
+	for _, fixture := range fixtures {
+		subject := fixture.create(t, "lifecycle-subject")
+		server := &Service{config: Config{TenantRepository: base.service.config.TenantRepository, Hosted: &HostedConfig{OrganizationID: string(fixture.project.OrganizationID)}, Logger: discardLogger(), now: clock.Now}}
+		service := newWorkspaceService(server, WorkspaceConfig{Enabled: true})
+		if server.accessOrganization() != fixture.project.OrganizationID {
+			t.Fatalf("configured tenant resolved to %q", server.accessOrganization())
+		}
+		services = append(services, service)
+		for index := 1; index <= 2; index++ {
+			now := clock.Now()
+			if err := base.service.config.TenantRepository.WriteTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.(postgres.WorkspaceWriter).CreateWorkspaceSession(t.Context(), postgres.WorkspaceCreate{OrganizationID: fixture.project.OrganizationID, ProjectID: fixture.project.ID, ID: fmt.Sprintf("ws_%032x", index), SubjectWorkItemID: string(subject.WorkItemID), Requires: []string{"files"}, IdleTimeoutSeconds: 60, ExpiresAt: now.Add(time.Hour), RequestedExpiresAt: now.Add(time.Minute), CreatedBy: "example", CreatedAt: now})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	clock.Advance(time.Minute)
+	for selected, service := range services {
+		records, err := service.dueWorkspaces(t.Context(), clock.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 2 {
+			t.Fatalf("tenant %d sweep rows=%d", selected, len(records))
+		}
+		for _, record := range records {
+			if record.OrganizationID != fixtures[selected].project.OrganizationID {
+				t.Fatalf("sweep crossed tenant boundary: %+v", record)
+			}
+			moved, changed, err := service.applyDeadline(t.Context(), record, clock.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !changed || moved.State != workspacesession.StateFailed || moved.Reason != workspacesession.ReasonNoRunner {
+				t.Fatalf("tenant deadline did not execute: changed=%t row=%+v", changed, moved)
+			}
+		}
+		for tenant, fixture := range fixtures {
+			if err := base.service.config.TenantRepository.ReadTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				rows, err := r.(postgres.WorkspaceReader).WorkspaceSessions(t.Context(), fixture.project.ID, "", 10)
+				if err != nil {
+					return err
+				}
+				if len(rows) != 2 {
+					t.Fatalf("tenant %d rows=%d", tenant, len(rows))
+				}
+				want := workspacesession.StateRequested
+				if tenant <= selected {
+					want = workspacesession.StateFailed
+				}
+				for _, row := range rows {
+					if row.State != want {
+						t.Fatalf("sweep %d mutated tenant %d: state=%q want=%q", selected, tenant, row.State, want)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 func TestWorkspaceDecideDeadline(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
@@ -1164,8 +1498,8 @@ func TestWorkspaceItemsAreNotOrdinaryWork(t *testing.T) {
 	// Once the workspace has ended the association closes. Its issue is a
 	// spent dispatch record, so neither lane picks it up again: before the
 	// fix this was the state the dogfood runner found it in.
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE workspace_items SET closed_at = ? WHERE work_item_id = ?", formatHubTime(time.Now().UTC()), item); err != nil {
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(),
+		"UPDATE workspace_items SET closed_at = $1 WHERE organization_id=$2 AND project_id=$3 AND work_item_id = $4", f.service.config.now(), f.project.OrganizationID, f.project.ID, item); err != nil {
 		t.Fatal(err)
 	}
 	if reclaimed := f.ordinaryClaim(t, item, "ordinary-closed"); reclaimed.Code == http.StatusOK {
@@ -1193,6 +1527,77 @@ func (f *workspaceRunnerFixture) ordinaryClaim(t *testing.T, item, session strin
 // is stricter than the coordinator's because the runner has to be able to
 // serve the surfaces and, when a worktree is retained, to be the one holding
 // it.
+type workspaceClaimChangeRepository struct {
+	tenantstore.Repository
+	before func()
+}
+
+func (r *workspaceClaimChangeRepository) WriteRunnerCommand(ctx context.Context, organization tracker.OrganizationID, credential, runner string, write func(context.Context, tenantstore.Writer) error) error {
+	if r.before != nil {
+		before := r.before
+		r.before = nil
+		before()
+	}
+	return r.Repository.(interface {
+		WriteRunnerCommand(context.Context, tracker.OrganizationID, string, string, func(context.Context, tenantstore.Writer) error) error
+	}).WriteRunnerCommand(ctx, organization, credential, runner, write)
+}
+
+func (r *workspaceClaimChangeRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, read)
+}
+
+type workspaceClaimSourceFailureRepository struct {
+	*workspaceClaimChangeRepository
+	wrap func(tenantstore.Reader) tenantstore.Reader
+}
+
+func (r workspaceClaimSourceFailureRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error { return read(r.wrap(reader)) })
+}
+
+type workspaceClaimSourceFailureReader struct {
+	tenantstore.Reader
+	postgres.WorkspaceReader
+	source  string
+	attempt string
+	subject tracker.NativeWorkItemID
+	lease   string
+	failure error
+}
+
+func (r workspaceClaimSourceFailureReader) IsWorkspaceWorkItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (bool, error) {
+	return r.Reader.IsWorkspaceWorkItem(ctx, project, item)
+}
+
+func (r workspaceClaimSourceFailureReader) Attempt(ctx context.Context, id string) (leasestore.Attempt, error) {
+	if r.source == "attempt" && id == r.attempt {
+		return leasestore.Attempt{}, r.failure
+	}
+	return r.Reader.Attempt(ctx, id)
+}
+
+func (r workspaceClaimSourceFailureReader) WorkItem(ctx context.Context, project tracker.ProjectID, id tracker.NativeWorkItemID) (corestore.WorkItem, error) {
+	if r.source == "subject" && id == r.subject {
+		return corestore.WorkItem{}, r.failure
+	}
+	return r.Reader.WorkItem(ctx, project, id)
+}
+
+func (r workspaceClaimSourceFailureReader) Lease(ctx context.Context, id string) (leasestore.Lease, error) {
+	if r.source == "lease" && id == r.lease {
+		return leasestore.Lease{}, r.failure
+	}
+	return r.Reader.Lease(ctx, id)
+}
+
+func (r workspaceClaimSourceFailureReader) RunnerForLease(ctx context.Context, id string) (runnerstore.Identity, error) {
+	if r.source == "attempt_runner" && id == r.lease {
+		return runnerstore.Identity{}, r.failure
+	}
+	return r.Reader.RunnerForLease(ctx, id)
+}
+
 func TestWorkspaceClaimable(t *testing.T) {
 	t.Parallel()
 	const runner = "runner_one"
@@ -1200,15 +1605,19 @@ func TestWorkspaceClaimable(t *testing.T) {
 	terminal := []string{workspacesession.CapabilityFiles, workspacesession.CapabilityDiff, workspacesession.CapabilityTerminal}
 	withTerminal := workspacesession.Capabilities{Files: true, Diff: true, Terminal: true}
 	for _, test := range []struct {
-		name         string
-		requires     []string
-		capabilities workspacesession.Capabilities
-		fresh        bool
-		retained     string
-		isolation    string
-		configured   string
-		want         bool
-		reason       string
+		name           string
+		requires       []string
+		capabilities   workspacesession.Capabilities
+		fresh          bool
+		retained       string
+		isolation      string
+		configured     string
+		publicRetained string
+		finished       bool
+		expired        bool
+		race           bool
+		want           bool
+		reason         string
 	}{
 		{
 			name: "a runner with no fresh report serves nothing", requires: surfaces, capabilities: workspaceTestCapabilities,
@@ -1249,6 +1658,29 @@ func TestWorkspaceClaimable(t *testing.T) {
 			configured: workspacesession.IsolationUser, want: true,
 		},
 		{
+			name: "a finished retained attempt stays with its runner", requires: surfaces,
+			capabilities: workspaceTestCapabilities, fresh: true, retained: runner, finished: true, want: true,
+		},
+		{
+			name: "a finished retained attempt excludes another runner", requires: surfaces,
+			capabilities: workspaceTestCapabilities, fresh: true, retained: "runner_two", finished: true,
+			reason: "the attempt's retained worktree belongs to another runner",
+		},
+		{
+			name: "expired retention permits a fresh checkout on another runner", requires: surfaces,
+			capabilities: workspaceTestCapabilities, fresh: true, publicRetained: "runner_two", finished: true, expired: true, want: true,
+		},
+		{
+			name: "a changed capability report is rechecked at commit", requires: surfaces,
+			capabilities: workspacesession.Capabilities{Files: true}, fresh: true, race: true,
+			reason: "the runner does not serve every required surface",
+		},
+		{
+			name: "a changed retained attempt is rechecked at commit", requires: surfaces,
+			capabilities: workspaceTestCapabilities, fresh: true, retained: "runner_two", race: true,
+			reason: "the attempt's retained worktree belongs to another runner",
+		},
+		{
 			name: "isolation does not matter without a terminal", requires: surfaces,
 			capabilities: workspaceTestCapabilities, fresh: true, isolation: workspacesession.IsolationUser,
 			configured: workspacesession.IsolationContainer, want: true,
@@ -1261,8 +1693,301 @@ func TestWorkspaceClaimable(t *testing.T) {
 			if claimable != test.want || reason != test.reason {
 				t.Fatalf("workspaceClaimable() = %v, %q, want %v, %q", claimable, reason, test.want, test.reason)
 			}
+			f := newWorkspaceRunnerFixture(t)
+			admin := hostedPostgresAdmin(t, f.service)
+			f.service.workspaces.config.Terminal.Isolation = test.configured
+			heartbeat := func(capabilities workspacesession.Capabilities, isolation string) {
+				t.Helper()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{
+					"display_name": "Runner", "capacity": 8, "version": minimumSupportedRunnerVersion, "backend_isolation": f.runner.redemption.BackendIsolation,
+					"workspace_capabilities": capabilities, "workspace_isolation": isolation,
+					"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()},
+				}), http.StatusOK)
+			}
+			heartbeat(workspacesession.Capabilities{Files: true, Diff: true, Exec: true}, workspacesession.IsolationContainer)
+			session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
+			item := f.item(t, session.ID)
+			if slices.Contains(test.requires, workspacesession.CapabilityTerminal) {
+				f.requireTerminal(t, session.ID)
+			}
+			isolation := test.isolation
+			if isolation == "" {
+				isolation = workspacesession.IsolationContainer
+			}
+			if test.race {
+				heartbeat(workspaceTestCapabilities, isolation)
+			} else {
+				heartbeat(test.capabilities, isolation)
+			}
+			if !test.fresh {
+				if _, err := admin.ExecContext(t.Context(), "DELETE FROM runner_workspace_reports WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, f.runner.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			retainedOwner := test.retained
+			if test.publicRetained != "" {
+				retainedOwner = test.publicRetained
+			}
+			attempt := ""
+			if retainedOwner != "" {
+				owner := f.runner
+				if retainedOwner != runner {
+					owner = prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+					owner.enroll(t)
+				}
+				lease := nativeAttemptFixtureLease(t, owner, f.issue, newNativeID("retained-session"))
+				start := nativeStartedEvent(lease)
+				start.IdempotencyKey = newNativeID("start")
+				attempt = start.Data.AttemptID
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", owner.redemption.Credential, start), http.StatusOK)
+				if test.finished {
+					finish := start
+					finish.IdempotencyKey, finish.Type, finish.Data.Sequence, finish.Data.Outcome = newNativeID("finish"), "run.finished", 2, "succeeded"
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", owner.redemption.Credential, finish), http.StatusOK)
+				}
+				if test.expired {
+					now := f.service.config.now().UTC()
+					f.service.config.now = func() time.Time { return now }
+					if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET updated_at=$3 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, attempt, now.Add(-f.service.workspaces.config.RetainAfterRun)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !test.race {
+					if _, err := admin.ExecContext(t.Context(), "UPDATE workspace_sessions SET attempt_id=$4 WHERE organization_id=$1 AND project_id=$2 AND id=$3", f.project.OrganizationID, f.project.ID, session.ID, attempt); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			request := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID, SessionID: newNativeID("workspace-claim"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+			preview := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", f.runner.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: request})
+			requireNativeStatus(t, preview, http.StatusOK)
+			var page tracker.NativeCapacityPage
+			decodeHubResponse(t, preview, &page)
+			listed := slices.ContainsFunc(page.Items, func(value tracker.NativeIssue) bool { return value.WorkItemID == tracker.NativeWorkItemID(item) })
+			wantPreview := test.want || test.race
+			if listed != wantPreview {
+				t.Fatalf("workspace preview listed=%t want=%t", listed, wantPreview)
+			}
+			changed := false
+			if test.race {
+				original := f.service.config.TenantRepository
+				f.service.config.TenantRepository = &workspaceClaimChangeRepository{Repository: original, before: func() {
+					if attempt != "" {
+						if _, err := admin.ExecContext(t.Context(), "UPDATE workspace_sessions SET attempt_id=$4 WHERE organization_id=$1 AND project_id=$2 AND id=$3", f.project.OrganizationID, f.project.ID, session.ID, attempt); err != nil {
+							t.Fatal(err)
+						}
+					} else if err := original.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.ReplaceRunnerWorkspaceReport(t.Context(), f.runner.binding.RunnerID, test.capabilities, isolation)
+					}); err != nil {
+						t.Fatal(err)
+					}
+					changed = true
+				}}
+				defer func() { f.service.config.TenantRepository = original }()
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential, request)
+			wantStatus := http.StatusConflict
+			if test.want {
+				wantStatus = http.StatusOK
+			}
+			requireNativeStatus(t, response, wantStatus)
+			if test.race && !changed {
+				t.Fatal("workspace claim did not reach the intervening write")
+			}
+			if !test.want {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					row, err := r.WorkItem(t.Context(), f.project.ID, tracker.NativeWorkItemID(item))
+					if err != nil {
+						return err
+					}
+					_, err = r.ActiveLeaseForIssue(t.Context(), row.ID)
+					if !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("refused workspace acquired a lease: %v", err)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
 		})
 	}
+	for _, test := range []struct {
+		name, source string
+		failure      error
+		wantHealthy  bool
+	}{
+		{name: "missing attempt does not block the lane", source: "attempt", failure: corestore.ErrNotFound, wantHealthy: true},
+		{name: "missing subject does not block the lane", source: "subject", failure: corestore.ErrNotFound, wantHealthy: true},
+		{name: "missing lease does not block the lane", source: "lease", failure: corestore.ErrNotFound, wantHealthy: true},
+		{name: "missing retained runner does not block the lane", source: "attempt_runner", failure: corestore.ErrNotFound, wantHealthy: true},
+		{name: "backend failures remain errors", source: "attempt", failure: errors.New("example backend failure")},
+		{name: "authorization failures remain errors", source: "subject", failure: accessstore.ErrDenied},
+		{name: "tenant corruption remains an error", source: "attempt", failure: corestore.ErrTenantMismatch},
+		{name: "fence corruption remains an error", source: "lease", failure: corestore.ErrRevisionConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newWorkspaceRunnerFixture(t)
+			admin := hostedPostgresAdmin(t, f.service)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 8, "version": minimumSupportedRunnerVersion, "backend_isolation": f.runner.redemption.BackendIsolation, "workspace_capabilities": workspacesession.Capabilities{Files: true, Diff: true, Exec: true}, "workspace_isolation": workspacesession.IsolationContainer, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()}}), http.StatusOK)
+			bad := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
+			other := f.create(t, "Healthy workspace subject")
+			good := f.opened(t, f.token, map[string]any{"work_item_id": string(other.WorkItemID)})
+			badItem, goodItem := f.item(t, bad.ID), f.item(t, good.ID)
+			lease := nativeAttemptFixtureLease(t, f.runner, f.issue, newNativeID("source-session"))
+			start := nativeStartedEvent(lease)
+			start.IdempotencyKey = newNativeID("source-start")
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.runner.redemption.Credential, start), http.StatusOK)
+			attachedAttempt := start.Data.AttemptID
+			if test.wantHealthy && test.source == "attempt" {
+				attachedAttempt = newNativeID("missing-attempt")
+			}
+			if test.wantHealthy && test.source == "attempt_runner" {
+				if _, err := admin.ExecContext(t.Context(), "DELETE FROM runner_lease_assignments WHERE organization_id=$1 AND lease_id=$2", f.project.OrganizationID, string(lease.ID)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := admin.ExecContext(t.Context(), "UPDATE workspace_sessions SET attempt_id=$4 WHERE organization_id=$1 AND project_id=$2 AND id=$3", f.project.OrganizationID, f.project.ID, bad.ID, attachedAttempt); err != nil {
+				t.Fatal(err)
+			}
+			original := f.service.config.TenantRepository
+			if err := original.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				for index, id := range []string{badItem, goodItem} {
+					entry, err := w.QueueEntry(t.Context(), f.project.ID, tracker.NativeWorkItemID(id), string(f.project.ID))
+					if err != nil {
+						return err
+					}
+					entry.Priority, entry.Rank = new(int64(0)), fmt.Sprintf("%04d", index)
+					if err := w.PutQueueEntry(t.Context(), entry); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			failureSource := test.source
+			if test.wantHealthy && (test.source == "attempt" || test.source == "attempt_runner") {
+				failureSource = ""
+			}
+			f.service.config.TenantRepository = workspaceClaimSourceFailureRepository{workspaceClaimChangeRepository: &workspaceClaimChangeRepository{Repository: original}, wrap: func(r tenantstore.Reader) tenantstore.Reader {
+				return workspaceClaimSourceFailureReader{Reader: r, WorkspaceReader: r.(postgres.WorkspaceReader), source: failureSource, attempt: start.Data.AttemptID, subject: f.issue.WorkItemID, lease: string(lease.ID), failure: test.failure}
+			}}
+			defer func() { f.service.config.TenantRepository = original }()
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.runner.redemption.Credential), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("authenticate claim runner status=%d error=%v", status, err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			if !test.wantHealthy {
+				err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					_, err := f.service.nativeWorkspaceClaimAllowed(t.Context(), r, scope, tracker.NativeWorkItemID(badItem), f.service.config.now())
+					return err
+				})
+				if !errors.Is(err, test.failure) {
+					t.Fatalf("workspace failure became a candidate refusal: %v want %v", err, test.failure)
+				}
+				return
+			}
+			request := tracker.NativeClaim{PolicyID: f.policy, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("lane"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}, LabelInclude: []string{workspaceItemLabel}}
+			preview := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", f.runner.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: request, Limit: 100})
+			requireNativeStatus(t, preview, http.StatusOK)
+			var page tracker.NativeCapacityPage
+			decodeHubResponse(t, preview, &page)
+			if len(page.Items) != 1 || page.Items[0].WorkItemID != tracker.NativeWorkItemID(goodItem) {
+				t.Fatalf("one missing workspace source blocked preview: %+v", page)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential, request)
+			requireNativeStatus(t, response, http.StatusOK)
+			var claimed tracker.NativeLease
+			decodeHubResponse(t, response, &claimed)
+			if claimed.WorkItemID != tracker.NativeWorkItemID(goodItem) {
+				t.Fatalf("workspace lane claimed=%s want=%s", claimed.WorkItemID, goodItem)
+			}
+			if err := original.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				cursor, err := r.SelectionCursor(t.Context(), f.runner.binding.RunnerID, scope.project)
+				if err != nil {
+					return err
+				}
+				if cursor.Position.WorkItemID != tracker.NativeWorkItemID(badItem) {
+					t.Fatalf("skipped workspace did not advance selection: %+v", cursor)
+				}
+				row, err := r.WorkItem(t.Context(), scope.project, tracker.NativeWorkItemID(badItem))
+				if err != nil {
+					return err
+				}
+				_, err = r.ActiveLeaseForIssue(t.Context(), row.ID)
+				if !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("unavailable workspace acquired lease: %v", err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	t.Run("ordinary candidates cannot crowd the workspace page", func(t *testing.T) {
+		f := newWorkspaceRunnerFixture(t)
+		heartbeat := func() {
+			t.Helper()
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 8, "version": minimumSupportedRunnerVersion, "backend_isolation": f.runner.redemption.BackendIsolation, "workspace_capabilities": workspacesession.Capabilities{Files: true, Diff: true, Exec: true}, "workspace_isolation": workspacesession.IsolationContainer, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()}}), http.StatusOK)
+		}
+		ordinary := []tracker.NativeWorkItemID{f.issue.WorkItemID}
+		for index := range nativeClaimCandidatePageSize {
+			ordinary = append(ordinary, f.create(t, fmt.Sprintf("Ordinary item %03d", index)).WorkItemID)
+		}
+		heartbeat()
+		session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
+		item := tracker.NativeWorkItemID(f.item(t, session.ID))
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			for index, id := range append(ordinary, item) {
+				entry, err := w.QueueEntry(t.Context(), f.project.ID, id, string(f.project.ID))
+				if err != nil {
+					return err
+				}
+				entry.Priority, entry.Rank = new(int64(0)), fmt.Sprintf("%05d", index)
+				if err := w.PutQueueEntry(t.Context(), entry); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		request := tracker.NativeClaim{PolicyID: f.policy, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("uncrowded-workspace"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			query := nativeTenantCandidateQuery(nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, request, "", f.service.config.now())
+			query.WorkspaceLane, query.Limit = false, nativeClaimCandidatePageSize
+			page, err := r.CandidatePage(t.Context(), query)
+			if err != nil {
+				return err
+			}
+			if len(page.Items) != nativeClaimCandidatePageSize || slices.ContainsFunc(page.Items, func(value claimstore.Candidate) bool { return value.WorkItemID == item }) {
+				t.Fatalf("ordinary claim population=%+v", page)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		heartbeat()
+		preview := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", f.runner.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: request, Limit: nativeClaimCandidatePageSize})
+		requireNativeStatus(t, preview, http.StatusOK)
+		var page tracker.NativeCapacityPage
+		decodeHubResponse(t, preview, &page)
+		if len(page.Items) != 1 || page.Items[0].WorkItemID != item {
+			t.Fatalf("ordinary population displaced workspace preview: %+v", page)
+		}
+		requireNativeStatus(t, f.ordinaryClaim(t, "", newNativeID("ordinary-poll")), http.StatusOK)
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		var lease tracker.NativeLease
+		decodeHubResponse(t, response, &lease)
+		if lease.WorkItemID != item {
+			t.Fatalf("ordinary poll displaced workspace claim: %+v", lease)
+		}
+	})
+
 }
 
 func TestTerminalIsolationAllowed(t *testing.T) {
@@ -1303,8 +2028,8 @@ func TestTerminalIsolationAllowed(t *testing.T) {
 // what is under test is the runner side, not who may ask for one.
 func (f *workspaceRunnerFixture) requireTerminal(t *testing.T, id string) {
 	t.Helper()
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		`UPDATE workspace_sessions SET requires_json = '["files","diff","terminal"]' WHERE id = ?`, id); err != nil {
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(),
+		`UPDATE workspace_sessions SET requires = ARRAY['files','diff','terminal'] WHERE organization_id=$1 AND project_id=$2 AND id = $3`, f.project.OrganizationID, f.project.ID, id); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1437,10 +2162,18 @@ func (f *workspaceRunnerFixture) reportProviderCapacity(t *testing.T, capacity i
 // reservations counts the provider reservations written against a lease.
 func (f workspaceFixture) reservations(t *testing.T, lease tracker.LeaseID) int {
 	t.Helper()
-	var rows int
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT count(*) FROM provider_reservations WHERE lease_id = ?", lease).Scan(&rows); err != nil {
-		t.Fatalf("count provider reservations for %s: %v", lease, err)
+	rows := 0
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := r.ProviderReservation(t.Context(), lease)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err == nil {
+			rows = 1
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 	return rows
 }
@@ -1511,8 +2244,11 @@ func TestWorkspaceClaimTakesCapacityNotAProviderReservation(t *testing.T) {
 func TestWorkspaceCloseEndsItsDispatchItem(t *testing.T) {
 	t.Parallel()
 	f := newWorkspaceRunnerFixture(t)
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID,
-		credential: apiCredential{Scope: apiScopeAdmin}}
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 	for _, test := range []struct {
 		name  string
 		close func(t *testing.T, session workspacesession.Session)
@@ -1540,7 +2276,7 @@ func TestWorkspaceCloseEndsItsDispatchItem(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
 			item := f.item(t, session.ID)
-			issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, item)
+			issue, err := f.service.readWorkItem(t.Context(), scope, item)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1551,7 +2287,7 @@ func TestWorkspaceCloseEndsItsDispatchItem(t *testing.T) {
 			if !f.itemClosed(t, session.ID) {
 				t.Fatal("closing the workspace left the association open")
 			}
-			closed, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, item)
+			closed, err := f.service.readWorkItem(t.Context(), scope, item)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -204,10 +205,7 @@ func (s *Service) artifactReadGrant(c echo.Context) error {
 }
 
 func minTime(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
+	return hubapi.MinTime(a, b)
 }
 
 func (s *Service) authorizeArtifactRead(c echo.Context) error {

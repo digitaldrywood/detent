@@ -17,7 +17,6 @@ import (
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestGlobalConfigReloaderApply(t *testing.T) {
@@ -223,8 +222,7 @@ func TestGlobalConfigReloaderConvergesWhenFileChangesDuringReconciliation(t *tes
 	if err := globalconfig.Write(path, current); err != nil {
 		t.Fatalf("Write(current) error = %v", err)
 	}
-	settings := &reloadConfigurationFixture{projects: append([]globalconfig.Project(nil), current.Projects...)}
-	current, err := readRuntimeConfiguration(t.Context(), settings, path)
+	current, err := readRunnerConfiguration(path)
 	if err != nil {
 		t.Fatalf("Read(current) error = %v", err)
 	}
@@ -233,7 +231,7 @@ func TestGlobalConfigReloaderConvergesWhenFileChangesDuringReconciliation(t *tes
 	if err := globalconfig.Write(path, first); err != nil {
 		t.Fatalf("Write(first) error = %v", err)
 	}
-	first, err = readRuntimeConfiguration(t.Context(), settings, path)
+	first, err = readRunnerConfiguration(path)
 	if err != nil {
 		t.Fatalf("Read(first) error = %v", err)
 	}
@@ -247,9 +245,8 @@ func TestGlobalConfigReloaderConvergesWhenFileChangesDuringReconciliation(t *tes
 	applied := []int{}
 	var logs bytes.Buffer
 	reloader := &globalConfigReloader{
-		current:  current,
-		manager:  manager,
-		settings: settings,
+		current: current,
+		manager: manager,
 		applyRuntime: func(cfg globalconfig.Config) error {
 			applied = append(applied, cfg.Global.MaxConcurrentAgents)
 			return nil
@@ -286,15 +283,15 @@ func TestGlobalConfigReloaderConvergesWhenFileChangesDuringReconciliation(t *tes
 	if err := globalconfig.Write(path, latest); err != nil {
 		t.Fatalf("Write(latest) error = %v", err)
 	}
-	latest, err = readRuntimeConfiguration(t.Context(), settings, path)
+	latest, err = readRunnerConfiguration(path)
 	if err != nil {
 		t.Fatalf("Read(latest) error = %v", err)
 	}
 	close(manager.release)
 	<-done
 
-	if len(manager.configs) != 2 || manager.configs[0].Projects[0].ID != "alpha" || manager.configs[1].Projects[0].ID != "alpha" {
-		t.Fatalf("manager configs = %#v, want two alpha reconciliations", manager.configs)
+	if len(manager.configs) != 2 {
+		t.Fatalf("manager configs = %#v, want two reconciliations", manager.configs)
 	}
 	if !reflect.DeepEqual(applied, []int{4, 6}) {
 		t.Fatalf("applied runtime capacities = %v, want [4 6]", applied)
@@ -899,14 +896,4 @@ func TestStartupManagerConfigBoundsTokenRefresh(t *testing.T) {
 	if config.RuntimeCredentialVersion != runtimeGitHubTokenVersion("") {
 		t.Fatalf("RuntimeCredentialVersion = %q, want the unresolved token version", config.RuntimeCredentialVersion)
 	}
-}
-
-type reloadConfigurationFixture struct {
-	store.LocalConfigurationStore
-	projects []globalconfig.Project
-}
-
-func (f *reloadConfigurationFixture) LocalConfiguration(ctx context.Context, cfg globalconfig.Config) (globalconfig.Config, error) {
-	cfg.Projects = append([]globalconfig.Project(nil), f.projects...)
-	return cfg, ctx.Err()
 }

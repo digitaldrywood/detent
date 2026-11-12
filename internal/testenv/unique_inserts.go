@@ -25,13 +25,6 @@ var numberedPlaceholder = regexp.MustCompile(`^\$([1-9][0-9]*)(?:::[A-Za-z_][A-Z
 // later caller fails or is silently ignored. An ON CONFLICT clause naming
 // exactly that index's columns, or naming a key that is itself all constant,
 // marks a deliberate singleton row and is allowed.
-func ConstantUniqueInserts(ctx context.Context, db *sql.DB, dir string) ([]string, error) {
-	indexes, err := uniqueIndexes(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	return constantUniqueInserts(dir, indexes)
-}
 
 func ConstantUniquePostgresInserts(ctx context.Context, db *sql.DB, dir string) ([]string, error) {
 	rows, err := db.QueryContext(ctx, `
@@ -117,51 +110,6 @@ func constantUniqueInserts(dir string, indexes map[string][][]string) ([]string,
 		})
 	}
 	return violations, nil
-}
-
-func uniqueIndexes(ctx context.Context, db *sql.DB) (map[string][][]string, error) {
-	tables, err := queryNames(ctx, db, `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
-	if err != nil {
-		return nil, fmt.Errorf("list tables: %w", err)
-	}
-	indexes := map[string][][]string{}
-	for _, table := range tables {
-		names, err := queryNames(ctx, db, `SELECT name FROM pragma_index_list(?) WHERE "unique"=1 AND partial=0`, table)
-		if err != nil {
-			return nil, fmt.Errorf("list indexes: %w", err)
-		}
-		for _, name := range names {
-			columns, err := queryNames(ctx, db, `SELECT coalesce(name, '') FROM pragma_index_info(?) ORDER BY seqno`, name)
-			if err != nil {
-				return nil, fmt.Errorf("read index columns: %w", err)
-			}
-			if len(columns) == 0 || slices.Contains(columns, "") {
-				continue
-			}
-			for i := range columns {
-				columns[i] = strings.ToLower(columns[i])
-			}
-			indexes[strings.ToLower(table)] = append(indexes[strings.ToLower(table)], columns)
-		}
-	}
-	return indexes, nil
-}
-
-func queryNames(ctx context.Context, db *sql.DB, query string, args ...any) ([]string, error) {
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-	return names, rows.Err()
 }
 
 func constantInsertViolations(query string, args []ast.Expr, spread bool, constants map[string]ast.Expr, indexes map[string][][]string) []string {

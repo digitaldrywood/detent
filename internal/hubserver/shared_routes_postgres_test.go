@@ -52,7 +52,19 @@ func newSharedRouteFixture(t *testing.T, configure ...func(*Config)) sharedRoute
 	})
 	result := sharedRouteFixture{services: map[string]*Service{}, key: key}
 	for _, org := range organizations {
-		seedStartupOrganization(t, store.postgres, org)
+		organizationConfig := cfg
+		hosted := *cfg.Hosted
+		entry := *cfg.Hosted.SharedEntry
+		hosted.SharedEntry = &entry
+		hosted.OrganizationID, hosted.WorkOSOrganizationID = string(org), "provider_"+string(org)
+		organizationConfig.Hosted = &hosted
+		for _, apply := range configure {
+			apply(&organizationConfig)
+		}
+		binding := *cfg.Hosted
+		binding.OrganizationID, binding.WorkOSOrganizationID = string(org), "provider_"+string(org)
+		binding.SharedEntry = organizationConfig.Hosted.SharedEntry
+		seedStartupOrganization(t, store.postgres, org, &binding)
 		now := time.Now()
 		if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			id := string(org) + "_owner"
@@ -62,15 +74,6 @@ func newSharedRouteFixture(t *testing.T, configure ...func(*Config)) sharedRoute
 			return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: id, Email: id + "@example.test", MembershipID: id, Role: "owner", Active: true, PrincipalID: id, CreatedAt: now, UpdatedAt: now})
 		}); err != nil {
 			t.Fatal(err)
-		}
-		organizationConfig := cfg
-		hosted := *cfg.Hosted
-		entry := *cfg.Hosted.SharedEntry
-		hosted.SharedEntry = &entry
-		hosted.OrganizationID, hosted.WorkOSOrganizationID = string(org), "provider_"+string(org)
-		organizationConfig.Hosted = &hosted
-		for _, apply := range configure {
-			apply(&organizationConfig)
 		}
 		service, err := Open(t.Context(), organizationConfig)
 		if err != nil {

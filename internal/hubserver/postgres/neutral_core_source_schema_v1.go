@@ -14,6 +14,13 @@ type neutralCoreSourceSchema struct {
 
 func neutralCoreSourceSchemasV1() map[string]neutralCoreSourceSchema {
 	return map[string]neutralCoreSourceSchema{
+		"project_onboarding": {seekKeys: []string{"organization_id", "project_id"}, columns: map[string]string{
+			"organization_id": "[0,\"organization_id\",\"TEXT\",1,null,1,0]",
+			"progress_json":   "[3,\"progress_json\",\"TEXT\",1,null,0,0]",
+			"project_id":      "[1,\"project_id\",\"TEXT\",1,null,2,0]",
+			"revision":        "[2,\"revision\",\"INTEGER\",1,null,0,0]",
+			"updated_at":      "[4,\"updated_at\",\"TEXT\",1,null,0,0]",
+		}},
 		"projects": {seekKeys: []string{"id"}, columns: map[string]string{
 			"aging_enabled":                "[30,\"aging_enabled\",\"INTEGER\",1,\"0\",0,0]",
 			"archive_cancelled_after_days": "[20,\"archive_cancelled_after_days\",\"INTEGER\",0,\"7\",0,0]",
@@ -194,6 +201,24 @@ func validateNeutralCoreSourceSchema(source *VerifiedNeutralImport, names ...str
 	for name, definition := range neutralChangeSourceSchemasV1() {
 		definitions[name] = definition
 	}
+	return validateNeutralCoreDefinitions(source, definitions, names...)
+}
+
+func ValidateNeutralHistoricalWorkItemTables(source *VerifiedNeutralImport) error {
+	if source == nil || source.Identity().SchemaVersion != 1 {
+		return storagecatalog.ErrUnmapped
+	}
+	definitions := neutralHistoricalWorkItemSourceSchemas()
+	names := []string{"issues", "repositories", "workflow_states"}
+	for _, name := range []string{"machines", "leases", "work_events", "pull_requests", "queue_entries", "issue_dependencies"} {
+		if _, ok := source.Schema()[name]; ok {
+			names = append(names, name)
+		}
+	}
+	return validateNeutralCoreDefinitions(source, definitions, names...)
+}
+
+func validateNeutralCoreDefinitions(source *VerifiedNeutralImport, definitions map[string]neutralCoreSourceSchema, names ...string) error {
 	for _, name := range names {
 		definition, ok := definitions[name]
 		if !ok {

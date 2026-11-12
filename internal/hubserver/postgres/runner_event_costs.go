@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
@@ -88,4 +89,12 @@ func (f *runnerEventSession) RecordBillingCosts(ctx context.Context, records []b
 func (f *runnerEventSession) RefreshReportUsage(ctx context.Context, records []billingstore.CostObservation) error {
 	s := &session{organization: f.session.organization, db: runEventQueue{f.pending}}
 	return s.RefreshReportUsage(ctx, records)
+}
+
+func (f *runnerEventSession) RecordAttemptUsage(ctx context.Context, report reportstore.AttemptUsage) error {
+	if report.OrganizationID != f.session.organization || report.ProjectID != f.command.Project || report.WorkItemID != f.command.WorkItem || report.LeaseID != f.command.LeaseID {
+		return corestore.ErrTenantMismatch
+	}
+	s := &session{organization: f.session.organization, db: runEventQueue{f.pending}, leaseClock: f.session.leaseClock, readOnly: f.session.readOnly}
+	return s.RecordAttemptUsage(ctx, report)
 }

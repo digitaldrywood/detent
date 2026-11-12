@@ -13,6 +13,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -67,10 +74,12 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			f := newHostedSecurityFixture(t, func(cfg *Config) {
 				cfg.Conversation = &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}
 			})
-			operatorSQL(t, f, "DELETE FROM project_policies WHERE scope=?", "org_security/"+string(f.project))
-			operatorSQL(t, f, `UPDATE projects SET states_json=json_insert(states_json,'$[#]',json('{"name":"Human Review","terminal":false,"dispatchable":false,"transitions":["Todo","Done"]}')) WHERE id=?`, f.project)
-			now := formatHubTime(f.service.config.now())
-			operatorSQL(t, f, "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Human Review','Human Review',?,?)", f.project, now, now)
+			coordinatorFixtureClearPolicyPin(t, f.service, "org_security", f.project)
+			coordinatorFixtureProject(t, f.service, "org_security", f.project, func(row *projectstore.Record) {
+				if !slices.ContainsFunc(row.States, func(state tracker.NativeState) bool { return state.Name == "Human Review" }) {
+					row.States = append(row.States, tracker.NativeState{Name: "Human Review", Transitions: []string{"Todo", "Done"}})
+				}
+			})
 			owner := f.user(t, "workflow-owner", "owner", "owner@example.test", "write", "")
 			f.grant(t, owner, true, true)
 			user := owner
@@ -113,12 +122,12 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			if test.name == "approve authored policy" {
 				repository = "acme/orders"
 				selected = resolvedWorkflowPolicy(t, HostedProjectStates(), strings.Repeat("b", 40), false)
-				operatorSQL(t, f, "UPDATE projects SET checkout_repository=? WHERE id=?", repository, f.project)
+				coordinatorFixtureProject(t, f.service, "org_security", f.project, func(row *projectstore.Record) { row.Settings.CheckoutRepository = repository })
 			}
-			operatorSQL(t, f, "UPDATE projects SET checkout_repository=? WHERE id=?", repository, f.project)
+			coordinatorFixtureProject(t, f.service, "org_security", f.project, func(row *projectstore.Record) { row.Settings.CheckoutRepository = repository })
 			scope := "org_security/" + string(f.project)
 			if test.name == "first approval" {
-				operatorSQL(t, f, "DELETE FROM project_policies WHERE scope=?", scope)
+				coordinatorFixtureClearPolicyPin(t, f.service, "org_security", f.project)
 			}
 			if test.name != "first approval" {
 				if _, err := f.service.approveTestTenantPolicy(t.Context(), scope, "fixture", policy.Change{Policy: current}); err != nil {
@@ -136,7 +145,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			if test.name != "missing runner owner" {
 				post()
 			}
-			if err := storeObservedPolicy(t.Context(), f.service.database.db, scope, r.binding.RunnerID, policy.Observation{Descriptor: selected, Source: &policy.RepositorySource{Repository: repository, Commit: selected.SourceRevision}}, f.service.config.now()); err != nil {
+			if err := coordinatorFixturePolicyObservation(t.Context(), f.service, scope, r.binding.RunnerID, policy.Observation{Descriptor: selected, Source: &policy.RepositorySource{Repository: repository, Commit: selected.SourceRevision}}); err != nil {
 				t.Fatal(err)
 			}
 			if test.name == "ambiguous runners" || test.name == "explicit runner selection" {
@@ -150,7 +159,10 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				}
 			}
 			if test.name == "repository workflow refusal" {
-				operatorSQL(t, f, "UPDATE projects SET workflow_source='detent.yaml',workflow_source_revision=? WHERE id=?", current.SourceRevision, f.project)
+				coordinatorFixtureProject(t, f.service, "org_security", f.project, func(row *projectstore.Record) {
+					row.Core.WorkflowSource = "detent.yaml"
+					row.Core.WorkflowSourceRevision = current.SourceRevision
+				})
 			}
 			holdResponse := f.request(t, owner, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "held-issue", "title": "Keep this issue in review", "body": nativeContractTestBody + "\n<!-- detent:no-dispatch -->", "state": "Human Review"})
 			requireNativeStatus(t, holdResponse, http.StatusOK)
@@ -170,7 +182,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				if _, err := f.service.approveTestTenantPolicy(t.Context(), secondScope, "fixture", policy.Change{Policy: current}); err != nil {
 					t.Fatal(err)
 				}
-				if err := storeObservedPolicy(t.Context(), f.service.database.db, secondScope, r.binding.RunnerID, policy.Observation{Descriptor: selected, Source: &policy.RepositorySource{Repository: repository, Commit: selected.SourceRevision}}, f.service.config.now()); err != nil {
+				if err := coordinatorFixturePolicyObservation(t.Context(), f.service, secondScope, r.binding.RunnerID, policy.Observation{Descriptor: selected, Source: &policy.RepositorySource{Repository: repository, Commit: selected.SourceRevision}}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -187,11 +199,11 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			}
 			decodeHubResponse(t, response, &created)
 			c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
-			record, err := c.readConversation(t.Context(), f.service.database.db, created.Conversation.ID)
+			record, err := c.service.readPublicationConversation(t.Context(), created.Conversation.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			messages, err := c.service.store.listMessages(t.Context(), f.service.database.db, record.ID, 0, 100)
+			messages, err := c.coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -203,10 +215,18 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			}
 			tools := newCoordinatorToolset(c, &coordinatorTurnState{coordinator: c, conversationID: record.ID, users: []conversationMessageRecord{message}})
 			if test.role == "viewer" {
-				operatorSQL(t, f, "UPDATE conversations SET visibility='shared' WHERE id=?", record.ID)
+				coordinatorFixtureWrite(t, f.service, record.OrganizationID, func(w tenantstore.Writer) error {
+					row, err := w.Conversation(t.Context(), record.ProjectID, record.ID)
+					if err != nil {
+						return err
+					}
+					row.Visibility = conversation.VisibilityShared
+					_, err = w.UpdateConversation(t.Context(), row, row.Revision)
+					return err
+				})
 				tools, _ = coordinatorViewerTools(t, f, record, user)
 			}
-			before, err := readRunnerWithClock(t.Context(), f.service.database.db, "org_security", r.binding.RunnerID, f.service.config.now)
+			before, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -237,7 +257,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 					}
 					if test.name == "escaped cloud workflow" {
 						padding = "&"
-						operatorSQL(t, f, "UPDATE projects SET workflow_markdown=? WHERE id=?", markdown+strings.Repeat(">", size-len(markdown)), f.project)
+						coordinatorFixtureWorkflow(t, f.service, "org_security", f.project, markdown+strings.Repeat(">", size-len(markdown)))
 					}
 					args["workflow_markdown"] = markdown + strings.Repeat(padding, size-len(markdown))
 					for _, tool := range tools.tools() {
@@ -335,7 +355,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 						t.Fatalf("%s explanatory policy changed identity or settings", check.name)
 					}
 				}
-				stored, _, err := readProjectPolicy(t.Context(), f.service.database.db, scope)
+				stored, _, err := readTestTenantProjectPolicy(t.Context(), f.service, scope)
 				if err != nil || !reflect.DeepEqual(stored.Policy, current) {
 					t.Fatalf("grounded reads changed stored policy: %+v err=%v", stored, err)
 				}
@@ -358,14 +378,14 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			if test.name == "missing runner owner" && !strings.Contains(result.Content, "unavailable") && !strings.Contains(result.Content, "stopped") {
 				t.Fatalf("missing owner=%s", result.Content)
 			}
-			after, err := readRunnerWithClock(t.Context(), f.service.database.db, "org_security", r.binding.RunnerID, f.service.config.now)
+			after, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.now())
 			if err != nil {
 				t.Fatal(err)
 			}
 			if after.Revision != before.Revision || after.ProjectConfigurationCommand != nil {
 				t.Fatal("read/preview mutated runner")
 			}
-			messages, err = c.service.store.listMessages(t.Context(), f.service.database.db, record.ID, 0, 100)
+			messages, err = c.coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -447,16 +467,16 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "stale cloud workflow":
-				operatorSQL(t, f, "UPDATE projects SET integration_revision=integration_revision+1 WHERE id=?", f.project)
+				coordinatorFixtureProject(t, f.service, "org_security", f.project, func(*projectstore.Record) {})
 			case "stale runner submission":
-				operatorSQL(t, f, "UPDATE runner_identities SET revision=revision+1 WHERE id=?", r.binding.RunnerID)
+				coordinatorFixtureRouting(t, f.service, "org_security", r.binding.RunnerID, func(*runnerstore.Identity) {})
 			case "grant revoked":
 				f.grant(t, user, false, false)
 			}
 			response = f.request(t, user, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
 			requireNativeStatus(t, response, test.status)
 			if foreignScope != "" {
-				approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, foreignScope)
+				approval, _, err := readTestTenantProjectPolicy(t.Context(), f.service, foreignScope)
 				if err != nil || !reflect.DeepEqual(approval.Policy, current) {
 					t.Fatalf("foreign project policy changed: %+v err=%v", approval, err)
 				}
@@ -473,7 +493,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			}
 			if test.status != http.StatusOK {
 				if test.name != "stale approval submission" {
-					approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, scope)
+					approval, _, err := readTestTenantProjectPolicy(t.Context(), f.service, scope)
 					want := current
 					if test.tool == "apply_local_project_policy" {
 						want = selected
@@ -485,7 +505,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				return
 			}
 			if test.tool == "approve_project_policy" {
-				approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, scope)
+				approval, _, err := readTestTenantProjectPolicy(t.Context(), f.service, scope)
 				if err != nil || !reflect.DeepEqual(approval.Policy, selected) {
 					t.Fatalf("approval=%+v %v", approval, err)
 				}
@@ -557,9 +577,7 @@ func (f *browserHostedFixture) seedCoordinatorWorkflow(t *testing.T) {
 	selected.Gates.GitHubPullRequest = true
 	selected.Gates.Validator = true
 	selected = selected.WithID()
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository=? WHERE id=?", "example-org/example-project", f.project); err != nil {
-		t.Fatal(err)
-	}
+	coordinatorFixtureProject(t, f.service, "org_browser_preview", tracker.ProjectID(f.project), func(row *projectstore.Record) { row.Settings.CheckoutRepository = "example-org/example-project" })
 	scope := "org_browser_preview/" + f.project
 	if _, err := f.service.approveTestTenantPolicy(t.Context(), scope, "fixture", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: current}); err != nil {
 		t.Fatal(err)
@@ -570,7 +588,7 @@ func (f *browserHostedFixture) seedCoordinatorWorkflow(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, browserHostedOrganizationBase+"/projects/"+f.project+"/machines/"+string(r.MachineID)+"/heartbeat", r.Credential, map[string]any{"display_name": "Workflow runner", "capacity": 1, "version": "test", "project_configuration": view}), http.StatusOK)
 	}
 	heartbeat()
-	if err := storeObservedPolicy(t.Context(), f.service.database.db, scope, r.RunnerID, policy.Observation{Descriptor: selected, Source: &policy.RepositorySource{Repository: "example-org/example-project", Commit: selected.SourceRevision}}, f.service.config.now()); err != nil {
+	if err := coordinatorFixturePolicyObservation(t.Context(), f.service, scope, r.RunnerID, policy.Observation{Descriptor: selected, Source: &policy.RepositorySource{Repository: "example-org/example-project", Commit: selected.SourceRevision}}); err != nil {
 		t.Fatal(err)
 	}
 	backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
@@ -631,5 +649,81 @@ func (f *browserHostedFixture) seedCoordinatorWorkflow(t *testing.T) {
 		}
 		text := fmt.Sprintf("The repository owns the workflow from %s at revision %s. Rework dispatchable: %t; Human Review dispatchable: %t. The Hub-approved policy requires a GitHub PR: %t; validator: %t; project human review: %t. An issue hold can still require review. The registered runner's host finalizer owns signing and native Change publication; its delivery owner creates the required PR.\n\nApproved policy: %s. Effective runner policy: %s. Runner application pending: %t. Approval alone does not prove adoption.", approved.Data.Policy.Workflow.Source, approved.Data.Policy.SourceRevision, slices.ContainsFunc(approved.Data.Policy.Workflow.States, func(state policy.State) bool { return state.Name == "Rework" && state.Dispatchable }), slices.ContainsFunc(approved.Data.Policy.Workflow.States, func(state policy.State) bool { return state.Name == "Human Review" && state.Dispatchable }), approved.Data.Policy.Gates.GitHubPullRequest, approved.Data.Policy.Gates.Validator, approved.Data.Policy.Gates.HumanReview, approved.Data.Policy.ID, observed.EffectivePolicy.ID, observed.Pending)
 		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: text})
+	})
+}
+
+func coordinatorFixtureWrite(t *testing.T, s *Service, organization tracker.OrganizationID, change func(tenantstore.Writer) error) {
+	t.Helper()
+	if err := s.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(t.Context()); err != nil {
+			return err
+		}
+		return change(w)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func coordinatorFixtureRouting(t *testing.T, s *Service, organization tracker.OrganizationID, id string, change func(*runnerstore.Identity)) {
+	t.Helper()
+	coordinatorFixtureWrite(t, s, organization, func(w tenantstore.Writer) error {
+		row, err := w.RunnerIdentity(t.Context(), id)
+		if err != nil {
+			return err
+		}
+		change(&row)
+		return w.UpdateRunnerRouting(t.Context(), row.Revision, row)
+	})
+}
+
+func coordinatorFixtureProject(t *testing.T, s *Service, organization tracker.OrganizationID, project tracker.ProjectID, change func(*projectstore.Record)) {
+	t.Helper()
+	coordinatorFixtureWrite(t, s, organization, func(w tenantstore.Writer) error {
+		row, err := w.ProjectRecord(t.Context(), project)
+		if err != nil {
+			return err
+		}
+		change(&row)
+		_, err = w.UpdateProjectRecord(t.Context(), row)
+		return err
+	})
+}
+
+func coordinatorFixtureClearPolicyPin(t *testing.T, s *Service, organization tracker.OrganizationID, project tracker.ProjectID) {
+	t.Helper()
+	if _, err := hostedPostgresAdmin(t, s).ExecContext(t.Context(), "DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2", organization, project); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func coordinatorFixturePolicyObservation(ctx context.Context, s *Service, scope, reporter string, observation policy.Observation) error {
+	organization, project, ok := strings.Cut(scope, "/")
+	if !ok {
+		return nativeNotFound()
+	}
+	row, err := eventstore.NewContent(s.runDetailStore()).PrepareProjectPolicy(ctx, tracker.OrganizationID(organization), observation.Descriptor)
+	if err != nil {
+		return err
+	}
+	row.ProjectID = tracker.ProjectID(project)
+	return s.config.TenantRepository.WriteTenant(ctx, row.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.RecordProjectPolicyObservation(ctx, policystore.Observation{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, RunnerID: reporter, PolicyID: row.PolicyID, ObservedAt: s.config.now(), Revision: row, Source: observation.Source})
+		return err
+	})
+}
+
+func coordinatorFixtureWorkflow(t *testing.T, s *Service, organization tracker.OrganizationID, project tracker.ProjectID, markdown string) {
+	t.Helper()
+	raw, err := json.Marshal(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: organization}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinatorFixtureProject(t, s, organization, project, func(row *projectstore.Record) {
+		row.Settings.WorkflowKey, row.Settings.WorkflowSHA256 = payload.PayloadObjectKey, payload.PayloadSHA256
+		row.Settings.WorkflowBytes, row.Settings.WorkflowContentBytes = payload.PayloadBytes, payload.PayloadContentBytes
 	})
 }

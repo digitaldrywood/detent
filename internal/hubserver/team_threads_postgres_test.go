@@ -27,6 +27,7 @@ import (
 func TestPostgresThreadsPreservePostsPermissionsAndUnread(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	now := time.Now().UTC()
 	for _, role := range []string{"owner", "reporter"} {
 		if _, err := cfg.Hosted.Provider.CreateMembership(t.Context(), "user_"+role, "provider_org_startup", role); err != nil {
@@ -38,7 +39,9 @@ func TestPostgresThreadsPreservePostsPermissionsAndUnread(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_startup", "org_second"} {
-		seedStartupOrganization(t, store.postgres, org)
+		binding := *cfg.Hosted
+		binding.OrganizationID, binding.WorkOSOrganizationID = string(org), "provider_"+string(org)
+		seedStartupOrganization(t, store.postgres, org, &binding)
 		err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, role := range []string{"owner", "reporter"} {
 				user := "user_" + role
@@ -141,8 +144,8 @@ func TestPostgresThreadsPreservePostsPermissionsAndUnread(t *testing.T) {
 	if err := service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
-	if service.database.db != nil || service.database.reader != nil {
-		t.Fatal("PostgreSQL threads retained legacy SQL handles")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 	const owner = "example_thread_org_startupowner"
 	const reporter = "example_thread_org_startupreporter"
@@ -562,20 +565,4 @@ func (r *threadBodyReadRepository) ReadTenant(ctx context.Context, organization 
 	r.active.Add(1)
 	defer r.active.Add(-1)
 	return r.Repository.ReadTenant(ctx, organization, workload, read)
-}
-
-func TestThreadPostHydrationReturnsCanceledContext(t *testing.T) {
-	service := &Service{config: Config{RunDetails: &memoryRunDetails{}}}
-	for _, tc := range []struct {
-		name  string
-		posts []threadstore.PostRecord
-	}{{name: "empty"}, {name: "pending", posts: []threadstore.PostRecord{{}}}} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(t.Context())
-			cancel()
-			if err := service.hydrateThreadPosts(ctx, "org_example", tc.posts); !errors.Is(err, context.Canceled) {
-				t.Fatalf("canceled body hydration returned success: %v", err)
-			}
-		})
-	}
 }

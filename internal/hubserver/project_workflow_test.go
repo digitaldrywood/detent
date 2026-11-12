@@ -1,8 +1,6 @@
 package hubserver
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +8,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -33,6 +37,7 @@ func migrationWorkflow() []tracker.NativeState {
 func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
+	admin := hostedPostgresAdmin(t, f.service)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	viewer := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 	member := f.user(t, "member", "member", "member@example.test", "write", "")
@@ -51,7 +56,11 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 	f.grant(t, member, true, false)
 	base := organizationBase + "/projects/" + string(f.project)
 	seedNativeFixturePolicy(t, f.service, "org_security/"+string(f.project))
-	operatorSQL(t, f, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
+	if result, err := admin.ExecContext(t.Context(), "UPDATE project_settings SET duplicate_challenge=false WHERE organization_id=$1 AND project_id=$2", created.OrganizationID, created.ID); err != nil {
+		t.Fatal(err)
+	} else if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("duplicate-challenge fixture affected=%d error=%v", affected, err)
+	}
 	api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "current-task"}, Title: "Preserve project workflow", Body: nativeContractTestBody, State: "Todo"}, http.StatusOK)
 	var otherProject tracker.NativeProject
 	browserHostedDecode(t, api(t, "owner", http.MethodPost, organizationBase+"/projects", map[string]any{"idempotency_key": "other-project", "name": "Other project", "grant_access": true}, http.StatusCreated), &otherProject)
@@ -104,7 +113,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 	}
 	for _, state := range states {
 		var terminal, dispatchable bool
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT terminal,dispatchable FROM workflow_states WHERE project_id=? AND detent_state=?", f.project, state.Name).Scan(&terminal, &dispatchable); err != nil {
+		if err := admin.QueryRowContext(t.Context(), "SELECT terminal,dispatchable FROM project_workflow_states WHERE organization_id=$1 AND project_id=$2 AND name=$3", created.OrganizationID, f.project, state.Name).Scan(&terminal, &dispatchable); err != nil {
 			t.Fatal(err)
 		}
 		if terminal != state.Terminal || dispatchable != state.Dispatchable {
@@ -148,21 +157,22 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 	}
 	t.Run("saved transition ownership", func(t *testing.T) {
 		api(t, "owner", http.MethodPost, base+"/work-items/"+string(blocker.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "invalid-transition"}, ExpectedRevision: blocker.Revision, State: "Rework", Reason: "user_requested"}, http.StatusUnprocessableEntity)
-		worker := nativeScope{organization: project.OrganizationID, project: project.ID, credential: apiCredential{ID: "test-worker", Scope: apiScopeWorker}}
-		request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "worker-backlog"}, Title: "Unapproved admission", State: "Backlog"}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		binding := runnerauth.NewBinding()
+		var enrollment runnerauth.Enrollment
+		browserHostedDecode(t, api(t, "owner", http.MethodPost, organizationBase+"/runner-enrollments", runnerauth.EnrollmentRequest{Scope: "projects", Binding: binding, ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Collaborate}, TTLSeconds: 60}, http.StatusCreated), &enrollment)
+		credential, err := apikey.GenerateToken()
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-				t.Error(err)
-			}
-		})
-		_, err = createNativeFixtureIssueTx(t.Context(), tx, worker, request, f.service.config.now())
-		var failure *nativeError
-		if !errors.As(err, &failure) || failure.Message != "Workflow target requires an operator" {
-			t.Fatalf("worker operator-only admission = %v", err)
+		redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "example", DisplayName: "Example runner", Capacity: 2, Version: "test", BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organizationBase+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+		request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "worker-backlog"}, Title: "Unapproved admission", Body: issueContractTestSections, State: "Backlog"}
+		response := performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items", credential, request)
+		requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+		var failure apiErrorResponse
+		decodeHubResponse(t, response, &failure)
+		if failure.Message != "Workflow target requires an operator" {
+			t.Fatalf("worker operator-only admission = %v", failure)
 		}
 	})
 	t.Run("archived items still retain their state", func(t *testing.T) {
@@ -189,13 +199,21 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		api(t, "owner", http.MethodPut, newBase+"/onboarding/integration", map[string]any{"idempotency_key": "simplify", "expected_revision": "1", "intake": "disabled", "projection": "disabled", "states": []tracker.NativeState{{Name: "Backlog"}}}, http.StatusOK)
 		browserHostedDecode(t, api(t, "owner", http.MethodGet, newBase+"/integration", nil, http.StatusOK), &simplified)
 		var remaining int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM workflow_states WHERE project_id=?", created.ID).Scan(&remaining); err != nil {
+		if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM project_workflow_states WHERE organization_id=$1 AND project_id=$2", created.OrganizationID, created.ID).Scan(&remaining); err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(simplified.States, []tracker.NativeState{{Name: "Triage", Transitions: []string{"Backlog"}}, {Name: "Backlog"}}) || remaining != 2 {
 			t.Fatalf("unused states were not removed: %#v, rows=%d", simplified.States, remaining)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET profile='github_compatible' WHERE id=?", created.ID); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), created.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			record, err := w.Project(t.Context(), created.ID)
+			if err != nil {
+				return err
+			}
+			record.Profile = "github_compatible"
+			_, err = w.UpdateProject(t.Context(), record)
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		api(t, "owner", http.MethodPut, newBase+"/onboarding/integration", map[string]any{"idempotency_key": "source-owned", "expected_revision": "2", "intake": "disabled", "projection": "disabled", "states": states}, http.StatusUnprocessableEntity)
@@ -250,13 +268,9 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 			t.Fatal(err)
 		}
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: approved.Policy}, http.StatusConflict)
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, claimErr := validateClaimPolicy(t.Context(), tx, claimCandidateQuery{NativeScope: &nativeScope{organization: created.OrganizationID, project: created.ID}, PolicyID: approved.Policy.ID}, "machine_stale")
-		if err := tx.Rollback(); err != nil {
-			t.Fatal(err)
+		claimPolicy, claimErr := f.service.readTenantProjectPolicy(t.Context(), created.OrganizationID, created.ID)
+		if claimErr == nil {
+			claimErr = claimPolicy.Policy.Requirements.Match("", "machine_stale", nil)
 		}
 		if claimErr != nil {
 			t.Fatalf("configuration change refused claim: %v", claimErr)
@@ -268,7 +282,15 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 			t.Fatal(err)
 		}
 		browserHostedDecode(t, api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: cloudPolicy}, http.StatusOK), &approved)
-		if err := validateWorkflowPolicy(t.Context(), f.service.database.db, string(created.OrganizationID)+"/"+string(created.ID), approved.Policy); err != nil {
+		var currentProject projectstore.Record
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), created.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			currentProject, err = r.ProjectRecord(t.Context(), created.ID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateNativeWorkflowPolicy(currentProject, approved.Policy, true); err != nil {
 			t.Fatalf("current Cloud workflow approval = %v", err)
 		}
 		resolveRepositoryPolicy := func(markdown, revision string) policy.Descriptor {

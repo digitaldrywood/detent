@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
@@ -177,94 +176,4 @@ func decodeConversationQueryMetadata(table, raw, extra string) (conversationQuer
 		return m, errors.New("unknown conversation metadata family")
 	}
 	return m, nil
-}
-
-func resolveConversationEventMetadata(ctx context.Context, q nativeQueryer, id, query string, args ...any) (string, []any, error) {
-	rows, err := q.QueryContext(ctx, `SELECT seq,body_json FROM conversation_events WHERE conversation_id=? AND query_metadata_version=0 ORDER BY seq LIMIT ?`, id, eventCompactionBatch)
-	if err != nil {
-		return "", nil, err
-	}
-	defer rows.Close()
-	var values []string
-	var bound []any
-	var columns []string
-	for rows.Next() {
-		var seq int64
-		var raw string
-		if err := rows.Scan(&seq, &raw); err != nil {
-			rows.Close()
-			return "", nil, err
-		}
-		m, err := eventQueryMetadata([]byte(raw))
-		if err != nil {
-			rows.Close()
-			return "", nil, err
-		}
-		columns = columns[:0]
-		marks := []string{"?"}
-		bound = append(bound, seq)
-		for i, column := range m.columns {
-			columns = append(columns, strings.TrimSuffix(column, "=?"))
-			marks = append(marks, "?")
-			bound = append(bound, m.values[i])
-		}
-		values = append(values, "("+strings.Join(marks, ",")+")")
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return "", nil, err
-	}
-	if len(values) == 0 {
-		return query, args, nil
-	}
-	selection := []string{"e.conversation_id", "e.seq", "e.type", "e.body_json", "e.created_at", "CASE WHEN d.seq IS NOT NULL THEN 1 ELSE e.query_metadata_version END AS query_metadata_version"}
-	for _, column := range columns {
-		selection = append(selection, "CASE WHEN d.seq IS NOT NULL THEN d."+column+" ELSE e."+column+" END AS "+column)
-	}
-	prefix := "WITH decoded_event_metadata(seq," + strings.Join(columns, ",") + ") AS (VALUES " + strings.Join(values, ",") + "), resolved_conversation_events AS (SELECT " + strings.Join(selection, ",") + " FROM conversation_events e LEFT JOIN decoded_event_metadata d ON d.seq=e.seq WHERE e.conversation_id=?) "
-	bound = append(bound, id)
-	bound = append(bound, args...)
-	return prefix + strings.ReplaceAll(query, "conversation_events", "resolved_conversation_events"), bound, nil
-}
-
-func conversationIsCompactable(ctx context.Context, q nativeQueryer, id string, now time.Time) (bool, error) {
-	var raw string
-	var version int
-	if err := q.QueryRowContext(ctx, "SELECT execution_json,query_metadata_version FROM conversations WHERE id=?", id).Scan(&raw, &version); err != nil {
-		return false, err
-	}
-	query := compactableConversation
-	var args []any
-	if version == 0 {
-		var execution conversation.Execution
-		if err := json.Unmarshal([]byte(raw), &execution); err != nil {
-			return false, err
-		}
-		query = strings.ReplaceAll(query, "c.query_metadata_version=0 OR ", "")
-		query = strings.ReplaceAll(query, "c.execution_status", "?")
-		query = strings.ReplaceAll(query, "c.execution_lease_id", "?")
-		args = []any{formatHubTime(now.Add(-eventRetention)), execution.Status, execution.Owner.LeaseID, formatHubTime(now)}
-	} else {
-		args = []any{formatHubTime(now.Add(-eventRetention)), formatHubTime(now)}
-	}
-	var full bool
-	args = append([]any{id}, args...)
-	err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM conversations c WHERE c.id=? AND "+query+")", args...).Scan(&full)
-	return full, err
-}
-
-func (s *Service) prepareStorageConversionQueryMetadata(ctx context.Context, family storageConversionFamily, row int64, raw, converted []byte) (conversationQueryMetadata, error) {
-	if converted == nil {
-		return conversationQueryMetadata{}, nil
-	}
-	var m conversationQueryMetadata
-	var err error
-	switch family.name {
-	case "runs":
-		return s.prepareCollaborationPayloadMetadata(ctx, row, raw)
-	case "conversation_events":
-		m, err = eventQueryMetadata(converted)
-	default:
-		return conversationQueryMetadata{}, nil
-	}
-	return m, err
 }

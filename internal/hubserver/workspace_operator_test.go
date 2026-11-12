@@ -18,6 +18,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -28,19 +31,27 @@ import (
 func TestWorkspaceOperatorFiles(t *testing.T) {
 	f := newWorkspaceRunnerFixture(t)
 	bound, lease := f.bound(t)
+	var originalLease leasestore.Lease
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		originalLease, err = r.Lease(t.Context(), string(lease.ID))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	workspace := bound.Session.ID
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workspace_sessions SET read_only = 1 WHERE id = ?", workspace); err != nil {
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE workspace_sessions SET read_only = true WHERE organization_id=$1 AND project_id=$2 AND id = $3", f.project.OrganizationID, f.project.ID, workspace); err != nil {
 		t.Fatal(err)
 	}
 	ctx := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "files")
 	for _, test := range []struct{ name, update, status, code string }{
 		{"runner unavailable", "", "unavailable", workspacesession.CodeStaleExecution},
-		{"unsupported", `UPDATE workspace_sessions SET capabilities_json = '{}' WHERE id = ?`, "unsupported_transport", workspacesession.CodeForbidden},
-		{"ended", `UPDATE workspace_sessions SET state = 'closed' WHERE id = ?`, "unavailable", workspacesession.CodeWorkspaceClosed},
+		{"unsupported", `UPDATE workspace_sessions SET capabilities = ARRAY[]::text[] WHERE organization_id=$1 AND project_id=$2 AND id = $3`, "unsupported_transport", workspacesession.CodeForbidden},
+		{"ended", `UPDATE workspace_sessions SET state = 'closed' WHERE organization_id=$1 AND project_id=$2 AND id = $3`, "unavailable", workspacesession.CodeWorkspaceClosed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.update != "" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), test.update, workspace); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), test.update, f.project.OrganizationID, f.project.ID, workspace); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -55,8 +66,8 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 			if err := json.Unmarshal(workspaceOperatorData(t, result), &response); err != nil || response.Status != test.status || response.Code != test.code || len(response.Result) != 0 {
 				t.Fatalf("availability=%s err=%v", result.Content, err)
 			}
-			capabilities, _ := json.Marshal(bound.Session.Capabilities)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workspace_sessions SET capabilities_json = ?, state = ? WHERE id = ?", string(capabilities), bound.Session.State, workspace); err != nil {
+			capabilities := workspaceCapabilityNames(*bound.Session.Capabilities)
+			if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE workspace_sessions SET capabilities = $1::text[], state = $2 WHERE organization_id=$3 AND project_id=$4 AND id = $5", capabilities, bound.Session.State, f.project.OrganizationID, f.project.ID, workspace); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -87,7 +98,11 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 			}
 		})
 	}
-	runner := &relayConnection{id: "relayrunner_test", workspaceID: workspace, runner: true, out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
+	runnerCredential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.runner.redemption.Credential), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &relayConnection{id: "relayrunner_test", workspaceID: workspace, runner: true, scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: runnerCredential}, owner: bound.Owner, sessionID: string(lease.ID), out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
 	if _, err := f.service.workspaces.relay.attachRunner(runner); err != nil {
 		t.Fatal(err)
 	}
@@ -159,12 +174,22 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 				result operatortool.Result
 				err    error
 			}
+			callCtx, cancel := context.WithCancel(ctx)
 			done := make(chan answer, 1)
+			finished := make(chan struct{})
 			go func() {
-				result, err := (workspaceOperatorExecutor{server: f.service}).Execute(ctx, operatortool.Call{Name: test.tool, Arguments: raw})
+				defer close(finished)
+				result, err := (workspaceOperatorExecutor{server: f.service}).Execute(callCtx, operatortool.Call{Name: test.tool, Arguments: raw})
 				done <- answer{result, err}
 			}()
-			forwarded := (<-runner.out).frame
+			t.Cleanup(func() { cancel(); <-finished })
+			var forwarded workspacesession.Frame
+			select {
+			case outbound := <-runner.out:
+				forwarded = outbound.frame
+			case got := <-done:
+				t.Fatalf("file read ended before runner request: %v", got.err)
+			}
 			var request workspacesession.FilesRequest
 			if err := json.Unmarshal(forwarded.Payload, &request); err != nil || request.Path != test.path || forwarded.Actor == nil || request.Length > 32768 {
 				t.Fatalf("request=%+v frame=%+v err=%v", request, forwarded, err)
@@ -196,19 +221,19 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 				frame.Payload, _ = workspacesession.Encode(value)
 			}
 			if test.revoke {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = created_at WHERE id = ?", f.ownerID); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = created_at WHERE organization_id=$1 AND id = $2", f.project.OrganizationID, f.ownerID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.expired {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at = ? WHERE lease_id = ?", "2000-01-01T00:00:00Z", lease.ID); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$1::timestamptz,renewed_at=$1::timestamptz,expires_at=$1::timestamptz+interval '1 microsecond' WHERE organization_id=$2 AND lease_id = $3", "2000-01-01T00:00:00Z", f.project.OrganizationID, lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			f.service.workspaces.handleRunnerFrame(t.Context(), runner, frame)
 			got := <-done
 			if test.expired {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at = ? WHERE lease_id = ?", formatHubTime(lease.ExpiresAt), lease.ID); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$1,renewed_at=$2,expires_at=$3 WHERE organization_id=$4 AND lease_id = $5", originalLease.AcquiredAt, originalLease.RenewedAt, originalLease.ExpiresAt, f.project.OrganizationID, lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -324,12 +349,108 @@ func workspaceOperatorData(t *testing.T, result operatortool.Result) json.RawMes
 	return response.Data
 }
 
+func TestWorkItemConversationMissingDiagnostic(t *testing.T) {
+	f := newConversationAPIFixture(t, nil)
+	tenants := []nativeFixture{f.nativeFixture, newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "second conversation tenant")}
+	type tenantItems struct{ linked, unlinked tracker.NativeWorkItemID }
+	items := make([]tenantItems, len(tenants))
+	conversations := make([]string, len(tenants))
+	tenants[1].token, _ = conversationOperatorToken(t, tenants[1], "second-operator")
+	for index, tenant := range tenants {
+		items[index] = tenantItems{linked: tenant.create(t, "linked issue").WorkItemID, unlinked: tenant.create(t, "unlinked issue").WorkItemID}
+		response := performHubAPIRequest(t, f.service, http.MethodPost, tenant.base+"/conversations", tenant.token, conversationCreateBody(map[string]any{"title": "Linked history"}))
+		requireNativeStatus(t, response, http.StatusCreated)
+		var created conversationCreateResponse
+		decodeHubResponse(t, response, &created)
+		conversations[index] = created.Conversation.ID
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tenant.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			record, err := w.Conversation(t.Context(), tenant.project.ID, created.Conversation.ID)
+			if err != nil {
+				return err
+			}
+			record.WorkItemID, record.LinkedAt = string(items[index].linked), &record.CreatedAt
+			_, err = w.UpdateConversation(t.Context(), record, record.Revision)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, tenant := range tenants {
+		other := items[(index+1)%len(tenants)]
+		for _, test := range []struct {
+			name         string
+			item         tracker.NativeWorkItemID
+			conversation string
+			missing      bool
+			denied       bool
+		}{
+			{name: "with conversation", item: items[index].linked, conversation: conversations[index]},
+			{name: "without conversation", item: items[index].unlinked, missing: true},
+			{name: "foreign tenant linked item", item: other.linked, denied: true},
+			{name: "foreign tenant unlinked item", item: other.unlinked, denied: true},
+		} {
+			t.Run(string(tenant.project.OrganizationID)+"/"+test.name, func(t *testing.T) {
+				credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), tenant.project.OrganizationID, apikey.HashToken(tenant.token), "", "")
+				if err != nil {
+					t.Fatalf("credential status=%d error=%v", status, err)
+				}
+				scope := nativeScope{organization: tenant.project.OrganizationID, project: tenant.project.ID, credential: credential}
+				raw, err := f.service.readWorkspaceTool(t.Context(), scope, "get_work_item_conversation", workspaceToolRequest{WorkItemID: string(test.item)})
+				if test.denied {
+					var refused *nativeError
+					if !errors.As(err, &refused) || refused.status != http.StatusNotFound {
+						t.Fatalf("foreign item lookup=%s error=%v", raw, err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("lookup=%s error=%v", raw, err)
+				}
+				var data struct {
+					Status       string `json:"status"`
+					Conversation *struct {
+						ID string `json:"id"`
+					} `json:"conversation"`
+				}
+				if err := json.Unmarshal(raw, &data); err != nil {
+					t.Fatal(err)
+				}
+				if test.missing {
+					if data.Status != "unavailable" || data.Conversation != nil {
+						t.Fatalf("missing conversation diagnostic=%s", raw)
+					}
+				} else if data.Status == "unavailable" || data.Conversation == nil || data.Conversation.ID != test.conversation {
+					t.Fatalf("linked conversation lookup=%s", raw)
+				}
+				err = f.service.config.TenantRepository.ReadTenant(t.Context(), tenant.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					stored, err := r.ConversationByWorkItem(t.Context(), tenant.project.ID, string(test.item))
+					if err == nil && stored.ID != test.conversation {
+						return errors.New("lookup created a substitute conversation")
+					}
+					return err
+				})
+				if test.missing && !errors.Is(err, corestore.ErrNotFound) || !test.missing && err != nil {
+					t.Fatalf("stored conversation after lookup: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestWorkItemConversationLookup(t *testing.T) {
 	f := newConversationAPIFixture(t, nil)
 	issue := f.nativeFixture.create(t, "ordinary issue")
 	created := f.create(t, f.token, map[string]any{"title": "Private history"})
 	requireNativeStatus(t, f.command(t, f.token, created.Conversation.ID, conversation.Command{Key: "history", Kind: conversation.CommandMessage, Text: "private message sentinel"}), http.StatusOK)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET work_item_id = ?, linked_at = created_at WHERE id = ?", issue.WorkItemID, created.Conversation.ID); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.Conversation(t.Context(), f.project.ID, created.Conversation.ID)
+		if err != nil {
+			return err
+		}
+		record.WorkItemID, record.LinkedAt = string(issue.WorkItemID), &record.CreatedAt
+		_, err = w.UpdateConversation(t.Context(), record, record.Revision)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -364,19 +485,17 @@ func TestWorkItemConversationLookup(t *testing.T) {
 			}
 		})
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'Done') WHERE native_id = ?", f.project.ID, issue.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "complete-conversation-item"}, ExpectedRevision: issue.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
 	var state string
 	var generation int64
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT workflow_state_id, dispatch_generation FROM issues WHERE native_id = ?", issue.WorkItemID).Scan(&state, &generation); err != nil {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT workflow_state_name, dispatch_generation FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, issue.WorkItemID).Scan(&state, &generation); err != nil {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
 	f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, fault := range []bool{false, true} {
 		if fault {
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_messages SET actor_json = '["credential sentinel"]', actor_kind = NULL, actor_principal_id = NULL WHERE conversation_id = ?`, created.Conversation.ID); err != nil {
+			if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `UPDATE conversation_messages SET actor_json = '["credential sentinel"]', actor_kind = NULL, actor_principal_id = NULL WHERE organization_id=$1 AND conversation_id=$2`, f.project.OrganizationID, created.Conversation.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -442,7 +561,7 @@ func TestWorkItemConversationLookup(t *testing.T) {
 	}
 	var afterState string
 	var afterGeneration int64
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT workflow_state_id, dispatch_generation FROM issues WHERE native_id = ?", issue.WorkItemID).Scan(&afterState, &afterGeneration); err != nil || afterState != state || afterGeneration != generation {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT workflow_state_name, dispatch_generation FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, issue.WorkItemID).Scan(&afterState, &afterGeneration); err != nil || afterState != state || afterGeneration != generation {
 		t.Fatalf("snapshot read changed completed item: state=%s/%s generation=%d/%d err=%v", state, afterState, generation, afterGeneration, err)
 	}
 }
@@ -490,7 +609,7 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 		t.Fatalf("replay created new conversation: %+v", got)
 	}
 	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 1 {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversations WHERE organization_id=$1", f.project.OrganizationID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("conversations=%d %v", count, err)
 	}
 	args = map[string]any{"project_id": f.project.ID, "conversation_id": id, "request_id": "post", "input": map[string]any{"kind": "message", "text": "A single message"}}
@@ -503,7 +622,7 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 			t.Fatal(string(result.Content))
 		}
 	}
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id=? AND role='user'", id).Scan(&count); err != nil || count != 1 {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND role='user'", f.project.OrganizationID, id).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("messages=%d %v", count, err)
 	}
 	changed := map[string]any{"project_id": f.project.ID, "conversation_id": id, "request_id": "post", "input": map[string]any{"kind": "message", "text": "Changed"}}
@@ -550,12 +669,14 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 	f.setExecution(t, id, conversation.Execution{Status: conversation.ExecutionCompleted, Owner: conversation.Owner{AttemptID: "att_523"}, UpdatedAt: time.Now().UTC()})
 	before := f.snapshot(t, f.token, id)
 	var generation int64
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE native_id = ?", before.Conversation.WorkItemID).Scan(&generation); err != nil {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, before.Conversation.WorkItemID).Scan(&generation); err != nil {
 		t.Fatal(err)
 	}
 	staleInput := map[string]any{"kind": "message", "text": "Late steer", "expected": map[string]any{"attempt_id": "att_523", "turn_id": "turn_finished"}}
 	revoked := workspaceOperatorContext(t, f.service, f.other, string(f.project.OrganizationID), "revoked-stale")
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = created_at WHERE id = ?", f.otherID); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RevokeAccessCredential(t.Context(), f.otherID, f.service.config.now().UTC())
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, denied := range []context.Context{t.Context(), revoked} {
@@ -614,12 +735,12 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 			}
 		})
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = NULL WHERE id = ?", f.otherID); err != nil {
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = NULL WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, f.otherID); err != nil {
 		t.Fatal(err)
 	}
 	after := f.snapshot(t, f.token, id)
 	var afterGeneration int64
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE native_id = ?", before.Conversation.WorkItemID).Scan(&afterGeneration); err != nil || afterGeneration != generation || after.Conversation.Execution.Status != conversation.ExecutionCompleted || len(after.Messages) != len(before.Messages) {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, before.Conversation.WorkItemID).Scan(&afterGeneration); err != nil || afterGeneration != generation || after.Conversation.Execution.Status != conversation.ExecutionCompleted || len(after.Messages) != len(before.Messages) {
 		t.Fatalf("late steer changed conversation/dispatch: before=%+v after=%+v generation=%d/%d err=%v", before.Conversation, after.Conversation, generation, afterGeneration, err)
 	}
 	result, err = workspaceOperatorCall(t, f.service, reconnect, "post_conversation_command", map[string]any{"project_id": f.project.ID, "conversation_id": id, "request_id": "post", "input": map[string]any{"kind": "message", "text": "A single message"}})
@@ -733,7 +854,7 @@ func TestWorkspaceOperatorHistoryBudget(t *testing.T) {
 	}
 	t.Run("oversized worker message preserves controls", func(t *testing.T) {
 		f := newConversationWorkerFixture(t)
-		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
+		if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3", f.project.OrganizationID, f.project.ID, f.record.ID); err != nil {
 			t.Fatal(err)
 		}
 		operator, _ := conversationOperatorToken(t, f.nativeFixture, "snapshot-operator")
@@ -744,7 +865,7 @@ func TestWorkspaceOperatorHistoryBudget(t *testing.T) {
 			t.Fatalf("missing binding diagnostic=%s %v", result.Content, err)
 		}
 		var count int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations WHERE work_item_id = ?", f.issue.WorkItemID).Scan(&count); err != nil || count != 0 {
+		if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversations WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", f.project.OrganizationID, f.project.ID, f.issue.WorkItemID).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("read created a substitute conversation: count=%d err=%v", count, err)
 		}
 		var bound workerBindResponse

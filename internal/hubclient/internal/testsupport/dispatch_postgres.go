@@ -169,6 +169,10 @@ func dispatchPostgresConfig(t *testing.T, cfg hubserver.Config, admin *sql.DB, o
 	if cfg.Clock != nil {
 		now = cfg.Clock().UTC()
 	}
+	deployment, generation := "origin", int64(0)
+	if cfg.Hosted.SharedEntry != nil {
+		deployment, generation = "shared", cfg.Hosted.SharedEntry.Generation
+	}
 	envelope, err := cfg.SecretKeys.Seal(bytes.Repeat([]byte{0x5a}, 32), accessstore.SecretAAD(tracker.OrganizationID(organization), "", accessstore.NativeCursorKeyKind))
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +181,7 @@ func dispatchPostgresConfig(t *testing.T, cfg hubserver.Config, admin *sql.DB, o
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: tracker.OrganizationID(organization), Name: "Example", Slug: slug, CreatedAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: tracker.OrganizationID(organization), ProviderID: provider, AllocationGeneration: 1}); err != nil {
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: tracker.OrganizationID(organization), ProviderID: cfg.Hosted.WorkOSOrganizationID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 			return err
 		}
 		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: tracker.OrganizationID(organization), ID: hubID, CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {

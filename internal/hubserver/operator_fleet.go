@@ -472,7 +472,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 
 		if name == operatortool.UpdateApply {
 			var change runnerUpdateChange
-			if r.RunnerID == "" || r.Release || r.FromRelease || operatortool.DecodeArguments(r.Change, &change) != nil || change.delivery("validate", e.service.config.now()).Validate() != nil {
+			if r.RunnerID == "" || r.Release || r.FromRelease || operatortool.DecodeArguments(r.Change, &change) != nil || change.Delivery("validate", e.service.config.now()).Validate() != nil {
 				return a, operatortool.ErrInvalidArguments
 			}
 			if err := runnerUpdateReady(runner, change, e.service.config.now()); err != nil {

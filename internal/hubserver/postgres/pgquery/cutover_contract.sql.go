@@ -117,6 +117,37 @@ func (q *Queries) CutoverReceipt(ctx context.Context, arg CutoverReceiptParams) 
 	return i, err
 }
 
+const latestProjectCutoverReceipt = `-- name: LatestProjectCutoverReceipt :one
+SELECT organization_id, project_id, checkpoint, source_profile, expected_revision, receipt_object_key, receipt_sha256, receipt_bytes, receipt_content_bytes, actor_id, created_at FROM github_cutovers
+WHERE organization_id=$1 AND project_id=$2
+ORDER BY created_at DESC, checkpoint DESC
+LIMIT 1
+`
+
+type LatestProjectCutoverReceiptParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+}
+
+func (q *Queries) LatestProjectCutoverReceipt(ctx context.Context, arg LatestProjectCutoverReceiptParams) (GithubCutover, error) {
+	row := q.db.QueryRow(ctx, latestProjectCutoverReceipt, arg.OrganizationID, arg.ProjectID)
+	var i GithubCutover
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.Checkpoint,
+		&i.SourceProfile,
+		&i.ExpectedRevision,
+		&i.ReceiptObjectKey,
+		&i.ReceiptSha256,
+		&i.ReceiptBytes,
+		&i.ReceiptContentBytes,
+		&i.ActorID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const localImportMapping = `-- name: LocalImportMapping :one
 SELECT organization_id, project_id, source_key, source_kind, source_digest, work_item_id, imported_at FROM local_board_imports WHERE organization_id=$1 AND project_id=$2 AND source_key=$3
 `

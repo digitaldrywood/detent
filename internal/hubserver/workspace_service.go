@@ -6,10 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -69,6 +74,9 @@ type workspaceService struct {
 	// sweepInterval is how often the maintenance loop runs. It is a field so
 	// a test can drive the timeouts without waiting on wall clock.
 	sweepInterval time.Duration
+	scanMu        sync.Mutex
+	scanAfter     time.Time
+	scanID        string
 }
 
 // workspaceSweepInterval is how often the maintenance loop checks for expired
@@ -122,16 +130,24 @@ func (w *workspaceService) StopContext(ctx context.Context) {
 
 func (w *workspaceService) maintain(ctx context.Context) {
 	defer close(w.stopped)
-	ticker := time.NewTicker(w.sweepInterval)
-	defer ticker.Stop()
+	next := func() time.Duration {
+		spread := w.sweepInterval / 2
+		if spread <= 0 {
+			return w.sweepInterval
+		}
+		return w.sweepInterval - spread/2 + time.Duration(rand.Int64N(int64(spread)))
+	}
+	timer := time.NewTimer(next())
+	defer timer.Stop()
 	for {
 		select {
 		case <-w.stop:
 			return
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			w.sweep(ctx)
+			timer.Reset(next())
 		}
 	}
 }
@@ -139,59 +155,6 @@ func (w *workspaceService) maintain(ctx context.Context) {
 // now reads the hub clock through the service's configuration so a test can
 // drive every deadline.
 func (w *workspaceService) now() time.Time { return w.server.config.now().UTC() }
-
-// transition applies one move of the state machine inside the caller's
-// transaction: it validates the move, updates the row, keeps occupancy in
-// step and closes the dispatch association on a terminal state.
-//
-// It never closes relay connections itself. That has to happen after the
-// commit, so every caller ends with committed().
-func (w *workspaceService) transition(ctx context.Context, tx *sql.Tx, record workspaceRecord, to, reason string, now time.Time) (workspaceRecord, error) {
-	if !workspacesession.Transition(record.State, to) {
-		return record, nativeStaleExecution("A workspace cannot move from " + record.State + " to " + to)
-	}
-	if reason != "" && !workspacesession.ValidReason(reason) {
-		return record, nativeInvalid("Unknown workspace reason " + reason)
-	}
-	expected := record.Revision
-	previous := record.State
-	record.State = to
-	record.Reason = reason
-	record.Revision++
-	record.UpdatedAt = now
-	switch to {
-	case workspacesession.StateReady:
-		if record.OpenedAt == nil {
-			opened := now
-			record.OpenedAt = &opened
-		}
-		record.RebindDeadline = nil
-	case workspacesession.StateRequested:
-		// A re-request drops the runner's claim on the resource but keeps the
-		// tuple, because the original runner may still re-bind with it inside
-		// the grace window.
-		record.Capabilities = nil
-	}
-	if err := updateWorkspace(ctx, tx, record, expected); err != nil {
-		return record, err
-	}
-	switch {
-	case to == workspacesession.StateStarting:
-		if err := openWorkspaceOccupancy(ctx, tx, record, now); err != nil {
-			return record, err
-		}
-	case workspacesession.Terminal(to):
-		if err := closeWorkspaceOccupancy(ctx, tx, record.ID, now); err != nil {
-			return record, err
-		}
-		if err := w.closeWorkspaceDispatchItem(ctx, tx, record, now); err != nil {
-			return record, err
-		}
-	}
-	w.logger.Info("workspace.transitioned", "workspace_id", record.ID, "from", previous, "to", to,
-		"reason", reason, "runner_id", record.RunnerID)
-	return record, nil
-}
 
 // committed closes the relay connections of a workspace that
 // can no longer serve what a person is holding.
@@ -238,7 +201,16 @@ func relayEndReason(state string, servingRunner bool) (string, bool) {
 // the close ran after the attach and found the connection, or the attach ran
 // after the commit and this read sees the ended state.
 func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connection *relayConnection) {
-	record, err := readWorkspaceByID(ctx, w.server.database.reader, connection.workspaceID)
+	var record postgres.WorkspaceSession
+	err := w.server.accessRead(ctx, connection.scope.organization, func(reader tenantstore.Reader) error {
+		owner, ok := reader.(postgres.WorkspaceReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		record, err = owner.WorkspaceSession(ctx, connection.scope.project, connection.workspaceID)
+		return err
+	})
 	if err != nil {
 		// The periodic authority re-check reads the same row and closes the
 		// connection when it can, so a failed read here is logged, not fatal.
@@ -249,46 +221,6 @@ func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connect
 	if reason, ends := relayEndReason(record.State, connection.runner); ends {
 		w.relay.closeWorkspace(ctx, record.ID, reason)
 	}
-}
-
-// endWorkspace takes a workspace to a terminal state from wherever it is. It
-// is the single exit the sweeps, the DELETE handler and the unbind path share,
-// so no caller has to know whether closing means closing → closed or a direct
-// move.
-func (w *workspaceService) endWorkspace(ctx context.Context, tx *sql.Tx, record workspaceRecord, terminal, reason string, now time.Time) (workspaceRecord, error) {
-	if workspacesession.Terminal(record.State) {
-		return record, nil
-	}
-	if workspacesession.Transition(record.State, terminal) {
-		return w.transition(ctx, tx, record, terminal, reason, now)
-	}
-	// Every non-terminal state either reaches the terminal one directly or
-	// reaches it through closing; there is no third shape.
-	moved, err := w.transition(ctx, tx, record, workspacesession.StateClosing, reason, now)
-	if err != nil {
-		return record, err
-	}
-	return w.transition(ctx, tx, moved, terminal, reason, now)
-}
-
-// readWorkspaceForActor reads a workspace under the issue's read rule: the
-// subject issue is resolved in the caller's scope, so a reader who cannot see
-// the issue cannot see its workspace.
-func (w *workspaceService) readWorkspaceForActor(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (workspaceRecord, error) {
-	if err := workspacesession.ValidateID(id); err != nil {
-		return workspaceRecord{}, nativeNotFound()
-	}
-	record, err := readWorkspaceRow(ctx, query, scope, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return workspaceRecord{}, nativeNotFound()
-	}
-	if err != nil {
-		return workspaceRecord{}, err
-	}
-	if _, _, err := readNativeIssue(ctx, query, scope, record.SubjectWorkItemID); err != nil {
-		return workspaceRecord{}, err
-	}
-	return record, nil
 }
 
 // sweep enforces every deadline of the workspace session contract that no request would reach on
@@ -319,30 +251,70 @@ func (w *workspaceService) sweep(ctx context.Context) {
 	}
 }
 
-// dueWorkspaces reads every open workspace. The set is small by construction:
-// plan.workspaces.max_open bounds it per organization, so the sweep reads it
-// whole rather than encoding each deadline as a separate query.
-func (w *workspaceService) dueWorkspaces(ctx context.Context, now time.Time) ([]workspaceRecord, error) {
+const workspaceSweepBatch = 100
+
+func (w *workspaceService) workspacePage(ctx context.Context, after time.Time, id string) ([]workspaceRecord, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	rows, err := w.server.database.reader.QueryContext(ctx, `SELECT `+workspaceColumns+` FROM workspace_sessions
-WHERE state IN `+openWorkspaceStates+` ORDER BY created_at`)
-	if err != nil {
-		return nil, fmt.Errorf("query open workspaces: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	records := []workspaceRecord{}
-	for rows.Next() {
-		record, err := scanWorkspace(rows)
+	var records []workspaceRecord
+	err := w.server.config.TenantRepository.ReadTenant(ctx, w.server.accessOrganization(), corestore.Background, func(r tenantstore.Reader) error {
+		rows, err := r.(postgres.WorkspaceReader).WorkspaceOpenSessions(ctx, after, id, workspaceSweepBatch)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		records = append(records, record)
+		for _, row := range rows {
+			records = append(records, workspaceTenantRecord(row))
+		}
+		return nil
+	})
+	return records, err
+}
+
+func (w *workspaceService) dueWorkspaces(ctx context.Context, now time.Time) ([]workspaceRecord, error) {
+	w.scanMu.Lock()
+	after, id := w.scanAfter, w.scanID
+	w.scanMu.Unlock()
+	records, err := w.workspacePage(ctx, after, id)
+	if err != nil {
+		return nil, err
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate open workspaces: %w", err)
+	w.scanMu.Lock()
+	if len(records) < workspaceSweepBatch {
+		w.scanAfter, w.scanID = time.Time{}, ""
+	} else {
+		last := records[len(records)-1]
+		w.scanAfter, w.scanID = last.ExpiresAt, last.ID
 	}
+	w.scanMu.Unlock()
 	return records, nil
+}
+
+func workspaceTenantRecord(row postgres.WorkspaceSession) workspaceRecord {
+	var capabilities *workspacesession.Capabilities
+	if row.Capabilities != nil {
+		capabilities = &workspacesession.Capabilities{}
+		for _, name := range row.Capabilities {
+			switch name {
+			case "files":
+				capabilities.Files = true
+			case "diff":
+				capabilities.Diff = true
+			case "preview":
+				capabilities.Preview = true
+			case "terminal":
+				capabilities.Terminal = true
+			case "exec":
+				capabilities.Exec = true
+			case "git":
+				capabilities.Git = true
+			}
+		}
+	}
+	return workspaceRecord{ID: row.ID, OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, SubjectWorkItemID: row.SubjectWorkItemID, AttemptID: row.AttemptID, Ref: row.Ref, HeadSHA: row.HeadSHA, RunnerID: row.RunnerID, MachineID: tracker.MachineID(row.MachineID), MachineHostname: row.MachineHostname, WorktreePath: row.WorktreePath, LeaseID: tracker.LeaseID(row.LeaseID), FencingToken: tracker.FencingToken(row.FencingToken), State: row.State, Reason: row.Reason, Requires: row.Requires, Capabilities: capabilities, Isolation: row.Isolation, Worktree: row.Worktree, ReadOnly: row.ReadOnly, IdleTimeoutSeconds: int(row.IdleTimeoutSeconds), ExpiresAt: row.ExpiresAt, RequestedExpiresAt: row.RequestedExpiresAt, OpenedAt: row.OpenedAt, LastActivityAt: row.LastActivityAt, LastHeartbeatAt: row.LastHeartbeatAt, RebindDeadline: row.RebindDeadline, CreatedBy: row.CreatedBy, Revision: row.Revision, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+}
+
+func workspaceTenantUpdate(row postgres.WorkspaceSession, state, reason string, now time.Time) postgres.WorkspaceUpdate {
+	return postgres.WorkspaceUpdate{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, ExpectedRevision: row.Revision, ExpectedRunnerID: row.RunnerID, ExpectedLeaseID: row.LeaseID, ExpectedFencingToken: row.FencingToken, State: state, Reason: reason, RunnerID: row.RunnerID, MachineID: row.MachineID, LeaseID: row.LeaseID, FencingToken: row.FencingToken, HeadSHA: row.HeadSHA, Capabilities: row.Capabilities, Isolation: row.Isolation, Worktree: row.Worktree, MachineHostname: row.MachineHostname, WorktreePath: row.WorktreePath, ReadOnly: row.ReadOnly, OpenedAt: row.OpenedAt, LastActivityAt: row.LastActivityAt, LastHeartbeatAt: row.LastHeartbeatAt, RebindDeadline: row.RebindDeadline, UpdatedAt: now}
 }
 
 // workspaceDeadline is what the sweep decided about one workspace.
@@ -449,41 +421,145 @@ func workspaceIdleSince(record workspaceRecord) time.Time {
 
 // applyDeadline commits the decided transition.
 func (w *workspaceService) applyDeadline(ctx context.Context, record workspaceRecord, now time.Time) (workspaceRecord, bool, error) {
+	return w.applyWorkspaceLifecycle(ctx, record, now, false)
+}
+
+func (w *workspaceService) applyWorkspaceLifecycle(ctx context.Context, record workspaceRecord, now time.Time, recovery bool) (workspaceRecord, bool, error) {
+	scope := nativeScope{organization: record.OrganizationID, project: record.ProjectID, sourceActor: &tracker.Actor{Kind: "system", PrincipalID: "workspace_service"}}
 	decision := decideDeadline(record, now)
-	if !decision.apply {
-		return record, false, nil
-	}
-	var moved workspaceRecord
-	err := w.server.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-		current, err := readWorkspaceByID(ctx, tx, record.ID)
+	var itemID string
+	var current postgres.WorkspaceSession
+	var checkedLease leasestore.Lease
+	var leaseChecked, leaseMissing bool
+	err := w.server.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
+		owner := r.(postgres.WorkspaceReader)
+		var err error
+		current, err = owner.WorkspaceSession(ctx, record.ProjectID, record.ID)
 		if err != nil {
 			return err
 		}
-		if current.Revision != record.Revision {
-			// Something else moved it between the read and the write; the
-			// next sweep decides again from what is actually stored.
-			moved = current
+		if current.Revision != record.Revision || workspacesession.Terminal(current.State) {
 			return errWorkspaceUnchanged
 		}
-		switch {
-		case workspacesession.Terminal(decision.state):
-			moved, err = w.endWorkspace(ctx, tx, current, decision.state, decision.reason, now)
+		if recovery {
+			if current.State == workspacesession.StateRequested && current.RebindDeadline == nil {
+				return errWorkspaceUnchanged
+			}
+			decision = workspaceDeadline{state: workspacesession.StateRequested, reason: workspacesession.ReasonHubRestarted, endedAt: now, apply: true}
+			if current.State == workspacesession.StateClosing {
+				decision.state, decision.reason = workspacesession.StateClosed, current.Reason
+			}
+		}
+		if current.LeaseID != "" && current.State != workspacesession.StateRequested && current.State != workspacesession.StateClosing {
+			lease, err := r.Lease(ctx, current.LeaseID)
+			leaseChecked = true
+			checkedLease = lease
+			leaseMissing = errors.Is(err, corestore.ErrNotFound)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if errors.Is(err, corestore.ErrNotFound) || lease.FencingToken != current.FencingToken || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
+				ended := now
+				if err == nil && !lease.ExpiresAt.After(now) {
+					ended = lease.ExpiresAt
+				}
+				if err == nil && lease.ReleasedAt != nil && lease.ReleasedAt.Before(ended) {
+					ended = *lease.ReleasedAt
+				}
+				decision = workspaceDeadline{state: workspacesession.StateFailed, reason: workspacesession.ReasonLeaseLost, endedAt: ended, apply: true}
+			}
+		}
+		if !decision.apply {
+			return errWorkspaceUnchanged
+		}
+		if workspacesession.Terminal(decision.state) {
+			item, err := owner.WorkspaceDispatchItem(ctx, record.ProjectID, record.ID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}
-			return closeWorkspaceOccupancy(ctx, tx, moved.ID, decision.endedAt)
-		default:
-			moved, err = w.transition(ctx, tx, current, decision.state, decision.reason, now)
-			return err
+			if item.ClosedAt == nil {
+				itemID = string(item.WorkItemID)
+			}
 		}
+		return nil
 	})
 	if errors.Is(err, errWorkspaceUnchanged) {
-		return moved, false, nil
+		return workspaceTenantRecord(current), false, nil
 	}
 	if err != nil {
 		return record, false, err
 	}
-	return moved, true, nil
+	closure, err := w.server.prepareWorkspaceIssueClose(ctx, scope, itemID, now)
+	if err != nil {
+		return record, false, err
+	}
+	moved := record
+	err = w.server.config.TenantRepository.WriteTenant(ctx, record.OrganizationID, corestore.Background, func(writer tenantstore.Writer) error {
+		if err := writer.LockAccessOrganization(ctx); err != nil {
+			return err
+		}
+		if err := writer.LockWorkItemProject(ctx, record.ProjectID); err != nil {
+			return err
+		}
+		owner := writer.(postgres.WorkspaceWriter)
+		row, err := owner.WorkspaceSession(ctx, record.ProjectID, record.ID)
+		if err != nil {
+			return err
+		}
+		if row.Revision != current.Revision || row.RunnerID != current.RunnerID || row.LeaseID != current.LeaseID || row.FencingToken != current.FencingToken {
+			return errWorkspaceUnchanged
+		}
+		if leaseChecked {
+			lease, err := writer.Lease(ctx, row.LeaseID)
+			missing := errors.Is(err, corestore.ErrNotFound)
+			if err != nil && !missing {
+				return err
+			}
+			if missing != leaseMissing || !missing && (lease.FencingToken != checkedLease.FencingToken || !lease.ExpiresAt.Equal(checkedLease.ExpiresAt) || !lease.RenewedAt.Equal(checkedLease.RenewedAt) || !workspaceSameTime(lease.ReleasedAt, checkedLease.ReleasedAt)) {
+				return errWorkspaceUnchanged
+			}
+		}
+		if itemID != "" {
+			item, err := owner.WorkspaceDispatchItem(ctx, record.ProjectID, record.ID)
+			if err != nil {
+				return err
+			}
+			if item.ClosedAt != nil || string(item.WorkItemID) != itemID {
+				return errWorkspaceUnchanged
+			}
+			if err := closure.write(ctx, writer); err != nil {
+				return err
+			}
+			if err := owner.CloseWorkspaceItem(ctx, record.ProjectID, item.WorkItemID, now); err != nil {
+				return err
+			}
+		}
+		if recovery && decision.state == workspacesession.StateRequested {
+			deadline := now.Add(workspacesession.RebindGrace)
+			row.RebindDeadline = &deadline
+			row.Capabilities = nil
+		}
+		row, err = updateWorkspaceState(ctx, owner, row, row, decision.state, decision.reason, now)
+		if err != nil {
+			return err
+		}
+
+		if workspacesession.Terminal(decision.state) && row.RunnerID != "" {
+			ended := decision.endedAt
+			if err := owner.EndWorkspaceOccupancy(ctx, postgres.WorkspaceOccupancyEnd{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkspaceID: record.ID, RunnerID: row.RunnerID, EndedAt: &ended}); err != nil {
+				return err
+			}
+		}
+		moved = workspaceTenantRecord(row)
+		return nil
+	})
+	if errors.Is(err, errWorkspaceUnchanged) || errors.Is(err, corestore.ErrSerializationFailure) {
+		return record, false, nil
+	}
+	return moved, err == nil, err
 }
 
 // errWorkspaceUnchanged aborts a sweep transaction that found the workspace
@@ -497,51 +573,30 @@ var errWorkspaceUnchanged = errors.New("workspace changed under the sweep")
 // present it again.
 func (w *workspaceService) recoverOpenWorkspaces(ctx context.Context) error {
 	now := w.now()
-	records, err := w.dueWorkspaces(ctx, now)
-	if err != nil {
-		return err
-	}
-	recovered := 0
-	for _, record := range records {
-		if record.State == workspacesession.StateRequested && record.RebindDeadline == nil {
-			continue
-		}
-		var moved workspaceRecord
-		err := w.server.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-			current, err := readWorkspaceByID(ctx, tx, record.ID)
-			if err != nil {
-				return err
-			}
-			deadline := now.Add(workspacesession.RebindGrace)
-			current.RebindDeadline = &deadline
-			if current.State == workspacesession.StateRequested {
-				// Already requested and already inside a grace: extend it
-				// rather than move, so a restart loop cannot revoke a lease
-				// the runner never had a chance to present.
-				expected := current.Revision
-				current.Revision++
-				current.UpdatedAt = now
-				return updateWorkspace(ctx, tx, current, expected)
-			}
-			moved, err = w.transition(ctx, tx, current, workspacesession.StateRequested, workspacesession.ReasonHubRestarted, now)
-			return err
-		})
+	var after time.Time
+	id := ""
+	for {
+		records, err := w.workspacePage(ctx, after, id)
 		if err != nil {
-			return fmt.Errorf("recover workspace %s: %w", record.ID, err)
+			return err
 		}
-		recovered++
-		if moved.ID != "" {
-			w.committed(ctx, moved)
+		for _, record := range records {
+			moved, changed, err := w.applyWorkspaceLifecycle(ctx, record, now, true)
+			if err != nil {
+				return fmt.Errorf("recover workspace %s: %w", record.ID, err)
+			}
+			if changed {
+				w.committed(ctx, moved)
+			}
 		}
+		if len(records) < workspaceSweepBatch {
+			return nil
+		}
+		last := records[len(records)-1]
+		after, id = last.ExpiresAt, last.ID
 	}
-	if recovered > 0 {
-		w.logger.Info("workspace.restart_recovered", "workspaces", recovered, "grace_seconds", int(workspacesession.RebindGrace/time.Second))
-	}
-	return nil
 }
 
-// workspaceReadOnly reports whether the subject attempt is still running, which
-// is what holds a workspace read-only and refuses a terminal on it.
 func workspaceAttemptRunning(ctx context.Context, query nativeQueryer, scope nativeScope, attemptID string) (bool, error) {
 	if attemptID == "" {
 		return false, nil
@@ -581,4 +636,35 @@ WHERE id = ? AND organization_id = ? AND project_id = ?`, attemptID, scope.organ
 		return "", time.Time{}, false, fmt.Errorf("decode workspace attempt updated_at: %w", err)
 	}
 	return execution.RunnerID, finished, true, nil
+}
+
+func workspaceSameTime(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
+}
+
+func updateWorkspaceState(ctx context.Context, owner postgres.WorkspaceWriter, row, expected postgres.WorkspaceSession, target, reason string, now time.Time) (postgres.WorkspaceSession, error) {
+	states := []string{target}
+	if row.State != target && !workspacesession.Transition(row.State, target) {
+		if !workspacesession.Transition(row.State, workspacesession.StateClosing) {
+			return row, nativeStaleExecution("The workspace cannot enter the requested state")
+		}
+		states = []string{workspacesession.StateClosing, target}
+	}
+	for _, state := range states {
+		if row.State != state && !workspacesession.Transition(row.State, state) {
+			return row, nativeStaleExecution("The workspace cannot enter the requested state")
+		}
+		arg := workspaceTenantUpdate(row, state, reason, now)
+		arg.ExpectedRunnerID, arg.ExpectedLeaseID, arg.ExpectedFencingToken = expected.RunnerID, expected.LeaseID, expected.FencingToken
+		var err error
+		row, err = owner.UpdateWorkspaceSession(ctx, arg)
+		if err != nil {
+			return row, err
+		}
+		expected = row
+	}
+	return row, nil
 }

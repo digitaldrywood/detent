@@ -1,18 +1,25 @@
 package postgres_test
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestWorkspaceClaimAssociationIsTenantScopedAndPermanent(t *testing.T) {
@@ -96,7 +103,7 @@ func TestWorkspaceClaimAssociationIsTenantScopedAndPermanent(t *testing.T) {
 
 func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing.T) {
 	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	repository, pool := repositoryFor(t, admin, smallPool())
 	tenantRepository := tenantstore.Repository(repository)
 	now := time.Date(2026, time.November, 1, 21, 0, 0, 0, time.UTC)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -148,7 +155,7 @@ func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing
 				queue := claimstore.QueueEntry{OrganizationID: organization, ProjectID: "prj_claim", WorkItemID: id, Scope: "prj_claim", State: "Todo", Rank: string(id), Priority: &priority, CreatedAt: createdAt, UpdatedAt: createdAt}
 				var labels []string
 				if id != "wi_workspace" {
-					labels = []string{"ready"}
+					labels = []string{" Ready "}
 				}
 				if _, err := w.CreateWorkItemWithClaimFacts(t.Context(), item, labels, facts, queue); err != nil {
 					return err
@@ -159,7 +166,7 @@ func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing
 			t.Fatalf("seed claim facts for %s: %v", organization, err)
 		}
 	}
-	query := claimstore.CandidateQuery{ProjectID: "prj_claim", Scope: "prj_claim", Assignees: []string{"WORKER_A"}, IncludeLabels: []string{"ready"}, AvailableAt: now, Limit: 1}
+	query := claimstore.CandidateQuery{ProjectID: "prj_claim", Scope: "prj_claim", Assignees: []string{"WORKER_A"}, IncludeLabels: []string{" ReAdY "}, LabelPriority: []string{"absent", " READY "}, AvailableAt: now, Limit: 1}
 	var first claimstore.CandidatePage
 	if err := tenantRepository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -168,8 +175,31 @@ func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Items) != 1 || first.Items[0].WorkItemID != "wi_first" || first.Items[0].Priority != 1 || first.Items[0].Author != "author" || first.Items[0].Repository != "example/repository" || len(first.Items[0].Assignees) != 1 || len(first.Items[0].Labels) != 1 {
+	if len(first.Items) != 1 || first.Items[0].WorkItemID != "wi_first" || first.Items[0].Priority != 1 || first.Items[0].Author != "author" || first.Items[0].Repository != "example/repository" || len(first.Items[0].Assignees) != 1 || len(first.Items[0].Labels) != 1 || first.Items[0].Labels[0] != "Ready" || first.Items[0].LabelRank != 2 {
 		t.Fatalf("first candidate page = %+v", first)
+	}
+	for _, test := range []struct {
+		name               string
+		included, excluded []string
+		want               int
+	}{
+		{"normalized inclusion", []string{" READY "}, []string{"absent"}, 1},
+		{"normalized exclusion", nil, []string{" ReAdY "}, 0},
+		{"all included labels required", []string{"ready", "missing"}, nil, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			filtered := query
+			filtered.IncludeLabels, filtered.ExcludeLabels = test.included, test.excluded
+			if err := tenantRepository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+				page, err := r.CandidatePage(t.Context(), filtered)
+				if err == nil && (len(page.Items) != test.want || len(page.Items) > 0 && page.Items[0].WorkItemID != "wi_first") {
+					t.Fatalf("normalized label candidate page=%+v want=%d", page, test.want)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 	requested := query
 	requested.WorkItemIDs = []tracker.NativeWorkItemID{"wi_second", "wi_missing"}
@@ -211,7 +241,7 @@ func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing
 	}
 	query.Assignees = []string{"worker_a"}
 	query.IncludeLabels = nil
-	query.Limit = 3
+	query.Limit = 1
 	query.WorkspaceLane = true
 	var workspaceLane claimstore.CandidatePage
 	if err := tenantRepository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
@@ -230,6 +260,212 @@ func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing
 	if !sawWorkspace {
 		t.Fatalf("workspace lane omitted associated item: %+v", workspaceLane)
 	}
+	if len(workspaceLane.Items) != 1 || workspaceLane.Items[0].WorkItemID != "wi_workspace" {
+		t.Fatalf("ordinary work crowded the workspace page: %+v", workspaceLane)
+	}
+	query.Assignees = []string{"worker_b"}
+	if err := tenantRepository.ReadTenant(t.Context(), "org_second", corestore.Serving, func(r tenantstore.Reader) error {
+		page, err := r.CandidatePage(t.Context(), query)
+		if err != nil {
+			return err
+		}
+		if len(page.Items) != 1 || page.Items[0].WorkItemID != "wi_workspace" {
+			t.Fatalf("second tenant workspace page=%+v", page)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tenantRepository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CloseWorkspaceItem(t.Context(), "prj_claim", "wi_workspace", now.Add(time.Minute))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	query.Assignees = []string{"worker_a"}
+	if err := tenantRepository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+		page, err := r.CandidatePage(t.Context(), query)
+		if err != nil {
+			return err
+		}
+		if len(page.Items) != 0 {
+			t.Fatalf("closed workspace remained selectable: %+v", page)
+		}
+		query.WorkspaceLane, query.Limit = false, 3
+		page, err = r.CandidatePage(t.Context(), query)
+		if err != nil {
+			return err
+		}
+		if len(page.Items) != 2 || page.Items[0].WorkItemID != "wi_first" || page.Items[1].WorkItemID != "wi_second" {
+			t.Fatalf("ordinary lane changed after workspace closed: %+v", page)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("queue sort projection preserves Unicode whitespace and raw rank", func(t *testing.T) {
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			for index, test := range []struct {
+				raw, normalized string
+				missing         int
+			}{
+				{" \t\n\v\f\ra \t\n\v\f\r", "a", 0},
+				{"\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000a\u3000\u205f\u202f\u2029\u2028\u200a\u2009\u2008\u2007\u2006\u2005\u2004\u2003\u2002\u2001\u2000\u1680\u00a0\u0085", "a", 0},
+				{" \t\n\v\f\r\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000", "", 1},
+				{"\u200ba\u200b", "\u200ba\u200b", 0},
+				{"\ufeffa\ufeff", "\ufeffa\ufeff", 0},
+				{"\u180ea\u180e", "\u180ea\u180e", 0},
+				{"\u00a0a\tb\u00a0", "a\tb", 0},
+			} {
+				if strings.TrimSpace(test.raw) != test.normalized {
+					t.Fatalf("literal rank expectation differs from Go whitespace contract at case %d", index)
+				}
+				scope := fmt.Sprintf("queue-key-%d", index)
+				entry := claimstore.QueueEntry{OrganizationID: org, ProjectID: "prj_claim", WorkItemID: "wi_first", Scope: scope, State: "Todo", Rank: test.raw, CreatedAt: now, UpdatedAt: now}
+				if err := tenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.PutQueueEntry(t.Context(), entry) }); err != nil {
+					t.Fatal(err)
+				}
+				for pass := range 2 {
+					var raw, normalized string
+					var priority, missing int
+					if err := admin.QueryRowContext(t.Context(), "SELECT rank,list_priority,list_rank_missing,list_rank FROM queue_entries WHERE organization_id=$1 AND project_id=$2 AND scope=$3 AND work_item_id=$4", org, "prj_claim", scope, "wi_first").Scan(&raw, &priority, &missing, &normalized); err != nil {
+						t.Fatal(err)
+					}
+					if raw != entry.Rank || normalized != test.normalized || missing != test.missing || priority != []int{4, 0}[pass] {
+						t.Fatalf("queue generated projection org=%s case=%d pass=%d raw=%q normalized=%q missing=%d priority=%d", org, index, pass, raw, normalized, missing, priority)
+					}
+					if pass == 0 {
+						entry.Rank = "\t" + entry.Rank + "\n"
+						if _, err := admin.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override=0,rank=$5 WHERE organization_id=$1 AND project_id=$2 AND scope=$3 AND work_item_id=$4", org, "prj_claim", scope, "wi_first", entry.Rank); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}
+		}
+	})
+	t.Run("queue list bounds source before private residuals", func(t *testing.T) {
+		if err := repository.Close(); err != nil {
+			t.Fatal(err)
+		}
+		config := pool.Config()
+		trace := &queueListQueryTrace{}
+		config.ConnConfig.Tracer = trace
+		tracedPool, err := pgxpool.NewWithConfig(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(tracedPool.Close)
+		reader, err := postgres.NewRepository(t.Context(), tracedPool, smallPool())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := reader.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			if _, err := admin.ExecContext(t.Context(), `WITH added AS (
+INSERT INTO issues(organization_id,project_id,native_id,number,title,workflow_state_name,native_created_at,native_updated_at,actor_kind,actor_principal_id)
+SELECT $1,'prj_claim','wi_seek_'||n,n+10,'Hidden queue source','Todo',$2,$2,'human','hidden' FROM generate_series(1,1000)n RETURNING organization_id,project_id,native_id,number
+),facts AS (
+INSERT INTO issue_claim_facts(organization_id,project_id,work_item_id,author_login,repository,assignees) SELECT organization_id,project_id,native_id,'hidden','example/source',ARRAY['hidden']::text[] FROM added RETURNING work_item_id)
+INSERT INTO queue_entries(organization_id,project_id,work_item_id,scope,state,rank,priority_override,created_at,updated_at)
+SELECT organization_id,project_id,native_id,'queue-list','Todo',$1||lpad(number::text,6,'0'),0,$2,$2 FROM added`, org, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := admin.ExecContext(t.Context(), "ANALYZE issues; ANALYZE queue_entries; ANALYZE issue_claim_facts"); err != nil {
+			t.Fatal(err)
+		}
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			for _, test := range []struct {
+				identifier    bool
+				first, second tracker.NativeWorkItemID
+			}{{false, "wi_seek_1", "wi_seek_22"}, {true, "wi_first", "wi_seek_19"}} {
+				query := claimstore.QueueListQuery{ProjectID: "prj_claim", Scope: "queue-list", IdentifierOrder: test.identifier, Principal: "visible", Labels: []string{"absent"}, Assignees: []string{"absent"}, Limit: 21}
+				for pageIndex := range 2 {
+					var rows []claimstore.QueueListRow
+					if err := reader.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						rows, err = r.QueueListPage(t.Context(), query)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					want := test.first
+					if pageIndex == 1 {
+						want = test.second
+					}
+					if len(rows) != 21 || rows[0].Entry.WorkItemID != want {
+						t.Fatalf("queue source tenant=%s page=%d rows=%+v", org, pageIndex, rows)
+					}
+					for _, row := range rows {
+						if row.Matches || row.Entry.OrganizationID != org {
+							t.Fatalf("private/foreign queue row served: %+v", row)
+						}
+						if row.Entry.Scope != "" && !strings.HasPrefix(row.Entry.Rank, string(org)) {
+							t.Fatalf("cross-tenant queue rank=%s", row.Entry.Rank)
+						}
+					}
+					query.After = rows[len(rows)-1].Position
+				}
+			}
+		}
+		trace.mu.Lock()
+		samples := append([]queueListQuerySample(nil), trace.samples...)
+		trace.mu.Unlock()
+		if len(samples) != 8 {
+			t.Fatalf("captured actual queue requests=%d", len(samples))
+		}
+		for _, sample := range samples {
+			if err := withPlanSeedTransaction(t.Context(), admin, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", sample.args[0]); err != nil {
+					return err
+				}
+				var raw []byte
+				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+sample.sql, sample.args...).Scan(&raw); err != nil {
+					return err
+				}
+				var plans []struct{ Plan queueListPlan }
+				if err := json.Unmarshal(raw, &plans); err != nil {
+					return err
+				}
+				if len(plans) != 1 {
+					return fmt.Errorf("queue plan count=%d", len(plans))
+				}
+				visits := map[string]float64{}
+				keyed := false
+				identifier := strings.Contains(sample.sql, "SELECT i.* FROM issues i")
+				continuation := strings.Contains(sample.sql, "AND i.number>") || strings.Contains(sample.sql, "q.created_at,q.work_item_id)>")
+				var inspect func(queueListPlan, string)
+				inspect = func(node queueListPlan, relation string) {
+					if node.Relation != "" {
+						relation = node.Relation
+						visits[relation] += (node.Rows + node.Removed + node.Rechecked) * node.Loops
+					}
+					source := identifier && relation == "issues" || !identifier && relation == "queue_entries" && strings.Contains(node.Condition, "scope")
+					if source && node.Loops == 1 && strings.Contains(node.Condition, "organization_id") && strings.Contains(node.Condition, "project_id") && (!continuation || strings.Contains(node.Condition, ">")) {
+						keyed = true
+					}
+					for _, child := range node.Plans {
+						inspect(child, relation)
+					}
+				}
+				inspect(plans[0].Plan, "")
+				if !keyed || visits["queue_entries"] > 21 || visits["issues"] > 21 || visits["issue_claim_facts"] > 21 {
+					return fmt.Errorf("queue seek/residual bound visits=%v keyed=%t plan=%s", visits, keyed, raw)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+
 }
 
 func TestProviderReservationSnapshotIsTypedAndTenantScoped(t *testing.T) {
@@ -290,4 +526,33 @@ func TestProviderReservationSnapshotIsTypedAndTenantScoped(t *testing.T) {
 	if !errors.Is(err, corestore.ErrNotFound) {
 		t.Fatalf("cross-tenant provider reservation read error=%v", err)
 	}
+}
+
+type queueListQuerySample struct {
+	sql  string
+	args []any
+}
+type queueListQueryTrace struct {
+	mu      sync.Mutex
+	samples []queueListQuerySample
+}
+
+func (trace *queueListQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.HasPrefix(data.SQL, "WITH raw AS MATERIALIZED (") {
+		trace.mu.Lock()
+		trace.samples = append(trace.samples, queueListQuerySample{sql: data.SQL, args: append([]any(nil), data.Args...)})
+		trace.mu.Unlock()
+	}
+	return ctx
+}
+func (*queueListQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+type queueListPlan struct {
+	Relation  string  `json:"Relation Name"`
+	Condition string  `json:"Index Cond"`
+	Rows      float64 `json:"Actual Rows"`
+	Removed   float64 `json:"Rows Removed by Filter"`
+	Rechecked float64 `json:"Rows Removed by Index Recheck"`
+	Loops     float64 `json:"Actual Loops"`
+	Plans     []queueListPlan
 }

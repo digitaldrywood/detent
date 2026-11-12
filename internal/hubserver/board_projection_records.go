@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"time"
 
@@ -11,8 +12,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -28,16 +31,20 @@ func (e *boardRefreshError) Error() string { return e.cause.Error() }
 func (e *boardRefreshError) Unwrap() error { return e.cause }
 
 type boardProjectionSnapshot struct {
-	organizationSlug  string
-	changePrincipalID string
-	project           projectstore.Record
-	item              corestore.WorkItem
-	version           eventstore.CollaborationVersion
-	attempt           *tenantAttemptSnapshot
-	attemptCount      int64
-	lease             *leasestore.Lease
-	change            *eventstore.Change
-	changeVersion     *eventstore.Version
+	organizationSlug   string
+	changePrincipalID  string
+	project            projectstore.Record
+	item               corestore.WorkItem
+	version            eventstore.CollaborationVersion
+	transition         *eventstore.Event
+	attempt            *tenantAttemptSnapshot
+	attemptCount       int64
+	lease              *leasestore.Lease
+	runnerID           string
+	diagnostics        *runnerauth.ProjectDiagnostics
+	change             *eventstore.Change
+	changeVersion      *eventstore.Version
+	pullRequestVersion *eventstore.PullRequestVersion
 }
 
 func (s *Service) maintainBoardRecords(ctx context.Context) error {
@@ -189,6 +196,21 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 		if err != nil {
 			return err
 		}
+		step = "latest_transition"
+		transitions, ok := r.(eventstore.WorkflowTransitionReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		transition, err := transitions.LatestWorkflowTransition(ctx, candidate.ProjectID, candidate.WorkItemID)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err == nil {
+			if transition.OrganizationID != organization || transition.ProjectID != candidate.ProjectID || transition.WorkItemID != candidate.WorkItemID || transition.Type != "workflow.transitioned" || transition.Sequence <= 0 || transition.Sequence > snapshot.item.EventSequence {
+				return eventstore.ErrInvalidRecord
+			}
+			snapshot.transition = &transition
+		}
 		step = "latest_attempt"
 		attempt, err := r.LatestAttempt(ctx, snapshot.item.ID)
 		if err == nil {
@@ -225,6 +247,42 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 		lease, err := r.ActiveLeaseForIssue(ctx, snapshot.item.ID)
 		if err == nil {
 			snapshot.lease = &lease
+		} else if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if lease := snapshot.lease; lease != nil && lease.RunnerID != nil && *lease.RunnerID != "" && lease.ProjectID != nil && *lease.ProjectID == candidate.ProjectID && lease.ReleasedAt == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt) {
+			step = "execution_runner"
+			runnerReader, ok := r.(interface {
+				LeaseMutationIdentity(context.Context, string) (runnerstore.Identity, error)
+			})
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			identity, err := runnerReader.LeaseMutationIdentity(ctx, lease.LeaseID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err == nil && identity.OrganizationID == organization && identity.RunnerID == *lease.RunnerID && string(identity.MachineID) == lease.MachineID && identity.RemovedAt == nil && now.Before(identity.ExpiresAt) {
+				allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, candidate.ProjectID, now)
+				if err != nil {
+					return err
+				}
+				if allowed {
+					step = "execution_observation"
+					observation, _, err := r.RunnerProjectObservation(ctx, identity.RunnerID, candidate.ProjectID, string(candidate.WorkItemID))
+					if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+						return err
+					}
+					if err == nil && observation.OrganizationID == organization && observation.RunnerID == identity.RunnerID && observation.ProjectID == candidate.ProjectID {
+						snapshot.runnerID, snapshot.diagnostics = identity.RunnerID, observation.Diagnostics
+					}
+				}
+			}
+		}
+		step = "pull_request_version"
+		retained, err := r.WorkItemPullRequestVersion(ctx, candidate.ProjectID, candidate.WorkItemID)
+		if err == nil {
+			snapshot.pullRequestVersion = &retained
 		} else if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
@@ -278,6 +336,17 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		if err != nil {
 			return err
 		}
+		if snapshot.transition != nil {
+			step = "transition_payload"
+			transition, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, *snapshot.transition)
+			if err != nil {
+				return err
+			}
+			issue.LatestTransitionReason = transition.Data.ReasonDetail
+			if issue.LatestTransitionReason == "" {
+				issue.LatestTransitionReason = transition.Data.Reason
+			}
+		}
 		card := tracker.NativeBoardCard{Issue: issue}
 		var latest *tracker.NativeAttempt
 		if historical := snapshot.attempt; historical != nil {
@@ -324,6 +393,10 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 					}
 				}
 			}
+		}
+		if card.Execution != nil && snapshot.lease != nil {
+			terminal := snapshot.attempt != nil && snapshot.attempt.lease.LeaseID == snapshot.lease.LeaseID && (snapshot.attempt.attempt.Status != "running" || latest != nil && latest.Runtime != nil && latest.Runtime.Phase == "completed")
+			applyBoardExecutionDiagnostics(card.Execution, *snapshot.lease, latest, terminal, snapshot.runnerID, snapshot.diagnostics, string(candidate.WorkItemID), now)
 		}
 		if snapshot.change != nil {
 			card.Change = &tracker.NativeBoardChange{ID: snapshot.change.ID, Title: snapshot.change.Title}
@@ -473,4 +546,55 @@ func boardProjectionRecord(snapshot boardProjectionSnapshot, card tracker.Native
 		record.ExecutionFence = snapshot.lease.FencingToken
 	}
 	return record
+}
+
+func applyBoardExecutionDiagnostics(execution *tracker.NativeBoardExecution, lease leasestore.Lease, latest *tracker.NativeAttempt, terminal bool, runner string, d *runnerauth.ProjectDiagnostics, item string, now time.Time) {
+	started := lease.AcquiredAt
+	if runner != "" {
+		execution.RunnerID = runner
+	}
+	if d == nil || d.ObservedAt.Before(started) || d.ObservedAt.After(now) {
+		return
+	}
+	asOf := d.RuntimeObservedAt
+	if asOf.IsZero() {
+		asOf = d.ObservedAt
+	}
+	fresh := !asOf.Before(started) && !asOf.After(now) && now.Sub(asOf) <= runnerauth.HeartbeatTimeout && now.Sub(d.ObservedAt) <= runnerauth.HeartbeatTimeout
+	var local *runnerauth.DiagnosticAttempt
+	var claim *runnerauth.DiagnosticAttempt
+	count := 0
+	for i := range d.Records {
+		record := &d.Records[i]
+		if record.IssueID != item || record.Fence != 0 && record.Fence != uint64(lease.FencingToken) {
+			continue
+		}
+		if record.Fence == uint64(lease.FencingToken) && slices.Contains(record.Membership, "native_claim") {
+			claim = record
+		}
+		if record.LocalAttemptID > 0 && record.Generation > 0 && slices.Contains(record.Membership, "running") && !record.LeaseRenewedAt.Before(started) && (latest == nil || string(latest.LeaseID) != lease.LeaseID || record.NativeAttemptID == "" || record.NativeAttemptID == latest.AttemptID) {
+			local = record
+			count++
+		}
+	}
+	if count == 1 && local != nil && !terminal && fresh && !d.Truncated {
+		execution.ID = runner + "/" + strconv.FormatInt(local.LocalAttemptID, 10) + "/" + strconv.FormatUint(local.Generation, 10)
+		if local.NativeAttemptID != "" {
+			execution.ID = local.NativeAttemptID
+		} else if claim != nil && claim.NativeAttemptID != "" {
+			execution.ID = claim.NativeAttemptID
+		}
+		execution.Running, execution.Stage = true, local.Stage
+		execution.ExpiresAt = minTime(execution.ExpiresAt, asOf.Add(runnerauth.HeartbeatTimeout))
+	}
+	if count != 1 {
+		local = nil
+	}
+	completed := local != nil && !local.ProviderCompletedAt.Before(started) && !local.ProviderCompletedAt.After(now) || claim != nil && !claim.ProviderCompletedAt.Before(started) && !claim.ProviderCompletedAt.After(now)
+	if completed {
+		execution.Running, execution.Stage = false, ""
+		if fresh && (claim != nil && claim.OperationPending && claim.HostOperation == "workspace.finalize_native_work" || local != nil && local.OperationPending && local.HostOperation == "workspace.finalize_native_work") {
+			execution.Stage = "finalizing"
+		}
+	}
 }

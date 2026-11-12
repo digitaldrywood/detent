@@ -9,6 +9,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -45,21 +48,50 @@ func TestCloudVisualReferenceWrites(t *testing.T) {
 	}
 	imported := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "imported"}, Title: "Historical", Body: source + issueContractTestSections, State: "Todo", Provenance: provenance}
 	send(t, http.MethodPost, "/work-items", "provenance-before", imported, 200)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1,duplicate_challenge=0 WHERE id=?", f.project); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project)
+		if err != nil {
+			return err
+		}
+		project.Settings.DuplicateChallenge = false
+		project, err = w.UpdateProjectRecord(t.Context(), project)
+		if err != nil {
+			return err
+		}
+		return w.UpdateProjectContent(t.Context(), f.project, project.Core.ContentSettingsRevision, true)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := func(t *testing.T) string {
 		t.Helper()
-		var body, title string
-		var revision, sequence, versions, history, refs, receipts, issues, comments int
-		if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT title,body,revision,event_sequence,
-   (SELECT count(*) FROM collaboration_versions), (SELECT count(*) FROM collaboration_events),
-   (SELECT count(*) FROM attachment_references), (SELECT count(*) FROM native_commands),
-   (SELECT count(*) FROM issues), (SELECT count(*) FROM native_comments)
-   FROM issues WHERE native_id=?`, issue.WorkItemID).Scan(&title, &body, &revision, &sequence, &versions, &history, &refs, &receipts, &issues, &comments); err != nil {
+		var row corestore.WorkItem
+		var version eventstore.CollaborationVersion
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			row, err = r.WorkItem(t.Context(), f.project, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			version, err = r.CollaborationVersion(t.Context(), string(issue.WorkItemID), row.Revision)
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
-		raw, _ := json.Marshal([]any{title, body, revision, sequence, versions, history, refs, receipts, issues, comments})
+		current, err := f.service.hydrateCanonicalWorkItemRecord(t.Context(), row, version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var versions, history, refs, receipts, issues, comments int
+		if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT
+   (SELECT count(*) FROM collaboration_versions), (SELECT count(*) FROM collaboration_events),
+   (SELECT count(*) FROM attachment_item_references), (SELECT count(*) FROM native_commands),
+   (SELECT count(*) FROM issues), (SELECT count(*) FROM native_comments)`).Scan(&versions, &history, &refs, &receipts, &issues, &comments); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal([]any{row.Title, current.Body, row.Revision, row.EventSequence, versions, history, refs, receipts, issues, comments, row.BodyObjectKey, version.PayloadObjectKey})
+		if err != nil {
+			t.Fatal(err)
+		}
 		return string(raw)
 	}
 	for _, test := range []struct {

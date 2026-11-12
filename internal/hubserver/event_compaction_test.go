@@ -1,7 +1,7 @@
 package hubserver
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -32,220 +32,120 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 		name             string
 		archived, leased bool
 		closedAgo        time.Duration
-		removed          int64
 		extraActivity    int
 	}{
-		{name: "archived", archived: true, removed: 0},
-		{name: "open"},
-		{name: "archived with live lease", archived: true, leased: true},
-		{name: "closed for three days", closedAgo: 73 * time.Hour, removed: 0},
-		{name: "closed recently", closedAgo: time.Hour},
-		{name: "unpublished closed activity stays hot", closedAgo: 73 * time.Hour, removed: 0, extraActivity: 500},
+		{name: "archived", archived: true}, {name: "open"}, {name: "archived with live lease", archived: true, leased: true},
+		{name: "closed for three days", closedAgo: 73 * time.Hour}, {name: "closed recently", closedAgo: time.Hour},
+		{name: "unpublished closed activity stays hot", closedAgo: 73 * time.Hour, extraActivity: 500},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			now := time.Date(2026, 10, 7, 8, 0, 0, 0, time.UTC)
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
-			f.service.config.ArchiveReader = func(ctx context.Context, ref attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
-				data, err := f.service.config.Content(ctx, entryauthority.ContentRequest{Organization: string(f.project.OrganizationID), Reference: ref})
-				return entryauthority.ArchiveResponse{Data: data}, err
-			}
-			issue := f.create(t, "retain history")
-			path := f.base + "/work-items/" + string(issue.WorkItemID)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "Human decision retained"}), http.StatusOK)
-			if test.leased {
-				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-				claimNativeAttempt(t, f, f.worker(t, "worker"), "machine", "session", issue.WorkItemID)
-			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			for index := range 20 {
-				if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_first", Sequence: int64(index + 1)}}, now); err != nil {
-					t.Fatal(err)
-				}
-			}
-			durable := []string{"run.started", "run.checkpointed", "run.finished", "workflow.transitioned", "scheduler.decision"}
-			for _, kind := range durable {
-				data := tracker.CollaborationData{ReasonDetail: "durable record"}
-				copies := 1
-				if kind == "run.checkpointed" {
-					copies += test.extraActivity
-					data.Run = &tracker.NativeRunData{AttemptID: "attempt_first", Runtime: &tracker.NativeRuntimeObservation{Activity: &workflowmetrics.ActivityProfile{Schema: 1, Spans: []workflowmetrics.ActivitySpan{{ID: "span", Kind: "tool", Evidence: strings.Repeat("x", 4096)}}}}}
-				}
-				for duplicate := range copies {
-					if duplicate > 0 {
-						run := *data.Run
-						run.AttemptID = fmt.Sprintf("attempt_checkpoint_%d", duplicate)
-						data.Run = &run
+			first := newTerminalAttemptFixture(t)
+			for index, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+				t.Run(string(organization), func(t *testing.T) {
+					a := first
+					if index > 0 {
+						a = newTerminalAttemptFixture(t, first)
 					}
-					if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), kind, data, now); err != nil {
+					path := strings.TrimSuffix(a.path, "/events")
+					requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPost, path+"/comments", a.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "Human decision retained"}), http.StatusOK)
+					current := a.issue
+					response := performHubAPIRequest(t, a.service, http.MethodGet, path, a.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &current)
+					transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "begin"}, ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}
+					requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPost, path+"/workflow", a.token, transition), http.StatusOK)
+					a.snapshots(t, 1)
+					for range 21 {
+						a.advance(time.Second)
+						event := a.start
+						event.Type = "run.observed"
+						event.Data.Runtime = a.runtime("implementation")
+						a.post(t, event)
+					}
+					for range test.extraActivity {
+						event := a.start
+						event.Type = "run.checkpointed"
+						event.Data.Handoff = nativeTestCheckpoint()
+						event.Data.Runtime = a.runtime("implementation")
+						a.post(t, event)
+					}
+					if !test.leased {
+						a.finish(t)
+					}
+					if test.closedAgo > 0 {
+						response = performHubAPIRequest(t, a.service, http.MethodGet, path, a.token, nil)
+						requireNativeStatus(t, response, http.StatusOK)
+						decodeHubResponse(t, response, &current)
+						requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPost, path+"/workflow", a.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "done"}, ExpectedRevision: current.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
+						a.advance(test.closedAgo)
+					}
+					if test.archived {
+						response = performHubAPIRequest(t, a.service, http.MethodGet, path, a.token, nil)
+						requireNativeStatus(t, response, http.StatusOK)
+						decodeHubResponse(t, response, &current)
+						requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPost, path+"/archive", a.token, archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive"}, ExpectedRevision: current.Revision}), http.StatusOK)
+					}
+					beforeRows, beforePayloads := a.canonicalEvents(t)
+					response = performHubAPIRequest(t, a.service, http.MethodGet, path+"/history?limit=1", a.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var initial tracker.Page[tracker.CollaborationEvent]
+					decodeHubResponse(t, response, &initial)
+					if initial.NextCursor == "" {
+						t.Fatal("missing initial cursor")
+					}
+					admin := conversationTestAdmin(t, a.service)
+					var beforeSchema int64
+					if err := admin.QueryRowContext(t.Context(), `SELECT max(version_id) FROM goose_db_version WHERE is_applied`).Scan(&beforeSchema); err != nil {
 						t.Fatal(err)
 					}
-				}
-			}
-			if test.closedAgo > 0 {
-				if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, now.Add(-test.closedAgo)); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := tx.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=issues.project_id AND detent_state='Done') WHERE native_id=?`, issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_second", Finalization: &tracker.NativeFinalization{HeadSHA: strings.Repeat("a", 40)}}}, now); err != nil {
-				t.Fatal(err)
-			}
-			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_second"}}, now); err != nil {
-				t.Fatal(err)
-			}
-			if test.archived {
-				issue.Archived = true
-				if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "issue.edited", tracker.CollaborationData{Operation: "archive"}, now); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?limit=1", f.token, nil)
-			requireNativeStatus(t, response, http.StatusOK)
-			var before tracker.Page[tracker.CollaborationEvent]
-			decodeHubResponse(t, response, &before)
-			if before.NextCursor == "" {
-				t.Fatal("missing initial cursor")
-			}
-			if test.extraActivity > 0 {
-				f.service.config.Content = nil
-			}
-			beforeSchema := storageSchemaVersion(t, f.service.database.reader)
-			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
-				t.Fatal(err)
-			}
-			if after := storageSchemaVersion(t, f.service.database.reader); after != beforeSchema {
-				t.Fatalf("event maintenance changed schema: %d -> %d", beforeSchema, after)
-			}
-			if test.extraActivity > 0 {
-				for _, want := range []struct{ compacted, remaining int64 }{{0, 501}} {
-					summary, err := readEventCompaction(t.Context(), f.service.database.db, scope.organization, scope.project, "work_item", string(issue.WorkItemID))
-					if err != nil {
-						t.Fatal(err)
-					}
-					var remaining, checkpoints int64
-					ctx := f.service.runDetailContext(t.Context())
-					rows, err := f.service.database.reader.QueryContext(ctx, "SELECT "+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type='run.checkpointed'", issue.WorkItemID)
-					if err != nil {
-						t.Fatal(err)
-					}
-					documents := []string{}
-					for rows.Next() {
-						var document string
-						if err := rows.Scan(&document); err != nil {
-							rows.Close()
+					for range 3 {
+						if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
 							t.Fatal(err)
 						}
-						documents = append(documents, document)
-					}
-					if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-						t.Fatal(err)
-					}
-					for _, document := range documents {
-						var data tracker.CollaborationData
-						if err := decodeRunHistory(ctx, f.service.database.reader, document, &data); err != nil {
-							t.Fatal(err)
+						rows, payloads := a.canonicalEvents(t)
+						if !reflect.DeepEqual(rows, beforeRows) || !reflect.DeepEqual(payloads, beforePayloads) {
+							t.Fatal("maintenance changed immutable work history or canonical payload bytes")
 						}
-						checkpoints++
-						if data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Activity != nil && len(data.Run.Runtime.Activity.Spans) > 0 {
-							remaining++
+						events := a.history(t)
+						counts := map[string]int{}
+						for _, event := range events {
+							counts[event.Type]++
+						}
+						if counts["run.checkpointed"] != 1+test.extraActivity || counts["run.observed"] != 22 {
+							t.Fatalf("history lost checkpoints/observations: %v", counts)
+						}
+						for _, kind := range []string{"issue.created", "comment.created", "run.started", "run.checkpointed", "workflow.transitioned", "scheduler.decision"} {
+							if counts[kind] == 0 {
+								t.Fatalf("lost %s: %v", kind, counts)
+							}
+						}
+						if !test.leased && counts["run.finished"] != 1 {
+							t.Fatalf("history lost terminal answer: %v", counts)
+						}
+						a.assertSessionSpans(t)
+					}
+					var afterSchema int64
+					if err := admin.QueryRowContext(t.Context(), `SELECT max(version_id) FROM goose_db_version WHERE is_applied`).Scan(&afterSchema); err != nil || beforeSchema != afterSchema {
+						t.Fatalf("event maintenance changed schema: %d -> %d: %v", beforeSchema, afterSchema, err)
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodGet, path+"/history?cursor="+url.QueryEscape(initial.NextCursor), a.token, nil), http.StatusOK)
+					if test.extraActivity == 0 {
+						args, _ := json.Marshal(map[string]any{"project_id": a.project.ID, "reference": a.issue.WorkItemID})
+						result, err := (hostedOperatorExecutor{service: a.service}).Execute(changeOperatorContext(t, a.service, a.token, string(a.project.OrganizationID)), operatortool.Call{Name: operatortool.WorkHistory, Arguments: args})
+						if err != nil || !strings.Contains(string(result.Content), "run.checkpointed") {
+							t.Fatalf("MCP lost history: %s %v", result.Content, err)
 						}
 					}
-					if summary.RemovedEvents != 0 || summary.CompactedActivityEvents != want.compacted || remaining != want.remaining || checkpoints != 501 {
-						t.Fatalf("compaction=%+v remaining=%d checkpoints=%d want=%+v", summary, remaining, checkpoints, want)
+					response = performHubAPIRequest(t, a.service, http.MethodGet, path+"/comments", a.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					if !strings.Contains(response.Body.String(), "Human decision retained") {
+						t.Fatal("human comment was lost")
 					}
-					if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
-						t.Fatal(err)
+					if _, err := admin.ExecContext(t.Context(), `DELETE FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, a.scope.organization, a.scope.project, a.issue.WorkItemID); err == nil {
+						t.Fatal("ordinary history deletion allowed")
 					}
-				}
-				return
-			}
-			response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?limit=200", f.token, nil)
-			requireNativeStatus(t, response, http.StatusOK)
-			var after tracker.Page[tracker.CollaborationEvent]
-			decodeHubResponse(t, response, &after)
-			kinds := map[string]int{}
-			for _, event := range after.Items {
-				kinds[event.Type]++
-			}
-			for _, kind := range append(durable, "issue.created", "comment.created") {
-				if kinds[kind] < 1 {
-					t.Fatalf("lost %s: %+v", kind, kinds)
-				}
-			}
-			if test.removed > 0 {
-				if after.Compaction == nil || after.Compaction.RemovedEvents != test.removed || after.Compaction.RemovedBytes <= 0 || kinds["run.observed"] != 3 || after.Compaction.CompactedActivityEvents != 1 {
-					t.Fatalf("compaction=%+v kinds=%v", after.Compaction, kinds)
-				}
-				for _, event := range after.Items {
-					if event.Type == "run.checkpointed" && (event.Data.Run == nil || event.Data.Run.Runtime.Activity.Spans != nil || !slices.Contains(event.Data.Run.Runtime.Activity.CoverageNotes, "activity_spans_compacted")) {
-						t.Fatalf("checkpoint kept activity spans: %+v", event.Data.Run)
-					}
-				}
-				var raw string
-				var pending bool
-				if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT event_compaction_storage_before,vacuum_pending FROM attempt_diff_body_migration WHERE singleton=1`).Scan(&raw, &pending); err != nil {
-					t.Fatal(err)
-				}
-				var storage tenantEventStorageSize
-				if err := json.Unmarshal([]byte(raw), &storage); err != nil {
-					t.Fatal(err)
-				}
-				if !pending || storage.DatabaseBytes <= 0 || storage.CollaborationRows != int64(len(after.Items))+test.removed {
-					t.Fatalf("missing pre-compaction baseline: pending=%v storage=%+v", pending, storage)
-				}
-			} else if after.Compaction != nil || kinds["run.observed"] != 22 {
-				t.Fatalf("protected stream changed: %+v", after)
-			}
-			response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?cursor="+url.QueryEscape(before.NextCursor), f.token, nil)
-			want := http.StatusOK
-			if test.removed > 0 {
-				want = http.StatusUnprocessableEntity
-			}
-			requireNativeStatus(t, response, want)
-			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
-			args, err := json.Marshal(map[string]any{"project_id": f.project.ID, "reference": issue.WorkItemID, "limit": 200})
-			if err != nil {
-				t.Fatal(err)
-			}
-			result, err := (hostedOperatorExecutor{service: f.service}).Execute(ctx, operatortool.Call{Name: operatortool.WorkHistory, Arguments: args})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var mcp operatortool.WorkReadResult[tracker.Page[tracker.CollaborationEvent]]
-			if err := json.Unmarshal(result.Content, &mcp); err != nil {
-				t.Fatal(err)
-			}
-			if len(mcp.Data.Items) != len(after.Items) {
-				t.Fatalf("MCP lost history: %s", result.Content)
-			}
-			response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/comments", f.token, nil)
-			requireNativeStatus(t, response, http.StatusOK)
-			if !strings.Contains(response.Body.String(), "Human decision retained") {
-				t.Fatal("human comment was lost")
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_events WHERE work_item_id=?", issue.WorkItemID); err == nil {
-				t.Fatal("ordinary history deletion allowed")
-			}
-			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
-				t.Fatal(err)
-			}
-			summary, err := readEventCompaction(t.Context(), f.service.database.db, scope.organization, scope.project, "work_item", string(issue.WorkItemID))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if test.removed > 0 && summary.RemovedEvents != test.removed {
-				t.Fatalf("repeated sweep changed summary: %+v", summary)
+				})
 			}
 		})
 	}
@@ -423,47 +323,61 @@ func TestEventCompactionRollback(t *testing.T) {
 	a.snapshots(t, 2)
 	a.finish(t)
 	a.advance(2 * time.Hour)
-	if _, err := a.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER fail_compaction BEFORE INSERT ON event_compactions BEGIN SELECT RAISE(ABORT,'injected failure'); END`); err != nil {
+	beforeRows, beforePayloads := a.canonicalEvents(t)
+	scope := nativeAttemptListingScope(t, a.nativeFixture)
+	value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: a.scope.organization, ProjectID: a.scope.project, AggregateType: "issue", AggregateID: a.issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: a.service.config.now(), Data: tracker.CollaborationData{Run: &a.start.Data}}
+	raw, err := json.Marshal(value)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err == nil || !strings.Contains(err.Error(), "injected failure") {
+	row, err := eventstore.NewContent(a.service.runDetailStore()).PrepareEvent(t.Context(), a.scope.organization, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected rollback")
+	err = a.service.config.TenantRepository.WriteTenant(t.Context(), a.scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: a.scope.organization, ID: "archive_" + row.PayloadSHA256, Reference: eventstore.Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), CreatedAt: a.service.config.now()}); err != nil {
+			return err
+		}
+		if _, err := w.AppendEvent(t.Context(), row); err != nil {
+			return err
+		}
+		return injected
+	})
+	if !errors.Is(err, injected) {
 		t.Fatalf("expected failure: %v", err)
 	}
 	counts := a.runEvents(t)
 	if counts["run.started"] != 1 || counts["run.checkpointed"] != 2 || counts["run.observed"] != 2 || counts["run.finished"] != 1 {
 		t.Fatalf("rollback lost run events: %v", counts)
 	}
-	rows, err := a.service.database.reader.QueryContext(t.Context(), "SELECT "+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type IN ('run.started','run.checkpointed','run.observed','run.finished')", a.issue.WorkItemID)
-	if err != nil {
-		t.Fatal(err)
+	rows, payloads := a.canonicalEvents(t)
+	if !reflect.DeepEqual(rows, beforeRows) || !reflect.DeepEqual(payloads, beforePayloads) {
+		t.Fatal("rollback changed immutable event references or payload bytes")
 	}
-	defer rows.Close()
-	var payloads []string
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
+	spans := 0
+	for _, row := range rows {
+		event, err := eventstore.NewContent(a.service.runDetailStore()).Event(t.Context(), row)
+		if err != nil {
 			t.Fatal(err)
 		}
-		payloads = append(payloads, raw)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		t.Fatal(err)
-	}
-	var spans int
-	ctx := a.service.runDetailContext(t.Context())
-	for _, raw := range payloads {
-		var data tracker.CollaborationData
-		if err := decodeRunHistory(ctx, a.service.database.reader, raw, &data); err != nil {
-			t.Fatal(err)
-		}
-		if data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Activity != nil && data.Run.Runtime.Activity.Spans != nil {
+		if event.Data.Run != nil && event.Data.Run.Runtime != nil && event.Data.Run.Runtime.Activity != nil && len(event.Data.Run.Runtime.Activity.Spans) > 0 {
 			spans++
 		}
 	}
 	if spans != 6 {
 		t.Fatalf("rollback lost activity payloads: %d", spans)
 	}
-	if _, err := a.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_events WHERE work_item_id=?", a.issue.WorkItemID); err == nil {
+	if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), row.PayloadObjectKey)
+		if !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("rollback retained archive ownership: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conversationTestAdmin(t, a.service).ExecContext(t.Context(), `DELETE FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, a.scope.organization, a.scope.project, a.issue.WorkItemID); err == nil {
 		t.Fatal("rollback lost deletion protection")
 	}
 }
@@ -481,12 +395,19 @@ type terminalAttemptFixture struct {
 	runtime func(string) *tracker.NativeRuntimeObservation
 }
 
-func newTerminalAttemptFixture(t *testing.T) *terminalAttemptFixture {
+func newTerminalAttemptFixture(t *testing.T, shared ...*terminalAttemptFixture) *terminalAttemptFixture {
 	t.Helper()
 	clock := &atomic.Int64{}
 	clock.Store(time.Now().UTC().Truncate(time.Second).UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
-	f := newDefaultNativeFixture(t, Config{now: now})
+	var f nativeFixture
+	if len(shared) == 0 {
+		f = newDefaultNativeFixture(t, Config{now: now})
+	} else {
+		clock = shared[0].clock
+		f = newNativeFixture(t, shared[0].service, "org_first_second", "terminal history second organization")
+	}
+
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	a := &terminalAttemptFixture{nativeFixture: f, clock: clock, issue: f.create(t, "terminal history"), worker: f.worker(t, "worker")}
 	a.scope = nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
@@ -550,24 +471,123 @@ func (a *terminalAttemptFixture) finish(t *testing.T) {
 
 func (a *terminalAttemptFixture) runEvents(t *testing.T) map[string]int {
 	t.Helper()
-	rows, err := a.service.database.db.QueryContext(t.Context(), `SELECT type,count(*) FROM collaboration_events WHERE work_item_id=? AND type LIKE 'run.%' GROUP BY type`, a.issue.WorkItemID)
+	counts := map[string]int{}
+	after := int64(0)
+	for {
+		var page []eventstore.Event
+		if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			page, err = r.Events(t.Context(), a.scope.project, a.issue.WorkItemID, after, corestore.MaxPageSize)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range page {
+			if strings.HasPrefix(row.Type, "run.") {
+				counts[row.Type]++
+			}
+		}
+		if len(page) < corestore.MaxPageSize {
+			return counts
+		}
+		after = page[len(page)-1].Sequence
+	}
+}
+
+func (a *terminalAttemptFixture) canonicalEvents(t *testing.T) ([]eventstore.Event, map[string][]byte) {
+	t.Helper()
+	var rows []eventstore.Event
+	after := int64(0)
+	for {
+		var page []eventstore.Event
+		if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			page, err = r.HistoryEvents(t.Context(), a.scope.project, a.issue.WorkItemID, after, corestore.MaxPageSize)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, page...)
+		if len(page) < corestore.MaxPageSize {
+			break
+		}
+		after = page[len(page)-1].Sequence
+	}
+	payloads := map[string][]byte{}
+	for _, row := range rows {
+		ref := eventstore.Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes)
+		raw, err := a.service.runDetailStore().ReadDetail(t.Context(), string(a.scope.organization), ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := eventstore.NewContent(a.service.runDetailStore()).Event(t.Context(), row); err != nil {
+			t.Fatal(err)
+		}
+		payloads[row.ID] = bytes.Clone(raw)
+	}
+	return rows, payloads
+}
+
+func (a *terminalAttemptFixture) history(t *testing.T) []tracker.CollaborationEvent {
+	t.Helper()
+	path := strings.TrimSuffix(a.path, "/events") + "/history?limit=200"
+	var events []tracker.CollaborationEvent
+	cursor := ""
+	for {
+		target := path
+		if cursor != "" {
+			target += "&cursor=" + url.QueryEscape(cursor)
+		}
+		response := performHubAPIRequest(t, a.service, http.MethodGet, target, a.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var page tracker.Page[tracker.CollaborationEvent]
+		decodeHubResponse(t, response, &page)
+		if page.Compaction != nil {
+			t.Fatal("PostgreSQL work history fabricated a compaction summary")
+		}
+		for _, event := range page.Items {
+			if event.Data.Run != nil && event.Data.Run.Runtime != nil && event.Data.Run.Runtime.Activity != nil {
+				profile := event.Data.Run.Runtime.Activity
+				if len(profile.Spans) != 0 || !slices.Contains(profile.CoverageNotes, "activity_spans_omitted_read_with_board_session_history") {
+					t.Fatalf("history did not honestly omit activity spans: %+v", profile)
+				}
+			}
+		}
+		events = append(events, page.Items...)
+		if page.NextCursor == "" {
+			break
+		}
+		if page.NextCursor == cursor {
+			t.Fatal("work history cursor did not progress")
+		}
+		cursor = page.NextCursor
+	}
+	return events
+}
+
+func (a *terminalAttemptFixture) assertSessionSpans(t *testing.T) {
+	t.Helper()
+	args, err := json.Marshal(map[string]any{"project_id": a.project.ID, "reference": a.issue.WorkItemID, "native_attempt_id": a.start.Data.AttemptID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	counts := map[string]int{}
-	for rows.Next() {
-		var kind string
-		var count int
-		if err := rows.Scan(&kind, &count); err != nil {
-			t.Fatal(err)
-		}
-		counts[kind] = count
-	}
-	if err := rows.Err(); err != nil {
+	result, err := (hostedOperatorExecutor{service: a.service}).Execute(changeOperatorContext(t, a.service, a.token, string(a.project.OrganizationID)), operatortool.Call{Name: operatortool.BoardSessionHistory, Arguments: args})
+	if err != nil {
 		t.Fatal(err)
 	}
-	return counts
+	var history struct {
+		Data struct {
+			Page struct {
+				Items []workflowmetrics.ActivitySpan `json:"items"`
+			} `json:"page"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(result.Content, &history); err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Data.Page.Items) != 1 || history.Data.Page.Items[0].Evidence != "edit_tool" {
+		t.Fatalf("board session lost canonical activity spans: %s", result.Content)
+	}
 }
 
 func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
@@ -587,22 +607,7 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		t.Fatalf("running attempt was compacted: %v", counts)
 	}
 	a.finish(t)
-	var raw string
-	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT payload_object_key FROM native_attempts WHERE id=?", a.start.Data.AttemptID).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var legacy tracker.NativeRunData
-	if err := decodeRunDetail(a.service.freshRunDetailContext(t.Context()), a.service.database.reader, raw, &legacy); err != nil {
-		t.Fatal(err)
-	}
-	legacy.CompletionBody = strings.Repeat("legacy attempt detail", 2048)
-	encoded, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := a.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,payload_object_key='',conversion_state=1 WHERE id=?", string(encoded), a.start.Data.AttemptID); err != nil {
-		t.Fatal(err)
-	}
+	beforeRows, beforePayloads := a.canonicalEvents(t)
 	a.advance(2 * time.Hour)
 	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
 		t.Fatal(err)
@@ -638,46 +643,19 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		t.Fatalf("receipt lacks the terminal answer: %s", before[operatortool.WorkAttemptReceipt])
 	}
 	for range 2 {
-		for {
-			err := a.service.convertLegacyStorage(t.Context(), a.service.config.now())
-			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatal(err)
-			}
-			progress, progressErr := readStorageConversionProgress(t.Context(), a.service.database.reader, a.scope)
-			if progressErr != nil {
-				t.Fatal(progressErr)
-			}
-			if err == nil && len(progress) > 0 && !slices.ContainsFunc(progress, func(p storageConversionProgress) bool { return !p.Complete }) {
-				break
-			}
-		}
 		if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	progress, err := readStorageConversionProgress(t.Context(), a.service.database.reader, a.scope)
-	if err != nil {
-		t.Fatal(err)
+	rows, payloads := a.canonicalEvents(t)
+	if !reflect.DeepEqual(rows, beforeRows) || !reflect.DeepEqual(payloads, beforePayloads) {
+		t.Fatal("maintenance changed terminal attempt history or canonical payloads")
 	}
-	attemptsConverted := false
-	for _, p := range progress {
-		if p.Family == "attempts" && p.Aggregate == string(a.issue.WorkItemID) {
-			attemptsConverted = p.Complete && p.Rows == 1
-		}
-	}
-	if !attemptsConverted {
-		t.Fatalf("legacy attempt detail was not converted: %+v", progress)
-	}
+	a.history(t)
+	a.assertSessionSpans(t)
 	counts := a.runEvents(t)
 	if counts["run.started"] != 1 || counts["run.checkpointed"] != 12 || counts["run.observed"] != 12 || counts["run.finished"] != 1 {
 		t.Fatalf("terminal attempt history=%v", counts)
-	}
-	summary, err := readEventCompaction(t.Context(), a.service.database.db, a.scope.organization, a.scope.project, "work_item", string(a.issue.WorkItemID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if summary.RemovedEvents != 0 || summary.CompactedActivityEvents != 0 {
-		t.Fatalf("compaction receipt=%+v", summary)
 	}
 	after := reads()
 	for tool, answer := range before {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -227,10 +228,6 @@ func TestNativeProjectPolicyInvalidationDuringRead(t *testing.T) {
 }
 
 func TestSchedulerRejectsMissingConfigurationBeforeWork(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name       string
@@ -239,32 +236,43 @@ func TestSchedulerRejectsMissingConfigurationBeforeWork(t *testing.T) {
 		{"missing", policy.Descriptor{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			claims := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/policy") {
-					claims++
-				}
-				if err := json.NewEncoder(w).Encode(policy.Approval{Policy: clientTestPolicy()}); err != nil {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Reject missing configuration before work")
+			var requests atomic.Int64
+			transport := fixtureClient(h.native.Transport()).requests.Load()
+			fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				requests.Add(1)
+				return transport.RoundTrip(request)
+			}))
+			t.Cleanup(func() { fixtureClient(h.native.Transport()).requests.Store(transport) })
+			_, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", WorkflowStates: []string{"In Progress"}, Policy: test.descriptor})
+			if err == nil || !strings.Contains(err.Error(), "policy_mismatch") || requests.Load() != 0 {
+				t.Fatalf("requests=%d, error=%v", requests.Load(), err)
+			}
+			claimed := h.claim(t, issue.ID)
+			originalPolicy := h.scheduler.claimPolicies[issue.ID]
+			lease := h.scheduler.nativeClaims[issue.ID].lease
+			t.Cleanup(func() {
+				h.scheduler.claimPolicies[issue.ID] = originalPolicy
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+				defer cancel()
+				if err := h.scheduler.ReleaseClaim(ctx, issue.ID, "dispatch_deferred"); err != nil {
 					t.Error(err)
 				}
-			}))
-			t.Cleanup(server.Close)
-			client, err := newTestClient(t, Config{URL: server.URL, TokenSource: func() string { return "worker" }})
-			if err != nil {
-				t.Fatal(err)
+			})
+			missingPolicy := originalPolicy
+			missingPolicy.descriptor = test.descriptor
+			h.scheduler.claimPolicies[issue.ID] = missingPolicy
+			before := requests.Load()
+			if _, err := h.scheduler.AdoptClaim(t.Context(), claimed, time.Now()); err == nil || !strings.Contains(err.Error(), "policy_mismatch") {
+				t.Fatalf("adopted mismatched policy: %v", err)
 			}
-			scheduler, err := newTestScheduler(client, SchedulerConfig{Machine: Machine{ID: "machine_a", Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
-			if err != nil {
-				t.Fatal(err)
+			if requests.Load() != before {
+				t.Fatal("mismatched adoption performed a Hub request")
 			}
-			_, err = scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "p", Repository: "acme/repo", Policy: test.descriptor})
-			if err == nil || !strings.Contains(err.Error(), "policy_mismatch") || claims != 0 {
-				t.Fatalf("claims=%d, error=%v", claims, err)
-			}
-			scheduler.claims["issue"] = tracker.Lease{LeaseSummary: tracker.LeaseSummary{PolicyID: clientTestPolicy().ID}}
-			scheduler.claimPolicies["issue"] = claimPolicy{project: "p", repository: "acme/repo", descriptor: test.descriptor}
-			if _, err := scheduler.AdoptClaim(t.Context(), connector.Issue{ID: "issue"}, time.Now()); err == nil {
-				t.Fatal("adopted mismatched policy")
+			current := h.scheduler.nativeClaims[issue.ID].lease
+			if current.ID != lease.ID || current.FencingToken != lease.FencingToken {
+				t.Fatal("mismatched adoption changed lease ownership")
 			}
 		})
 	}

@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestRunnerSetupLifecycle(t *testing.T) {
@@ -68,20 +67,10 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			dbPath := filepath.Join(t.TempDir(), "runner.db")
-			localStore, err := store.Open(t.Context(), store.Config{Path: dbPath})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := localStore.Close(); err != nil {
-					t.Error(err)
-				}
-			})
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
-			first := NewRunnerSetup("runner-one", localStore, logger)
-			second := NewRunnerSetup("runner-two", localStore, logger)
+			first := NewRunnerSetup("runner-one", nil, logger)
+			second := NewRunnerSetup("runner-two", nil, logger)
 			assertRuns := func(want int) {
 				t.Helper()
 				content, err := os.ReadFile(filepath.Join(root, "trace"))
@@ -98,7 +87,7 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 				})
 			}
 			callers.Wait()
-			assertRuns(1)
+			assertRuns(8)
 			for _, runner := range []*RunnerSetup{first, second} {
 				if err := runner.Prepare(t.Context(), cfg); err != nil {
 					t.Fatal(err)
@@ -108,7 +97,7 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 					t.Fatalf("next turn CLI = %q, error = %v", output, err)
 				}
 			}
-			assertRuns(2)
+			assertRuns(10)
 			script += "printf 'changed' > version\n"
 			write(script)
 			for _, runner := range []*RunnerSetup{first, second} {
@@ -118,30 +107,19 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 					}
 				}
 			}
-			assertRuns(4)
-			if err := localStore.Close(); err != nil {
-				t.Fatal(err)
-			}
-			localStore, err = store.Open(t.Context(), store.Config{Path: dbPath})
-			if err != nil {
-				t.Fatal(err)
-			}
-			first = NewRunnerSetup("runner-one", localStore, logger)
+			assertRuns(14)
+			first = NewRunnerSetup("runner-one", nil, logger)
 			if err := first.Prepare(t.Context(), cfg); err != nil {
 				t.Fatal(err)
 			}
-			assertRuns(4)
+			assertRuns(15)
 			write("printf 'failure\\n' >> trace\nexit 7\n")
 			for range 2 {
 				if err := first.Prepare(t.Context(), cfg); err == nil {
 					t.Fatal("failing setup succeeded")
 				}
 			}
-			assertRuns(6)
-			hash, err := localStore.ProjectRunnerSetupHash(t.Context(), "runner-one", cfg.ID)
-			if err != nil || hash != "" {
-				t.Fatalf("failed setup hash = %q, error = %v", hash, err)
-			}
+			assertRuns(17)
 			if !strings.Contains(logs.String(), `"attribution":"instance"`) || !strings.Contains(logs.String(), `"project_id":"project-one"`) {
 				t.Fatalf("missing instance setup report: %s", &logs)
 			}
@@ -149,17 +127,17 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 			if err := first.Prepare(t.Context(), cfg); err != nil {
 				t.Fatal(err)
 			}
-			assertRuns(7)
+			assertRuns(18)
 			if ref {
-				if err := os.Remove(filepath.Join(root, ".git", "detent-runner-setup")); err != nil {
-					t.Fatal(err)
+				if _, err := os.Stat(filepath.Join(root, ".git", "detent-runner-setup")); !os.IsNotExist(err) {
+					t.Fatalf("stateless setup created a reusable local receipt: %v", err)
 				}
 				for range 2 {
 					if err := first.Prepare(t.Context(), cfg); err != nil {
 						t.Fatal(err)
 					}
 				}
-				assertRuns(8)
+				assertRuns(20)
 				return
 			}
 			moved := t.TempDir()
@@ -179,8 +157,8 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if content, err := os.ReadFile(filepath.Join(moved, "trace")); err != nil || string(content) != "run\n" {
-				t.Fatalf("relocated checkout setup runs = %q, error = %v; want one", content, err)
+			if content, err := os.ReadFile(filepath.Join(moved, "trace")); err != nil || string(content) != "run\nrun\n" {
+				t.Fatalf("relocated checkout setup runs = %q, error = %v; want one per preparation", content, err)
 			}
 		})
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -487,7 +488,7 @@ func translateConversationError(err error) error {
 	if errors.Is(err, conversation.ErrStaleExecution) {
 		return conversationStale(err.Error())
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) {
 		return nativeNotFound()
 	}
 	return err

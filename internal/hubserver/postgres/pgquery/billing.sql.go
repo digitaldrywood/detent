@@ -297,6 +297,48 @@ func (q *Queries) BillingMonthlyAdmission(ctx context.Context, arg BillingMonthl
 	return i, err
 }
 
+const billingMonthlyAdmittedCandidate = `-- name: BillingMonthlyAdmittedCandidate :one
+WITH admitted AS MATERIALIZED (
+ SELECT a.organization_id,a.issue_id FROM monthly_budget_admissions a
+ JOIN issues cohort_item ON cohort_item.organization_id=a.organization_id AND cohort_item.id=a.issue_id
+ WHERE a.organization_id=$1 AND cohort_item.project_id=$2
+)
+SELECT EXISTS (
+ SELECT 1 FROM admitted a
+ JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+ JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
+ JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
+ JOIN issue_claim_facts f ON f.organization_id=i.organization_id AND f.project_id=i.project_id AND f.work_item_id=i.native_id
+ WHERE a.organization_id=$1
+ AND i.project_id=$2
+ AND p.profile='native' AND p.deleted_at IS NULL AND i.archived=false
+ AND w.dispatchable=true AND w.terminal=false
+ AND EXISTS (SELECT 1 FROM queue_entries q WHERE q.organization_id=i.organization_id AND q.project_id=i.project_id AND q.work_item_id=i.native_id AND q.scope=i.project_id)
+ AND NOT EXISTS (SELECT 1 FROM workspace_items wi WHERE wi.organization_id=i.organization_id AND wi.project_id=i.project_id AND wi.work_item_id=i.native_id)
+ AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id AND l.released_at IS NULL AND l.expires_at>$3::timestamptz)
+ AND (NOT p.require_dependencies OR NOT EXISTS (
+  SELECT 1 FROM issue_dependencies d
+  JOIN issues blocker ON blocker.organization_id=d.organization_id AND blocker.project_id=d.blocker_project_id AND blocker.id=d.blocker_issue_id
+  LEFT JOIN project_workflow_states blocker_state ON blocker_state.organization_id=blocker.organization_id AND blocker_state.project_id=blocker.project_id AND blocker_state.name=blocker.workflow_state_name
+  WHERE d.organization_id=i.organization_id AND d.dependent_project_id=i.project_id AND d.dependent_issue_id=i.id
+  AND (blocker_state.name IS NULL OR blocker_state.terminal=false)
+ ))
+)
+`
+
+type BillingMonthlyAdmittedCandidateParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AvailableAt    time.Time
+}
+
+func (q *Queries) BillingMonthlyAdmittedCandidate(ctx context.Context, arg BillingMonthlyAdmittedCandidateParams) (bool, error) {
+	row := q.db.QueryRow(ctx, billingMonthlyAdmittedCandidate, arg.OrganizationID, arg.ProjectID, arg.AvailableAt)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const billingMonthlyLease = `-- name: BillingMonthlyLease :one
 SELECT organization_id,lease_id,luna_api,runner_api,sprite_infrastructure FROM monthly_budget_leases WHERE organization_id=$1 AND lease_id=$2
 `
@@ -317,6 +359,76 @@ func (q *Queries) BillingMonthlyLease(ctx context.Context, arg BillingMonthlyLea
 		&i.SpriteInfrastructure,
 	)
 	return i, err
+}
+
+const billingMonthlyOrganizationAdmittedCandidate = `-- name: BillingMonthlyOrganizationAdmittedCandidate :one
+WITH admitted AS MATERIALIZED (
+ SELECT a.organization_id,a.issue_id FROM monthly_budget_admissions a
+ WHERE a.organization_id=$1
+)
+SELECT EXISTS (
+ SELECT 1 FROM admitted a
+ JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+ JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
+ JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
+ JOIN issue_claim_facts f ON f.organization_id=i.organization_id AND f.project_id=i.project_id AND f.work_item_id=i.native_id
+ WHERE a.organization_id=$1
+
+ AND p.profile='native' AND p.deleted_at IS NULL AND i.archived=false
+ AND w.dispatchable=true AND w.terminal=false
+ AND EXISTS (SELECT 1 FROM queue_entries q WHERE q.organization_id=i.organization_id AND q.project_id=i.project_id AND q.work_item_id=i.native_id AND q.scope=i.project_id)
+ AND NOT EXISTS (SELECT 1 FROM workspace_items wi WHERE wi.organization_id=i.organization_id AND wi.project_id=i.project_id AND wi.work_item_id=i.native_id)
+ AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id AND l.released_at IS NULL AND l.expires_at>$2::timestamptz)
+ AND (NOT p.require_dependencies OR NOT EXISTS (
+  SELECT 1 FROM issue_dependencies d
+  JOIN issues blocker ON blocker.organization_id=d.organization_id AND blocker.project_id=d.blocker_project_id AND blocker.id=d.blocker_issue_id
+  LEFT JOIN project_workflow_states blocker_state ON blocker_state.organization_id=blocker.organization_id AND blocker_state.project_id=blocker.project_id AND blocker_state.name=blocker.workflow_state_name
+  WHERE d.organization_id=i.organization_id AND d.dependent_project_id=i.project_id AND d.dependent_issue_id=i.id
+  AND (blocker_state.name IS NULL OR blocker_state.terminal=false)
+ ))
+)
+`
+
+type BillingMonthlyOrganizationAdmittedCandidateParams struct {
+	OrganizationID tracker.OrganizationID
+	AvailableAt    time.Time
+}
+
+func (q *Queries) BillingMonthlyOrganizationAdmittedCandidate(ctx context.Context, arg BillingMonthlyOrganizationAdmittedCandidateParams) (bool, error) {
+	row := q.db.QueryRow(ctx, billingMonthlyOrganizationAdmittedCandidate, arg.OrganizationID, arg.AvailableAt)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const billingMonthlyRetainsMachine = `-- name: BillingMonthlyRetainsMachine :one
+WITH admitted AS MATERIALIZED (
+ SELECT a.organization_id,a.issue_id FROM monthly_budget_admissions a
+ JOIN issues cohort_item ON cohort_item.organization_id=a.organization_id AND cohort_item.id=a.issue_id
+ WHERE a.organization_id=$1 AND cohort_item.project_id=$2
+)
+SELECT EXISTS (
+ SELECT 1 FROM admitted a
+ JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+ JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
+ JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
+ WHERE a.organization_id=$1 AND i.project_id=$2
+ AND (SELECT l.machine_id FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id ORDER BY l.fencing_token DESC LIMIT 1)=$3::text
+ AND p.deleted_at IS NULL AND i.archived=false AND w.dispatchable=true AND w.terminal=false
+)
+`
+
+type BillingMonthlyRetainsMachineParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	MachineID      string
+}
+
+func (q *Queries) BillingMonthlyRetainsMachine(ctx context.Context, arg BillingMonthlyRetainsMachineParams) (bool, error) {
+	row := q.db.QueryRow(ctx, billingMonthlyRetainsMachine, arg.OrganizationID, arg.ProjectID, arg.MachineID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const billingRecentCreditTransactions = `-- name: BillingRecentCreditTransactions :many

@@ -34,6 +34,10 @@ WHERE organization_id=sqlc.arg(organization_id)
   AND native_id=ANY(sqlc.arg(native_ids)::text[]);
 
 -- name: CreateWorkItem :one
+WITH published_source AS MATERIALIZED (
+ SELECT v.revision AS source_revision,v.source_scheduled,v.source_observed_at FROM collaboration_versions v
+ WHERE v.organization_id=sqlc.arg(organization_id) AND v.project_id=sqlc.arg(project_id) AND v.work_item_id=sqlc.arg(native_id) AND v.record_id=sqlc.arg(native_id) AND v.revision=COALESCE(NULLIF(sqlc.arg(revision)::bigint,0),1) AND v.source_known AND sqlc.arg(source_revision)::bigint<>COALESCE(NULLIF(sqlc.arg(revision)::bigint,0),1)
+)
 INSERT INTO issues (
     last_activity_at,
     id,
@@ -59,7 +63,13 @@ INSERT INTO issues (
     provenance_provider,
     provenance_external_id,
     archived,
-    workflow_state_name
+    workflow_state_name,
+    terminal_entered_at,
+    archive_restored_at,
+    archive_restore_known,
+    source_revision,
+    source_scheduled,
+    source_observed_at
 )
 VALUES (
     COALESCE(sqlc.narg(last_activity_at)::timestamptz, CURRENT_TIMESTAMP),
@@ -86,11 +96,24 @@ VALUES (
     sqlc.arg(provenance_provider),
     sqlc.arg(provenance_external_id),
     sqlc.arg(archived),
-    sqlc.narg(workflow_state_name)
+    sqlc.narg(workflow_state_name),
+    CASE WHEN sqlc.arg(current_write)::boolean THEN
+        CASE WHEN EXISTS (SELECT 1 FROM project_workflow_states w WHERE w.organization_id=sqlc.arg(organization_id) AND w.project_id=sqlc.arg(project_id) AND w.name=sqlc.narg(workflow_state_name) AND w.terminal)
+        THEN COALESCE(sqlc.narg(terminal_clock)::timestamptz,CURRENT_TIMESTAMP) ELSE NULL END
+    ELSE sqlc.narg(terminal_entered_at)::timestamptz END,
+    CASE WHEN sqlc.arg(current_write)::boolean THEN NULL ELSE sqlc.narg(archive_restored_at)::timestamptz END,
+    CASE WHEN sqlc.arg(current_write)::boolean THEN true ELSE sqlc.arg(archive_restore_known)::boolean END,
+    CASE WHEN sqlc.arg(source_revision)::bigint=COALESCE(NULLIF(sqlc.arg(revision)::bigint,0),1) THEN sqlc.arg(source_revision)::bigint ELSE COALESCE((SELECT published_source.source_revision FROM published_source),0) END,
+    CASE WHEN sqlc.arg(source_revision)::bigint=COALESCE(NULLIF(sqlc.arg(revision)::bigint,0),1) THEN sqlc.arg(source_scheduled)::boolean ELSE COALESCE((SELECT published_source.source_scheduled FROM published_source),false) END,
+    CASE WHEN sqlc.arg(source_revision)::bigint=COALESCE(NULLIF(sqlc.arg(revision)::bigint,0),1) THEN sqlc.narg(source_observed_at)::timestamptz ELSE COALESCE((SELECT published_source.source_observed_at FROM published_source),NULL::timestamptz) END
 ) RETURNING *;
 
 -- name: UpdateWorkItem :one
-WITH previous AS MATERIALIZED (
+WITH published_source AS MATERIALIZED (
+ SELECT v.revision AS source_revision,v.source_scheduled,v.source_observed_at FROM collaboration_versions v
+ WHERE v.organization_id=sqlc.arg(organization_id) AND v.project_id=sqlc.arg(project_id) AND v.work_item_id=sqlc.arg(native_id) AND v.record_id=sqlc.arg(native_id) AND v.revision=sqlc.arg(expected_revision)::bigint+1 AND v.source_known AND sqlc.arg(source_revision)::bigint<>sqlc.arg(expected_revision)::bigint+1
+),
+previous AS MATERIALIZED (
     SELECT id,archived,workflow_state_name FROM issues
     WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
       AND native_id=sqlc.arg(native_id) AND revision=sqlc.arg(expected_revision)
@@ -106,7 +129,10 @@ WITH previous AS MATERIALIZED (
       ))
 )
 UPDATE issues SET
-    last_activity_at=greatest(issues.last_activity_at,COALESCE(sqlc.narg(last_activity_at)::timestamptz,issues.last_activity_at)),
+    source_revision=CASE WHEN sqlc.arg(source_revision)::bigint=sqlc.arg(expected_revision)::bigint+1 THEN sqlc.arg(source_revision)::bigint ELSE COALESCE((SELECT published_source.source_revision FROM published_source),issues.source_revision) END,
+    source_scheduled=CASE WHEN sqlc.arg(source_revision)::bigint=sqlc.arg(expected_revision)::bigint+1 THEN sqlc.arg(source_scheduled)::boolean ELSE COALESCE((SELECT published_source.source_scheduled FROM published_source),issues.source_scheduled) END,
+    source_observed_at=CASE WHEN sqlc.arg(source_revision)::bigint=sqlc.arg(expected_revision)::bigint+1 THEN sqlc.narg(source_observed_at)::timestamptz ELSE COALESCE((SELECT published_source.source_observed_at FROM published_source),issues.source_observed_at) END,
+    last_activity_at=greatest(issues.last_activity_at,COALESCE(sqlc.narg(last_activity_at)::timestamptz,issues.last_activity_at),CASE WHEN (issues.title,issues.body_object_key) IS DISTINCT FROM (sqlc.arg(title),sqlc.arg(body_object_key)) THEN COALESCE(sqlc.narg(activity_clock)::timestamptz,sqlc.narg(terminal_clock)::timestamptz,CURRENT_TIMESTAMP) ELSE issues.last_activity_at END),
     number=sqlc.arg(number),
     event_sequence=sqlc.arg(event_sequence),
     native_source_key=sqlc.arg(native_source_key),
@@ -121,7 +147,14 @@ UPDATE issues SET
     provenance_provider=sqlc.arg(provenance_provider),
     provenance_external_id=sqlc.arg(provenance_external_id),
     archived=sqlc.arg(archived),
+    archive_restored_at=CASE WHEN issues.archived AND NOT sqlc.arg(archived) THEN COALESCE(sqlc.narg(terminal_clock)::timestamptz,CURRENT_TIMESTAMP) ELSE issues.archive_restored_at END,
+    archive_restore_known=CASE WHEN issues.archived AND NOT sqlc.arg(archived) THEN true ELSE issues.archive_restore_known END,
     workflow_state_name=sqlc.narg(workflow_state_name),
+    terminal_entered_at=CASE
+        WHEN NOT EXISTS (SELECT 1 FROM project_workflow_states w WHERE w.organization_id=sqlc.arg(organization_id) AND w.project_id=sqlc.arg(project_id) AND w.name=sqlc.narg(workflow_state_name) AND w.terminal) THEN NULL
+        WHEN EXISTS (SELECT 1 FROM project_workflow_states w WHERE w.organization_id=sqlc.arg(organization_id) AND w.project_id=sqlc.arg(project_id) AND w.name=issues.workflow_state_name AND w.terminal) THEN issues.terminal_entered_at
+        ELSE COALESCE(sqlc.narg(terminal_clock)::timestamptz,CURRENT_TIMESTAMP)
+    END,
     revision=issues.revision+1,
     updated_at=CURRENT_TIMESTAMP,
     native_updated_at=CURRENT_TIMESTAMP

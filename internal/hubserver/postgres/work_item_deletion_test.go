@@ -165,15 +165,6 @@ func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 		t.Fatal(err)
 	}
 	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedIdentityMigrationIssues(t, admin, org)
 	}
@@ -189,7 +180,17 @@ func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 			t.Fatalf("backfilled identities=%d", count)
 		}
 	}
-	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteWorkItem(t.Context(), "prj_first", "wi_first_1") }); err != nil {
+	const organization, project, item = "org_first", "prj_first", "wi_first_1"
+	ctx := t.Context()
+	tx := tenantTx(t, runtimeFor(t, pool, pool), pool, organization)
+	if _, err := tx.Exec(ctx, `UPDATE projects SET duplicate_source_sequence=duplicate_source_sequence+1 WHERE organization_id=$1 AND id=$2`, organization, project); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := tx.Exec(ctx, `DELETE FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3`, organization, project, item)
+	if err != nil || deleted.RowsAffected() != 1 {
+		t.Fatalf("delete migrated work item: rows=%d error=%v", deleted.RowsAffected(), err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	_, err = provider.Down(t.Context())

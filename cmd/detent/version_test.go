@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
 func TestFormatVersionInfo(t *testing.T) {
@@ -117,7 +117,7 @@ func TestVersionCommandDefaultsJSONForNonTTY(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("version output is not JSON: %v\n%s", err, stdout.String())
 	}
-	latest, err := hubserver.LatestSchemaVersion()
+	latest, err := postgres.LatestSchemaVersion()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,6 +15,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -173,23 +176,23 @@ func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		record, err := service.readWorkspaceForActor(ctx, tx, scope, c.Param("workspace"))
+	err = s.accessWrite(ctx, scope.organization, func(writer tenantstore.Writer) error {
+		current := scope
+		current.credential = principal.credential
+		record, err := service.readRelayWorkspaceForActor(ctx, writer, current, c.Param("workspace"))
 		if err != nil {
 			return err
 		}
 		if workspacesession.Terminal(record.State) {
 			return nativeStaleExecution("The workspace has ended")
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO workspace_relay_tickets
- (digest, workspace_id, session_id, principal_id, subject, support_reason, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, relayTicketDigest(ticket), record.ID, principal.sessionID,
-			principal.principalID, principal.subject, principal.supportReason,
-			formatHubTime(now), formatHubTime(now.Add(workspacesession.TicketLifetime)))
-		if err != nil {
-			return fmt.Errorf("store relay ticket: %w", err)
+		owner, ok := writer.(postgres.RelayActionWriter)
+		if !ok {
+			return workItemStorageUnavailable()
 		}
-		return nil
+		now := s.config.now().UTC()
+		_, err = owner.CreateRelayTicket(ctx, postgres.CreateRelayTicketInput{OrganizationID: scope.organization, ProjectID: scope.project, Digest: relayTicketDigest(ticket), WorkspaceID: record.ID, SessionID: principal.sessionID, PrincipalID: principal.principalID, Subject: principal.subject, SupportReason: principal.supportReason, CreatedAt: now, ExpiresAt: now.Add(workspacesession.TicketLifetime)})
+		return err
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -199,55 +202,49 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, relayTicketDigest(ticket), record.ID, principa
 	})
 }
 
-// redeemedRelayTicket is a ticket that has just been spent.
-type redeemedRelayTicket struct {
-	WorkspaceID   string
-	SessionID     string
-	PrincipalID   string
-	Subject       string
-	SupportReason string
-}
-
-// redeemRelayTicket spends a ticket exactly once. The update is the check: a
-// second connection presenting the same ticket changes no rows and is refused,
-// with no window between reading and marking it spent.
-func redeemRelayTicket(ctx context.Context, tx *sql.Tx, ticket, workspaceID string, now time.Time) (redeemedRelayTicket, error) {
-	digest := relayTicketDigest(ticket)
-	result, err := tx.ExecContext(ctx, `UPDATE workspace_relay_tickets SET redeemed_at = ?
-WHERE digest = ? AND workspace_id = ? AND redeemed_at IS NULL AND julianday(expires_at) > julianday(?)`,
-		formatHubTime(now), digest, workspaceID, formatHubTime(now))
-	if err != nil {
-		return redeemedRelayTicket{}, fmt.Errorf("redeem relay ticket: %w", err)
-	}
-	spent, err := result.RowsAffected()
-	if err != nil {
-		return redeemedRelayTicket{}, fmt.Errorf("count redeemed relay ticket: %w", err)
-	}
-	if spent != 1 {
-		return redeemedRelayTicket{}, nativeNotFound()
-	}
-	var redeemed redeemedRelayTicket
-	err = tx.QueryRowContext(ctx, `SELECT workspace_id, session_id, principal_id, subject, support_reason
-FROM workspace_relay_tickets WHERE digest = ?`, digest).Scan(&redeemed.WorkspaceID, &redeemed.SessionID,
-		&redeemed.PrincipalID, &redeemed.Subject, &redeemed.SupportReason)
-	if errors.Is(err, sql.ErrNoRows) {
-		return redeemedRelayTicket{}, nativeNotFound()
-	}
-	if err != nil {
-		return redeemedRelayTicket{}, fmt.Errorf("read redeemed relay ticket: %w", err)
-	}
-	return redeemed, nil
-}
-
 // sweepRelayTickets drops spent and expired tickets. A ticket is worth 30
 // seconds, so the table is only ever a handful of rows; the sweep is here so
 // that stays true on a hub nobody restarts.
 func (w *workspaceService) sweepRelayTickets(ctx context.Context, now time.Time) error {
-	cutoff := formatHubTime(now.Add(-workspacesession.TicketLifetime))
-	if _, err := w.server.database.db.ExecContext(ctx, `DELETE FROM workspace_relay_tickets
-WHERE julianday(expires_at) <= julianday(?) OR (redeemed_at IS NOT NULL AND julianday(redeemed_at) <= julianday(?))`,
-		formatHubTime(now), cutoff); err != nil {
-		return fmt.Errorf("sweep relay tickets: %w", err)
+	organization := tracker.OrganizationID(w.server.appOrganizationID())
+	w.relay.mu.Lock()
+	after := w.relay.ticketSweepAfter
+	w.relay.mu.Unlock()
+	var page []postgres.RelayTicket
+	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+		owner, ok := reader.(postgres.RelayActionReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		page, err = owner.RelayTicketPage(ctx, after, hubmaintenance.ItemLimit)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if len(page) == 0 {
+		w.relay.mu.Lock()
+		w.relay.ticketSweepAfter = ""
+		w.relay.mu.Unlock()
+		return nil
+	}
+	cutoff := now.Add(-workspacesession.TicketLifetime)
+	for _, ticket := range page {
+		if !ticket.ExpiresAt.After(now) || ticket.RedeemedAt != nil && !ticket.RedeemedAt.After(cutoff) {
+			if err := w.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
+				owner, ok := writer.(postgres.RelayActionWriter)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				return owner.DeleteExpiredRelayTicket(ctx, ticket.Digest, now, cutoff)
+			}); err != nil {
+				return err
+			}
+		}
+		w.relay.mu.Lock()
+		w.relay.ticketSweepAfter = ticket.Digest
+		w.relay.mu.Unlock()
 	}
 	return nil
 }

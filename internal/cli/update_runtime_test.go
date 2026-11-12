@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -23,10 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
-	"github.com/digitaldrywood/detent/internal/toolcache"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -370,15 +366,13 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 	if !runtimeUpdateIdle(context.Background(), project.NewRegistry()) {
 		t.Fatal("runtimeUpdateIdle() with empty registry = false, want true")
 	}
-	t.Run("pending admission maintenance does not block idle adoption", func(t *testing.T) {
-		lookedUp := make(chan struct{}, 1)
-		attempts := &pendingAdmissionMaintenanceStore{lookedUp: lookedUp}
+	t.Run("idle adoption requests restart without draining", func(t *testing.T) {
 		cfg := workflowconfig.Default()
 		cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 		tracked, err := projectfixture.New(project.Config{
 			Project:  globalconfig.Project{ID: "fixture", Workdir: t.TempDir(), Weight: 1},
 			Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
-		}, project.Dependencies{WorkAttempts: attempts, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		}, project.Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -386,7 +380,6 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 		if err := tracked.Start(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		<-lookedUp
 		registry := project.NewRegistry()
 		mustSetProject(t, registry, tracked)
 		gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, []scheduler.ProjectCandidate{{ID: "fixture"}})
@@ -431,170 +424,9 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !executed || updater.Status().State != "restart_requested" {
-			t.Fatalf("pending maintenance blocked adoption: executed=%t status=%+v", executed, updater.Status())
+			t.Fatalf("idle adoption did not request restart: executed=%t status=%+v", executed, updater.Status())
 		}
 	})
-	t.Run("restored completion still owns pending work", func(t *testing.T) {
-		if testing.Short() {
-			t.Skip("durable completion restore integration")
-		}
-		now := time.Now()
-		runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = runtimeStore.Close() })
-		issue := connector.Issue{ID: "completed-provider", State: "In Progress"}
-		attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "fixture", IssueID: issue.ID, WorkerType: "implement", Lane: issue.State, AttemptNumber: 1, StartedAt: now, LeaseExpiresAt: now.Add(time.Hour)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		metadata, err := json.Marshal(map[string]any{"deferred_completion": map[string]any{"schema": 1, "running": orchestrator.Running{Issue: issue, WorkAttemptID: attemptID, Attempt: 1}, "completed_at": now, "deferred_at": now, "fence_retry_at": now.Add(time.Hour)}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := runtimeStore.RecordWorkAttemptHeartbeat(t.Context(), store.WorkAttemptHeartbeat{AttemptID: attemptID, HeartbeatAt: now, LeaseExpiresAt: now.Add(time.Hour), Phase: "completion_deferred", WorkerMetadataJSON: string(metadata)}); err != nil {
-			t.Fatal(err)
-		}
-		cfg := workflowconfig.Default()
-		cfg.Tracker.Kind = workflowconfig.TrackerHubNative
-		tracked, err := projectfixture.New(project.Config{Project: globalconfig.Project{ID: "fixture", Workdir: t.TempDir(), Weight: 1}, Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."}}, project.Dependencies{WorkAttempts: runtimeStore})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := tracked.Start(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			if err := tracked.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
-				t.Error(err)
-			}
-		})
-		registry := project.NewRegistry()
-		if err := registry.Set(tracked); err != nil {
-			t.Fatal(err)
-		}
-		ctx := t.Context()
-		var state orchestrator.State
-		testenv.WaitUntil(t, ctx, func() error {
-			state, err = tracked.Orchestrator().State(ctx)
-			if err != nil {
-				return err
-			}
-			if state.UnsettledWork() == 0 {
-				return errors.New("completion owner was not restored")
-			}
-			return nil
-		})
-		if err != nil || len(state.Snapshot(now).Running) != 0 || state.UnsettledWork() != 1 {
-			t.Fatalf("completion owner unavailable: unsettled=%d err=%v", state.UnsettledWork(), err)
-		}
-		if runtimeUpdateIdle(t.Context(), registry) {
-			t.Fatal("updater treated pending completion as idle")
-		}
-		for _, observation := range []struct {
-			name        string
-			freeBefore  uint64
-			wantEvicted int64
-			pressure    bool
-		}{
-			{name: "no pressure", freeBefore: 25000, wantEvicted: 2000},
-			{name: "pressure", freeBefore: 500, wantEvicted: 2500, pressure: true},
-		} {
-			t.Run(observation.name, func(t *testing.T) {
-				cacheRoot := t.TempDir()
-				cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(cacheRoot, "README"), nil, 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Mkdir(filepath.Join(cacheRoot, "00"), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				output := filepath.Join(cacheRoot, "00", strings.Repeat("a", 64)+"-d")
-				if err := os.WriteFile(output, make([]byte, 2000), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				retained := filepath.Join(cacheRoot, "00", strings.Repeat("b", 64)+"-d")
-				if err := os.WriteFile(retained, make([]byte, 500), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				warm := now.Add(-4 * time.Hour)
-				if err := os.Chtimes(retained, warm, warm); err != nil {
-					t.Fatal(err)
-				}
-				aged := now.Add(-26 * time.Hour)
-				if err := os.Chtimes(output, aged, aged); err != nil {
-					t.Fatal(err)
-				}
-				candidate := scheduler.ProjectCandidate{ID: "fixture"}
-				gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, []scheduler.ProjectCandidate{candidate})
-				if err != nil {
-					t.Fatal(err)
-				}
-				managed := &runnerBuildCache{cache: cache, root: cacheRoot}
-				observations := 0
-				volume := func(root string) (uint64, uint64, error) {
-					if root != cacheRoot {
-						t.Fatalf("observed unrelated cache volume: %s", root)
-					}
-					observations++
-					if observations == 1 {
-						return observation.freeBefore, 100000, nil
-					}
-					return 25000, 100000, nil
-				}
-				if err := managed.trimForVolume(ctx, toolcache.Policy{MaxBytes: 1000}, now, volume); err != nil {
-					t.Fatalf("deferred publication blocked quiescent cache reclamation: %v", err)
-				}
-				if observations != 2 {
-					t.Fatalf("cache volume observations=%d, want before and after", observations)
-				}
-				if report := managed.observe(); report == nil || report.SizeEvictedBytes != observation.wantEvicted || report.RetainedBytes > 1000 {
-					t.Fatalf("quiescent cache did not reclaim to budget during publication hold: %+v", report)
-				}
-				if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("reclaimed cache output still exists: %v", err)
-				}
-				_, retainedErr := os.Stat(retained)
-				if observation.pressure {
-					if !errors.Is(retainedErr, os.ErrNotExist) {
-						t.Fatalf("pressure retained reclaimable cache entry: %v", retainedErr)
-					}
-				} else if retainedErr != nil {
-					t.Fatalf("no-pressure maintenance removed within-budget entry: %v", retainedErr)
-				}
-				state, err = tracked.Orchestrator().State(ctx)
-				if err != nil || state.UnsettledWork() != 1 {
-					t.Fatalf("cache maintenance altered completion custody: unsettled=%d err=%v", state.UnsettledWork(), err)
-				}
-				slot, acquired, err := gate.TryAcquire(ctx, candidate, scheduler.SlotRequest{State: "Todo"}, now)
-				if err != nil || !acquired {
-					t.Fatalf("dispatch remained paused after cache reclamation: acquired=%t err=%v", acquired, err)
-				}
-				if err := gate.Release(slot); err != nil {
-					t.Fatal(err)
-				}
-			})
-		}
-	})
-}
-
-type pendingAdmissionMaintenanceStore struct {
-	configurationAttemptFixture
-	lookedUp chan struct{}
-}
-
-func (s *pendingAdmissionMaintenanceStore) ListLocalAdmittedIssueIDs(context.Context, string) ([]string, error) {
-	select {
-	case s.lookedUp <- struct{}{}:
-	default:
-	}
-	return nil, errors.New("store projections pending maintenance")
 }
 
 func TestRuntimeUpdateIdleReservationBlocksDispatch(t *testing.T) {

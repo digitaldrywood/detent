@@ -22,10 +22,24 @@ func (s *session) ClaimChangeRows(ctx context.Context, project tracker.ProjectID
 		return result, nil
 	}
 	rows, err := s.db.Query(ctx, `WITH requested AS MATERIALIZED (
- SELECT id FROM change_requests WHERE organization_id=$1 AND project_id=$2 AND id=ANY($3::text[])
+ SELECT id,current_version_id FROM change_requests WHERE organization_id=$1 AND project_id=$2 AND id=ANY($3::text[])
 ), evidence AS MATERIALIZED (
  SELECT e.* FROM requested r CROSS JOIN LATERAL (
-  SELECT * FROM change_evidence WHERE organization_id=$1 AND change_id=r.id ORDER BY sequence LIMIT $4
+  SELECT * FROM (
+   (SELECT * FROM change_evidence WHERE organization_id=$1 AND change_id=r.id AND kind<>'review' ORDER BY sequence LIMIT $4)
+   UNION
+   (SELECT * FROM change_evidence WHERE organization_id=$1 AND change_id=r.id AND kind='review'
+    AND (review_kind='' OR version_id IS DISTINCT FROM r.current_version_id AND decision<>'commented') ORDER BY sequence LIMIT $4)
+   UNION
+   (SELECT DISTINCT ON (actor_principal_id) * FROM change_evidence WHERE organization_id=$1 AND change_id=r.id AND version_id=r.current_version_id
+    AND kind='review' AND review_kind='human' AND decision<>'commented' ORDER BY actor_principal_id,sequence DESC LIMIT $4)
+   UNION
+   (SELECT DISTINCT ON (review_kind,review_landing) * FROM change_evidence WHERE organization_id=$1 AND change_id=r.id AND version_id=r.current_version_id
+    AND kind='review' AND review_kind IN ('validator','implementation','security_audit') ORDER BY review_kind,review_landing,sequence DESC)
+   UNION
+   (SELECT DISTINCT ON (review_landing) * FROM change_evidence WHERE organization_id=$1 AND change_id=r.id AND version_id=r.current_version_id
+    AND kind='review' AND review_kind='security_audit' AND decision='changes_requested' ORDER BY review_landing,sequence DESC)
+  ) selected ORDER BY sequence LIMIT $4
  ) e
 ) , audit_runs AS (
  SELECT review_session_id AS audit_session_id FROM evidence WHERE review_kind='security_audit' AND review_session_known AND review_session_id>0

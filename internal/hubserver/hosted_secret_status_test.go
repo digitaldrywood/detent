@@ -25,7 +25,7 @@ func TestHostedSecretStatusTenantPagesAndKeyChecks(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := f.repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-				if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization)}); err != nil {
+				if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization), Deployment: "origin", PublicURL: "https://hub.example.test"}); err != nil {
 					return err
 				}
 				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "test_hub_admin", Name: "Example administrator", Hash: apikey.HashToken(testHubAdminToken), Scope: "admin", Kind: "service", KeyScope: "admin", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}); err != nil {

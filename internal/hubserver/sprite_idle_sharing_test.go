@@ -2,13 +2,13 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"testing"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -17,9 +17,7 @@ import (
 
 func TestSpriteIdleSharingCommands(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organizations(id,name,created_at) VALUES('org_other_sharing','Other organization',?)`, testTimestamp); err != nil {
-		t.Fatal(err)
-	}
+	seedPostgresHubAdmin(t, f.service.config.TenantRepository, f.service, nativeOrganization{ID: "org_other_sharing", Name: "Other organization", Slug: "other-organization"})
 	other := newNativeFixture(t, f.service, "org_other_sharing", "other-organization")
 	contexts := make(chan context.Context, 1)
 	f.service.echo.GET("/api/v2/organizations/:organization/sprite-sharing-context", func(c echo.Context) error {
@@ -134,13 +132,9 @@ func TestHostedSpriteIdleSharingCommand(t *testing.T) {
 			browserHostedStatus(t, response, test.status)
 		})
 	}
-	var sharing bool
-	var revision int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT share_idle_capacity,revision FROM organization_sprite_pools WHERE organization_id='org_browser_preview'`).Scan(&sharing, &revision); err != nil {
-		t.Fatal(err)
-	}
-	if !sharing || revision != 1 {
-		t.Fatalf("sharing=%t revision=%d", sharing, revision)
+	pool := readSpritePoolFixture(t, f.service, "org_browser_preview")
+	if !pool.ShareIdleCapacity || pool.Revision != 1 {
+		t.Fatalf("sharing=%t revision=%d", pool.ShareIdleCapacity, pool.Revision)
 	}
 }
 
@@ -194,26 +188,13 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
 			}
-			now := formatHubTime(f.service.config.now())
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, r.redemption.Hostname, r.enrollment.ID, now, now); err != nil {
-				t.Fatal(err)
-			}
+			createSpriteMemberFixture(t, f, runnerstore.SpriteMembership{AllocationProjectID: f.project.ID, Name: r.redemption.Hostname, ProviderOrganization: "test", EnrollmentID: r.enrollment.ID, State: "enrolled"})
 			setSpriteMemberChecks(t, f, spriteMemberReady)
 			if test.ready {
-				raw, err := json.Marshal(spriteMemberReady)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET local_checks_json=json_set(local_checks_json,?,json(?)) WHERE id=?`, "$."+jsonPathKey(string(other.project.ID)), string(raw), r.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
+				setSpriteRunnerChecksFixture(t, f, r.binding.RunnerID, other.project.ID, spriteMemberReady)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_pools SET share_idle_capacity=? WHERE organization_id=?`, test.sharing, f.project.OrganizationID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE projects SET scheduling_rank=CASE WHEN id=? THEN 1 ELSE 10 END WHERE organization_id=?`, other.project.ID, f.project.OrganizationID); err != nil {
-				t.Fatal(err)
-			}
+			spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET share_idle_capacity=$1 WHERE organization_id=$2`, test.sharing, f.project.OrganizationID)
+			spriteFixtureExec(t, f, `UPDATE projects SET scheduling_rank=CASE WHEN id=$1 THEN 1 ELSE 10 END WHERE organization_id=$2`, other.project.ID, f.project.OrganizationID)
 			var own tracker.NativeIssue
 			if test.ownReady {
 				own = f.create(t, "own ready work")
@@ -227,16 +208,8 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			var rankedIssue tracker.NativeIssue
 			if ranked.service != nil {
 				rankedIssue = ranked.create(t, "highest ranked fallback")
-				raw, err := json.Marshal(spriteMemberReady)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET local_checks_json=json_set(local_checks_json,?,json(?)) WHERE id=?`, "$."+jsonPathKey(string(ranked.project.ID)), string(raw), r.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE projects SET scheduling_rank=0 WHERE id=?`, ranked.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				setSpriteRunnerChecksFixture(t, f, r.binding.RunnerID, ranked.project.ID, spriteMemberReady)
+				spriteFixtureExec(t, f, `UPDATE projects SET scheduling_rank=0 WHERE organization_id=$1 AND id=$2`, f.project.OrganizationID, ranked.project.ID)
 			}
 			if test.budget == "provider" {
 				report := capacityReport(f.service.config.now())
@@ -274,15 +247,13 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			if test.ownReady && test.budget != "own monthly" && landing.service == nil {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, own, "own")), http.StatusOK)
 			}
-			allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			allocation, err := readSpriteAllocationFixture(t, f, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 			if err != nil || allocation.DesiredCount != 1 || allocation.AllocatedCount != 1 {
 				t.Fatalf("allocation changed: %+v %v", allocation, err)
 			}
 			if test.status == http.StatusOK && !test.managed && landing.service == nil {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE leases SET released_at=? WHERE machine_id=?`, now, r.binding.MachineID); err != nil {
-					t.Fatal(err)
-				}
-				placement, err := readOrganizationPlacementSnapshot(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID}, f.service.config.now())
+				spriteFixtureExec(t, f, `UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND machine_id=$3`, f.service.config.now(), f.project.OrganizationID, r.binding.MachineID)
+				placement, err := f.service.readOrganizationPlacementSnapshot(t.Context(), nativeScope{organization: f.project.OrganizationID}, f.service.config.now())
 				if err != nil || placement.SpriteFree != 1 || placement.Provisionable != 0 {
 					t.Fatalf("idle sharing provisioned extra capacity: %+v %v", placement, err)
 				}

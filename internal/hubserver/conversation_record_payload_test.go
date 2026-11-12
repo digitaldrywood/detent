@@ -2,120 +2,162 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func TestConversationRecordPayloadsNeverInline(t *testing.T) {
 	f := newConversationFixture(t)
-	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+	ctx := conversationObjectIOContext(t, f.store.contents.(*conversationContentFixture))
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	record := f.record(f.owner, "payloads", now)
+	if err := f.createRecord(ctx, &record); err != nil {
 		t.Fatal(err)
 	}
-	f.store.contents.(*conversationContentFixture).onIO = func() error {
-		if f.store.db.Stats().InUse != 0 {
-			return errors.New("object I/O held the writer connection")
-		}
-		return nil
-	}
-	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-	record := f.create(t, f.record(f.owner, "payloads", now))
+	admin := nativeAttemptTestDatabase(t, f.nativeFixture)
 	t.Run("execution and preferences", func(t *testing.T) {
 		var execution, preferences string
-		if err := f.store.reader.QueryRowContext(t.Context(), "SELECT execution_json,preferences_json FROM conversations WHERE id=?", record.ID).Scan(&execution, &preferences); err != nil {
+		if err := admin.QueryRowContext(ctx, "SELECT execution_json,preferences_json FROM conversations WHERE organization_id=$1 AND id=$2", f.organization, record.ID).Scan(&execution, &preferences); err != nil {
 			t.Fatal(err)
 		}
 		if execution != "{}" || preferences != "{}" {
 			t.Fatalf("inline execution/preferences remain: %s / %s", execution, preferences)
 		}
-		got, err := f.store.readConversationByID(t.Context(), f.store.reader, record.ID)
+		got, err := f.readRecord(ctx, f.project.ID, record.ID)
 		if err != nil || !reflect.DeepEqual(got.Execution, record.Execution) || got.Preferences != record.Preferences.Normalized() {
 			t.Fatalf("execution/preferences round trip changed: %+v, %v", got, err)
 		}
 	})
 	t.Run("question", func(t *testing.T) {
 		question := conversationQuestionRecord{Question: conversation.Question{ID: conversation.NewQuestionID(), ConversationID: record.ID, Status: conversation.QuestionPending, Prompts: []conversation.Prompt{{ID: "prompt", Question: "example question"}}, CreatedAt: now, UpdatedAt: now}}
-		raw, err := questionPayload(question)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ctx := prepareRecordTestPayload(t, f, record, raw)
-		tx := f.tx(t)
-		if err := f.store.upsertQuestion(ctx, tx, question); err != nil {
+		if err := f.upsertQuestion(t, ctx, question); err != nil {
 			t.Fatal(err)
 		}
 		var prompts, answers string
-		if err := tx.QueryRowContext(t.Context(), "SELECT prompts_json,answers_json FROM conversation_questions WHERE id=?", question.ID).Scan(&prompts, &answers); err != nil {
+		if err := admin.QueryRowContext(ctx, "SELECT prompts_json,answers_json FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND id=$3", f.organization, record.ID, question.ID).Scan(&prompts, &answers); err != nil {
 			t.Fatal(err)
 		}
 		if prompts != "[]" || answers != "{}" {
 			t.Fatalf("inline question remains: %s / %s", prompts, answers)
 		}
-		f.commit(t, tx)
-		got, err := f.store.readQuestion(t.Context(), f.store.reader, record.ID, question.ID)
+		got, err := f.readQuestion(ctx, record.ID, question.ID)
 		if err != nil || !reflect.DeepEqual(got.Prompts, question.Prompts) {
 			t.Fatalf("question round trip changed: %+v, %v", got, err)
 		}
 	})
 	t.Run("receipt", func(t *testing.T) {
-		initial, err := json.Marshal(conversation.Receipt{Key: "command", Kind: conversation.CommandMessage, Status: conversation.DeliverySaved, UpdatedAt: now})
-		if err != nil {
+		if _, _, err := f.reserveCommand(t, ctx, record.ID, "command", conversation.CommandMessage, "hash", now); err != nil {
 			t.Fatal(err)
 		}
-		final, err := json.Marshal(conversation.Receipt{Key: "command", Kind: conversation.CommandMessage, Status: conversation.DeliveryDelivered, UpdatedAt: now})
-		if err != nil {
+		if err := f.updateReceipt(t, ctx, record.ID, "command", conversation.Receipt{Key: "command", Kind: conversation.CommandMessage, Status: conversation.DeliveryDelivered, UpdatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
-		ctx := prepareRecordTestPayload(t, f, record, initial, final)
-		tx := f.tx(t)
-		if _, _, err := f.store.reserveCommand(ctx, tx, record.ID, "command", conversation.CommandMessage, "hash", now); err != nil {
-			t.Fatal(err)
-		}
-		if err := f.store.updateReceipt(ctx, tx, record.ID, "command", conversation.Receipt{Key: "command", Kind: conversation.CommandMessage, Status: conversation.DeliveryDelivered, UpdatedAt: now}); err != nil {
-			t.Fatal(err)
-		}
-		var receipt string
-		if err := tx.QueryRowContext(t.Context(), "SELECT receipt_json FROM conversation_commands WHERE conversation_id=?", record.ID).Scan(&receipt); err != nil {
-			t.Fatal(err)
-		}
-		if receipt != "{}" {
-			t.Fatalf("inline receipt remains: %s", receipt)
-		}
-		f.commit(t, tx)
 		var raw, contentID string
-		if err := f.store.reader.QueryRowContext(t.Context(), "SELECT receipt_json,content_attachment_id FROM conversation_commands WHERE conversation_id=? AND key='command'", record.ID).Scan(&raw, &contentID); err != nil {
+		if err := admin.QueryRowContext(ctx, "SELECT receipt_json,content_attachment_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key='command'", f.organization, record.ID).Scan(&raw, &contentID); err != nil {
 			t.Fatal(err)
 		}
-		got, err := f.store.decodeReceipt(t.Context(), f.store.reader, record.ID, raw, contentID)
-		if err != nil || got.Status != conversation.DeliveryDelivered {
+		if raw != "{}" || contentID == "" {
+			t.Fatalf("inline or unpublished receipt remains: %s / %s", raw, contentID)
+		}
+		var got conversationstore.Command
+		if err := f.readTenant(ctx, func(r tenantstore.Reader) error {
+			var err error
+			var found bool
+			got, found, err = r.Command(ctx, record.ID, "command")
+			if err == nil && !found {
+				return corestore.ErrNotFound
+			}
+			return err
+		}); err != nil || got.Receipt.Status != conversation.DeliveryDelivered {
 			t.Fatalf("receipt round trip changed: %+v, %v", got, err)
 		}
 	})
 	t.Run("attachment", func(t *testing.T) {
-		ctx, err := f.store.preparePayload(t.Context(), string(record.OrganizationID), []byte("example"))
+		ref, err := f.store.publishPayload(ctx, string(f.organization), []byte("example"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		tx := f.tx(t)
-		attachment := conversationAttachmentRecord{ID: conversation.NewAttachmentID(), ConversationID: record.ID, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, PrincipalID: record.OwnerPrincipalID, Name: "example.txt", MIME: "text/plain", Size: 7, ArtifactRef: "example-ref", CreatedAt: now}
-		if err := f.store.insertAttachment(ctx, tx, attachment, []byte("example")); err != nil {
+		contentID := contentArchiveID(string(f.organization), ref)
+		expires := now.Add(time.Hour)
+		attachment := conversationstore.Attachment{ID: conversation.NewAttachmentID(), ConversationID: record.ID, OrganizationID: f.organization, ProjectID: f.project.ID, PrincipalID: f.owner, Name: "example.txt", MIME: "text/plain", Size: 7, ArtifactRef: "example-ref", ContentID: contentID, CreatedAt: now, ExpiresAt: &expires}
+		object := conversationstore.ContentObject{OrganizationID: f.organization, ID: contentID, Reference: ref, CreatedAt: now}
+		if err := f.writeTenant(ctx, func(w tenantstore.Writer) error {
+			return w.(conversationstore.AttachmentWriter).CreateConversationAttachment(ctx, attachment, object)
+		}); err != nil {
 			t.Fatal(err)
 		}
-		var content []byte
-		if err := tx.QueryRowContext(t.Context(), "SELECT content FROM conversation_attachment_blobs WHERE artifact_ref=?", attachment.ArtifactRef).Scan(&content); err != sql.ErrNoRows {
-			t.Fatalf("inline attachment remains: %q, %v", content, err)
+		var inline bool
+		if err := admin.QueryRowContext(ctx, "SELECT to_regclass('public.conversation_attachment_blobs') IS NOT NULL").Scan(&inline); err != nil || inline {
+			t.Fatalf("inline attachment table remains: %v, %v", inline, err)
 		}
-		f.commit(t, tx)
-		got, err := f.store.readAttachmentContent(t.Context(), f.store.reader, attachment.ArtifactRef)
+		var stored conversationstore.Attachment
+		var storedObject conversationstore.ContentObject
+		if err := f.readTenant(ctx, func(r tenantstore.Reader) error {
+			var err error
+			stored, err = r.(conversationstore.AttachmentReader).ConversationAttachmentByRef(ctx, f.project.ID, record.ID, attachment.ArtifactRef)
+			if err != nil {
+				return err
+			}
+			storedObject, err = r.ConversationContent(ctx, stored.ContentID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := f.store.contents.ReadContent(ctx, string(f.organization), storedObject.Reference)
 		if err != nil || string(got) != "example" {
 			t.Fatalf("attachment round trip changed: %q, %v", got, err)
 		}
 	})
+}
+
+type conversationIOProbeKey struct{}
+
+func conversationObjectIOContext(t *testing.T, objects *conversationContentFixture, statements ...func(time.Time, string)) context.Context {
+	t.Helper()
+	type span struct{ start, end time.Time }
+	var mu sync.Mutex
+	var spans []span
+	var operations []time.Time
+	marker := new(byte)
+	objects.onContextIO = func(ctx context.Context) error {
+		if ctx.Value(conversationIOProbeKey{}) == marker {
+			mu.Lock()
+			operations = append(operations, time.Now())
+			mu.Unlock()
+		}
+		return nil
+	}
+	ctx := context.WithValue(t.Context(), conversationIOProbeKey{}, marker)
+	ctx = postgres.WithTransactionTiming(ctx, func(name string, start time.Time) {
+		if name == "pg_callback" {
+			mu.Lock()
+			spans = append(spans, span{start, time.Now()})
+			mu.Unlock()
+		}
+	}, statements...)
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(spans) == 0 || len(operations) == 0 {
+			t.Fatalf("missing attributable transaction/object evidence: spans=%d operations=%d", len(spans), len(operations))
+		}
+		for _, operation := range operations {
+			for _, transaction := range spans {
+				if !operation.Before(transaction.start) && !operation.After(transaction.end) {
+					t.Error("object I/O held its operation's PostgreSQL transaction")
+				}
+			}
+		}
+	})
+	return ctx
 }
 
 func prepareRecordTestPayload(t *testing.T, f conversationFixture, record conversationRecord, values ...[]byte) context.Context {
@@ -150,20 +192,4 @@ func prepareTestConversationRecord(t *testing.T, store *conversationStore, recor
 		t.Fatal(err)
 	}
 	return ctx
-}
-
-func mustMarshalConversationExecution(t *testing.T, store *conversationStore, id string, mutate func(*conversation.Execution)) string {
-	t.Helper()
-	record, err := store.readConversationByID(t.Context(), store.reader, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mutate != nil {
-		mutate(&record.Execution)
-	}
-	raw, err := json.Marshal(record.Execution)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(raw)
 }

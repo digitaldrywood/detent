@@ -142,6 +142,20 @@ func (o *Orchestrator) resolveLaneWrite(ctx context.Context, write coordination.
 }
 
 func (o *Orchestrator) observeLane(ctx context.Context, state *State, issue connector.Issue, at time.Time) (store.LaneObservation, provenance.Attribution, error) {
+	canonicalEntry := false
+	if issue.StageUpdatedAt == nil {
+		if reader, ok := o.connector.(connector.CurrentLaneEntryReader); ok && reader != nil {
+			canonicalEntry = true
+			transition, found, err := reader.CurrentLaneEntry(ctx, issue)
+			if err != nil {
+				return store.LaneObservation{}, provenance.Attribution{}, fmt.Errorf("read current lane entry: %w", err)
+			}
+			if found && !transition.EnteredAt.IsZero() {
+				enteredAt := transition.EnteredAt.UTC()
+				issue.StageUpdatedAt, issue.StageUpdatedActor = &enteredAt, transition.Actor
+			}
+		}
+	}
 	unlock := o.lockLaneWrites()
 	defer unlock()
 	if o.laneLedger == nil {
@@ -169,7 +183,7 @@ func (o *Orchestrator) observeLane(ctx context.Context, state *State, issue conn
 			known = true
 		}
 	}
-	if issue.StageUpdatedAt == nil && !known {
+	if issue.StageUpdatedAt == nil && !known && !canonicalEntry {
 		transition := o.trackerIssueStateTransition(ctx, issue)
 		if !transition.EnteredAt.IsZero() {
 			issue.StageUpdatedAt = &transition.EnteredAt

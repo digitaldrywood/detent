@@ -280,7 +280,7 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 		{"final summary", "execution_validation", "data.disposition", "Final summary must be bounded UTF-8 text", func(e *tracker.NativeRunEvent) {
 			e.Data.Disposition = &tracker.NativeDisposition{Status: workpad.StatusComplete, FinalSummary: strings.Repeat("sentinel-private", workpad.MaxFinalSummaryBytes/len("sentinel-private")+1)}
 		}},
-		{"unordered execution metadata", "execution_validation", "data", "Execution metadata requires an ordered event", func(e *tracker.NativeRunEvent) {
+		{"unordered execution metadata", "execution_validation", "data.sequence", "Current run events require a positive sequence", func(e *tracker.NativeRunEvent) {
 			e.Data.Sequence, e.Data.CompletionBody = 0, ""
 		}},
 		{"identity", "execution_validation", "data", "", func(e *tracker.NativeRunEvent) { e.Data.Identity = nil }},

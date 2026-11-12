@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -388,10 +387,6 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 }
 
 func TestTickAutoPromoteHumanReviewIssuesConflictParks(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		reason    string
@@ -415,21 +410,7 @@ func TestTickAutoPromoteHumanReviewIssuesConflictParks(t *testing.T) {
 				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
 				TerminalStates: []string{"Done", "Cancelled"},
 			})
-			path := filepath.Join(t.TempDir(), "history.db")
-			open := func() store.Store {
-				t.Helper()
-				db, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: path})
-				if err != nil {
-					t.Fatal(err)
-				}
-				return db
-			}
-			db := open()
-			defer func() {
-				if err := db.Close(); err != nil {
-					t.Error(err)
-				}
-			}()
+			db := newRuntimeFixture()
 			if _, err := db.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
 				ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID, Identifier: issue.Identifier,
 				PhaseType: store.WorkflowPhaseTypeLane, PhaseName: issue.State, Status: "entered",
@@ -439,12 +420,6 @@ func TestTickAutoPromoteHumanReviewIssuesConflictParks(t *testing.T) {
 			}
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 			for restart := range 2 {
-				if restart == 1 {
-					if err := db.Close(); err != nil {
-						t.Fatal(err)
-					}
-					db = open()
-				}
 				orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: db, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 				state := newState(cfg)
 				for tick := range 3 {
@@ -3338,10 +3313,6 @@ func TestValidatorDiffFetchFailureUsesInstancePath(t *testing.T) {
 }
 
 func TestValidatorRetryDeadlineSurvivesReloadWithOneMaxAttempt(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	issue := connector.Issue{ID: "issue-retry-reload", Identifier: "digitaldrywood/detent#3150",
 		PullRequest: &connector.PullRequest{Number: 3151, BaseSHA: "base", HeadSHA: "head"}}
@@ -3393,10 +3364,6 @@ func (c *validatorDiffFailureConnector) PullRequestValidationDiff(context.Contex
 }
 
 func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()
@@ -5517,10 +5484,6 @@ func TestHandleRunResultRetriesMergeWorkerWhenRunCompletesWithoutTerminalState(t
 }
 
 func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalState(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	// Replays #3445/#3465's recorded worker completion and actual integration,
@@ -5535,15 +5498,8 @@ func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalSta
 		t.Run(tt.name, func(t *testing.T) {
 			now := tt.worker
 			clock := now
-			backend, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "delivery.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := backend.Close(); err != nil {
-					t.Error(err)
-				}
-			})
+			backend := newRuntimeFixture()
+			receipts := &efficiencyRecorderSpy{}
 			cfg := normalizeConfig(Config{
 				MaxConcurrentAgents:   1,
 				FailureRetryBaseDelay: time.Minute,
@@ -5572,14 +5528,14 @@ func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalSta
 				cfg:             cfg,
 				now:             func() time.Time { return clock },
 				workflowMetrics: backend,
-				workAttempts:    backend.(store.WorkAttemptStore),
-				efficiency:      backend,
+				workAttempts:    backend,
+				efficiency:      receipts,
 				connector:       tracker,
 				logger:          slog.New(slog.NewTextHandler(&logs, nil)),
 			}
 			state := newState(cfg)
 			state.MergeTimings[issue.ID] = MergeTiming{EnteredMergingAt: now.Add(-time.Minute), MergeStartedAt: now.Add(-time.Minute)}
-			attemptID, err := backend.(store.WorkAttemptStore).StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID, WorkerType: "codex", Lane: "Merging", AttemptNumber: 1, StartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Hour)})
+			attemptID, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID, WorkerType: "codex", Lane: "Merging", AttemptNumber: 1, StartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Hour)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -5648,7 +5604,7 @@ func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalSta
 				t.Fatalf("logs %q contain terminal_state_missing", logs.String())
 			}
 
-			attempt, err := backend.(store.WorkAttemptStore).WorkAttempt(t.Context(), attemptID)
+			attempt, err := backend.WorkAttempt(t.Context(), attemptID)
 			if err != nil || !attempt.CompletedAt.Equal(now) {
 				t.Fatalf("worker completed=%s err=%v, want %s", attempt.CompletedAt, err, now)
 			}
@@ -5674,32 +5630,12 @@ func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalSta
 			if completed.MergeTiming.TotalMergingSeconds != int64(tt.delivery.Sub(now.Add(-time.Minute))/time.Second) {
 				t.Fatalf("merge duration = %#v", completed.MergeTiming)
 			}
-			write, result, err := backend.(store.LaneLedgerStore).LatestLaneWrite(t.Context(), store.IssueIdentity{ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID})
+			write, result, err := backend.LatestLaneWrite(t.Context(), store.IssueIdentity{ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID})
 			if err != nil || result != "applied" || !write.WrittenAt.Equal(tt.delivery) {
 				t.Fatalf("write=%#v result=%s err=%v", write, result, err)
 			}
-			receipt, err := backend.EfficiencyReceipt(t.Context(), defaultWorkflowMetricsProjectID, issue.ID, "")
-			if err != nil || !receipt.CompletedAt.Equal(tt.delivery) {
-				t.Fatalf("receipt=%#v err=%v", receipt, err)
-			}
-			loc, err := time.LoadLocation("America/Chicago")
-			if err != nil {
-				t.Fatal(err)
-			}
-			midnight := time.Date(2026, 10, 1, 0, 0, 0, 0, loc)
-			days, err := backend.DailyDigest(t.Context(), []store.DailyDigestWindow{
-				{Date: "2026-09-30", From: midnight.AddDate(0, 0, -1), To: midnight},
-				{Date: "2026-10-01", From: midnight, To: midnight.AddDate(0, 0, 1)},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantFirst := int64(0)
-			if tt.delivery.Before(midnight) {
-				wantFirst = 1
-			}
-			if days[0].IssuesShipped != wantFirst || days[1].IssuesShipped != 1-wantFirst {
-				t.Fatalf("calendar shipped=%d/%d", days[0].IssuesShipped, days[1].IssuesShipped)
+			if receipts.calls != 1 || receipts.completion.IssueID != issue.ID || !receipts.completion.CompletedAt.Equal(tt.delivery) {
+				t.Fatalf("receipt completion=%#v calls=%d", receipts.completion, receipts.calls)
 			}
 		})
 	}
@@ -6565,22 +6501,10 @@ func waitForValidatorFailure(t *testing.T, orch *Orchestrator, issue connector.I
 	return validatorStageFailure{}
 }
 
-func openValidatorMemoStore(t *testing.T) store.Store {
+func openValidatorMemoStore(t *testing.T) store.ValidatorMemoStore {
 	t.Helper()
 
-	backend, err := store.Open(context.Background(), store.Config{
-		Backend: store.BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "detent.db"),
-	})
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-	})
-	return backend
+	return &validatorMemoFixture{}
 }
 
 func autoPromoteValidatorTestConfig() Config {

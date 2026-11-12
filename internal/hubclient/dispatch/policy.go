@@ -30,11 +30,7 @@ func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, r
 	}
 	source := s.nativeProject(project)
 	if source == nil {
-		path, err := repositoryPolicyPath(repository)
-		if err != nil {
-			return err
-		}
-		return s.client.Request(ctx, http.MethodPost, path+"/observed", policy.Observation{Descriptor: descriptor, Source: provenance}, nil)
+		return fmt.Errorf("project %q is not mapped to a Hub-native project; generic Hub tracker mode was removed", project)
 	}
 	if s.client.Enrolled() {
 		s.client.SetLocalPolicy(source.NativeClient().ProjectID(), descriptor.ID)

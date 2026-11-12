@@ -14,6 +14,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -66,7 +70,9 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 				prompt += delegation + "\n"
 			}
 			prompt += strings.ReplaceAll(criteria, "## ", "### ")
-			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte(prompt), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: " + repository + "\n  lanes:\n    - {name: Todo, role: active}\n    - {name: Backlog, role: holding}\n    - {name: Blocked, role: holding}\n    - {name: Done, role: terminal}\n"), HasConfig: true, ConfigPath: "detent.yaml"})
+			projectConfig := "schema: 1\ntracker:\n  kind: hub_native\n  repository: " + repository + "\n  lanes:\n    - {name: Todo, role: active}\n    - {name: Backlog, role: holding}\n    - {name: Blocked, role: holding}\n    - {name: Done, role: terminal}\n"
+			projectConfig += "    - {name: Triage, role: holding}\n"
+			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte(prompt), Config: []byte(projectConfig), HasConfig: true, ConfigPath: "detent.yaml"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -76,16 +82,25 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository=? WHERE id=?", repository, f.project.ID); err != nil {
+			organization, projectID := f.project.OrganizationID, f.project.ID
+			err = f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), projectID)
+				if err != nil {
+					return err
+				}
+				project.Settings.Repository = repository
+				project.Settings.CheckoutRepository = repository
+				project.Settings.Intake = "manual"
+				_, err = w.UpdateProjectRecord(t.Context(), project)
+				return err
+			})
+			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO repositories (github_node_id, github_owner, github_name, created_at, updated_at) VALUES ('R_example', 'example-org', 'example-project', ?, ?)", testTimestamp, testTimestamp); err != nil {
+			scope, err := f.service.gitHubIntegrationScope(t.Context(), organization, projectID)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=(SELECT id FROM repositories WHERE github_node_id='R_example') WHERE id=?", f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			for number := 12; number <= 13; number++ {
 				evidence := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: fmt.Sprintf("%064x", number), RunID: "123", RunAttempt: "1", JobID: strconv.Itoa(number), JobName: "Verify", RunURL: "https://github.com/" + repository + "/actions/runs/123/attempts/1", HeadSHA: strings.Repeat("a", 40), Conclusion: "failure"}
 				evidence.JobURL = "https://github.com/" + repository + "/actions/jobs/" + evidence.JobID
@@ -105,26 +120,46 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 						return GitHubImportPage{}, errors.New("run verification refused")
 					}
 					if test.stalePolicy {
-						if _, err := f.service.database.db.ExecContext(ctx, "DELETE FROM project_policies WHERE scope=?", string(scope.organization)+"/"+string(scope.project)); err != nil {
-							t.Fatal(err)
+						workflow.Definition.Revision = strings.Repeat("b", 40)
+						replacement, err := config.ResolvePolicy(workflow)
+						if err != nil {
+							return GitHubImportPage{}, err
 						}
+						if replacement.ID == descriptor.ID {
+							t.Fatal("replacement did not change the approved policy ID")
+						}
+						approveHubTestPolicy(t, f.service, f.base+"/policy", replacement)
 					}
 					if test.staleRepository {
-						if _, err := f.service.database.db.ExecContext(ctx, "UPDATE projects SET checkout_repository='other-org/other-project' WHERE id=?", scope.project); err != nil {
-							t.Fatal(err)
+						err := f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+							project, err := w.ProjectRecord(ctx, scope.project)
+							if err != nil {
+								return err
+							}
+							project.Settings.CheckoutRepository = "other-org/other-project"
+							_, err = w.UpdateProjectRecord(ctx, project)
+							return err
+						})
+						if err != nil {
+							return GitHubImportPage{}, err
 						}
 					}
 					return GitHubImportPage{Scheduled: &evidence}, nil
 				})
-				request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: strconv.Itoa(number)}, GitHubIssueURL: snapshot.URL, Labels: []string{"detent:todo", "hotfix"}}
+				labels := []string{"detent:todo", "hotfix"}
 				importReport := func(key string) tracker.NativeIssue {
 					t.Helper()
 					if !test.webhook {
-						request.IdempotencyKey = key
-						response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
-						requireNativeStatus(t, response, http.StatusOK)
-						var issue tracker.NativeIssue
-						decodeHubResponse(t, response, &issue)
+						_, _, sourceNumber, err := tracker.ParseGitHubIssueURL(snapshot.URL)
+						if err != nil {
+							t.Fatal(err)
+						}
+						issue, err := f.service.importGitHubSnapshotRecord(t.Context(), scope, key, tracker.GitHubIssuePreview{
+							URL: snapshot.URL, Number: sourceNumber, ID: snapshot.Provenance.ExternalID,
+						}, snapshot, "Triage", labels)
+						if err != nil {
+							t.Fatal(err)
+						}
 						return issue
 					}
 					payload, err := json.Marshal(map[string]any{
@@ -137,11 +172,15 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					}
 					f.service.config.GitHubWebhookSecret = []byte(testWebhookSecret)
 					requireNativeStatus(t, sendSignedWebhookRequest(t, f.service, key, "issues", string(payload)), http.StatusAccepted)
-					var id string
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE project_id=? AND native_source_key=?", scope.project, "github:"+snapshot.URL).Scan(&id); err != nil {
+					var linked eventstore.LinkedSource
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						linked, err = r.LinkedSourceByURL(t.Context(), scope.project, snapshot.URL)
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
-					issue, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, id)
+					issue, err := f.service.readWorkItem(t.Context(), scope, string(linked.WorkItemID))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -152,13 +191,8 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					if issue.State != "Todo" || issue.Priority == nil || *issue.Priority != 0 || len(issue.IssueContract.ConfirmedSections) != 5 {
 						t.Fatalf("admission = %+v", issue)
 					}
-					var id tracker.WorkItemID
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id=?", issue.WorkItemID).Scan(&id); err != nil {
-						t.Fatal(err)
-					}
-					ok, reason, err := nativeIssueContractClaimable(t.Context(), f.service.database.reader, scope, id)
-					if err != nil || !ok || reason != "" {
-						t.Fatalf("claim contract = %v %q %v", ok, reason, err)
+					if !nativeClaimIssueContractAllowed(nativeClaimPlan{descriptor: descriptor, issue: issue}) {
+						t.Fatal("verified import is not contract-claimable")
 					}
 				} else if issue.State != "Triage" || issue.Priority != nil || len(issue.IssueContract.ConfirmedSections) != 0 {
 					t.Fatalf("untrusted admission = %+v", issue)
@@ -168,17 +202,45 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					if err != nil || contract.Evaluate(nativeContractIssue(issue)).Satisfied() {
 						t.Fatalf("untrusted contract became eligible: %v", err)
 					}
-					var dispatchable bool
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT dispatchable FROM workflow_states WHERE project_id=? AND detent_state=?", scope.project, issue.State).Scan(&dispatchable); err != nil {
+					project, err := f.service.readProjectRecord(t.Context(), scope)
+					if err != nil {
 						t.Fatal(err)
 					}
-					if dispatchable {
-						t.Fatal("untrusted import entered a dispatchable lane")
+					configured := false
+					for _, state := range project.States {
+						if state.Name == issue.State {
+							configured = true
+							if state.Dispatchable {
+								t.Fatal("untrusted import entered a dispatchable lane")
+							}
+						}
 					}
-					var reason string
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT json_extract(data_json,'$.reason') FROM collaboration_events WHERE work_item_id=? AND type='github.imported' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&reason); err != nil {
+					if !configured {
+						t.Fatalf("untrusted issue has unconfigured state %q", issue.State)
+					}
+					var imported eventstore.Event
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+						events, err := r.Events(t.Context(), scope.project, issue.WorkItemID, 0, 4)
+						if err != nil {
+							return err
+						}
+						for _, event := range events {
+							if event.Type == "github.imported" {
+								imported = event
+							}
+						}
+						if imported.ID == "" {
+							return corestore.ErrNotFound
+						}
+						return nil
+					}); err != nil {
 						t.Fatal(err)
 					}
+					event, err := eventstore.NewContent(f.service.runDetailStore()).Event(t.Context(), imported)
+					if err != nil {
+						t.Fatal(err)
+					}
+					reason := event.Data.Reason
 					if !strings.Contains(reason, "Scheduled CI import") {
 						t.Fatalf("missing explicit refusal: %q", reason)
 					}
@@ -195,41 +257,67 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &issue)
 				if test.existingState != "" {
-					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-					if err != nil {
-						t.Fatal(err)
-					}
-					issue.State = test.existingState
-					issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: issue.State, Reason: "user_requested"}, time.Now())
-					if err != nil {
-						tx.Rollback()
-						t.Fatal(err)
-					}
-					if err := tx.Commit(); err != nil {
-						t.Fatal(err)
+					issue = seedScheduledImportOccurrenceState(t, f, scope, issue, test.existingState)
+				}
+				if test.duplicate {
+					search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, tracker.CreateIssue{Body: snapshot.Body}, true)
+					if err != nil || !search.available || len(search.matches) != 1 || search.matches[0].WorkItemID != issue.WorkItemID {
+						t.Fatalf("expected an indexed same-project owner, search=%+v error=%v", search, err)
 					}
 				}
 				if test.duplicate {
 					snapshot.URL = fmt.Sprintf("https://github.com/%s/issues/%d", repository, number+100)
 					snapshot.Provenance.ExternalID += "-duplicate"
-					request.GitHubIssueURL = snapshot.URL
 				}
 				replay := importReport(fmt.Sprintf("%d-repeat", number))
 				if replay.WorkItemID != issue.WorkItemID || replay.State != issue.State || !reflect.DeepEqual(replay.Priority, issue.Priority) || replay.Body != issue.Body {
 					t.Fatalf("replay changed report: %+v", replay)
 				}
 				if test.duplicate {
-					importReport(fmt.Sprintf("%d-third", number))
-					var count int
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=? AND source_key=?", issue.WorkItemID, "github:scheduled:"+evidence.OccurrenceKey).Scan(&count); err != nil {
+					if !replay.PublicationReused {
+						t.Fatal("verified occurrence did not report reuse")
+					}
+					sameKey := importReport(fmt.Sprintf("%d-repeat", number))
+					_, _, sourceNumber, err := tracker.ParseGitHubIssueURL(snapshot.URL)
+					if err != nil {
 						t.Fatal(err)
 					}
-					want := 1
-					if issue.Terminal {
-						want = 0
+					_, err = f.service.importGitHubSnapshotRecord(t.Context(), scope, fmt.Sprintf("%d-repeat", number), tracker.GitHubIssuePreview{
+						URL: snapshot.URL, Number: sourceNumber, ID: snapshot.Provenance.ExternalID,
+					}, snapshot, "Triage", []string{"different-label"})
+					var conflict *nativeError
+					if !errors.As(err, &conflict) || conflict.status != http.StatusConflict {
+						t.Fatalf("different create input reused the receipt: %v", err)
 					}
-					if count != want {
-						t.Fatalf("occurrence comments=%d want=%d", count, want)
+					anotherKey := importReport(fmt.Sprintf("%d-third", number))
+					if !reflect.DeepEqual(sameKey, replay) || anotherKey.WorkItemID != issue.WorkItemID || anotherKey.Revision != issue.Revision {
+						t.Fatalf("repeat changed the verified occurrence owner: same=%+v new=%+v", sameKey, anotherKey)
+					}
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+						_, err := r.LinkedSourceByURL(t.Context(), scope.project, snapshot.URL)
+						if !errors.Is(err, corestore.ErrNotFound) {
+							t.Errorf("reused report created a linked source: %v", err)
+						}
+						originalSource, err := r.LinkedSourceByURL(t.Context(), scope.project, fmt.Sprintf("https://github.com/%s/issues/%d", repository, number))
+						if err != nil || originalSource.WorkItemID != issue.WorkItemID {
+							t.Fatalf("original source binding changed: %+v, %v", originalSource, err)
+						}
+						comments, err := r.Comments(t.Context(), scope.project, issue.WorkItemID, 0, 2)
+						if err != nil {
+							return err
+						}
+						want := 1
+						if issue.Terminal {
+							want = 0
+						}
+						if len(comments) != want {
+							t.Errorf("occurrence comments=%d want=%d", len(comments), want)
+						} else if want == 1 && (comments[0].SourceKey == nil || *comments[0].SourceKey != "github:scheduled:"+evidence.OccurrenceKey) {
+							t.Error("occurrence did not retain the verified source key")
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
 					}
 				}
 				if test.staleRepository || test.stalePolicy {
@@ -238,4 +326,49 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 			}
 		})
 	}
+}
+
+func seedScheduledImportOccurrenceState(t *testing.T, f nativeFixture, scope nativeScope, issue tracker.NativeIssue, state string) tracker.NativeIssue {
+	t.Helper()
+	ctx := t.Context()
+	current, previous, err := f.service.readWorkItemRecord(ctx, scope, string(issue.WorkItemID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = f.service.hydrateCanonicalWorkItemRecord(ctx, current, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.State, issue.Terminal = state, state == "Done"
+	issue.Revision++
+	raw, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{
+		OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision),
+	}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	search, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(ctx, searchstore.Document{
+		OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID),
+		SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt,
+	}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		current.WorkflowStateName = &issue.State
+		if _, err := w.UpdateWorkItem(ctx, current); err != nil {
+			return err
+		}
+		if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
+			return err
+		}
+		return w.PutSearch(ctx, search, current.Revision)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return issue
 }

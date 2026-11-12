@@ -510,6 +510,168 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 			}
 		}
 	})
+	t.Run("catalog_scope_freshness_and_current_authority", func(t *testing.T) {
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			firstID, secondID, otherID := string(org)+"/z-model", string(org)+"/a-model", string(org)+"/other-model"
+			firstReport := providercapacity.Report{Backend: "example", Provider: "example", AccountAlias: "example", Billing: "subscription", MaxConcurrent: 1, Availability: "exhausted", ObservedAt: now, UsageWindows: []providercapacity.UsageWindow{}, Models: []string{firstID, secondID}, ModelDetails: []providercapacity.ModelDetail{{ID: firstID, Label: "Example model", Provider: "model-provider", ReasoningEfforts: []string{"medium", "max"}, DefaultReasoningEffort: "max", Default: true, Legacy: true}}}
+			otherReport := firstReport
+			otherReport.Models, otherReport.ModelDetails = []string{otherID}, []providercapacity.ModelDetail{}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: "prj_catalog_other", Name: "Other project", Slug: "catalog-other", Profile: "native", WorkflowSource: "example", WorkflowSourceRevision: "source", WorkflowObjectKey: new("example/workflow"), StatesObjectKey: new("example/states"), ModelSelectionObjectKey: new("example/models")}); err != nil {
+					return err
+				}
+				for _, row := range []struct {
+					runner  string
+					project tracker.ProjectID
+					report  providercapacity.Report
+				}{{"runner_first", "prj_report", firstReport}, {"runner_second", "prj_catalog_other", otherReport}} {
+					identity, err := w.RunnerIdentity(t.Context(), row.runner)
+					if err != nil {
+						return err
+					}
+					identity.Scope = "projects"
+					if err := w.UpdateRunnerRouting(t.Context(), identity.Revision, identity); err != nil {
+						return err
+					}
+					if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: row.runner, ProjectID: row.project}); err != nil {
+						return err
+					}
+					if err := w.ReplaceRunnerProviderReports(t.Context(), row.runner, []providercapacity.Report{row.report}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			expected[string(org)+"runner_first"] = []providercapacity.Report{firstReport}
+			expected[string(org)+"runner_second"] = []providercapacity.Report{otherReport}
+			for _, tc := range []struct {
+				name     string
+				projects []tracker.ProjectID
+				want     []string
+				change   func(*session) error
+			}{
+				{name: "all_tenant_projects", want: []string{firstID, secondID, otherID}},
+				{name: "empty_projects", projects: []tracker.ProjectID{}, want: []string{}},
+				{name: "selected_project", projects: []tracker.ProjectID{"prj_report"}, want: []string{firstID, secondID}},
+				{name: "other_project", projects: []tracker.ProjectID{"prj_catalog_other"}, want: []string{otherID}},
+				{name: "project_union", projects: []tracker.ProjectID{"prj_catalog_other", "prj_report"}, want: []string{firstID, secondID, otherID}},
+				{name: "unknown_project", projects: []tracker.ProjectID{"prj_missing"}, want: []string{}},
+				{name: "duplicate_model_first_report_wins", want: []string{firstID, secondID}, change: func(s *session) error {
+					report := otherReport
+					report.Models = []string{firstID}
+					return s.ReplaceRunnerProviderReports(t.Context(), "runner_second", []providercapacity.Report{report})
+				}},
+				{name: "organization_runner", projects: []tracker.ProjectID{"prj_report"}, want: []string{firstID, secondID, otherID}, change: func(s *session) error {
+					identity, err := s.RunnerIdentity(t.Context(), "runner_second")
+					if err != nil {
+						return err
+					}
+					identity.Scope = "organization"
+					return s.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
+				}},
+				{name: "withdrawn_runner_grant", projects: []tracker.ProjectID{"prj_report"}, want: []string{}, change: func(s *session) error {
+					return s.DeleteAccessTokenGrant(t.Context(), "runner_first", "prj_report")
+				}},
+				{name: "expired_runner", projects: []tracker.ProjectID{"prj_report"}, want: []string{}, change: func(s *session) error {
+					identity, err := s.RunnerIdentity(t.Context(), "runner_first")
+					if err != nil {
+						return err
+					}
+					identity.ExpiresAt = now
+					return s.UpdateRunnerIdentity(t.Context(), identity)
+				}},
+				{name: "inactive_runner", projects: []tracker.ProjectID{"prj_report"}, want: []string{}, change: func(s *session) error {
+					identity, err := s.RunnerIdentity(t.Context(), "runner_first")
+					if err != nil {
+						return err
+					}
+					identity.State = "draining"
+					return s.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
+				}},
+				{name: "removed_runner", projects: []tracker.ProjectID{"prj_report"}, want: []string{}, change: func(s *session) error {
+					return s.RemoveRunnerIdentity(t.Context(), "runner_first", now)
+				}},
+				{name: "revoked_credential", projects: []tracker.ProjectID{"prj_report"}, want: []string{}, change: func(s *session) error {
+					return s.RevokeAccessCredential(t.Context(), "runner_first", now)
+				}},
+				{name: "expired_credential", projects: []tracker.ProjectID{"prj_report"}, want: []string{}, change: func(s *session) error {
+					return s.RenewAccessCredential(t.Context(), "runner_first", apikey.HashToken("renewed/"+string(org)), "example", now, now)
+				}},
+				{name: "deleted_project", projects: []tracker.ProjectID{"prj_report"}, want: []string{}, change: func(s *session) error {
+					project, err := s.Project(t.Context(), "prj_report")
+					if err != nil {
+						return err
+					}
+					project.DeletedAt = &now
+					_, err = s.UpdateProject(t.Context(), project)
+					return err
+				}},
+				{name: "exact_stale_boundary", projects: []tracker.ProjectID{"prj_report"}, want: []string{}, change: func(s *session) error {
+					report := firstReport
+					report.ObservedAt = now.Add(-providercapacity.MaxAge)
+					return s.ReplaceRunnerProviderReports(t.Context(), "runner_first", []providercapacity.Report{report})
+				}},
+				{name: "just_fresh_boundary", projects: []tracker.ProjectID{"prj_report"}, want: []string{firstID, secondID}, change: func(s *session) error {
+					report := firstReport
+					report.ObservedAt = now.Add(-providercapacity.MaxAge + time.Microsecond)
+					return s.ReplaceRunnerProviderReports(t.Context(), "runner_first", []providercapacity.Report{report})
+				}},
+				{name: "future_report", projects: []tracker.ProjectID{"prj_report"}, want: []string{}, change: func(s *session) error {
+					report := firstReport
+					report.ObservedAt = now.Add(time.Microsecond)
+					return s.ReplaceRunnerProviderReports(t.Context(), "runner_first", []providercapacity.Report{report})
+				}},
+				{name: "expired_capacity_reset_is_not_catalog_authority", projects: []tracker.ProjectID{"prj_report"}, want: []string{firstID, secondID}, change: func(s *session) error {
+					report := firstReport
+					report.ObservedAt, report.ResetAt = now.Add(-time.Second), now.Add(-time.Microsecond)
+					return s.ReplaceRunnerProviderReports(t.Context(), "runner_first", []providercapacity.Report{report})
+				}},
+			} {
+				t.Run(string(org)+"/"+tc.name, func(t *testing.T) {
+					rollback := errors.New("catalog test rollback")
+					err := repository.transaction(t.Context(), org, corestore.Serving, false, func(s *session) error {
+						if tc.change != nil {
+							if err := tc.change(s); err != nil {
+								return err
+							}
+						}
+						probe := &providerBatchProbe{DBTX: s.db}
+						s.db = probe
+						catalog, err := s.RunnerProviderCatalog(t.Context(), tc.projects, now)
+						if err != nil {
+							return err
+						}
+						ids := make([]string, 0, len(catalog))
+						for _, model := range catalog {
+							ids = append(ids, model.ID)
+							if model.ID == firstID && (model.Detail == nil || model.Detail.Label != "Example model" || model.Detail.Provider != "model-provider" || !model.Detail.Default || !model.Detail.Legacy || model.Detail.DefaultReasoningEffort != "max" || !reflect.DeepEqual(model.Detail.ReasoningEfforts, []string{"medium", "max"})) {
+								t.Errorf("catalog detail = %+v", model)
+							}
+							if model.ID != firstID && model.Detail != nil {
+								t.Errorf("identifier-only model acquired detail: %+v", model)
+							}
+						}
+						if !reflect.DeepEqual(ids, tc.want) {
+							t.Errorf("catalog model IDs = %v, want %v", ids, tc.want)
+						}
+						wantStatements := 1
+						if tc.projects != nil && len(tc.projects) == 0 {
+							wantStatements = 0
+						}
+						if probe.statements != wantStatements {
+							t.Errorf("catalog statements = %d, want %d", probe.statements, wantStatements)
+						}
+						return rollback
+					})
+					if !errors.Is(err, rollback) {
+						t.Fatal(err)
+					}
+				})
+			}
+		}
+	})
 	t.Run("empty_replacement", func(t *testing.T) {
 		write(t, "org_first", "runner_first", []providercapacity.Report{}, "", false)
 		check(t)

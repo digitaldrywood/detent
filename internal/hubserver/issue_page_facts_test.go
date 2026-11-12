@@ -1,461 +1,656 @@
 package hubserver
 
 import (
+	"context"
+	"crypto/sha256"
 	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestIssuePageFactsAcrossBackfill(t *testing.T) {
+func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "example-library")
-	type entry struct {
-		scope     nativeScope
-		issue     tracker.NativeIssue
-		commenter string
-	}
-	var entries []entry
-	priority := 2
-	for index, fixture := range []nativeFixture{f, other} {
-		actor := tracker.Actor{Kind: "human", PrincipalID: fmt.Sprintf("example-actor-%d", index)}
-		scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, sourceActor: &actor, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "Filterable issue", Body: issueContractTestSections, Type: "bug", State: "Todo", Labels: []string{"Example-Label", "EXAMPLE-LABEL"}, Assignees: []string{"Example-Assignee", "EXAMPLE-ASSIGNEE"}, Priority: &priority}, f.service.config.now())
-		if err != nil {
-			tx.Rollback()
-			t.Fatal(err)
-		}
-		issue.State = "Done"
-		issue.Revision++
-		issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done", Reason: "example transition", Run: &tracker.NativeRunData{AttemptID: "example-attempt", FencingToken: 4}}, f.service.config.now())
-		if err != nil {
-			tx.Rollback()
-			t.Fatal(err)
-		}
-		commenter := tracker.Actor{Kind: "human", PrincipalID: fmt.Sprintf("example-commenter-%d", index)}
-		commentScope := scope
-		commentScope.sourceActor = &commenter
-		if err := appendNativeHistory(t.Context(), tx, commentScope, string(issue.WorkItemID), "comment.created", tracker.CollaborationData{}, f.service.config.now()); err != nil {
-			tx.Rollback()
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-		entries = append(entries, entry{scope, issue, commenter.PrincipalID})
-	}
-	drainTestNativeBoard(t, f.service)
-	for _, stage := range []string{"typed", "unknown filters", "unknown", "backfilled", "opaque payload differs"} {
-		t.Run(stage, func(t *testing.T) {
-			switch stage {
-			case "unknown filters":
-				for _, statement := range []string{"UPDATE issues SET page_filters_ready=NULL", "UPDATE native_board_items SET page_filters_ready=NULL", "DELETE FROM native_issue_page_filter_values", "DELETE FROM native_board_filter_values", "INSERT INTO native_board_filter_values(work_item_id,kind,value) SELECT i.native_id,v.kind,v.value FROM issues i JOIN issue_filter_values v ON v.issue_id=i.id"} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
-						t.Fatal(err)
-					}
-				}
-			case "unknown":
-				for _, statement := range []string{"UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,page_filters_ready=NULL", "UPDATE collaboration_events SET page_projection_ready=NULL,event_revision=NULL,from_state=NULL,to_state=NULL", "UPDATE native_board_items SET actor_principal_id=NULL,issue_type=NULL,verification_state=NULL,priority=NULL,page_filters_ready=NULL", "DELETE FROM native_board_filter_values", "DELETE FROM native_issue_page_filter_values"} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
-						t.Fatal(err)
-					}
-				}
-			case "backfilled":
-				if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
-					t.Fatal(err)
-				}
-				var unknown int
-				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM issues WHERE actor_principal_id IS NULL OR page_filters_ready IS NULL)+(SELECT count(*) FROM collaboration_events WHERE page_projection_ready IS NULL)+(SELECT count(*) FROM native_board_items WHERE actor_principal_id IS NULL OR page_filters_ready IS NULL)`).Scan(&unknown); err != nil || unknown != 0 {
-					t.Fatalf("unknown=%d err=%v", unknown, err)
-				}
-			case "opaque payload differs":
-				for _, entry := range entries {
-					raw, err := json.Marshal(tracker.Actor{Kind: "integration", PrincipalID: "opaque-actor"})
-					if err != nil {
-						t.Fatal(err)
-					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json=?,labels_json='[]',assignees_json='[]' WHERE native_id=?", string(raw), entry.issue.WorkItemID); err != nil {
-						t.Fatal(err)
-					}
-					card := tracker.NativeBoardCard{Issue: entry.issue}
-					card.Issue.Actor.PrincipalID = "opaque-actor"
-					card.Issue.Type = "change_request"
-					card.Issue.Labels = nil
-					card.Issue.Assignees = nil
-					card.Issue.Priority = nil
-					card.Issue.Verification = nil
-					payload, err := json.Marshal(card)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_items SET record_json=? WHERE work_item_id=?", string(payload), entry.issue.WorkItemID); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			for _, entry := range entries {
-				event := issueEmailEvent{item: string(entries[0].issue.WorkItemID), project: string(entries[0].scope.project), sequence: 100, at: f.service.config.now()}
-				participants, next, err := readIssueEmailParticipants(t.Context(), f.service.database.reader, event, string(entry.issue.WorkItemID), string(entry.scope.organization), "", 10)
-				if err != nil || next != "" || len(participants) != 2 || !participants[entry.issue.Actor.PrincipalID] {
-					t.Fatalf("project %s participants=%v next=%s err=%v", entry.scope.project, participants, next, err)
-				}
-				if filer, exists := participants[entry.commenter]; !exists || filer {
-					t.Fatalf("project %s commenter missing or marked as filer: %v", entry.scope.project, participants)
-				}
-				for _, filter := range []struct {
-					name, value string
-					want        int
-				}{{"created_by", entry.issue.Actor.PrincipalID, 1}, {"type", "bug", 1}, {"verification", "pending", 1}, {"label", "Example-Label", 1}, {"label", "EXAMPLE-LABEL", 1}, {"assignee", "Example-Assignee", 1}, {"assignee", "EXAMPLE-ASSIGNEE", 1}, {"priority", "2", 1}, {"q", "example-label", 1}, {"label", "example-label", 0}, {"assignee", "example-assignee", 0}, {"label", " Example-Label ", 0}, {"assignee", " Example-Assignee ", 0}} {
-					params := url.Values{filter.name: {filter.value}}
-					want := filter.want
-					query, args, err := nativeIssueSelection(entry.scope, params, false)
-					if err != nil {
-						t.Fatal(err)
-					}
-					q, err := prepareNativePageQuery(t.Context(), f.service.database.reader, entry.scope, "", "native_issue_actors", "native_transition_facts", "native_workflow_ranks", "native_board_filter_facts", "native_issue_page_filter_values")
-					if err != nil {
-						t.Fatal(err)
-					}
-					ids, err := nativePageIDs(t.Context(), q, query, args...)
-					if err != nil || len(ids) != want || want == 1 && ids[0] != string(entry.issue.WorkItemID) {
-						t.Errorf("issue %s=%q: ids=%v want=%d err=%v", filter.name, filter.value, ids, want, err)
-					}
-					where, args, err := nativeBoardFilter(entry.scope, params, true)
-					if err != nil {
-						t.Fatal(err)
-					}
-					ids, err = nativePageIDs(t.Context(), q, "SELECT b.work_item_id FROM native_board_items b WHERE "+where, args...)
-					if err != nil || len(ids) != want || want == 1 && ids[0] != string(entry.issue.WorkItemID) {
-						t.Errorf("board %s=%q: ids=%v want=%d err=%v", filter.name, filter.value, ids, want, err)
-					}
-				}
-				for _, filter := range []struct{ name, value string }{{"created_by", entry.issue.Actor.PrincipalID}, {"type", "bug"}, {"label", "Example-Label"}, {"assignee", "Example-Assignee"}, {"reporter", ""}, {"reporter foreign", ""}} {
-					scope := entry.scope
-					params := url.Values{"completed_window": {"1h"}}
-					want := 1
-					if strings.HasPrefix(filter.name, "reporter") {
-						scope.credential.HostedRole = "reporter"
-						if filter.name == "reporter foreign" {
-							scope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "another-actor"}
-							want = 0
-						}
-					} else {
-						params.Set(filter.name, filter.value)
-					}
-					summary, err := readNativeBoardSummary(t.Context(), f.service.database.reader, scope, params, f.service.config.now().Add(time.Second))
-					if err != nil {
-						t.Fatal(err)
-					}
-					if len(summary.Lanes) != want || want == 1 && summary.Lanes[0].Total != 1 || summary.Completed != want || summary.Cancelled != 0 || len(summary.ShippedWindows) != 3 {
-						t.Errorf("%s summary=%+v", filter.name, summary)
-					}
-					for _, window := range summary.ShippedWindows {
-						if window.Shipped != want || window.Cancelled != 0 {
-							t.Errorf("%s window=%+v", filter.name, window)
-						}
-					}
-				}
-				reporter := entry.scope
-				reporter.credential.HostedRole = "reporter"
-				if err := requireReporterItem(t.Context(), f.service.database.reader, reporter, string(entry.issue.WorkItemID)); err != nil {
-					t.Fatal(err)
-				}
-				intruder := tracker.Actor{Kind: "human", PrincipalID: "another-actor"}
-				reporter.sourceActor = &intruder
-				if err := requireReporterItem(t.Context(), f.service.database.reader, reporter, string(entry.issue.WorkItemID)); !errors.Is(err, sql.ErrNoRows) {
-					t.Fatalf("unknown actor authorized: %v", err)
-				}
-				rows, err := f.service.projectIssuePage(t.Context(), f.service.database.reader, mustIssueSelection(t, entry.scope), []any{entry.scope.organization, entry.scope.project}, "", "", entry.scope)
-				if err != nil || len(rows) != 1 || issuePageItem(rows[0]).Position.Lane == 2147483647 {
-					t.Fatalf("lane rows=%v err=%v", rows, err)
-				}
-				issue, _, err := readNativeIssueProjection(t.Context(), f.service.database.reader, entry.scope, string(entry.issue.WorkItemID), true)
-				if err != nil || issue.ClosedAt == nil {
-					t.Fatalf("closed issue=%+v err=%v", issue, err)
-				}
-			}
+	for _, fixture := range []nativeFixture{f, other} {
+		response := performHubAPIRequest(t, fixture.service, http.MethodPost, fixture.base+"/work-items", fixture.token, tracker.CreateIssue{
+			Mutation: tracker.Mutation{IdempotencyKey: "typed-page-facts"}, Title: "Filterable issue", Body: issueContractTestSections, Type: "bug", State: "Done", Priority: new(2),
+			Labels: []string{"Example-Label", "EXAMPLE-LABEL"}, Assignees: []string{"Example-Assignee", "EXAMPLE-ASSIGNEE"},
 		})
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		drainTestNativeBoard(t, fixture.service)
+		if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			stored, err := r.WorkItem(t.Context(), fixture.project.ID, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if stored.ActorKind == nil || *stored.ActorKind != issue.Actor.Kind || stored.ActorPrincipalID == nil || *stored.ActorPrincipalID != issue.Actor.PrincipalID || stored.IssueType != "bug" || stored.Priority == nil || *stored.Priority != 2 {
+				t.Fatalf("typed source facts=%+v actor=%+v", stored, issue.Actor)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, filter := range []struct {
+			name, value string
+			want        int
+		}{
+			{"created_by", issue.Actor.PrincipalID, 1}, {"type", "bug", 1}, {"verification", "pending", 1}, {"q", "example-label", 1},
+			{"label", "Example-Label", 1}, {"label", "EXAMPLE-LABEL", 1}, {"assignee", "Example-Assignee", 1}, {"assignee", "EXAMPLE-ASSIGNEE", 1}, {"priority", "2", 1},
+			{"label", "example-label", 0}, {"assignee", "example-assignee", 0}, {"label", " Example-Label ", 0}, {"assignee", " Example-Assignee ", 0},
+		} {
+			t.Run(string(fixture.project.ID)+"/"+filter.name+"="+filter.value, func(t *testing.T) {
+				response := performHubAPIRequest(t, fixture.service, http.MethodGet, fixture.base+"/work-items?"+url.Values{filter.name: {filter.value}}.Encode(), fixture.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page tracker.NativeIssuePage
+				decodeHubResponse(t, response, &page)
+				if len(page.Items) != filter.want || filter.want == 1 && page.Items[0].WorkItemID != issue.WorkItemID {
+					t.Fatalf("page=%+v want count=%d item=%s", page, filter.want, issue.WorkItemID)
+				}
+				if filter.want == 1 && page.Items[0].ClosedAt == nil {
+					t.Fatalf("Done issue list projection lost closure: %+v", page.Items[0])
+				}
+				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, sourceActor: &issue.Actor}
+				selection, err := boardRecordSelection(scope, url.Values{filter.name: {filter.value}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				selection.Limit = 10
+				if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					rows, err := r.BoardPage(t.Context(), selection)
+					if err != nil {
+						return err
+					}
+					if len(rows) != filter.want || filter.want == 1 && rows[0].WorkItemID != issue.WorkItemID {
+						t.Fatalf("board %s=%q rows=%+v want count=%d", filter.name, filter.value, rows, filter.want)
+					}
+					if filter.want == 1 && (rows[0].Position.Lane == 2147483647 || rows[0].ClosedAt == nil) {
+						t.Fatalf("typed Done issue lost lane or closure: %+v", rows[0])
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+		for _, filter := range []struct{ name, value string }{{"created_by", issue.Actor.PrincipalID}, {"type", "bug"}, {"label", "Example-Label"}, {"assignee", "Example-Assignee"}, {"reporter", ""}, {"reporter foreign", ""}} {
+			scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, sourceActor: &issue.Actor}
+			params := url.Values{}
+			want := 1
+			if strings.HasPrefix(filter.name, "reporter") {
+				scope.credential.HostedRole = "reporter"
+				if filter.name == "reporter foreign" {
+					scope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "another-actor"}
+					want = 0
+				}
+			} else {
+				params.Set(filter.name, filter.value)
+			}
+			selection, err := boardRecordSelection(scope, params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := fixture.service.config.now().Add(time.Second)
+			if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				lanes, err := r.BoardLanes(t.Context(), selection, at)
+				if err != nil {
+					return err
+				}
+				if len(lanes) != want || want == 1 && lanes[0].Total != 1 {
+					t.Fatalf("%s lanes=%+v want=%d", filter.name, lanes, want)
+				}
+				windows, err := r.BoardClosedWindows(t.Context(), selection, []time.Time{at.Add(-time.Hour), at.Add(-24 * time.Hour), at.Add(-7 * 24 * time.Hour)}, at)
+				if err != nil {
+					return err
+				}
+				counts := [3]int64{}
+				for _, window := range windows {
+					if window.State != "Done" || window.Window < 0 || window.Window >= len(counts) {
+						t.Fatalf("%s unexpected shipped/cancelled window=%+v", filter.name, window)
+					}
+					counts[window.Window] += window.Total
+				}
+				if counts != [3]int64{int64(want), int64(want), int64(want)} {
+					t.Fatalf("%s shipped windows=%v want=%d each; cancelled must remain zero", filter.name, counts, want)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reporter := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, sourceActor: &issue.Actor, credential: apiCredential{HostedRole: "reporter"}}
+		if _, _, err := fixture.service.readWorkItemRecord(t.Context(), reporter, string(issue.WorkItemID)); err != nil {
+			t.Fatalf("filer denied own item: %v", err)
+		}
+		reporter.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "another-actor"}
+		_, _, err := fixture.service.readWorkItemRecord(t.Context(), reporter, string(issue.WorkItemID))
+		var denied *nativeError
+		if !errors.As(err, &denied) || denied.status != http.StatusNotFound {
+			t.Fatalf("foreign reporter item authorization=%v want not found", err)
+		}
+		assertIssuePageNotificationParticipants(t, fixture, issue, tracker.Actor{Kind: "human", PrincipalID: "commenter_" + string(issue.WorkItemID)}, true)
 	}
 }
 
-func TestIssuePageFiltersExceedCompoundSelectLimit(t *testing.T) {
+func TestIssuePageFiltersPreservePopulationAndProjectScope(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "example-library")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	var known string
-	want := map[string]bool{}
+	want := map[tracker.ProjectID]map[tracker.NativeWorkItemID]string{}
 	for _, fixture := range []nativeFixture{f, other} {
+		if err := fixture.service.config.TenantRepository.WriteTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			record, err := w.ProjectRecord(t.Context(), fixture.project.ID)
+			if err != nil {
+				return err
+			}
+			record.Settings.DuplicateChallenge = false
+			_, err = w.UpdateProjectRecord(t.Context(), record)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		want[fixture.project.ID] = map[tracker.NativeWorkItemID]string{}
 		for index := range 103 {
 			group := "unknown"
 			if index == 100 {
 				group = "known"
 			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			issue, err := createNativeFixtureIssueTx(t.Context(), tx, nativeScope{organization: scope.organization, project: fixture.project.ID}, tracker.CreateIssue{
-				Title: fmt.Sprintf("Filter population %d", index), Body: issueContractTestSections, State: "Todo",
+			response := performHubAPIRequest(t, fixture.service, http.MethodPost, fixture.base+"/work-items", fixture.token, tracker.CreateIssue{
+				Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("filter-population-%d", index)}, Title: fmt.Sprintf("Filter population %d", index), Body: issueContractTestSections, State: "Todo",
 				Labels:    []string{"Common-Label", "common-label", "label'quote", "label-four", "label-five", group},
 				Assignees: []string{"Common-Assignee", "common-assignee", "assignee'quote", "assignee-four", "assignee-five", group},
-			}, f.service.config.now())
-			if err != nil {
-				tx.Rollback()
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			if fixture.project.ID == scope.project {
-				want[string(issue.WorkItemID)] = true
-				if group == "known" {
-					known = string(issue.WorkItemID)
-				}
-			}
+			})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			want[fixture.project.ID][issue.WorkItemID] = group
 		}
 	}
 	drainTestNativeBoard(t, f.service)
-	for _, stage := range []string{"typed", "unknown filters", "backfilled"} {
-		t.Run(stage, func(t *testing.T) {
-			switch stage {
-			case "unknown filters":
-				for _, statement := range []string{"UPDATE issues SET page_filters_ready=NULL WHERE native_id<>?", "UPDATE native_board_items SET page_filters_ready=NULL WHERE work_item_id<>?"} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), statement, known); err != nil {
+	for _, fixture := range []nativeFixture{f, other} {
+		for _, filter := range []struct{ name, value string }{
+			{"label", "Common-Label"}, {"label", "label'quote"}, {"label", "known"}, {"label", "unknown"},
+			{"assignee", "Common-Assignee"}, {"assignee", "assignee'quote"}, {"assignee", "known"}, {"assignee", "unknown"},
+		} {
+			t.Run(string(fixture.project.ID)+"/"+filter.name+"="+filter.value, func(t *testing.T) {
+				params := url.Values{filter.name: {filter.value}, "limit": {"37"}}
+				seen := map[tracker.NativeWorkItemID]bool{}
+				for {
+					response := performHubAPIRequest(t, fixture.service, http.MethodGet, fixture.base+"/work-items?"+params.Encode(), fixture.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var page tracker.NativeIssuePage
+					decodeHubResponse(t, response, &page)
+					for _, issue := range page.Items {
+						group, ok := want[fixture.project.ID][issue.WorkItemID]
+						if !ok || seen[issue.WorkItemID] || issue.ProjectID != fixture.project.ID || filter.value == "known" && group != "known" || filter.value == "unknown" && group != "unknown" {
+							t.Fatalf("unexpected or duplicate filtered issue=%+v", issue)
+						}
+						seen[issue.WorkItemID] = true
+					}
+					if page.NextCursor == "" {
+						break
+					}
+					params.Set("cursor", page.NextCursor)
+				}
+				count := 103
+				if filter.value == "known" {
+					count = 1
+				} else if filter.value == "unknown" {
+					count = 102
+				}
+				if len(seen) != count {
+					t.Fatalf("filtered count=%d want=%d", len(seen), count)
+				}
+				selection := viewstore.BoardSelection{ProjectID: fixture.project.ID, Limit: 37}
+				if filter.name == "label" {
+					selection.Labels = []string{filter.value}
+				} else {
+					selection.Assignees = []string{filter.value}
+				}
+				seen = map[tracker.NativeWorkItemID]bool{}
+				for {
+					var rows []viewstore.BoardRecord
+					if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						rows, err = r.BoardPage(t.Context(), selection)
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
-				}
-			case "backfilled":
-				for range 5 {
-					if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
-						t.Fatal(err)
+					for _, row := range rows {
+						group, ok := want[fixture.project.ID][row.WorkItemID]
+						if !ok || seen[row.WorkItemID] || row.ProjectID != fixture.project.ID || filter.value == "known" && group != "known" || filter.value == "unknown" && group != "unknown" {
+							t.Fatalf("unexpected or duplicate filtered board row=%+v", row)
+						}
+						seen[row.WorkItemID] = true
 					}
-				}
-			}
-			for _, filter := range []struct{ name, value string }{
-				{"label", "Common-Label"}, {"label", "label'quote"}, {"label", "known"}, {"label", "unknown"},
-				{"assignee", "Common-Assignee"}, {"assignee", "assignee'quote"}, {"assignee", "known"}, {"assignee", "unknown"},
-			} {
-				params := url.Values{filter.name: {filter.value}}
-				selection, args, err := nativeIssueSelection(scope, params, false)
-				if err != nil {
-					t.Fatal(err)
-				}
-				where, boardArgs, err := nativeBoardFilter(scope, params, true)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, surface := range []struct {
-					name, query string
-					args        []any
-				}{{"issues", selection, args}, {"board", "SELECT b.work_item_id FROM native_board_items b WHERE " + where, boardArgs}} {
-					for _, prefix := range []string{"", "WITH ", "WITH RECURSIVE "} {
-						query := surface.query
-						if prefix != "" {
-							query = prefix + "selected AS (" + query + ") SELECT * FROM selected"
-						}
-						q, err := prepareNativePageStatement(t.Context(), f.service.database.reader, scope, "", query)
-						if err != nil {
-							t.Fatal(err)
-						}
-						ids, err := nativePageIDs(t.Context(), q, query, surface.args...)
-						if err != nil {
-							t.Errorf("%s %s=%q %s: %v", surface.name, filter.name, filter.value, prefix, err)
-							continue
-						}
-						count := len(want)
-						switch filter.value {
-						case "known":
-							count = 1
-						case "unknown":
-							count--
-						}
-						if len(ids) != count {
-							t.Errorf("%s %s=%q: count=%d want=%d", surface.name, filter.name, filter.value, len(ids), count)
-						}
-						seen := map[string]bool{}
-						for _, id := range ids {
-							if !want[id] || seen[id] || filter.value == "known" && id != known || filter.value == "unknown" && id == known {
-								t.Errorf("%s %s=%q: unexpected issue %s", surface.name, filter.name, filter.value, id)
-							}
-							seen[id] = true
-						}
+					if len(rows) < selection.Limit {
+						break
 					}
+					position := rows[len(rows)-1].Position
+					selection.After = &position
 				}
-			}
-		})
+				if len(seen) != count {
+					t.Fatalf("board filtered count=%d want=%d", len(seen), count)
+				}
+			})
+		}
 	}
 }
 
-func mustIssueSelection(t *testing.T, scope nativeScope) string {
-	t.Helper()
-	query, _, err := nativeIssueSelection(scope, url.Values{}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return query
-}
-
-func TestIssuePageBackfillOwnsOneRowPerTransaction(t *testing.T) {
-	for _, test := range []struct {
-		name, table, column, family, update string
-	}{
-		{"actors", "issues", "actor_principal_id", "native_issue_actors", "UPDATE ISSUES SET ACTOR_KIND"},
-		{"board facts", "native_board_items", "actor_principal_id", "native_board_filter_facts", "UPDATE NATIVE_BOARD_ITEMS SET ACTOR_PRINCIPAL_ID"},
-		{"issue filters", "issues", "page_filters_ready", "native_issue_page_filter_values", "UPDATE ISSUES SET PAGE_FILTERS_READY"},
-		{"board filters", "native_board_items", "page_filters_ready", "native_board_filter_values", "UPDATE NATIVE_BOARD_ITEMS SET PAGE_FILTERS_READY"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
-			var first tracker.NativeIssue
-			for i := range storageConversionRows + 1 {
-				issue := f.create(t, fmt.Sprintf("backfill item %d", i))
-				if i == 0 {
-					first = issue
-				}
-			}
-			drainTestNativeBoard(t, f.service)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE "+test.table+" SET "+test.column+"=NULL"); err != nil {
-				t.Fatal(err)
-			}
-			count := func() int {
-				t.Helper()
-				var n int
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM "+test.table+" WHERE "+test.column+" IS NULL").Scan(&n); err != nil {
-					t.Fatal(err)
-				}
-				return n
-			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			if strings.Contains(test.name, "filters") {
-				statement := "INSERT INTO native_issue_page_filter_values(issue_id,kind,value) SELECT id,'label','ghost' FROM issues WHERE native_id=?"
-				if test.name == "board filters" {
-					statement = "INSERT INTO native_board_filter_values(work_item_id,kind,value) VALUES(?,'label','ghost')"
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), statement, first.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-				query, err := prepareNativePageQuery(t.Context(), f.service.database.reader, scope, string(first.WorkItemID), test.family)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var stale int
-				if err := query.QueryRowContext(t.Context(), "SELECT count(*) FROM "+test.family+" WHERE value='ghost'").Scan(&stale); err != nil || stale != 0 {
-					t.Fatalf("unknown empty list matched stale filter: count=%d err=%v", stale, err)
-				}
-			}
-			query, err := prepareNativePageQuery(t.Context(), f.service.database.reader, scope, "", test.family)
-			if err != nil {
-				t.Fatalf("pending backfill prevents reads: %v", err)
-			}
-			var got int
-			if err := query.QueryRowContext(t.Context(), "SELECT count(*) FROM "+test.family).Scan(&got); err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(test.name, "filters") && got != storageConversionRows+1 {
-				t.Fatalf("legacy actors=%d", got)
-			}
-			remaining, observed := count(), 0
-			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(statement string, bindings []driver.NamedValue) {
-				if strings.HasPrefix(statement, "SELECT organization_id,project_id,") {
-					args := make([]any, len(bindings))
-					for index, binding := range bindings {
-						args[index] = binding.Value
-					}
-					plan := explainQueryPlan(t, f.service.database.reader, statement, args)
-					if strings.Contains(strings.Join(plan, "\n"), "USE TEMP B-TREE") {
-						t.Fatalf("conversion batch sorts the pending backlog: %v", plan)
-					}
-				}
-				if strings.HasPrefix(strings.ToUpper(statement), test.update) {
-					if committed := count(); committed != remaining {
-						t.Fatalf("backfill wrote a second row before committing: unknown=%d want=%d", committed, remaining)
-					}
-					remaining--
-					observed++
-				}
-			}})
-			for tick, want := range []int{1, 0} {
-				if err := f.service.convertIssuePageFacts(ctx); err != nil {
-					t.Fatal(err)
-				}
-				if got := count(); got != want {
-					t.Fatalf("tick %d unknown=%d want=%d", tick, got, want)
-				}
-			}
-			if observed != storageConversionRows+1 {
-				t.Fatalf("observed writes=%d", observed)
-			}
-			if err := f.service.convertIssuePageFacts(t.Context()); err != nil || count() != 0 {
-				t.Fatalf("completed backfill: %v", err)
-			}
-		})
-	}
-}
-
-func TestBlockerHistoryUsesTypedPageFacts(t *testing.T) {
+func TestBlockerHistoryUsesTypedPostgresFacts(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
-	issue := f.create(t, "Blocker history")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-	ctx := f.service.freshRunDetailContext(t.Context())
-	if err := f.service.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		data, err := marshalNative(tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "opaque reason", Run: &tracker.NativeRunData{AttemptID: "opaque-attempt", FencingToken: 3}})
+	for index := range 2 {
+		issue := f.create(t, fmt.Sprintf("Blocker history %d", index))
+		value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "Persisted reason", Run: &tracker.NativeRunData{AttemptID: "persisted-attempt", FencingToken: 3}}}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			var err error
+			record, err = w.AppendEvent(t.Context(), record)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, stage := range []string{"persisted", "typed facts differ"} {
+			t.Run(fmt.Sprintf("item-%d/%s", index, stage), func(t *testing.T) {
+				revision, from, to := tracker.Revision(2), "Todo", "Done"
+				if stage == "typed facts differ" {
+					revision, from, to = 7, "Backlog", "Cancelled"
+					if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE collaboration_events SET event_revision=$1,from_state=$2,to_state=$3 WHERE organization_id=$4 AND project_id=$5 AND work_item_id=$6 AND id=$7", revision, from, to, f.project.OrganizationID, f.project.ID, issue.WorkItemID, record.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/history?view=blockers", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page tracker.Page[tracker.CollaborationEvent]
+				decodeHubResponse(t, response, &page)
+				found := slices.IndexFunc(page.Items, func(event tracker.CollaborationEvent) bool { return event.ID == record.ID })
+				if found < 0 {
+					t.Fatalf("persisted transition absent from blocker history=%+v", page)
+				}
+				data := page.Items[found].Data
+				if data.Revision != revision || data.FromState != from || data.ToState != to || data.Reason != "Persisted reason" || data.Run == nil || data.Run.AttemptID != "persisted-attempt" || data.Run.FencingToken != 3 {
+					t.Fatalf("blocker data=%+v want revision=%d from=%s to=%s", data, revision, from, to)
+				}
+			})
+		}
+		if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE collaboration_events SET attempt_id=$1 WHERE organization_id=$2 AND project_id=$3 AND work_item_id=$4 AND id=$5", "corrupt-attempt", f.project.OrganizationID, f.project.ID, issue.WorkItemID, record.ID); err != nil {
+			t.Fatal(err)
+		}
+		var corrupted eventstore.Event
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			rows, err := r.Events(t.Context(), f.project.ID, issue.WorkItemID, record.Sequence-1, 1)
+			if err != nil {
+				return err
+			}
+			if len(rows) != 1 || rows[0].ID != record.ID || rows[0].AttemptID != "corrupt-attempt" {
+				t.Fatalf("typed event mismatch fixture did not persist: %+v", rows)
+			}
+			corrupted = rows[0]
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := f.service.readTenantCollaborationEvent(t.Context(), corrupted); !errors.Is(err, artifact.ErrIntegrity) {
+			t.Fatalf("corrupt typed attempt was served: %v", err)
+		}
+	}
+}
+
+func TestIssuePageHistoryReadsPastStorageConversionBudget(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), f.project.ID)
 		if err != nil {
 			return err
 		}
-		actor, err := marshalNative(scope.actor())
-		if err != nil {
-			return err
+		for index := range storageConversionRows + 3 {
+			record.States = append(record.States, tracker.NativeState{Name: fmt.Sprintf("example-state-%d", index), Dispatchable: true, Transitions: []string{"Todo"}})
 		}
-		var sequence int64
-		if err := tx.QueryRowContext(ctx, "UPDATE issues SET event_sequence=event_sequence+1 WHERE native_id=? RETURNING event_sequence", issue.WorkItemID).Scan(&sequence); err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) VALUES(?,?,?,?,?,'workflow.transitioned',1,?,?,?)", newNativeID("event"), scope.organization, scope.project, issue.WorkItemID, sequence, actor, data, formatHubTime(now))
+		_, err = w.UpdateProjectRecord(t.Context(), record)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, stage := range []string{"unknown", "typed"} {
-		t.Run(stage, func(t *testing.T) {
-			if stage == "unknown" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET page_projection_ready=NULL WHERE work_item_id=?", issue.WorkItemID); err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		record, err := r.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		for index := range storageConversionRows + 3 {
+			name := fmt.Sprintf("example-state-%d", index)
+			if !slices.ContainsFunc(record.States, func(state tracker.NativeState) bool { return state.Name == name }) {
+				t.Fatalf("workflow rank population truncated before %s: states=%d", name, len(record.States))
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	actor := tracker.Actor{Kind: "human", PrincipalID: strings.Repeat("example-", 1500)}
+	for itemIndex := range 2 {
+		name := fmt.Sprintf("Large event history %d", itemIndex)
+		state := fmt.Sprintf("example-state-%d", storageConversionRows+2)
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + name}, Title: name, Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: state})
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		drainTestNativeBoard(t, f.service)
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			rows, err := r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: f.project.ID, WorkItemIDs: []tracker.NativeWorkItemID{issue.WorkItemID}, Limit: 1})
+			if err != nil {
+				return err
+			}
+			if len(rows) != 1 || rows[0].WorkItemID != issue.WorkItemID || rows[0].Position.State != state || rows[0].Position.Lane != len(f.project.States)+storageConversionRows+2 || rows[0].Position.Lane == 2147483647 {
+				t.Fatalf("last workflow state has no usable board rank: %+v", rows)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateLinkedSource(t.Context(), eventstore.LinkedSource{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, URL: fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", itemIndex+1)})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]bool{}
+		transitions := map[string]bool{}
+		through := int64(0)
+		for index := range storageConversionRows + 3 {
+			for _, kind := range []string{"issue.edited", "comment.created", "workflow.transitioned"} {
+				value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now().Add(time.Duration(index) * time.Microsecond), Data: tracker.CollaborationData{Revision: tracker.Revision(index + 2), FromState: "Todo", ToState: "Done", Reason: strings.Repeat("x", 11000)}}
+				if index == storageConversionRows+2 {
+					value.Data.Fields = []string{"title", "body"}
+				}
+				raw, err := json.Marshal(value)
+				if err != nil {
 					t.Fatal(err)
 				}
-			} else {
-				if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
+				record, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, raw)
+				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET event_revision=7,from_state='Backlog',to_state='Cancelled',reason='typed reason',run_attempt_id='typed-attempt',run_fencing_token=9 WHERE work_item_id=? AND type='workflow.transitioned'", issue.WorkItemID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					var err error
+					record, err = w.AppendEvent(t.Context(), record)
+					return err
+				}); err != nil {
 					t.Fatal(err)
+				}
+				through = record.Sequence
+				want[value.ID] = len(value.Data.Fields) != 0
+				if kind == "workflow.transitioned" {
+					transitions[value.ID] = true
 				}
 			}
-			page, err := f.service.readHistory(t.Context(), scope, string(issue.WorkItemID), url.Values{"view": {"blockers"}})
-			if err != nil {
+		}
+		seenTransitions := map[string]bool{}
+		cursor := reportstore.HistoryEventCursor{Through: through}
+		for {
+			var page reportstore.HistoryEventPage
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				page, err = r.(reportstore.HistoryIssuePageReader).ReadHistoryIssueEvents(t.Context(), f.project.ID, issue.WorkItemID, cursor, 37)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
-			data := page.Items[len(page.Items)-1].Data
-			revision, from, to, reason, attempt, fence := tracker.Revision(2), "Todo", "Done", "opaque reason", "opaque-attempt", tracker.FencingToken(3)
-			if stage == "typed" {
-				revision, from, to, reason, attempt, fence = 7, "Backlog", "Cancelled", "typed reason", "typed-attempt", 9
+			for _, event := range page.Events {
+				if !transitions[event.ID] || seenTransitions[event.ID] || event.FromState != "Todo" || event.ToState != "Done" {
+					t.Fatalf("typed transition facts lost source or duplicated history: %+v", event)
+				}
+				seenTransitions[event.ID] = true
 			}
-			if data.Revision != revision || data.FromState != from || data.ToState != to || data.Reason != reason || data.Run == nil || data.Run.AttemptID != attempt || data.Run.FencingToken != fence {
-				t.Fatalf("data=%+v", data)
+			if page.Exhausted {
+				break
 			}
-			events, err := readNativeBlockerHistory(f.service.freshRunDetailContext(t.Context()), f.service.database.reader, scope, issue, tracker.NativeAttempt{})
-			if err != nil || events[len(events)-1].Data.Revision != revision {
-				t.Fatalf("events=%v err=%v", events, err)
+			if page.After <= cursor.After {
+				t.Fatalf("typed transition page did not advance: before=%+v page=%+v", cursor, page)
+			}
+			cursor.After = page.After
+		}
+		if len(seenTransitions) != storageConversionRows+3 {
+			t.Fatalf("typed transition facts=%d want=%d", len(seenTransitions), storageConversionRows+3)
+		}
+		params := url.Values{"limit": {"17"}}
+		seen := map[string]bool{}
+		lateEdit := false
+		for {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/history?"+params.Encode(), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page tracker.Page[tracker.CollaborationEvent]
+			decodeHubResponse(t, response, &page)
+			for _, event := range page.Items {
+				if event.Type == "issue.created" {
+					continue
+				}
+				edited, ok := want[event.ID]
+				if !ok || seen[event.ID] || event.AggregateID != issue.WorkItemID || event.ProjectID != f.project.ID {
+					t.Fatalf("unexpected or duplicate history event=%+v", event)
+				}
+				if event.Actor.PrincipalID != actor.PrincipalID || event.Data.Reason != strings.Repeat("x", 11000) || edited && (!slices.Contains(event.Data.Fields, "title") || !slices.Contains(event.Data.Fields, "body")) {
+					t.Fatalf("history data lost after page boundary=%+v", event)
+				}
+				lateEdit = lateEdit || edited
+				seen[event.ID] = true
+			}
+			if page.NextCursor == "" {
+				break
+			}
+			params.Set("cursor", page.NextCursor)
+		}
+		if len(seen) != len(want) || !lateEdit {
+			t.Fatalf("history count=%d want=%d late edit=%t", len(seen), len(want), lateEdit)
+		}
+		assertIssuePageNotificationParticipants(t, f, issue, actor, true)
+		for editIndex, fields := range []struct{ title, body string }{{"Native title", "Native body" + issueContractTestSections}, {issue.Title, issue.Body}} {
+			response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("ownership-%d", editIndex)}, ExpectedRevision: issue.Revision, Title: &fields.title, Body: &fields.body})
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &issue)
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				source, err := r.LinkedSource(t.Context(), f.project.ID, issue.WorkItemID)
+				if err == nil && (!source.TitleOwned || !source.BodyOwned) {
+					t.Fatalf("native edit command lost persistent ownership: %+v", source)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func assertIssuePageNotificationParticipants(t *testing.T, f nativeFixture, issue tracker.NativeIssue, commenter tracker.Actor, createComment bool) {
+	t.Helper()
+	roles := map[string]bool{}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		for index, actor := range []tracker.Actor{issue.Actor, commenter} {
+			digest := sha256.Sum256([]byte(actor.PrincipalID))
+			user := fmt.Sprintf("page_participant_%x", digest[:8])
+			if _, err := w.AccessCredential(t.Context(), actor.PrincipalID); errors.Is(err, corestore.ErrNotFound) {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: actor.PrincipalID, Name: "Example participant " + actor.PrincipalID, Hash: fmt.Sprintf("%x", digest), Scope: "operator", Kind: "personal", ProjectAccess: "selected", CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()}); err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			}
+			member, err := w.AccessMember(t.Context(), user)
+			if errors.Is(err, corestore.ErrNotFound) {
+				member = accessstore.Member{OrganizationID: f.project.OrganizationID, UserID: user, Email: user + "@example.test", MembershipID: "membership_" + user, Role: "member", Active: true, PrincipalID: actor.PrincipalID, NotifyIssues: true, CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()}
+				if err := w.CreateAccessMember(t.Context(), member); err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			}
+			if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: f.project.OrganizationID, UserID: user, ProjectID: f.project.ID}); err != nil {
+				return err
+			}
+			roles[member.Email] = index == 0
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	appendEvent := func(kind string, actor tracker.Actor) eventstore.Event {
+		t.Helper()
+		value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Done"}}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			var err error
+			record, err = w.AppendEvent(t.Context(), record)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return record
+	}
+	if createComment {
+		appendEvent("comment.created", commenter)
+	}
+	event := appendEvent("workflow.transitioned", tracker.Actor{Kind: "machine", PrincipalID: "notification-example"})
+	owner, ok := f.service.config.TenantRepository.(accountstore.NotificationRepository)
+	if !ok {
+		t.Fatal("PostgreSQL issue notification owner is unavailable")
+	}
+	for after := int64(0); after < event.Sequence-1; {
+		var earlier []eventstore.Event
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			earlier, err = r.Events(t.Context(), f.project.ID, issue.WorkItemID, after, 100)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(earlier) == 0 {
+			t.Fatalf("events before sequence %d ended at %d", event.Sequence, after)
+		}
+		for _, record := range earlier {
+			if record.Sequence >= event.Sequence {
+				break
+			}
+			if done, _, err := owner.QueueNotification(t.Context(), f.project.OrganizationID, record, accountstore.IssueNotice{}, "", false, 256); err != nil || !done {
+				t.Fatalf("advance participants past sequence %d complete=%t error=%v", record.Sequence, done, err)
+			}
+			after = record.Sequence
+		}
+	}
+	complete, _, err := owner.QueueNotification(t.Context(), f.project.OrganizationID, event, accountstore.IssueNotice{StateTo: "Done", Verify: true}, "", true, 256)
+	if err != nil || !complete {
+		t.Fatalf("queue participants complete=%t error=%v", complete, err)
+	}
+	seen := map[string]bool{}
+	cursor := accountstore.NotificationCursor{}
+	for {
+		page, err := owner.DueNotification(t.Context(), f.project.OrganizationID, event.RecordedAt.Add(time.Hour), cursor, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !page.Found {
+			if !page.More {
+				break
+			}
+			cursor = page.Next
+			continue
+		}
+		if page.Candidate.ProjectID != f.project.ID || page.Candidate.WorkItemID != issue.WorkItemID {
+			t.Fatalf("participant notification crossed project or item: %+v", page.Candidate)
+		}
+		notice, _, claimed, err := owner.ClaimNotification(t.Context(), f.project.OrganizationID, event.RecordedAt.Add(time.Hour), page.Candidate, true)
+		if err != nil || !claimed {
+			t.Fatalf("claim participant notice claimed=%t error=%v", claimed, err)
+		}
+		filer, exists := roles[notice.Email]
+		if !exists || seen[notice.Email] || len(notice.Notices) != 1 || notice.Notices[0].Verify != filer {
+			t.Fatalf("missing participant, duplicate, or incorrect filer role: notice=%+v expected=%v", notice, roles)
+		}
+		seen[notice.Email] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("project %s filer/commenter participants=%v want=%v", f.project.ID, seen, roles)
+	}
+}
+
+func TestBlockerHistoryUsesTypedPageFacts(t *testing.T) {
+	for _, stage := range []string{"unknown", "typed"} {
+		t.Run(stage, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			source := coreWorkItemNeutralFixture(t, f.project.OrganizationID, f.project.ID, false)
+			for _, suffix := range []string{"", "_second"} {
+				item := "wi_core_import" + suffix
+				actor, err := json.Marshal(tracker.Actor{Kind: "human", PrincipalID: "example-owner"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := json.Marshal(tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "opaque reason", Run: &tracker.NativeRunData{AttemptID: "opaque-attempt", FencingToken: 3}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				fields := map[string]any{"id": "event_corrected" + suffix, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": 3, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(actor), "data_json": string(data), "recorded_at": "2026-10-02T01:00:00Z", "event_revision": nil}
+				if stage == "typed" {
+					for name, value := range map[string]any{"page_projection_ready": 1, "event_revision": 7, "from_state": "Backlog", "to_state": "Cancelled", "reason": "typed reason", "run_present": 1, "run_attempt_id": "typed-attempt", "run_fencing_token": 9} {
+						fields[name] = value
+					}
+				}
+				source.add("collaboration_events", fields)
+				source.set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3})
+			}
+			count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()})
+			if err != nil || count != 2 {
+				t.Fatalf("historical blocker source import count=%d error=%v", count, err)
+			}
+			for _, suffix := range []string{"", "_second"} {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/wi_core_import"+suffix+"/history?view=blockers", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page tracker.Page[tracker.CollaborationEvent]
+				decodeHubResponse(t, response, &page)
+				index := slices.IndexFunc(page.Items, func(event tracker.CollaborationEvent) bool { return event.ID == "event_corrected"+suffix })
+				if index < 0 {
+					t.Fatalf("historical blocker transition missing: %+v", page)
+				}
+				revision, from, to, reason, attempt, fence := tracker.Revision(2), "Todo", "Done", "opaque reason", "opaque-attempt", tracker.FencingToken(3)
+				if stage == "typed" {
+					revision, from, to, reason, attempt, fence = 7, "Backlog", "Cancelled", "typed reason", "typed-attempt", 9
+				}
+				data := page.Items[index].Data
+				if data.Revision != revision || data.FromState != from || data.ToState != to || data.Reason != reason || data.Run == nil || data.Run.AttemptID != attempt || data.Run.FencingToken != fence {
+					t.Fatalf("historical blocker corrections lost: %+v", data)
+				}
 			}
 		})
 	}
@@ -465,287 +660,570 @@ func TestIssuePagePullRequestBackfill(t *testing.T) {
 	for _, operation := range []string{"insert", "update", "delete", "concurrent update"} {
 		for _, projection := range []string{"typed", "unknown", "typed URL differs"} {
 			t.Run(operation+"/"+projection, func(t *testing.T) {
-				unknown := projection == "unknown"
-				f := newPullRequestFixture(t, true)
-				linked := f.create(t, "Linked example")
-				unrelated := f.create(t, "Unrelated example")
-				path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes"
-				response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{
-					Mutation: tracker.Mutation{IdempotencyKey: "linked-change"}, Title: "Linked change", LinkedIssues: []tracker.NativeWorkItemID{linked.WorkItemID},
+				now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+				var duringFetch func()
+				calls := 0
+				sourceAt := now
+				number := 1
+				canonicalNumber := number
+				if projection == "typed URL differs" {
+					canonicalNumber = 42
+				}
+				backend := pullRequestRefreshBackend(func(_ context.Context, request ReconcileRequest) (ReconcileSnapshot, error) {
+					calls++
+					if operation == "delete" {
+						return ReconcileSnapshot{}, Permanent(corestore.ErrNotFound)
+					}
+					if !request.TargetedPullRequests || len(request.Hydrations) != 1 || request.Hydrations[0].GitHubNumber != number {
+						t.Fatalf("refresh did not use requested PR identity: %+v", request)
+					}
+					if duringFetch != nil {
+						hook := duringFetch
+						duringFetch = nil
+						hook()
+					}
+					head := request.Hydrations[0].HeadSHA
+					return ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_example", Owner: "example-org", Name: "example-project"}, PullRequests: []PullRequestSource{{Number: number, HeadSHA: head, State: "open", UpdatedAt: sourceAt}}, PullRequestDetails: []PullRequestDetailSource{{Number: number, HeadSHA: head, Checks: &tracker.CheckSummary{}, Reviews: &tracker.ReviewSummary{}}}}, nil
 				})
+				f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, ReconcileBackend: backend})
+				adminValue, ok := projectRecordDatabases.Load(f.service.database.postgres)
+				if !ok {
+					t.Fatal("fixture PostgreSQL administration connection unavailable")
+				}
+				admin := adminValue.(*sql.DB)
+				first, linked, unrelated := f.create(t, "First linked example"), f.create(t, "Second linked example"), f.create(t, "Unrelated example")
+				write := func(fn func(tenantstore.Writer) error) {
+					t.Helper()
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, fn); err != nil {
+						t.Fatal(err)
+					}
+				}
+				write(func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), f.project.ID)
+					if err != nil {
+						return err
+					}
+					project.Settings.CheckoutRepository, project.Settings.RepositoryEnabled = "example-org/example-project", true
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				})
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(first.WorkItemID)+"/changes", f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "linked-change"}, Title: "Linked change", LinkedIssues: []tracker.NativeWorkItemID{linked.WorkItemID}})
 				requireNativeStatus(t, response, http.StatusOK)
-				decodeHubResponse(t, response, &f.change)
-				f.changeFixture.path = path + "/" + f.change.ID
-				reference := tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: pullRequestTestURL}
-				if projection == "typed URL differs" {
-					reference.ID = "42"
-					reference.URL = "https://github.com/owner/repository/pull/42"
-				}
-				version := f.publishReference(t, "linked-version", reference)
-				if projection == "typed URL differs" {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET external_url=? WHERE id=?", pullRequestTestURL, version.ID); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE pull_requests SET issue_id=NULL,updated_at=?,synchronized_at=? WHERE repository_id=?", formatHubTime(f.now), formatHubTime(f.now), f.repositoryID); err != nil {
-					t.Fatal(err)
-				}
-				if operation == "insert" {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM pull_requests WHERE repository_id=?", f.repositoryID); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if unknown {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET external_url=NULL WHERE id=?", version.ID); err != nil {
-						t.Fatal(err)
-					}
-				}
-				drainTestNativeBoard(t, f.service)
-				at := f.now.Add(time.Hour)
-				stamp := formatHubTime(at)
-				var err error
-				switch operation {
-				case "insert":
-					_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO pull_requests(repository_id,github_node_id,github_number,title,url,github_state,head_ref,head_sha,base_ref,source_version,source_updated_at,synchronized_at,created_at,updated_at) VALUES(?,'example-pr',1,'Example pull request',?,'open','feature','abc','develop','v1',?,?,?,?)`, f.repositoryID, pullRequestTestURL, stamp, stamp, stamp, stamp)
-				case "update", "concurrent update":
-					_, err = f.service.database.db.ExecContext(t.Context(), "UPDATE pull_requests SET updated_at=?,synchronized_at=? WHERE repository_id=?", stamp, stamp, f.repositoryID)
-				case "delete":
-					_, err = f.service.database.db.ExecContext(t.Context(), "DELETE FROM pull_requests WHERE repository_id=?", f.repositoryID)
-				}
+				var change tracker.ChangeRequest
+				decodeHubResponse(t, response, &change)
+				input := changeTestInput()
+				input.Repository = "https://github.com/example-org/example-project"
+				input.External = &tracker.ChangeExternalReference{Provider: "github", ID: fmt.Sprint(canonicalNumber), URL: fmt.Sprintf("https://github.com/example-org/example-project/pull/%d", canonicalNumber)}
+				content := eventstore.NewContent(f.service.runDetailStore())
+				source, err := content.PrepareSourceBundle(t.Context(), f.project.OrganizationID, changeTestSource(t, &input))
 				if err != nil {
 					t.Fatal(err)
 				}
-				observed := 0
-				injected := false
-				ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(statement string, _ []driver.NamedValue) {
-					if operation == "concurrent update" && unknown && !injected && statement == issuePageVersionActivityItemQuery {
-						injected = true
-						at = at.Add(time.Minute)
-						stamp = formatHubTime(at)
-						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE pull_requests SET updated_at=?,synchronized_at=? WHERE repository_id=?", stamp, stamp, f.repositoryID); err != nil {
-							t.Fatal(err)
-						}
-					}
-					if strings.HasPrefix(statement, "UPDATE issues SET last_activity_at=") {
-						var committed int
-						if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE native_id IN (?,?) AND last_activity_at=?", f.issue.WorkItemID, linked.WorkItemID, stamp).Scan(&committed); err != nil {
-							t.Fatal(err)
-						}
-						if committed != observed {
-							t.Fatalf("activity backfill did not commit one issue at a time: committed=%d writes=%d", committed, observed)
-						}
-						observed++
-					}
-				}})
-				if err := f.service.convertIssuePageFacts(ctx); err != nil {
+				version := tracker.ChangeVersion{ID: "version_linked", ChangeID: change.ID, Number: 1, ChangeVersionInput: input, Policy: hubTestPolicy(), Actor: first.Actor, CreatedAt: now}
+				version.PolicyID = version.Policy.ID
+				raw, err := json.Marshal(version)
+				if err != nil {
 					t.Fatal(err)
 				}
-				var ready bool
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT external_url IS NOT NULL FROM change_versions WHERE id=?", version.ID).Scan(&ready); err != nil || !ready {
-					t.Fatalf("version URL not backfilled: ready=%t err=%v", ready, err)
+				stored, err := content.PrepareVersion(t.Context(), f.project.OrganizationID, raw)
+				if err != nil {
+					t.Fatal(err)
 				}
-				for _, item := range []tracker.NativeIssue{f.issue, linked} {
-					var dirty bool
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM native_board_dirty WHERE work_item_id=?)", item.WorkItemID).Scan(&dirty); err != nil || !dirty {
-						t.Fatalf("board refresh lost for %s: dirty=%t err=%v", item.WorkItemID, dirty, err)
+				stored.SourceObjectKey, stored.SourceSHA256, stored.SourceBytes, stored.SourceContentBytes = source.Key, source.SHA256, source.CompressedSize, source.UncompressedSize
+				write(func(w tenantstore.Writer) error {
+					if _, err := w.CreateVersion(t.Context(), stored); err != nil {
+						return err
+					}
+					row, err := w.Change(t.Context(), change.ID)
+					if err != nil {
+						return err
+					}
+					row.CurrentVersionID = new(stored.ID)
+					_, err = w.UpdateChange(t.Context(), row)
+					return err
+				})
+				if projection == "typed URL differs" {
+					tx, err := admin.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					if _, err := tx.ExecContext(t.Context(), "ALTER TABLE change_versions DISABLE TRIGGER change_versions_immutable"); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.ExecContext(t.Context(), "UPDATE change_versions SET external_url='https://github.com/example-org/example-project/pull/1' WHERE organization_id=$1 AND change_id=$2 AND id=$3", f.project.OrganizationID, change.ID, stored.ID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.ExecContext(t.Context(), "ALTER TABLE change_versions ENABLE TRIGGER change_versions_immutable"); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						typed, err := r.WorkItemPullRequestVersion(t.Context(), f.project.ID, first.WorkItemID)
+						if err != nil {
+							return err
+						}
+						if typed.External.URL != "https://github.com/example-org/example-project/pull/1" {
+							t.Fatalf("typed URL disagreement fixture lost: %+v", typed)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					canonical, err := content.Version(t.Context(), stored)
+					if err != nil || canonical.External == nil || canonical.External.URL != "https://github.com/example-org/example-project/pull/42" {
+						t.Fatalf("immutable PR identity changed: %+v %v", canonical.External, err)
+					}
+				}
+				request := projectstore.GitHubPullRequestRefresh{GitHubPullRequestRefreshKey: projectstore.GitHubPullRequestRefreshKey{ProjectID: f.project.ID, ChangeID: change.ID, Repository: "example-org/example-project", Number: number}, WorkItemID: linked.WorkItemID, RequestedVersion: stored.ID, RequestedHeadSHA: input.HeadSHA, RequestedAt: now}
+				queue := func() {
+					write(func(w tenantstore.Writer) error {
+						return w.(projectstore.GitHubPullRequestRefreshWriter).RequestGitHubPullRequests(t.Context(), []projectstore.GitHubPullRequestRefresh{request})
+					})
+				}
+				baseline := map[tracker.NativeWorkItemID]tracker.NativeIssue{}
+				for _, item := range []tracker.NativeIssue{first, linked, unrelated} {
+					baseline[item.WorkItemID] = readWorkItem(t, f, item.WorkItemID, "")
+				}
+				drainTestNativeBoard(t, f.service)
+				if operation == "update" {
+					queue()
+					for range 2 {
+						if err := f.service.maintainGitHubPullRequestRefresh(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					}
+					drainTestNativeBoard(t, f.service)
+				}
+				readRefresh := func() projectstore.GitHubPullRequestRefresh {
+					t.Helper()
+					var row projectstore.GitHubPullRequestRefresh
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						row, err = r.(projectstore.GitHubPullRequestRefreshReader).GitHubPullRequestRefresh(t.Context(), request.GitHubPullRequestRefreshKey)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					return row
+				}
+				if projection == "unknown" {
+					if operation != "update" {
+						queue()
+						observation := projectstore.GitHubPullRequestObservation{Repository: request.Repository, Number: number, HeadSHA: request.RequestedHeadSHA, SourceUpdatedAt: now, ObservedAt: now, State: "open"}
+						for range 2 {
+							current := readRefresh()
+							write(func(w tenantstore.Writer) error {
+								return w.(projectstore.GitHubPullRequestRefreshWriter).CompleteGitHubPullRequestRefresh(t.Context(), current, observation)
+							})
+						}
+					}
+					if _, err := admin.ExecContext(t.Context(), "UPDATE github_pull_request_refresh SET observed_request_count=NULL,pending=true,work_item_id=$4 WHERE organization_id=$1 AND project_id=$2 AND change_id=$3", f.project.OrganizationID, f.project.ID, change.ID, max(first.WorkItemID, linked.WorkItemID)); err != nil {
+						t.Fatal(err)
+					}
+					if legacy := readRefresh(); legacy.ObservedRequestCount != 0 || legacy.Observation == nil {
+						t.Fatalf("legacy unknown generation fixture lost: %+v", legacy)
+					}
+					before := readRefresh()
+					beforeCalls := calls
+					if err := f.service.maintainGitHubPullRequestRefresh(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					reset := readRefresh()
+					if calls != beforeCalls || reset.WorkItemID != min(first.WorkItemID, linked.WorkItemID) || reset.RequestCount != before.RequestCount+1 || reset.ObservedRequestCount != 0 || reset.Observation == nil {
+						t.Fatalf("legacy target was not restarted without reusing uncertain generation: %+v", reset)
+					}
+
+				}
+				now = now.Add(time.Hour)
+				sourceAt = now.Add(time.Minute)
+				if projection == "unknown" {
+					sourceAt = now.Add(-time.Minute)
+				}
+				want := now
+				if sourceAt.After(want) {
+					want = sourceAt
+				}
+				if projection != "unknown" {
+					queue()
+				}
+				if operation == "concurrent update" {
+					duringFetch = func() { sourceAt = sourceAt.Add(time.Minute); want = sourceAt; queue() }
+					if err := f.service.maintainGitHubPullRequestRefresh(t.Context()); !errors.Is(err, corestore.ErrRevisionConflict) {
+						t.Fatalf("concurrent request accepted stale completion: %v", err)
+					}
+					for _, item := range []tracker.NativeIssue{first, linked} {
+						if got := readWorkItem(t, f, item.WorkItemID, ""); !got.LastActivityAt.Equal(baseline[item.WorkItemID].LastActivityAt) {
+							t.Fatalf("stale request changed activity: %+v", got)
+						}
+					}
+				}
+				beforeCalls := calls
+				for step := range 2 {
+					err := f.service.maintainGitHubPullRequestRefresh(t.Context())
+					if operation == "delete" && step == 0 {
+						if !errors.Is(err, corestore.ErrNotFound) {
+							t.Fatalf("deleted source completion=%v", err)
+						}
+					} else if err != nil {
+						t.Fatal(err)
+					}
+					committed := 0
+					for _, item := range []tracker.NativeIssue{first, linked} {
+						if got := readWorkItem(t, f, item.WorkItemID, ""); got.LastActivityAt.Equal(want) {
+							committed++
+						}
+					}
+					if operation != "delete" && committed != step+1 {
+						t.Fatalf("activity did not commit one issue per turn: committed=%d step=%d", committed, step)
+					}
+				}
+				if operation != "delete" && calls-beforeCalls != 1 {
+					t.Fatalf("continuation refetched source: calls=%d", calls-beforeCalls)
+				}
+				if operation != "delete" {
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						var attempted []tracker.NativeWorkItemID
+						for range 2 {
+							candidate, err := r.NextBoardCandidate(t.Context(), "", attempted...)
+							if err != nil {
+								return err
+							}
+							if candidate.QueuedAt == nil || candidate.WorkItemID != first.WorkItemID && candidate.WorkItemID != linked.WorkItemID {
+								t.Fatalf("board refresh lost: %+v", candidate)
+							}
+							attempted = append(attempted, candidate.WorkItemID)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
 					}
 				}
 				drainTestNativeBoard(t, f.service)
-				for _, item := range []tracker.NativeIssue{f.issue, linked, unrelated} {
-					want := f.now
+				for _, item := range []tracker.NativeIssue{first, linked, unrelated} {
+					expected := baseline[item.WorkItemID].LastActivityAt
 					if operation != "delete" && item.WorkItemID != unrelated.WorkItemID {
-						want = at
+						expected = want
 					}
-					issue := readWorkItem(t, f.nativeFixture, item.WorkItemID, "")
-					var raw string
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", item.WorkItemID).Scan(&raw); err != nil {
+					issue := readWorkItem(t, f, item.WorkItemID, "")
+					var board viewstore.BoardRecord
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						board, err = r.BoardItem(t.Context(), f.project.ID, item.WorkItemID)
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
-					var card tracker.NativeBoardCard
-					if err := json.Unmarshal([]byte(raw), &card); err != nil {
+					card, err := viewstore.NewContent(f.service.runDetailStore()).BoardRecord(t.Context(), board)
+					if err != nil {
 						t.Fatal(err)
 					}
-					if !issue.LastActivityAt.Equal(want) || !card.Issue.LastActivityAt.Equal(want) || !issue.UpdatedAt.Equal(f.now) {
-						t.Fatalf("issue=%s activity=%s board=%s updated=%s want activity=%s", item.WorkItemID, issue.LastActivityAt, card.Issue.LastActivityAt, issue.UpdatedAt, want)
+					if !issue.LastActivityAt.Equal(expected) || !card.Issue.LastActivityAt.Equal(expected) || !issue.UpdatedAt.Equal(baseline[item.WorkItemID].UpdatedAt) || issue.Revision != baseline[item.WorkItemID].Revision {
+						t.Fatalf("issue=%s activity=%s board=%s updated=%s want activity=%s", item.WorkItemID, issue.LastActivityAt, card.Issue.LastActivityAt, issue.UpdatedAt, expected)
 					}
-				}
-				if unknown && operation != "delete" && observed != 2 {
-					t.Fatalf("backfilled issues=%d want=2", observed)
-				}
-				if unknown && operation == "concurrent update" && !injected {
-					t.Fatal("pull request did not change during backfill preparation")
 				}
 			})
 		}
 	}
 }
-
 func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
-	issue := f.create(t, "Legacy event pages")
+	source := coreWorkItemNeutralFixture(t, f.project.OrganizationID, f.project.ID, false)
+	linked := newCoreNeutralFixture(t, f.project.OrganizationID, "linked_issue_sources")
+	source.tables["linked_issue_sources"] = linked.tables["linked_issue_sources"]
+	source.add("workflow_states", map[string]any{"id": 2, "project_id": f.project.ID, "detent_state": "Done", "terminal": 1})
 	actor := tracker.Actor{Kind: "human", PrincipalID: strings.Repeat("example-", 1500)}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, sourceActor: &actor}
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	actorJSON, err := json.Marshal(actor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(t.Context(), "INSERT INTO linked_issue_sources(work_item_id,source_url,title_supplied,body_supplied) VALUES(?,?,0,0)", issue.WorkItemID, "https://github.com/example-org/example-project/issues/1"); err != nil {
-		t.Fatal(err)
-	}
-	issue.State = "Done"
-	issue.Revision++
-	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, f.service.config.now()); err != nil {
-		t.Fatal(err)
-	}
-	for index := range storageConversionRows + 3 {
-		data := tracker.CollaborationData{Reason: strings.Repeat("x", 11000), FromState: "Todo", ToState: "Done"}
-		if index == storageConversionRows+2 {
-			data.Fields = []string{"title", "body"}
-		}
-		for _, kind := range []string{"issue.edited", "comment.created", "workflow.transitioned"} {
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), kind, data, f.service.config.now()); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	for index := range storageConversionRows + 3 {
-		if _, err := tx.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES(?,?,?,?,?)", scope.project, fmt.Sprintf("example-state-%d", index), "Todo", formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET page_projection_ready=NULL,edited_title=NULL,edited_body=NULL WHERE work_item_id=?", issue.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	for _, family := range []string{"native_transition_facts", "native_workflow_ranks"} {
-		t.Run(family, func(t *testing.T) {
-			q, err := prepareNativePageQuery(t.Context(), f.service.database.reader, scope, "", family)
+	const created = "2026-10-01T00:00:00Z"
+	const updated = "2026-10-02T00:00:00Z"
+	closed := parseTestTime(t, updated)
+	for itemIndex, suffix := range []string{"", "_second"} {
+		item := "wi_core_import" + suffix
+		url := fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", itemIndex+1)
+		var snapshotJSON any
+		if itemIndex == 0 {
+			raw, err := json.Marshal(tracker.GitHubIssueSnapshot{URL: url, Title: "Historical source title", Body: "Historical source body", Provenance: tracker.Provenance{Provider: "github", ExternalID: "historical-source", AuthorID: "source-author", CreatedAt: closed, UpdatedAt: closed, ObservedAt: closed}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			var count int
-			if err := q.QueryRowContext(t.Context(), "SELECT count(*) FROM "+family).Scan(&count); err != nil || count < storageConversionRows+3 {
-				t.Fatalf("facts=%d error=%v", count, err)
-			}
-		})
-	}
-	t.Run("edited ownership", func(t *testing.T) {
-		title, body, err := readNativeEditedOwnership(t.Context(), f.service.database.reader, issue.WorkItemID)
-		if err != nil || !title || !body {
-			t.Fatalf("late edits lost: title=%t body=%t error=%v", title, body, err)
+			snapshotJSON = string(raw)
 		}
-	})
-	t.Run("ownership during conversion", func(t *testing.T) {
-		pages := 0
-		ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(statement string, _ []driver.NamedValue) {
-			if !strings.Contains(statement, "type='issue.edited' AND page_projection_ready IS NULL") {
-				return
-			}
-			pages++
-			if pages == 2 {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET page_projection_ready=1,edited_title=1,edited_body=1 WHERE work_item_id=? AND type='issue.edited' AND sequence=(SELECT max(sequence) FROM collaboration_events WHERE work_item_id=? AND type='issue.edited')", issue.WorkItemID, issue.WorkItemID); err != nil {
+		source.add("linked_issue_sources", map[string]any{"work_item_id": item, "source_url": url, "title_supplied": false, "body_supplied": false, "snapshot_json": snapshotJSON})
+		current := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: tracker.NativeWorkItemID(item), Number: 1 + itemIndex*2, Revision: 2, Profile: "native"}, Title: "Updated title", Body: coreImportBody(), State: "Done", Terminal: true, ClosedAt: &closed, Labels: []string{"needs-review"}, Assignees: []string{"example-assignee"}, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: parseTestTime(t, created), UpdatedAt: closed, LastActivityAt: closed, LinkedSource: &tracker.LinkedIssueSource{URL: url, Status: "pending"}}
+		currentRaw, err := json.Marshal(current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys, values, err := nativeVersionObject(currentRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		currentRaw, err = nativeVersionObjectBytes(keys, values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source.set("collaboration_versions", map[string]string{"record_id": item, "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(currentRaw)})
+		entry, err := json.Marshal(tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		source.add("collaboration_events", map[string]any{"id": "event_entered" + suffix, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": 3, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(actorJSON), "data_json": string(entry), "event_revision": 2, "recorded_at": updated})
+		for index := range storageConversionRows + 3 {
+			for kindIndex, kind := range []string{"issue.edited", "comment.created", "workflow.transitioned"} {
+				data := tracker.CollaborationData{Revision: 2, Reason: strings.Repeat("x", 11000), FromState: "Todo", ToState: "Done"}
+				if index == storageConversionRows+2 {
+					data.Fields = []string{"title", "body"}
+				}
+				raw, err := json.Marshal(data)
+				if err != nil {
 					t.Fatal(err)
 				}
+				fields := map[string]any{"id": fmt.Sprintf("event_late_%d_%d%s", index, kindIndex, suffix), "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": 4 + index*3 + kindIndex, "type": kind, "schema_version": 1, "actor_json": string(actorJSON), "data_json": string(raw), "event_revision": 2, "recorded_at": "2026-10-02T01:00:00Z"}
+				if itemIndex == 1 && index == storageConversionRows+2 && kind == "issue.edited" {
+					fields["page_projection_ready"], fields["edited_title"], fields["edited_body"] = true, true, false
+				}
+				source.add("collaboration_events", fields)
 			}
-		}})
-		title, body, err := readNativeEditedOwnership(ctx, f.service.database.reader, issue.WorkItemID)
-		if err != nil || !title || !body || pages < 2 {
-			t.Fatalf("concurrent conversion lost edit ownership: title=%t body=%t pages=%d error=%v", title, body, pages, err)
 		}
-	})
-	t.Run("participants", func(t *testing.T) {
-		event := issueEmailEvent{item: "other-item", at: f.service.config.now()}
-		participants, next, err := readIssueEmailParticipants(t.Context(), f.service.database.reader, event, string(issue.WorkItemID), string(scope.organization), "", 10)
-		if err != nil || next != "" || len(participants) != 2 {
-			t.Fatalf("participants=%d next=%q error=%v", len(participants), next, err)
+		source.set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3 + 3*(storageConversionRows+3), "workflow_state_id": 2})
+	}
+	input := CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+		t.Fatalf("past-budget historical source import count=%d error=%v", count, err)
+	}
+	drainTestNativeBoard(t, f.service)
+	for itemIndex, suffix := range []string{"", "_second"} {
+		id := tracker.NativeWorkItemID("wi_core_import" + suffix)
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			linked, err := r.LinkedSource(t.Context(), f.project.ID, id)
+			if err != nil {
+				return err
+			}
+			if linked.URL != fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", itemIndex+1) || linked.TitleSupplied || linked.BodySupplied || !linked.TitleOwned || linked.BodyOwned != (itemIndex == 0) {
+				t.Fatalf("late historical edits lost ownership: %+v", linked)
+			}
+			if itemIndex == 0 {
+				snapshot, err := eventstore.NewContent(f.service.runDetailStore()).LinkedIssueSnapshot(t.Context(), f.project.OrganizationID, eventstore.Reference(linked.SnapshotObjectKey, linked.SnapshotSHA256, linked.SnapshotBytes, linked.SnapshotContentBytes))
+				if err != nil || snapshot.URL != linked.URL || snapshot.Title != "Historical source title" || snapshot.Body != "Historical source body" {
+					t.Fatalf("historical snapshot lost: %+v error=%v", snapshot, err)
+				}
+			} else if linked.SnapshotObjectKey != "" {
+				t.Fatalf("pending source invented a snapshot: %+v", linked)
+			}
+			rows, err := r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: f.project.ID, WorkItemIDs: []tracker.NativeWorkItemID{id}, Limit: 1})
+			if err != nil || len(rows) != 1 || rows[0].Position.State != "Done" || rows[0].Position.Lane == 2147483647 {
+				t.Fatalf("historical terminal state has no usable rank: %+v error=%v", rows, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
 		}
-		if _, ok := participants[actor.PrincipalID]; !ok {
-			t.Fatal("legacy commenter missing")
-		}
-	})
-}
-
-func TestLegacyPageFactsExceedSQLiteParameterLimit(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	fact := nativePageFact{columns: "id,actor_kind,actor_principal_id", known: "SELECT id,actor_kind,actor_principal_id FROM main.issues WHERE actor_principal_id IS NOT NULL"}
-	principal := "example'中文\x00principal"
-	for index := range 12000 {
-		fact.values = append(fact.values, []any{index, "human", principal})
-	}
-	q := &nativePageQuery{nativeQueryer: f.service.database.reader, facts: map[string]nativePageFact{"native_issue_actors": fact}}
-	var count int
-	if err := q.QueryRowContext(t.Context(), "SELECT count(*) FROM native_issue_actors WHERE actor_principal_id=?", principal).Scan(&count); err != nil || count != 12000 {
-		t.Fatalf("facts=%d error=%v", count, err)
-	}
-}
-
-func TestLegacyPageReadsSurviveConcurrentConversion(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	for index := range storageConversionRows + 3 {
-		f.create(t, fmt.Sprintf("Concurrent legacy item %d", index))
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_principal_id=NULL"); err != nil {
-		t.Fatal(err)
-	}
-	pages := 0
-	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(statement string, _ []driver.NamedValue) {
-		if !strings.Contains(statement, "FROM main.issues WHERE actor_principal_id IS NULL") {
-			return
-		}
-		pages++
-		if pages == 2 {
-			if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
+		cursor := reportstore.HistoryEventCursor{Through: int64(3 + 3*(storageConversionRows+3))}
+		transitions := map[string]bool{}
+		for {
+			var page reportstore.HistoryEventPage
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				page, err = r.(reportstore.HistoryIssuePageReader).ReadHistoryIssueEvents(t.Context(), f.project.ID, id, cursor, 37)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
+			for _, event := range page.Events {
+				if transitions[event.ID] || event.FromState != "Todo" || event.ToState != "Done" {
+					t.Fatalf("historical transition facts lost or duplicated: %+v", event)
+				}
+				transitions[event.ID] = true
+			}
+			if page.Exhausted {
+				break
+			}
+			if page.After <= cursor.After {
+				t.Fatalf("historical transition page did not advance: %+v", page)
+			}
+			cursor.After = page.After
 		}
-	}})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	q, err := prepareNativePageQuery(ctx, f.service.database.reader, scope, "", "native_issue_actors")
+		if len(transitions) != storageConversionRows+4 {
+			t.Fatalf("historical transition facts=%d want=%d", len(transitions), storageConversionRows+4)
+		}
+		want := map[string]string{}
+		for index := range storageConversionRows + 3 {
+			for kindIndex, kind := range []string{"issue.edited", "comment.created", "workflow.transitioned"} {
+				want[fmt.Sprintf("event_late_%d_%d%s", index, kindIndex, suffix)] = kind
+			}
+		}
+		params := url.Values{"limit": {"17"}}
+		seen := map[string]bool{}
+		lateEdit := false
+		for {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id)+"/history?"+params.Encode(), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page tracker.Page[tracker.CollaborationEvent]
+			decodeHubResponse(t, response, &page)
+			for _, event := range page.Items {
+				if !strings.HasPrefix(event.ID, "event_late_") {
+					continue
+				}
+				if want[event.ID] != event.Type || seen[event.ID] || event.AggregateID != id || event.Actor.PrincipalID != actor.PrincipalID || event.Data.Reason != strings.Repeat("x", 11000) {
+					t.Fatalf("historical event data lost or duplicated: %+v", event)
+				}
+				if event.ID == fmt.Sprintf("event_late_%d_0%s", storageConversionRows+2, suffix) {
+					lateEdit = true
+					if !slices.Contains(event.Data.Fields, "title") || slices.Contains(event.Data.Fields, "body") != (itemIndex == 0) {
+						t.Fatalf("late edit field provenance lost: %+v", event.Data)
+					}
+				}
+				seen[event.ID] = true
+			}
+			if page.NextCursor == "" {
+				break
+			}
+			params.Set("cursor", page.NextCursor)
+		}
+		if len(seen) != 3*(storageConversionRows+3) || !lateEdit {
+			t.Fatalf("historical event population=%d late edit=%t", len(seen), lateEdit)
+		}
+		issue := readWorkItem(t, f, id, "")
+		if issue.ClosedAt == nil || !issue.ClosedAt.Equal(closed) {
+			t.Fatalf("imported immutable closure changed: item=%s closed=%v want=%s", id, issue.ClosedAt, closed)
+		}
+		assertIssuePageNotificationParticipants(t, f, issue, actor, false)
+	}
+	var missingSource eventstore.LinkedSource
+	var missingReceipt eventstore.Receipt
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		missingSource, err = r.LinkedSource(t.Context(), f.project.ID, "wi_core_import")
+		if err != nil {
+			return err
+		}
+		missingReceipt, err = r.Receipt(t.Context(), "production-import", "core-work-item", "41")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "DELETE FROM linked_issue_sources WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", f.project.OrganizationID, f.project.ID, "wi_core_import"); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+		t.Fatalf("missing historical source replay count=%d error=%v", count, err)
+	}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		linked, err := r.LinkedSource(t.Context(), f.project.ID, "wi_core_import")
+		if err != nil {
+			return err
+		}
+		if linked != missingSource {
+			t.Fatalf("replay did not restore verified missing source: %+v", linked)
+		}
+		current, err := r.Receipt(t.Context(), "production-import", "core-work-item", "41")
+		if err == nil && current != missingReceipt {
+			t.Fatalf("missing source repair overwrote import receipt: %+v", current)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := tracker.NativeWorkItemID("wi_core_import_second")
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		linked, err := w.LinkedSource(t.Context(), f.project.ID, id)
+		if err != nil {
+			return err
+		}
+		linked.TitleOwned = false
+		_, err = w.UpdateLinkedSource(t.Context(), linked)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	issue := readWorkItem(t, f, id, "")
+	body := "Current native body" + issueContractTestSections
+	snapshot := tracker.GitHubIssueSnapshot{URL: "https://github.com/example-org/example-project/issues/2", Title: "Newer source title", Body: "Newer source body", Provenance: tracker.Provenance{Provider: "github", ExternalID: "newer-source", AuthorID: "source-author", CreatedAt: closed, UpdatedAt: closed.Add(time.Hour), ObservedAt: closed.Add(time.Hour)}}
+	ref, err := eventstore.NewContent(f.service.runDetailStore()).PrepareLinkedIssueSnapshot(t.Context(), f.project.OrganizationID, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var total, distinct int
-	if err := q.QueryRowContext(t.Context(), "SELECT count(*),count(DISTINCT id) FROM native_issue_actors").Scan(&total, &distinct); err != nil || total != storageConversionRows+3 || distinct != total {
-		t.Fatalf("concurrent conversion lost or duplicated rows: total=%d distinct=%d error=%v", total, distinct, err)
-	}
-	if pages < 2 {
-		t.Fatal("read did not cross a page boundary")
-	}
-}
-
-func TestIssuePageBackfillSkipsFailedRowsAndFamilies(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	for index := range storageConversionRows + 3 {
-		f.create(t, fmt.Sprintf("Failed conversion item %d", index))
-	}
-	drainTestNativeBoard(t, f.service)
-	for _, statement := range []string{"UPDATE issues SET actor_principal_id=NULL,actor_json='[]'", "UPDATE native_board_items SET actor_principal_id=NULL"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	failures := 0
-	for range 6 {
-		if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
-			failures++
-		}
-	}
-	var pending int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_items WHERE actor_principal_id IS NULL").Scan(&pending); err != nil || pending != 0 || failures == 0 {
-		t.Fatalf("failed actors starve board conversion: pending=%d failures=%d error=%v", pending, failures, err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json='{}' WHERE actor_principal_id IS NULL"); err != nil {
+	var receipt eventstore.Receipt
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		receipt, err = r.Receipt(t.Context(), "production-import", "core-work-item", "43")
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	for range 6 {
-		if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
-			t.Fatal(err)
+	interleaved := false
+	store := input.Objects
+	input.Objects = collaborationReadProbe{DetailStore: store, beforeRead: func(ctx context.Context, archived attachment.ArchiveReference) error {
+		if interleaved {
+			return nil
 		}
+		raw, err := store.ReadDetail(ctx, string(f.project.OrganizationID), archived)
+		if err != nil {
+			return err
+		}
+		var event tracker.CollaborationEvent
+		if json.Unmarshal(raw, &event) != nil || event.ID != fmt.Sprintf("event_late_%d_2_second", storageConversionRows+2) {
+			return nil
+		}
+		interleaved = true
+		response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(id), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "native-body-during-import"}, ExpectedRevision: issue.Revision, Body: &body})
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &issue)
+		return f.service.config.TenantRepository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			linked, err := w.LinkedSource(ctx, f.project.ID, id)
+			if err != nil {
+				return err
+			}
+			if linked.TitleOwned || !linked.BodyOwned {
+				t.Fatalf("native body ownership fixture did not persist: %+v", linked)
+			}
+			linked.SnapshotObjectKey, linked.SnapshotSHA256, linked.SnapshotBytes, linked.SnapshotContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
+			_, err = w.UpdateLinkedSource(ctx, linked)
+			return err
+		})
+	}}
+	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 || !interleaved {
+		t.Fatalf("historical ownership replay count=%d interleaved=%t error=%v", count, interleaved, err)
 	}
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE actor_principal_id IS NULL").Scan(&pending); err != nil || pending != 0 {
-		t.Fatalf("repaired actors were never retried: pending=%d error=%v", pending, err)
+	input.Objects = store
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		linked, err := r.LinkedSource(t.Context(), f.project.ID, id)
+		if err != nil {
+			return err
+		}
+		if !linked.TitleOwned || !linked.BodyOwned || linked.SnapshotSHA256 != ref.SHA256 || linked.SnapshotObjectKey != ref.Key || linked.TitleSupplied || linked.BodySupplied {
+			t.Fatalf("replay replaced native ownership or newer snapshot: %+v", linked)
+		}
+		current, err := r.Receipt(t.Context(), "production-import", "core-work-item", "43")
+		if err == nil && current != receipt {
+			t.Fatalf("replay overwrote import receipt: %+v", current)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := readWorkItem(t, f, id, "")
+	if current.Revision != issue.Revision || current.Body != body {
+		t.Fatalf("historical replay replaced a subsequent native edit: %+v", current)
+	}
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE linked_issue_sources SET source_url=$1 WHERE organization_id=$2 AND project_id=$3 AND work_item_id=$4", "https://github.com/example-org/example-project/issues/999", f.project.OrganizationID, f.project.ID, id); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); !errors.Is(err, mutation.ErrConflict) || count != 1 {
+		t.Fatalf("unsupported replay association accepted: count=%d error=%v", count, err)
+	}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		linked, err := r.LinkedSource(t.Context(), f.project.ID, id)
+		if err == nil && (linked.URL != "https://github.com/example-org/example-project/issues/999" || !linked.TitleOwned || !linked.BodyOwned || linked.SnapshotSHA256 != ref.SHA256) {
+			t.Fatalf("failed replay changed unrelated current source state: %+v", linked)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

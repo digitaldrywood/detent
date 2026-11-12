@@ -12,6 +12,9 @@ import (
 )
 
 func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope nativeScope, input attachment.EvidenceRequest) error {
+	if input.LeaseID == "" || input.FencingToken <= 0 {
+		return nativeStaleExecution("Evidence producer lease is no longer current")
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if _, err := s.validateRunnerLeaseTenant(ctx, scope, input.LeaseID, input.FencingToken); err != nil {

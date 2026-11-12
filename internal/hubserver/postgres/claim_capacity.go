@@ -11,7 +11,7 @@ import (
 func (s *session) ClaimCapacityUsage(ctx context.Context, machine, runner string, project tracker.ProjectID, batch string, now time.Time) (claimstore.CapacityUsage, error) {
 	const statement = `WITH active AS (
  SELECT i.project_id,COALESCE(a.runner_id,'') AS runner_id,
- CASE WHEN lower(trim(i.workflow_state_name))='merging' AND p.profile='native'
+ CASE WHEN lower(trim(i.workflow_state_name))='merging' AND p.profile IN ('native','github_compatible')
  AND policy.gate_github_pull_request IS FALSE AND l.session_id ~ '^landing/[^/]+/[^/]+$'
  THEN split_part(l.session_id,'/',2) ELSE '' END AS batch,
  l.lease_id

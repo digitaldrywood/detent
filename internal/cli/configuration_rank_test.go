@@ -24,6 +24,34 @@ import (
 )
 
 func TestConfigurationRankOwnerScopesRevisionsAndReopens(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		client globalconfig.HubClient
+		want   string
+	}{
+		{name: "unmapped installation project", want: "project is not configured for the Hub configuration owner"},
+		{name: "mapped project without Hub", client: globalconfig.HubClient{NativeProjects: map[string]string{"first": "prj_rank_first"}}, want: "project rank requires a configured Hub organization"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := defaultOptions()
+			opts.resolvePath = func(string) (globalconfig.PathResolution, error) {
+				return globalconfig.PathResolution{Path: "global.yaml"}, nil
+			}
+			opts.readOrDefault = func(string) (globalconfig.Config, error) {
+				return globalconfig.Config{Client: tc.client, Projects: []globalconfig.Project{{ID: "first", Priority: 1}}}, nil
+			}
+			writes, signals := 0, 0
+			opts.write = func(string, globalconfig.Config) error { writes++; return nil }
+			opts.signal = func(context.Context, Signal) error { signals++; return nil }
+			_, err := updateProject(t.Context(), "global.yaml", opts, OperationPromoteProject, "first", func(project *globalconfig.Project) error {
+				project.Priority = 2
+				return nil
+			})
+			if err == nil || err.Error() != tc.want || writes != 0 || signals != 0 {
+				t.Fatalf("unowned rank change error=%v writes=%d signals=%d", err, writes, signals)
+			}
+		})
+	}
 	var config hubserver.Config
 	service, _ := clihangPostgresHub(t, "rank-token", nil, clihangPostgresOptions{config: &config, seed: func(repository *postgres.Repository) error {
 		for _, org := range []tracker.OrganizationID{"org_example", "org_other"} {

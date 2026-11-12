@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
 	"slices"
-	"sync"
+	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -32,159 +32,238 @@ type validationAuditCandidate struct {
 }
 
 func (s *Service) readValidationAuditRecord(ctx context.Context, scope nativeScope, item tracker.NativeIssue, attempt *tracker.NativeAttempt) (*tracker.ValidationAudit, error) {
-	audit := &tracker.ValidationAudit{Source: "verified_tenant_collaboration_and_change_records", Coverage: "selected_issue_revision_and_newest_20_current_comment_sequences; current_change_or_selected_attempt_landing; other_project_scheduled_sources_and_change_versions_unavailable; candidate_only; source_inclusion_and_causality_unverified", Partial: true, Unavailable: []string{"project_wide_scheduled_sources", "other_change_versions"}, Occurrences: []tracker.ValidationOccurrence{}}
-	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
-	}
 	if item.OrganizationID != scope.organization || item.ProjectID != scope.project || item.WorkItemID == "" {
 		return nil, artifact.ErrIntegrity
 	}
-	comments := []validationAuditComment{}
-	candidate := validationAuditCandidate{}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	attemptID := ""
+	if attempt != nil {
+		attemptID = attempt.AttemptID
+		if attemptID == "" {
+			return nil, artifact.ErrIntegrity
+		}
+	}
+	return s.readValidationAuditTenant(ctx, scope, string(item.WorkItemID), string(item.WorkItemID), "", attemptID)
+}
+
+func (s *Service) readValidationAuditTenant(ctx context.Context, scope nativeScope, scheduledItem, localItem, changeID, attemptID string) (*tracker.ValidationAudit, error) {
+	audit := &tracker.ValidationAudit{Source: "verified_tenant_collaboration_and_change_records", Coverage: "up_to_40_classified_current_scheduled_records; unresolved_current_sources_unavailable; matching_historical_landing_receipts_and_newest_20_candidate_receipts; candidate_only; source_inclusion_and_causality_unverified", Unavailable: []string{"unlanded_historical_versions", "historical_repository_identity"}, Partial: true, Occurrences: []tracker.ValidationOccurrence{}}
+	if s.config.TenantRepository == nil {
+		return nil, workItemStorageUnavailable()
+	}
+	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, workItemStorageUnavailable()
+	}
+	var localRow corestore.WorkItem
+	var sourceVersions []eventstore.CollaborationVersion
+	sourceItems := map[tracker.NativeWorkItemID]corestore.WorkItem{}
+	sourceComments := map[string]corestore.Comment{}
+	fallback := validationAuditCandidate{}
+	budget := int64(32 * 1024 * 1024)
+	reserved := map[string]int64{}
+	reserve := func(key string, size int64) (bool, error) {
+		if key == "" || size <= 0 {
+			return false, artifact.ErrIntegrity
+		}
+		if previous, ok := reserved[key]; ok {
+			if previous != size {
+				return false, artifact.ErrIntegrity
+			}
+			return true, nil
+		}
+		if size > budget {
+			return false, nil
+		}
+		reserved[key] = size
+		budget -= size
+		return true, nil
+	}
+	unavailable := func(value string) {
+		if !slices.Contains(audit.Unavailable, value) {
+			audit.Unavailable = append(audit.Unavailable, value)
+		}
+		audit.Partial = true
+	}
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
 		project, err := r.Project(ctx, scope.project)
+		if errors.Is(err, corestore.ErrNotFound) && scheduledItem == "" && localItem == "" && changeID == "" && attemptID == "" {
+			unavailable("project_not_found")
+			return nil
+		}
 		if err != nil {
 			return err
 		}
 		if project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		current, err := r.WorkItem(ctx, scope.project, item.WorkItemID)
-		if err != nil {
-			return err
+		if localItem != "" {
+			localRow, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(localItem))
+			if err != nil {
+				return err
+			}
+		} else if attemptID != "" {
+			attempt, err := r.Attempt(ctx, attemptID)
+			if err != nil {
+				return err
+			}
+			localRow, err = r.WorkItemByID(ctx, scope.project, attempt.IssueID)
+			if err != nil {
+				return err
+			}
+		} else if changeID != "" {
+			change, err := r.Change(ctx, changeID)
+			if err != nil {
+				return err
+			}
+			if change.ProjectID != scope.project {
+				return corestore.ErrNotFound
+			}
+			localRow, err = r.WorkItem(ctx, scope.project, change.WorkItemID)
+			if err != nil {
+				return err
+			}
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+		if localRow.NativeID != "" && !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(localRow.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
-		rows, err := r.SelectComments(ctx, scope.project, item.WorkItemID, math.MaxInt64, true, 21)
-		if err != nil {
+		if attemptID != "" {
+			attempt, err := r.Attempt(ctx, attemptID)
+			if err != nil {
+				return err
+			}
+			if attempt.OrganizationID != scope.organization || attempt.IssueID != localRow.ID {
+				return corestore.ErrNotFound
+			}
+		}
+		var change eventstore.Change
+		if changeID != "" {
+			change, err = r.Change(ctx, changeID)
+		} else if localRow.NativeID != "" {
+			change, err = r.LatestChange(ctx, scope.project, localRow.NativeID)
+		} else {
+			err = corestore.ErrNotFound
+		}
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if len(rows) > 20 {
-			rows = rows[:20]
-			audit.Unavailable = append(audit.Unavailable, "older_comment_sequences")
+		if err == nil {
+			if change.OrganizationID != scope.organization || change.ProjectID != scope.project || change.WorkItemID != localRow.NativeID {
+				if changeID != "" {
+					return corestore.ErrNotFound
+				}
+				return artifact.ErrIntegrity
+			}
+			fallback.change = change
+			if change.CurrentVersionID != nil {
+				version, err := r.Version(ctx, change.ID, *change.CurrentVersionID)
+				if err != nil {
+					return err
+				}
+				fallback.version = &version
+			}
 		}
-		keys := make([]eventstore.CollaborationVersionKey, len(rows))
-		for i, row := range rows {
-			keys[i] = eventstore.CollaborationVersionKey{RecordID: row.ID, Revision: row.Revision}
-		}
-		reader, ok := r.(eventstore.CollaborationVersionsReader)
+		reader, ok := r.(eventstore.ScheduledSourceReader)
 		if !ok {
 			return workItemStorageUnavailable()
 		}
-		versions, err := reader.CollaborationVersions(ctx, keys)
+		var partial bool
+		sourceVersions, partial, err = reader.ScheduledSources(ctx, scope.project, tracker.NativeWorkItemID(scheduledItem))
+		if errors.Is(err, eventstore.ErrScheduledSourceIncomplete) {
+			return workItemStorageUnavailable()
+		}
 		if err != nil {
 			return err
 		}
-		byKey := map[eventstore.CollaborationVersionKey]eventstore.CollaborationVersion{}
-		for _, version := range versions {
-			byKey[eventstore.CollaborationVersionKey{RecordID: version.RecordID, Revision: version.Revision}] = version
+		if partial {
+			unavailable("incomplete_scheduled_sources")
 		}
-		budget := int64(32 * 1024 * 1024)
-		for _, row := range rows {
-			version, ok := byKey[eventstore.CollaborationVersionKey{RecordID: row.ID, Revision: row.Revision}]
-			if !ok {
+		selected := sourceVersions[:0]
+		for _, version := range sourceVersions {
+			if version.OrganizationID != scope.organization || version.ProjectID != scope.project || !version.SourceKnown || !version.SourceScheduled {
 				return artifact.ErrIntegrity
 			}
-			if version.PayloadContentBytes > budget {
-				audit.Unavailable = append(audit.Unavailable, "comment_payload_budget")
+			row, ok := sourceItems[version.WorkItemID]
+			if !ok {
+				row, err = r.WorkItem(ctx, scope.project, version.WorkItemID)
+				if err != nil {
+					return err
+				}
+				sourceItems[version.WorkItemID] = row
+			}
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+				unavailable("restricted_scheduled_sources")
+				continue
+			}
+			if version.RecordID == string(version.WorkItemID) {
+				if row.Revision != version.Revision {
+					return artifact.ErrIntegrity
+				}
+			} else {
+				comment, err := r.Comment(ctx, scope.project, version.WorkItemID, version.RecordID)
+				if err != nil {
+					return err
+				}
+				if comment.Revision != version.Revision {
+					return artifact.ErrIntegrity
+				}
+				sourceComments[version.RecordID] = comment
+			}
+			fits, err := reserve(version.PayloadObjectKey, version.PayloadContentBytes)
+			if err != nil {
+				return err
+			}
+			if !fits {
+				unavailable("scheduled_source_payload_budget")
 				break
 			}
-			budget -= version.PayloadContentBytes
-			comments = append(comments, validationAuditComment{row, version})
+			selected = append(selected, version)
 		}
-		var receipt eventstore.LandingReceipt
-		if attempt != nil {
-			receipt, err = r.LandingReceipt(ctx, attempt.AttemptID)
-		} else {
-			receipt, err = r.LatestLandingReceipt(ctx, scope.project, item.WorkItemID)
-		}
-		if err == nil {
-			if receipt.OrganizationID != scope.organization || attempt != nil && receipt.AttemptID != attempt.AttemptID {
-				return artifact.ErrIntegrity
-			}
-			binding, err := r.Attempt(ctx, receipt.AttemptID)
-			if err != nil {
-				return err
-			}
-			if binding.OrganizationID != scope.organization || binding.IssueID != current.ID {
-				return artifact.ErrIntegrity
-			}
-			candidate.binding = &binding
-			if attempt == nil {
-				event, err := r.LatestRunEvent(ctx, scope.project, binding.ID)
-				if err == nil {
-					if event.OrganizationID != scope.organization || event.ProjectID != scope.project || event.WorkItemID != item.WorkItemID || event.AttemptID != binding.ID {
-						return artifact.ErrIntegrity
-					}
-					candidate.event = &event
-				} else if !errors.Is(err, corestore.ErrNotFound) {
-					return err
-				} else {
-					audit.Unavailable = append(audit.Unavailable, "local_attempt_reference")
-				}
-			}
-			candidate.receipt = &receipt
-		} else if !errors.Is(err, corestore.ErrNotFound) {
-			return err
-		} else if attempt != nil {
-			audit.Unavailable = append(audit.Unavailable, "selected_attempt_landing_receipt")
-		}
-		change, err := r.LatestChange(ctx, scope.project, item.WorkItemID)
-		if errors.Is(err, corestore.ErrNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		candidate.change = change
-		if change.CurrentVersionID != nil {
-			version, err := r.Version(ctx, change.ID, *change.CurrentVersionID)
-			if err != nil {
-				return err
-			}
-			candidate.version = &version
-		}
+		sourceVersions = selected
 		return nil
 	})
 	if err != nil {
 		return nil, projectRecordError(err)
 	}
-	sources := make([]tracker.ValidationSource, len(comments)+1)
-	bodies := make([]string, len(sources))
-	sources[0] = tracker.ValidationSource{Actor: item.Actor, Kind: "issue", WorkItemID: item.WorkItemID, RecordID: string(item.WorkItemID), Revision: item.Revision, ObservedAt: item.UpdatedAt}
-	bodies[0] = item.Body
-	failures := make([]error, len(comments))
-	var workers sync.WaitGroup
-	for worker := 0; worker < min(4, len(comments)); worker++ {
-		workers.Go(func() {
-			for i := worker; i < len(comments); i += 4 {
-				comment, err := s.hydrateValidationAuditComment(ctx, comments[i])
-				if err != nil {
-					failures[i] = err
-					continue
-				}
-				sources[i+1] = tracker.ValidationSource{Actor: comment.Actor, Kind: "comment", WorkItemID: comment.WorkItemID, RecordID: comment.ID, Revision: comment.Revision, ObservedAt: comments[i].row.UpdatedAt}
-				bodies[i+1] = comment.Body
+	sources := make([]tracker.ValidationSource, 0, len(sourceVersions))
+	bodies := make([]string, 0, len(sourceVersions))
+	for _, version := range sourceVersions {
+		var source tracker.ValidationSource
+		var body string
+		if version.RecordID == string(version.WorkItemID) {
+			item, err := s.hydrateCanonicalWorkItemRecord(ctx, sourceItems[version.WorkItemID], version)
+			if err != nil {
+				return nil, err
 			}
-		})
+			source = tracker.ValidationSource{Actor: item.Actor, Kind: "issue", WorkItemID: item.WorkItemID, RecordID: string(item.WorkItemID), Revision: item.Revision, ObservedAt: item.UpdatedAt}
+			body = item.Body
+		} else {
+			comment, err := s.hydrateValidationAuditComment(ctx, validationAuditComment{sourceComments[version.RecordID], version})
+			if err != nil {
+				return nil, err
+			}
+			source = tracker.ValidationSource{Actor: comment.Actor, Kind: "comment", WorkItemID: comment.WorkItemID, RecordID: comment.ID, Revision: comment.Revision, ObservedAt: comment.UpdatedAt}
+			body = comment.Body
+		}
+		if !source.ObservedAt.UTC().Truncate(time.Microsecond).Equal(version.SourceObservedAt) {
+			return nil, artifact.ErrIntegrity
+		}
+		sources = append(sources, source)
+		bodies = append(bodies, body)
 	}
-	workers.Wait()
-	if err := errors.Join(failures...); err != nil {
-		return nil, err
-	}
-	comparison, repository, found, err := s.hydrateValidationAuditCandidate(ctx, scope, item.WorkItemID, candidate, attempt)
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		audit.Unavailable = append(audit.Unavailable, "current_change_validation")
-	}
+	cache := map[string][]tracker.ValidationComparison{}
 	seen := map[string]bool{}
-	for i, body := range bodies {
+	payloadBytes := 0
+	metadataBytes := func() (int, error) {
+		value := *audit
+		value.Occurrences = []tracker.ValidationOccurrence{}
+		raw, err := json.Marshal(value)
+		return len(raw), err
+	}
+sourcesLoop:
+	for index, body := range bodies {
 		origin, ok := issueorigin.Parse(body)
 		if !ok || origin.Kind != "doctor" || origin.Instance != "github-actions" {
 			continue
@@ -194,43 +273,193 @@ func (s *Service) readValidationAuditRecord(ctx context.Context, scope nativeSco
 				continue
 			}
 			if len(audit.Occurrences) == 40 {
+				unavailable("scheduled_occurrence_budget")
 				break
 			}
 			seen[scheduled.OccurrenceKey] = true
-			occurrence := tracker.ValidationOccurrence{Source: sources[i], Scheduled: scheduled, Comparisons: []tracker.ValidationComparison{}}
-			if found && repository == scheduled.Repository {
-				failed := []int{}
-				for j, check := range scheduled.Checks {
-					if check.ExitCode != 0 {
-						failed = append(failed, j)
+			repositoryIdentity := validationAuditRepository(scheduled.Repository)
+			key := repositoryIdentity + "\x00" + scheduled.HeadSHA
+			comparisons, cached := cache[key]
+			if !cached {
+				var page tenantstore.ValidationCandidatePage
+				err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+						return err
+					}
+					if localRow.NativeID != "" {
+						current, err := r.WorkItem(ctx, scope.project, localRow.NativeID)
+						if err != nil {
+							return err
+						}
+						if current.ID != localRow.ID || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+							return corestore.ErrNotFound
+						}
+					} else if scope.credential.HostedRole == "reporter" {
+						return workItemStorageUnavailable()
+					}
+					reader, ok := r.(tenantstore.ValidationCandidateReader)
+					if !ok {
+						return workItemStorageUnavailable()
+					}
+					page, err = reader.ValidationCandidates(ctx, tenantstore.ValidationCandidateQuery{ProjectID: scope.project, WorkItemID: localRow.NativeID, Repository: repositoryIdentity, HeadSHA: scheduled.HeadSHA, ChangeID: changeID, AttemptID: attemptID})
+					return err
+				})
+				if err != nil {
+					return nil, projectRecordError(err)
+				}
+				audit.Partial = audit.Partial || page.Partial
+				candidates := make([]validationAuditCandidate, 0, len(page.Rows)+1)
+				for _, row := range page.Rows {
+					version, receipt, binding := row.Version, row.Receipt, row.Attempt
+					candidates = append(candidates, validationAuditCandidate{change: row.Change, version: &version, receipt: &receipt, binding: &binding, event: row.Event})
+				}
+				if len(candidates) == 0 && fallback.version != nil && validationAuditRepository(fallback.version.Repository) == repositoryIdentity {
+					candidates = append(candidates, fallback)
+				}
+				comparisons = []tracker.ValidationComparison{}
+				for _, candidate := range candidates {
+					refs := []struct {
+						key  string
+						size int64
+					}{{candidate.change.PayloadObjectKey, candidate.change.PayloadContentBytes}}
+					if candidate.version != nil {
+						refs = append(refs, struct {
+							key  string
+							size int64
+						}{candidate.version.PayloadObjectKey, candidate.version.PayloadContentBytes})
+					}
+					if candidate.receipt != nil {
+						refs = append(refs, struct {
+							key  string
+							size int64
+						}{candidate.receipt.PayloadObjectKey, candidate.receipt.PayloadContentBytes})
+					}
+					if candidate.event != nil {
+						refs = append(refs, struct {
+							key  string
+							size int64
+						}{candidate.event.PayloadObjectKey, candidate.event.PayloadContentBytes})
+					}
+					fits := true
+					for _, ref := range refs {
+						allowed, err := reserve(ref.key, ref.size)
+						if err != nil {
+							return nil, err
+						}
+						if !allowed {
+							fits = false
+							break
+						}
+					}
+					if !fits {
+						unavailable("candidate_payload_budget")
+						break
+					}
+					value, repository, found, err := s.hydrateValidationAuditCandidate(ctx, scope, candidate.change.WorkItemID, candidate, nil)
+					if err != nil {
+						return nil, err
+					}
+					if found && repository == repositoryIdentity {
+						comparisons = append(comparisons, value)
+					}
+					if candidate.receipt != nil && candidate.event == nil && (candidate.binding == nil || !candidate.binding.LocalAttemptIDRecorded) {
+						unavailable("local_attempt_reference")
+					}
+				}
+				if len(comparisons) == 0 {
+					unavailable("current_change_validation")
+					comparisons = []tracker.ValidationComparison{{WorkItemID: localRow.NativeID, IntegratedSource: "unknown", Attribution: "candidate_only; source_inclusion_and_causality_unverified"}}
+				}
+				cache[key] = comparisons
+			}
+			occurrence := tracker.ValidationOccurrence{Source: sources[index], Scheduled: scheduled, Comparisons: []tracker.ValidationComparison{}}
+			empty, err := json.Marshal(occurrence)
+			if err != nil {
+				return nil, err
+			}
+			metadata, err := metadataBytes()
+			if err != nil {
+				return nil, err
+			}
+			separator := 0
+			if len(audit.Occurrences) > 0 {
+				separator = 1
+			}
+			if metadata+payloadBytes+separator+len(empty) > 64*1024 {
+				unavailable("audit_payload_budget")
+				break sourcesLoop
+			}
+			occurrenceBytes := len(empty)
+			appendComparison := func(value tracker.ValidationComparison) (bool, error) {
+				raw, err := json.Marshal(value)
+				if err != nil {
+					return false, err
+				}
+				size := len(raw)
+				if len(occurrence.Comparisons) > 0 {
+					size++
+				}
+				if metadata+payloadBytes+separator+occurrenceBytes+size > 64*1024 {
+					return false, nil
+				}
+				occurrence.Comparisons = append(occurrence.Comparisons, value)
+				occurrenceBytes += size
+				return true, nil
+			}
+			failed := []int{}
+			for index, check := range scheduled.Checks {
+				if check.ExitCode != 0 {
+					failed = append(failed, index)
+				}
+			}
+			full := false
+		comparisonsLoop:
+			for _, comparison := range comparisons {
+				comparison.IntegratedSource = "unknown"
+				if comparison.IntegratedHeadSHA != "" {
+					comparison.IntegratedSource = "different_commit"
+					if comparison.IntegratedHeadSHA == scheduled.HeadSHA {
+						comparison.IntegratedSource = "same_commit"
 					}
 				}
 				if len(failed) == 0 {
 					value := comparison
 					value.CheckComparison = gate.CompareCheck(value.Local, value.ObservedAt, scheduled, nil)
-					occurrence.Comparisons = append(occurrence.Comparisons, value)
+					fits, err := appendComparison(value)
+					if err != nil {
+						return nil, err
+					}
+					if !fits {
+						full = true
+						break comparisonsLoop
+					}
 				}
-				for _, j := range failed {
+				for _, index := range failed {
 					value := comparison
-					value.CheckIndex = new(j)
-					value.CheckComparison = gate.CompareCheck(value.Local, value.ObservedAt, scheduled, &scheduled.Checks[j])
-					occurrence.Comparisons = append(occurrence.Comparisons, value)
-				}
-				for j := range occurrence.Comparisons {
-					occurrence.Comparisons[j].IntegratedSource = "unknown"
-					if comparison.IntegratedHeadSHA != "" {
-						occurrence.Comparisons[j].IntegratedSource = "different_commit"
-						if comparison.IntegratedHeadSHA == scheduled.HeadSHA {
-							occurrence.Comparisons[j].IntegratedSource = "same_commit"
-						}
+					value.CheckIndex = new(index)
+					value.CheckComparison = gate.CompareCheck(value.Local, value.ObservedAt, scheduled, &scheduled.Checks[index])
+					fits, err := appendComparison(value)
+					if err != nil {
+						return nil, err
+					}
+					if !fits {
+						full = true
+						break comparisonsLoop
 					}
 				}
 			}
-			audit.Occurrences = append(audit.Occurrences, occurrence)
+			if len(occurrence.Comparisons) > 0 || !full {
+				audit.Occurrences = append(audit.Occurrences, occurrence)
+				payloadBytes += separator + occurrenceBytes
+			}
+			if full {
+				unavailable("audit_payload_budget")
+				break sourcesLoop
+			}
 		}
 	}
-	if len(audit.Occurrences) == 0 {
-		audit.Unavailable = append(audit.Unavailable, "selected_issue_scheduled_evidence")
+	if len(audit.Occurrences) == 0 && len(seen) == 0 {
+		unavailable("selected_issue_scheduled_evidence")
 	}
 	for {
 		raw, err := json.Marshal(audit)
@@ -240,9 +469,7 @@ func (s *Service) readValidationAuditRecord(ctx context.Context, scope nativeSco
 		if len(raw) <= 64*1024 {
 			return audit, nil
 		}
-		if !slices.Contains(audit.Unavailable, "audit_payload_budget") {
-			audit.Unavailable = append(audit.Unavailable, "audit_payload_budget")
-		}
+		unavailable("audit_payload_budget")
 		last := len(audit.Occurrences) - 1
 		if len(audit.Occurrences[last].Comparisons) > 1 {
 			audit.Occurrences[last].Comparisons = audit.Occurrences[last].Comparisons[:len(audit.Occurrences[last].Comparisons)-1]
@@ -255,40 +482,54 @@ func (s *Service) readValidationAuditRecord(ctx context.Context, scope nativeSco
 func (s *Service) hydrateValidationAuditCandidate(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, rows validationAuditCandidate, attempt *tracker.NativeAttempt) (tracker.ValidationComparison, string, bool, error) {
 	result := tracker.ValidationComparison{WorkItemID: item, IntegratedSource: "unknown", Attribution: "candidate_only; source_inclusion_and_causality_unverified"}
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	if rows.change.OrganizationID != "" && (rows.change.OrganizationID != scope.organization || rows.change.ProjectID != scope.project || rows.change.WorkItemID != item) {
+		return result, "", false, artifact.ErrIntegrity
+	}
 	var landing *tracker.NativeLandingReceipt
 	if rows.receipt != nil {
 		value, err := content.LandingReceipt(ctx, *rows.receipt)
 		if err != nil {
 			return result, "", false, err
 		}
-		if value.ChangeID == "" {
+		if value.ChangeID == "" && rows.version != nil && rows.change.ID == rows.version.ChangeID && rows.receipt.VersionID == rows.version.ID {
+			value.ChangeID = rows.change.ID
+		}
+		if value.ChangeID == "" || rows.version != nil && (rows.change.ID != value.ChangeID || rows.version.ID != value.VersionID) {
 			return result, "", false, artifact.ErrIntegrity
 		}
 		landing = &value
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
-				return err
-			}
-			change, err := r.Change(ctx, value.ChangeID)
+		if rows.version == nil || rows.change.ID != value.ChangeID || rows.version.ID != value.VersionID {
+			err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+					return err
+				}
+				change, err := r.Change(ctx, value.ChangeID)
+				if err != nil {
+					return err
+				}
+				if change.ProjectID != scope.project {
+					return artifact.ErrIntegrity
+				}
+				version, err := r.Version(ctx, change.ID, value.VersionID)
+				if err != nil {
+					return err
+				}
+				rows.change, rows.version = change, &version
+				return nil
+			})
 			if err != nil {
-				return err
+				return result, "", false, projectRecordError(err)
 			}
-			if change.ProjectID != scope.project {
-				return artifact.ErrIntegrity
-			}
-			version, err := r.Version(ctx, change.ID, value.VersionID)
-			if err != nil {
-				return err
-			}
-			rows.change, rows.version = change, &version
-			return nil
-		})
-		if err != nil {
-			return result, "", false, projectRecordError(err)
+		}
+		if rows.receipt.OrganizationID != scope.organization || rows.receipt.VersionID != value.VersionID || rows.binding != nil && (rows.binding.OrganizationID != scope.organization || rows.binding.ID != rows.receipt.AttemptID) {
+			return result, "", false, artifact.ErrIntegrity
 		}
 	}
 	if rows.version == nil {
 		return result, "", false, nil
+	}
+	if rows.change.OrganizationID != scope.organization || rows.change.ProjectID != scope.project || rows.change.WorkItemID != item || rows.version.OrganizationID != scope.organization || rows.version.ChangeID != rows.change.ID {
+		return result, "", false, artifact.ErrIntegrity
 	}
 	change, err := content.Change(ctx, rows.change)
 	if err != nil {
@@ -318,6 +559,12 @@ func (s *Service) hydrateValidationAuditCandidate(ctx context.Context, scope nat
 		result.NativeAttemptID = rows.receipt.AttemptID
 		if rows.binding != nil {
 			result.NativeRunID = rows.binding.RunID
+			if rows.binding.LocalAttemptIDRecorded {
+				if rows.binding.LocalAttemptID <= 0 {
+					return result, "", false, artifact.ErrIntegrity
+				}
+				result.LocalAttemptID = rows.binding.LocalAttemptID
+			}
 		}
 		if rows.event != nil {
 			value, err := content.Event(ctx, *rows.event)
@@ -328,7 +575,10 @@ func (s *Service) hydrateValidationAuditCandidate(ctx context.Context, scope nat
 			if run == nil || rows.binding == nil || run.AttemptID != rows.binding.ID || run.RunID != rows.binding.RunID || string(run.LeaseID) != rows.binding.LeaseID || int64(run.FencingToken) != rows.binding.FencingToken || run.Sequence != rows.binding.Sequence {
 				return result, "", false, artifact.ErrIntegrity
 			}
-			if run.Runtime != nil {
+			if run.Runtime != nil && run.Runtime.LocalAttemptID > 0 {
+				if result.LocalAttemptID > 0 && result.LocalAttemptID != run.Runtime.LocalAttemptID {
+					return result, "", false, artifact.ErrIntegrity
+				}
 				result.LocalAttemptID = run.Runtime.LocalAttemptID
 			}
 		}
@@ -353,7 +603,11 @@ func (s *Service) hydrateValidationAuditCandidate(ctx context.Context, scope nat
 		value.Command = tracker.PublicValidationCommand(value.Command)
 		result.Local = &value
 	}
-	return result, validationRepository(version.Repository), true, nil
+	repository := validationAuditRepository(version.Repository)
+	if rows.receipt != nil && rows.receipt.Repository != "" {
+		repository = validationAuditRepository(rows.receipt.Repository)
+	}
+	return result, repository, true, nil
 }
 
 func (s *Service) hydrateValidationAuditComment(ctx context.Context, input validationAuditComment) (tracker.NativeComment, error) {
@@ -366,8 +620,13 @@ func (s *Service) hydrateValidationAuditComment(ctx context.Context, input valid
 	if err != nil {
 		return comment, err
 	}
-	if json.Unmarshal(raw, &comment) != nil || comment.OrganizationID != row.OrganizationID || comment.ProjectID != row.ProjectID || comment.WorkItemID != row.WorkItemID || comment.ID != row.ID || int64(comment.Revision) != row.Revision || comment.Sequence != row.Sequence || comment.Deleted != row.Deleted || comment.Actor.Kind != row.ActorKind || comment.Actor.PrincipalID != row.ActorPrincipalID {
+	comment, err = eventstore.DecodeCollaborationComment(version, raw)
+	if err != nil || comment.OrganizationID != row.OrganizationID || comment.ProjectID != row.ProjectID || comment.WorkItemID != row.WorkItemID || comment.ID != row.ID || int64(comment.Revision) != row.Revision || comment.Sequence != row.Sequence || comment.Deleted != row.Deleted || comment.Actor.Kind != row.ActorKind || comment.Actor.PrincipalID != row.ActorPrincipalID {
 		return comment, artifact.ErrIntegrity
 	}
 	return comment, nil
+}
+
+func validationAuditRepository(repository string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(repository), "https://github.com/"), "git@github.com:"), ".git")
 }

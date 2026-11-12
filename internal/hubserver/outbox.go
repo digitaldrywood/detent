@@ -451,7 +451,7 @@ func (w *outboxWorker) run(ctx context.Context) {
 			if w.service.config.OutboxBackend != nil {
 				github = w.service.ProcessOutbox
 			}
-			processed, err := processOutboxStep(ctx, w.service.processSlackDelivery, github)
+			processed, err := processOutboxStep(ctx, github)
 			if err != nil && ctx.Err() == nil {
 				w.service.config.Logger.WarnContext(ctx, "outbox delivery failed", "error", err)
 			}
@@ -463,16 +463,12 @@ func (w *outboxWorker) run(ctx context.Context) {
 	}
 }
 
-func processOutboxStep(ctx context.Context, slack, github func(context.Context) (bool, error)) (bool, error) {
+func processOutboxStep(ctx context.Context, github func(context.Context) (bool, error)) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	processed, err := slack(ctx)
-	if processed || err != nil || github == nil {
-		return processed, err
-	}
-	if err := ctx.Err(); err != nil {
-		return false, err
+	if github == nil {
+		return false, nil
 	}
 	return github(ctx)
 }
@@ -485,6 +481,9 @@ func (w *outboxWorker) signal() {
 }
 
 func (w *outboxWorker) stop() {
+	if w == nil {
+		return
+	}
 	if w.cancel != nil {
 		w.cancel()
 	}

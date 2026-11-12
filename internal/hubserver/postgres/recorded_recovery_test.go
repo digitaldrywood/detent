@@ -110,11 +110,20 @@ func seedRecordedRecovery(t *testing.T, repository *postgres.Repository, admin *
 			t.Fatal(err)
 		}
 	}
+	checkpoint := &tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "local_only", WorktreeState: "clean", ExternalEffect: "none", EffectState: "none"}
+	checkpointRef, err := content.PreparePayload(t.Context(), organization, historyJSON(t, struct {
+		Checkpoint *tracker.NativeCheckpoint `json:"checkpoint"`
+	}{Checkpoint: checkpoint}))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var attempt leasestore.Attempt
 	var report, lane eventstore.Event
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		data := attemptEvent(lease)
-		data.Status, data.CheckpointObjectKey = "succeeded", new("example/checkpoint")
+		data.Status, data.CheckpointObjectKey = "succeeded", &checkpointRef.Key
+		data.CheckpointReference = checkpointRef
+		data.CheckpointPreservesSource = new(checkpoint.PreservesSource())
 		var err error
 		attempt, err = w.RecordAttempt(t.Context(), data)
 		if err != nil {

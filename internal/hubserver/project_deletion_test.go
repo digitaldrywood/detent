@@ -1,11 +1,17 @@
 package hubserver
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestHostedProjectDeletion(t *testing.T) {
@@ -20,29 +26,29 @@ func TestHostedProjectDeletion(t *testing.T) {
 		{name: "viewer refused", account: "viewer", status: http.StatusNotFound},
 		{name: "cross organization session refused", account: "wrong-organization", status: http.StatusForbidden},
 		{name: "cross organization path refused", account: "owner", organization: "org_other", status: http.StatusNotFound},
-		{name: "missing write grant refused", account: "owner", update: "UPDATE hosted_project_grants SET can_write=0 WHERE project_id=?", status: http.StatusNotFound},
+		{name: "missing write grant refused", account: "owner", update: "UPDATE hosted_project_grants SET can_write=FALSE WHERE project_id=$1", status: http.StatusNotFound},
 		{name: "missing CSRF refused", account: "owner", noCSRF: true, status: http.StatusForbidden},
 		{name: "wrong confirmation refused", account: "owner", confirm: "Wrong project", status: http.StatusUnprocessableEntity},
-		{name: "active lease refused", account: "owner", update: "UPDATE leases SET released_at=NULL,expires_at='2999-01-01T00:00:00Z' WHERE issue_id IN (SELECT id FROM issues WHERE project_id=?)", status: http.StatusUnprocessableEntity},
-		{name: "running attempt refused", account: "owner", update: "UPDATE native_attempts SET status='running' WHERE project_id=?", status: http.StatusUnprocessableEntity},
-		{name: "open workspace refused", account: "owner", update: "UPDATE workspace_sessions SET state='ready' WHERE project_id=?", status: http.StatusUnprocessableEntity},
-		{name: "queued script refused", account: "owner", update: "UPDATE project_action_runs SET status='queued' WHERE project_id=?", status: http.StatusUnprocessableEntity},
-		{name: "running script refused", account: "owner", update: "UPDATE project_action_runs SET status='running' WHERE project_id=?", status: http.StatusUnprocessableEntity},
-		{name: "unknown execution refused", account: "owner", update: "UPDATE conversations SET execution_status=NULL WHERE project_id=?", status: http.StatusUnprocessableEntity},
-		{name: "typed active execution refused", account: "owner", update: "UPDATE conversations SET execution_status='running' WHERE project_id=?", status: http.StatusUnprocessableEntity},
-		{name: "conversation turn refused", account: "owner", update: `UPDATE conversations SET execution_status='running',execution_json='{"status":"running"}' WHERE project_id=?`, status: http.StatusUnprocessableEntity},
-		{name: "queued conversation refused", account: "owner", update: "UPDATE conversation_messages SET delivery='queued' WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id=?)", status: http.StatusUnprocessableEntity},
-		{name: "pending import refused", account: "owner", update: "UPDATE github_imports SET status='pending' WHERE project_id=?", status: http.StatusUnprocessableEntity},
-		{name: "partial import refused", account: "owner", update: "UPDATE github_imports SET status='partial' WHERE project_id=?", status: http.StatusUnprocessableEntity},
-		{name: "pending GitHub write refused", account: "owner", update: "UPDATE github_outbox SET status='pending' WHERE issue_id IN (SELECT id FROM issues WHERE project_id=?)", status: http.StatusUnprocessableEntity},
-		{name: "processing GitHub write refused", account: "owner", update: "UPDATE github_outbox SET status='processing' WHERE issue_id IN (SELECT id FROM issues WHERE project_id=?)", status: http.StatusUnprocessableEntity},
-		{name: "organization Sprite preserved", account: "owner", update: "UPDATE organization_sprite_members SET state='enrolled',token_project_id='' WHERE token_project_id=?", status: http.StatusOK},
-		{name: "project allocation using organization token refused", account: "owner", update: "UPDATE organization_sprite_members SET state='enrolled',allocation_project_id=token_project_id,token_project_id='' WHERE token_project_id=?", status: http.StatusUnprocessableEntity},
-		{name: "provisioned Sprite using project token refused", account: "owner", update: "UPDATE organization_sprite_members SET state='enrolled' WHERE token_project_id=?", status: http.StatusUnprocessableEntity},
+		{name: "active lease refused", account: "owner", update: "UPDATE leases SET released_at=NULL,expires_at='2999-01-01T00:00:00Z' WHERE issue_id IN (SELECT id FROM issues WHERE project_id=$1)", status: http.StatusUnprocessableEntity},
+		{name: "running attempt refused", account: "owner", update: "UPDATE native_attempts SET status='running' WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "open workspace refused", account: "owner", update: "UPDATE workspace_sessions SET state='ready' WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "queued script refused", account: "owner", update: "UPDATE project_action_runs SET status='queued' WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "running script refused", account: "owner", update: "UPDATE project_action_runs SET status='running' WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "unknown execution refused", account: "owner", update: "UPDATE conversations SET execution_status=NULL WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "typed active execution refused", account: "owner", update: "UPDATE conversations SET execution_status='running' WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "conversation turn refused", account: "owner", update: "UPDATE conversations SET execution_status='running',execution_turn_id='deletion-turn' WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "queued conversation refused", account: "owner", update: "UPDATE conversation_messages SET delivery='queued' WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id=$1)", status: http.StatusUnprocessableEntity},
+		{name: "pending import refused", account: "owner", update: "UPDATE github_imports SET status='pending' WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "partial import refused", account: "owner", update: "UPDATE github_imports SET status='partial' WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "pending GitHub write refused", account: "owner", update: "UPDATE github_outbound SET status='pending' WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "processing GitHub write refused", account: "owner", update: "UPDATE github_outbound SET status='processing' WHERE project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "organization Sprite preserved", account: "owner", update: "UPDATE runner_sprite_memberships SET state='enrolled',token_project_id='' WHERE token_project_id=$1", status: http.StatusOK},
+		{name: "project allocation using organization token refused", account: "owner", update: "UPDATE runner_sprite_memberships SET state='enrolled',allocation_project_id=token_project_id,token_project_id='' WHERE token_project_id=$1", status: http.StatusUnprocessableEntity},
+		{name: "provisioned Sprite using project token refused", account: "owner", update: "UPDATE runner_sprite_memberships SET state='enrolled' WHERE token_project_id=$1", status: http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
-			db := f.service.database.db
+			db := hostedPostgresAdmin(t, f.service)
 			exec := func(query string, args ...any) {
 				t.Helper()
 				if _, err := db.ExecContext(t.Context(), query, args...); err != nil {
@@ -50,40 +56,43 @@ func TestHostedProjectDeletion(t *testing.T) {
 				}
 			}
 			var item, principal string
-			var issueID int64
-			if err := db.QueryRowContext(t.Context(), "SELECT id,native_id FROM issues WHERE project_id=?", f.project).Scan(&issueID, &item); err != nil {
+			if err := db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE organization_id='org_browser_preview' AND project_id=$1", f.project).Scan(&item); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id='user_browser_owner'").Scan(&principal); err != nil {
+			if err := db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE organization_id='org_browser_preview' AND user_id='user_browser_owner'").Scan(&principal); err != nil {
 				t.Fatal(err)
 			}
-			exec("INSERT INTO repositories(id,github_node_id,github_owner,github_name,created_at,updated_at) VALUES(987,'repo-deletion','acme','retained','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')")
-			exec("UPDATE projects SET repository_id=987,checkout_repository='acme/retained',github_repository_enabled=1 WHERE id=?", f.project)
-			exec("INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at,expires_at,native_only) VALUES('shared-runner-token','shared-runner',?,'runner','worker','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','2999-01-01T00:00:00Z',1)", strings.Repeat("c", 64))
-			exec("INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id,token_id) VALUES('deletion-machine','host',1,'1','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','org_browser_preview','shared-runner-token')")
-			exec("INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) VALUES('deletion-lease',?,'deletion-machine','deletion-session','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", issueID)
-			exec("INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) SELECT 'deletion-attempt',organization_id,project_id,native_id,'deletion-lease',(SELECT fencing_token FROM leases WHERE lease_id='deletion-lease'),'run',1,'succeeded','{}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM issues WHERE id=?", issueID)
-			exec("INSERT INTO workspace_sessions(id,organization_id,project_id,subject_work_item_id,ref,state,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at) SELECT 'deletion-workspace',organization_id,project_id,native_id,'branch','closed',300,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM issues WHERE id=?", principal, issueID)
-			exec("INSERT INTO project_actions(id,organization_id,project_id,name,command,created_by,created_at,updated_at) SELECT 'deletion-action',organization_id,id,'Test','go test',?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM projects WHERE id=?", principal, f.project)
-			exec("INSERT INTO project_action_runs(id,action_id,organization_id,project_id,workspace_id,command,status,created_at,updated_at) SELECT 'deletion-script','deletion-action',organization_id,id,'deletion-workspace','go test','succeeded','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM projects WHERE id=?", f.project)
-			exec(`INSERT INTO conversations(id,organization_id,project_id,owner_principal_id,visibility,status,execution_json,execution_status,execution_lease_id,created_at,updated_at) SELECT 'deletion-chat',organization_id,id,?,'private','active','{"status":"idle"}','idle','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM projects WHERE id=?`, principal, f.project)
-			exec(`INSERT INTO conversation_messages(id,conversation_id,seq,role,kind,delivery,actor_json,created_at,updated_at) VALUES('deletion-message','deletion-chat',1,'user','text','completed','{"kind":"human","principal_id":"owner"}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`)
-			exec("INSERT INTO github_imports(id,project_id,issue_number,status,observed_at) VALUES('deletion-import',?,1,'retrieved','2026-01-01T00:00:00Z')", f.project)
-			exec("INSERT INTO github_outbox(idempotency_key,repository_id,issue_id,mutation_kind,desired_json,status,created_at,updated_at) VALUES('deletion-outbox',987,?,'issue_comment','{}','succeeded','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", issueID)
-			exec("INSERT INTO runner_enrollments(id,organization_id,runner_id,machine_id,token_hash,operations_json,created_at,expires_at,created_by) VALUES('deletion-enrollment','org_browser_preview','shared-runner','deletion-machine',?,'[]','2026-01-01T00:00:00Z','2999-01-01T00:00:00Z',?)", strings.Repeat("a", 64), principal)
-			exec("INSERT INTO runner_identities(id,organization_id,machine_id,token_id,enrollment_id,operations_json,created_at,capacity_limit,reported_capacity,last_heartbeat_at) VALUES('shared-runner','org_browser_preview','deletion-machine',?,'deletion-enrollment','[]','2026-01-01T00:00:00Z',1,1,'2026-01-01T00:00:00Z')", "shared-runner-token")
-			exec("INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) SELECT 'deletion-change',organization_id,project_id,native_id,'{}' FROM issues WHERE id=?", issueID)
-			exec("INSERT INTO change_versions(id,change_id,number,record_json) VALUES('deletion-version','deletion-change',1,'{}')")
-			exec("INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,work_item_id) SELECT 'deletion-attachment',organization_id,project_id,?,'file.txt','text/plain',1,?,'2026-01-01T00:00:00Z',native_id FROM issues WHERE id=?", principal, strings.Repeat("b", 64), issueID)
-			exec("INSERT INTO artifact_services(organization_id,project_id,id,binding_json,publisher_token_id) VALUES('org_browser_preview',?,'deletion-service','{}',?)", f.project, principal)
-			exec("INSERT INTO artifact_references(organization_id,project_id,work_item_id,artifact_id,revision,service_id,manifest_id,reference_json) VALUES('org_browser_preview',?,?,'deletion-artifact',1,'deletion-service','manifest','{}')", f.project, item)
+			organization := tracker.OrganizationID("org_browser_preview")
+			scope := nativeScope{organization: organization, project: tracker.ProjectID(f.project)}
+			at := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+			seedAnalyticsTestAttempt(t, db, f.service, scope, tracker.NativeWorkItemID(item), "deletion-attempt", "succeeded", at, at.Add(time.Minute), tracker.NativeRunData{})
+			seedAnalyticsTestChange(t, f.service, scope, tracker.NativeWorkItemID(item), "deletion-change", at, nil)
+			command, err := eventstore.NewContent(f.service.runDetailStore()).PreparePayload(t.Context(), organization, []byte("go test"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			exec("UPDATE project_settings SET repository='example-org/example-project',checkout_repository='example-org/example-project',repository_enabled=TRUE WHERE organization_id='org_browser_preview' AND project_id IN ($1,$2)", f.project, f.privateProject)
+			exec(`INSERT INTO api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,created_at,updated_at,expires_at,native_only) VALUES('org_browser_preview','shared-runner-token','shared-runner',$1,'runner','worker',$2,$2,'2999-01-01T00:00:00Z',TRUE)`, strings.Repeat("c", 64), at)
+			exec(`INSERT INTO runner_enrollments(id,organization_id,runner_id,machine_id,token_hash,scope,operations,created_at,expires_at,created_by,redeemed_at) VALUES('deletion-enrollment','org_browser_preview','shared-runner','analytics-fixture',$1,'projects',ARRAY['claim'],$2,'2999-01-01T00:00:00Z',$3,$2)`, strings.Repeat("a", 64), at, principal)
+			exec(`INSERT INTO runner_identities(runner_id,organization_id,machine_id,token_id,enrollment_id,scope,operations,created_at,expires_at,capacity_limit,reported_capacity,last_heartbeat_at) VALUES('shared-runner','org_browser_preview','analytics-fixture','shared-runner-token','deletion-enrollment','projects',ARRAY['claim'],$1,'2999-01-01T00:00:00Z',1,1,$1)`, at)
+			exec(`INSERT INTO runner_repositories(organization_id,runner_id,owner,name,private,listed_at) VALUES('org_browser_preview','shared-runner','example-org','example-project',FALSE,$1)`, at)
+			exec(`INSERT INTO workspace_sessions(id,organization_id,project_id,subject_work_item_id,ref,state,requires,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at) VALUES('deletion-workspace','org_browser_preview',$1,$2,'branch','closed','{}',300,$3,$3,$4,$5,$5)`, f.project, item, at.Add(time.Hour), principal, at)
+			exec(`INSERT INTO project_actions(id,organization_id,project_id,slot,name,command_object_key,command_sha256,command_bytes,command_content_bytes,created_by,revision,created_at,updated_at) VALUES('deletion-action','org_browser_preview',$1,0,'Test',$2,$3,$4,$5,$6,1,$7,$7)`, f.project, command.Key, command.SHA256, command.CompressedSize, command.UncompressedSize, principal, at)
+			exec(`INSERT INTO project_action_runs(id,action_id,organization_id,project_id,workspace_id,command_object_key,command_sha256,command_bytes,command_content_bytes,status,created_by,created_at,updated_at) VALUES('deletion-script','deletion-action','org_browser_preview',$1,'deletion-workspace',$2,$3,$4,$5,'succeeded',$6,$7,$7)`, f.project, command.Key, command.SHA256, command.CompressedSize, command.UncompressedSize, principal, at)
+			exec(`INSERT INTO conversations(id,organization_id,project_id,owner_principal_id,origin,visibility,status,execution_status,execution_lease_id,execution_settled,created_at,updated_at) VALUES('deletion-chat','org_browser_preview',$1,$2,'user','private','active','idle','',TRUE,$3,$3)`, f.project, principal, at)
+			exec(`INSERT INTO conversation_messages(id,organization_id,conversation_id,seq,role,kind,delivery,actor_kind,actor_principal_id,text_bytes,stored_text_bytes,created_at,updated_at) VALUES('deletion-message','org_browser_preview','deletion-chat',1,'user','text','completed','human',$1,0,0,$2,$2)`, principal, at)
+			exec(`INSERT INTO github_imports(id,organization_id,project_id,issue_number,stage,status,observed_at) VALUES('deletion-import','org_browser_preview',$1,1,'complete','retrieved',$2)`, f.project, at)
+			exec(`INSERT INTO github_outbound(organization_id,project_id,work_item_id,command_key,repository,issue_number,kind,status,next_attempt_at,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) VALUES('org_browser_preview',$1,$2,'deletion-outbound','example-org/example-project',1,'issue_comment','completed',$3,$3,$4,$5,$6,$7)`, f.project, item, at, command.Key, command.SHA256, command.CompressedSize, command.UncompressedSize)
+			exec(`INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,work_item_id) VALUES('deletion-attachment','org_browser_preview',$1,$2,'file.txt','text/plain',1,$3,$4,$5)`, f.project, principal, strings.Repeat("b", 64), at, item)
+			exec(`INSERT INTO artifact_services(organization_id,project_id,id,origin,binding_mode,hosted_opt_in,publisher_token_id) VALUES('org_browser_preview',$1,'deletion-service','https://artifacts.example.test','customer',FALSE,$2)`, f.project, principal)
+			exec(`INSERT INTO artifact_references(organization_id,project_id,work_item_id,artifact_id,revision,service_id,manifest_id,schema_version,sha256,kind,state,availability,bytes,objects,expires_at,observed_at) VALUES('org_browser_preview',$1,$2,'deletion-artifact',1,'deletion-service','manifest',1,$3,'log','complete','available',0,0,$4,$5)`, f.project, item, strings.Repeat("b", 64), at.Add(time.Hour), at)
 			for _, project := range []string{f.project, f.privateProject} {
-				exec("INSERT INTO token_grants(token_id,organization_id,project_id) VALUES('shared-runner-token','org_browser_preview',?)", project)
-				exec("INSERT INTO runner_enrollment_projects(enrollment_id,organization_id,project_id) VALUES('deletion-enrollment','org_browser_preview',?)", project)
-				exec("INSERT INTO project_secrets(organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES('org_browser_preview',?,'fly_sprites_token','retained',X'01',X'02',X'03',1,'2026-01-01T00:00:00Z')", project)
+				exec(`INSERT INTO token_grants(token_id,organization_id,project_id) VALUES('shared-runner-token','org_browser_preview',$1)`, project)
+				exec(`INSERT INTO runner_enrollment_projects(enrollment_id,organization_id,project_id) VALUES('deletion-enrollment','org_browser_preview',$1)`, project)
+				exec(`INSERT INTO project_secrets(organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES('org_browser_preview',$1,'fly_sprites_token','retained',$2,$3,$4,1,$5)`, project, []byte{1}, []byte{2}, []byte{3}, at)
 			}
-			exec("INSERT INTO organization_sprite_pools(organization_id,configured_by) VALUES('org_browser_preview',?)", principal)
-			exec("INSERT INTO organization_sprite_members(organization_id,token_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES('org_browser_preview',?,'sprite','org','deletion-enrollment','deleted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", f.project)
+			exec(`INSERT INTO organization_sprite_pools(organization_id,min_runners,max_runners,idle_seconds,configured_by,revision,isolation_tier,share_idle_capacity,placement_mode,todo_threshold,overflow_slots,max_sprite_slots) VALUES('org_browser_preview',0,1,300,$1,1,'sandbox',FALSE,'blended',0,0,1)`, principal)
+			exec(`INSERT INTO runner_sprite_memberships(organization_id,token_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES('org_browser_preview',$1,'sprite','org','deletion-enrollment','deleted',$2,$2)`, f.project, at)
 			if test.role != "" {
 				var membership string
 				if err := db.QueryRowContext(t.Context(), "SELECT membership_id FROM hosted_members WHERE user_id='user_browser_owner'").Scan(&membership); err != nil {
@@ -92,18 +101,18 @@ func TestHostedProjectDeletion(t *testing.T) {
 				if err := f.provider.SetMembershipRole(t.Context(), membership, test.role); err != nil {
 					t.Fatal(err)
 				}
-				exec("UPDATE hosted_members SET role=? WHERE user_id='user_browser_owner'", test.role)
+				exec("UPDATE hosted_members SET role=$1 WHERE organization_id='org_browser_preview' AND user_id='user_browser_owner'", test.role)
 			}
 			if test.update != "" {
 				exec(test.update, f.project)
 			}
 			other := f.rawAPI(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects/"+f.privateProject+"/work-items", "{\"body\":\"\\n## Acceptance criteria\\nComplete the requested work.\\n## Must not break\\nExisting behavior.\\n## How we know it worked\\nRun the project checks.\",\"idempotency_key\":\"other-project-item\",\"state\":\"Todo\",\"title\":\"Other project active work\"}", map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["owner"].Value)})
 			browserHostedStatus(t, other, http.StatusOK)
-			exec("INSERT INTO workspace_sessions(id,organization_id,project_id,subject_work_item_id,ref,state,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at) SELECT 'other-workspace',organization_id,project_id,native_id,'branch','requested',300,'2999-01-01T00:00:00Z','2999-01-01T00:00:00Z',?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM issues WHERE project_id=?", principal, f.privateProject)
+			exec(`INSERT INTO workspace_sessions(id,organization_id,project_id,subject_work_item_id,ref,state,requires,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at) SELECT 'other-workspace',organization_id,project_id,native_id,'branch','requested','{}',300,'2999-01-01T00:00:00Z','2999-01-01T00:00:00Z',$1,$2,$2 FROM issues WHERE organization_id='org_browser_preview' AND project_id=$3`, principal, at, f.privateProject)
 			before := deletionDataSnapshot(t, db)
-			organization, confirm := test.organization, test.confirm
-			if organization == "" {
-				organization = "org_browser_preview"
+			organizationPath, confirm := test.organization, test.confirm
+			if organizationPath == "" {
+				organizationPath = "org_browser_preview"
 			}
 			if confirm == "" {
 				confirm = "Browser collaboration"
@@ -116,7 +125,7 @@ func TestHostedProjectDeletion(t *testing.T) {
 			if !test.noCSRF {
 				headers["X-CSRF-Token"] = hostedCSRF(f.cookies[test.account].Value)
 			}
-			base := "/api/v2/organizations/" + organization + "/projects/" + f.project
+			base := "/api/v2/organizations/" + organizationPath + "/projects/" + f.project
 			response := f.rawAPI(t, test.account, http.MethodDelete, base, string(body), headers)
 			browserHostedStatus(t, response, test.status)
 			if test.status != http.StatusOK {
@@ -134,7 +143,7 @@ func TestHostedProjectDeletion(t *testing.T) {
 			if err := json.Unmarshal([]byte(deletionDataSnapshot(t, db)), &afterRecords); err != nil {
 				t.Fatal(err)
 			}
-			for _, table := range []string{"issues", "native_attempts", "workspace_sessions", "project_action_runs", "conversations", "conversation_messages", "github_imports", "github_outbox", "organization_sprite_members", "organization_sprite_pools", "repositories", "machines", "runner_identities", "organizations", "attachments", "artifact_references", "change_requests", "change_versions"} {
+			for _, table := range []string{"issues", "native_attempts", "workspace_sessions", "project_action_runs", "conversations", "conversation_messages", "github_imports", "github_outbound", "runner_sprite_memberships", "organization_sprite_pools", "runner_repositories", "machines", "runner_identities", "organizations", "attachments", "artifact_references", "change_requests", "change_versions"} {
 				if string(beforeRecords[table]) != string(afterRecords[table]) {
 					t.Fatalf("deletion changed retained %s records", table)
 				}
@@ -160,8 +169,8 @@ func TestHostedProjectDeletion(t *testing.T) {
 				"SELECT count(*) FROM native_attempts":                                            1,
 				"SELECT count(*) FROM project_action_runs":                                        1,
 				"SELECT count(*) FROM conversations":                                              1,
-				"SELECT count(*) FROM repositories":                                               1,
-				"SELECT count(*) FROM github_outbox WHERE status='succeeded'":                     1,
+				"SELECT count(*) FROM runner_repositories":                                        1,
+				"SELECT count(*) FROM github_outbound WHERE status='completed'":                   1,
 				"SELECT count(*) FROM machines":                                                   1,
 				"SELECT count(*) FROM runner_enrollments":                                         1,
 			} {
@@ -176,9 +185,9 @@ func TestHostedProjectDeletion(t *testing.T) {
 
 func deletionDataSnapshot(t *testing.T, db *sql.DB) string {
 	t.Helper()
-	data := map[string][][]any{}
-	for _, table := range []string{"projects", "issues", "native_attempts", "workspace_sessions", "project_action_runs", "conversations", "conversation_messages", "github_imports", "github_outbox", "project_secrets", "hosted_project_grants", "token_grants", "runner_enrollment_projects", "organization_sprite_members", "organization_sprite_pools", "repositories", "machines", "runner_identities", "organizations", "attachments", "artifact_references", "change_requests", "change_versions"} {
-		rows, err := db.QueryContext(t.Context(), "SELECT * FROM "+table+" ORDER BY rowid")
+	data := map[string][]json.RawMessage{}
+	for _, table := range []string{"projects", "project_settings", "issues", "native_attempts", "workspace_sessions", "project_action_runs", "conversations", "conversation_messages", "github_imports", "github_outbound", "project_secrets", "hosted_project_grants", "token_grants", "runner_enrollment_projects", "runner_sprite_memberships", "organization_sprite_pools", "runner_repositories", "machines", "runner_identities", "organizations", "attachments", "artifact_references", "change_requests", "change_versions"} {
+		rows, err := db.QueryContext(t.Context(), "SELECT * FROM "+table)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -200,7 +209,11 @@ func deletionDataSnapshot(t *testing.T, db *sql.DB) string {
 			if err := rows.Scan(pointers...); err != nil {
 				t.Fatal(err)
 			}
-			data[table] = append(data[table], values)
+			encoded, err := json.Marshal(values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data[table] = append(data[table], encoded)
 		}
 		if err := rows.Err(); err != nil {
 			t.Fatal(err)
@@ -208,6 +221,7 @@ func deletionDataSnapshot(t *testing.T, db *sql.DB) string {
 		if err := rows.Close(); err != nil {
 			t.Fatal(err)
 		}
+		slices.SortFunc(data[table], func(a, b json.RawMessage) int { return bytes.Compare(a, b) })
 	}
 	encoded, err := json.Marshal(data)
 	if err != nil {

@@ -76,6 +76,26 @@ sql:
             go_type:
               import: "github.com/digitaldrywood/detent/internal/tracker"
               type: "ProjectID"
+          - column: "leases.project_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "ProjectID"
+              pointer: true
+          - column: "lease_created.project_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "ProjectID"
+              pointer: true
+          - column: "lease_locked.project_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "ProjectID"
+              pointer: true
+          - column: "lease_changed.project_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "ProjectID"
+              pointer: true
           - column: "*.project_id"
             go_type:
               import: "github.com/digitaldrywood/detent/internal/tracker"

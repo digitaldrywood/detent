@@ -22,35 +22,13 @@ var ErrDoctorProposalIdentitiesPending = errors.New("doctor proposal identities 
 
 var doctorProposalMarker = regexp.MustCompile(`<!-- detent:self-improvement proposal_id=[^\s<>]+ -->`)
 
-type DoctorProposalIdentity struct {
-	Kind  string
-	Value string
-}
+type DoctorProposalIdentity = corestore.DoctorProposalIdentity
 
-type DoctorProposalIdentityBinding struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	WorkItemID     tracker.NativeWorkItemID
-	Revision       int64
-	VersionSHA256  string
-	Identities     []DoctorProposalIdentity
-}
+type DoctorProposalIdentityBinding = corestore.DoctorProposalIdentityBinding
 
-type DoctorProposalIdentitySelection struct {
-	ProjectID tracker.ProjectID
-	Identity  DoctorProposalIdentity
-	OpenOnly  bool
-}
+type DoctorProposalIdentitySelection = corestore.DoctorProposalIdentitySelection
 
-type DoctorProposalIdentityResult struct {
-	ProjectID      tracker.ProjectID
-	SourceSequence int64
-	WorkItemID     tracker.NativeWorkItemID
-	Number         int64
-	Revision       int64
-	VersionSHA256  string
-	Terminal       bool
-}
+type DoctorProposalIdentityResult = corestore.DoctorProposalIdentityResult
 
 type DoctorProposalIdentityHead struct {
 	Item    corestore.WorkItem
@@ -121,7 +99,14 @@ func (s *session) LookupDoctorProposalIdentity(ctx context.Context, selection Do
 	if selection.ProjectID == "" || !validDoctorProposalIdentity(selection.Identity) {
 		return DoctorProposalIdentityResult{}, eventstore.ErrInvalidRecord
 	}
-	row, err := s.queries.LookupDoctorProposalIdentity(ctx, pgquery.LookupDoctorProposalIdentityParams{OrganizationID: s.organization, ProjectID: selection.ProjectID, Kind: selection.Identity.Kind, IdentityHash: artifact.Digest([]byte(selection.Identity.Value)), IdentityValue: []byte(selection.Identity.Value), OpenOnly: selection.OpenOnly})
+	var row pgquery.LookupDoctorProposalIdentityRow
+	var err error
+	if selection.Earliest {
+		selected, lookupErr := s.queries.LookupEarliestDoctorProposalIdentity(ctx, pgquery.LookupEarliestDoctorProposalIdentityParams{OrganizationID: s.organization, ProjectID: selection.ProjectID, Kind: selection.Identity.Kind, IdentityHash: artifact.Digest([]byte(selection.Identity.Value)), IdentityValue: []byte(selection.Identity.Value), OpenOnly: selection.OpenOnly})
+		row, err = pgquery.LookupDoctorProposalIdentityRow(selected), lookupErr
+	} else {
+		row, err = s.queries.LookupDoctorProposalIdentity(ctx, pgquery.LookupDoctorProposalIdentityParams{OrganizationID: s.organization, ProjectID: selection.ProjectID, Kind: selection.Identity.Kind, IdentityHash: artifact.Digest([]byte(selection.Identity.Value)), IdentityValue: []byte(selection.Identity.Value), OpenOnly: selection.OpenOnly})
+	}
 	if err != nil {
 		return DoctorProposalIdentityResult{}, mapError(ctx, err)
 	}

@@ -9,11 +9,14 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -131,29 +134,45 @@ func (s *Service) authorizeCommentWorkItem(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id string, params url.Values) (tracker.NativeIssue, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+		return tracker.NativeIssue{}, workItemStorageUnavailable()
+	}
 	for name, values := range params {
 		if name != "include" || len(values) != 1 {
 			return tracker.NativeIssue{}, nativePublicInvalid("Unsupported work item query")
 		}
 	}
-	include, err := nativeIssueChangeIncluded(params.Get("include"))
+	parts := strings.Split(params.Get("include"), ",")
+	workpad := slices.Contains(parts, "workpad")
+	parts = slices.DeleteFunc(parts, func(value string) bool { return value == "workpad" })
+	include, err := nativeIssueChangeIncluded(strings.Join(parts, ","))
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
 
 	var issue tracker.NativeIssue
-	err = s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
-		var err error
-		issue, err = s.readWorkItemPageModel(ctx, scope, id)
-		return err
-	})
+	project, err := s.readTenantProjectRecord(ctx, scope)
+	if err != nil {
+		return issue, err
+	}
+	if project.Core.Profile == "github_compatible" {
+		issue, err = s.readWorkItemSourcePage(ctx, scope, id)
+	} else {
+		err = s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
+			var err error
+			issue, err = s.readWorkItemPageModel(ctx, scope, id)
+			return err
+		})
+	}
 	if pageModelPending(err) {
 		issue, err = s.readWorkItemSourcePage(ctx, scope, id)
-	}
-	if err == nil {
+	} else if err == nil {
 		err = s.hydrateWorkItemActorNames(ctx, scope.organization, []*tracker.NativeIssue{&issue})
 	}
 	if err == nil {
+		issue.Queue, issue.Workpad = nil, nil
 		issue.DependencyReady = false
 		issue.SchedulingEligible = nil
 		for _, field := range []string{"dependency_ready", "scheduling_eligible"} {
@@ -161,6 +180,9 @@ func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id st
 				issue.OmittedFields = append(issue.OmittedFields, field)
 			}
 		}
+	}
+	if err == nil && workpad {
+		err = s.hydrateWorkItemWorkpad(ctx, scope, &issue)
 	}
 	if err == nil && include {
 		err = s.readNativeIssueChangePage(ctx, scope, &issue)
@@ -187,7 +209,16 @@ func (s *Service) readWorkItemPageModel(ctx context.Context, scope nativeScope, 
 		if errors.Is(err, corestore.ErrNotFound) {
 			return workItemStorageUnavailable()
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		head, err := r.BoardSequence(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		record.Value.ChangeSequence = head.Sequence
+		record.Value.OmittedFields = slices.DeleteFunc(slices.Clone(record.Value.OmittedFields), func(field string) bool { return field == "change_sequence" })
+		return nil
 	})
 	if err != nil {
 		return tracker.NativeIssue{}, projectRecordError(err)
@@ -362,29 +393,189 @@ func requireWorkItemPageReady(ctx context.Context, r tenantstore.Reader, scope n
 }
 
 func (s *Service) readWorkItemSourcePage(ctx context.Context, scope nativeScope, id string) (tracker.NativeIssue, error) {
-	row, version, err := s.readWorkItemRecord(ctx, scope, id)
-	if err != nil {
-		return tracker.NativeIssue{}, err
+	repository, ok := s.config.TenantRepository.(tenantstore.RequestReader)
+	if !ok {
+		return tracker.NativeIssue{}, workItemStorageUnavailable()
 	}
-	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
-	if err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		organization, err := r.AccessOrganization(ctx)
-		if err != nil {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	var row corestore.WorkItem
+	var version eventstore.CollaborationVersion
+	var source eventstore.LinkedSource
+	err := repository.ReadRequest(ctx, scope.organization, func(ctx context.Context) error {
+		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+				return err
+			}
+			var err error
+			row, version, err = s.readWorkItemRecord(ctx, scope, id)
+			if err != nil {
+				return err
+			}
+			source, err = r.LinkedSource(ctx, scope.project, row.NativeID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				source = eventstore.LinkedSource{}
+				return nil
+			}
 			return err
-		}
-		project, err := r.Project(ctx, scope.project)
-		if err != nil {
-			return err
-		}
-		issue.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(organization.Slug, project.Slug, issue.Number)}).WebURL
-		return nil
+		})
 	})
-	if err == nil {
-		err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue)
+	if err != nil {
+		return tracker.NativeIssue{}, projectRecordError(err)
 	}
-	issue.OmittedFields = append(issue.OmittedFields, "change_sequence")
-	return scope.reporterIssue(issue), err
+	issue, err := s.hydrateCanonicalWorkItemRecord(ctx, row, version)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	if source.OrganizationID != "" {
+		linked, err := s.hydrateLinkedIssueSourceRecord(ctx, scope.organization, source)
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		issue.LinkedSource = &linked
+	}
+	err = repository.ReadRequest(ctx, scope.organization, func(ctx context.Context) error {
+		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+				return err
+			}
+			project, err := r.Project(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			if project.DeletedAt != nil {
+				return corestore.ErrNotFound
+			}
+			current, err := r.WorkItem(ctx, scope.project, row.NativeID)
+			if err != nil {
+				return err
+			}
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+				return corestore.ErrNotFound
+			}
+			if current.Revision != row.Revision {
+				return nativeConflict(tracker.Revision(current.Revision))
+			}
+			currentVersion, err := r.CollaborationVersion(ctx, id, current.Revision)
+			if err != nil {
+				return err
+			}
+			if currentVersion.RecordID != version.RecordID || currentVersion.PayloadObjectKey != version.PayloadObjectKey || currentVersion.PayloadSHA256 != version.PayloadSHA256 {
+				return nativeConflict(tracker.Revision(current.Revision))
+			}
+			currentSource, err := r.LinkedSource(ctx, scope.project, row.NativeID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				currentSource, err = eventstore.LinkedSource{}, nil
+			}
+			if err != nil {
+				return err
+			}
+			if currentSource.SnapshotObjectKey != source.SnapshotObjectKey || currentSource.SnapshotSHA256 != source.SnapshotSHA256 {
+				return nativeConflict(tracker.Revision(current.Revision))
+			}
+			issue.Number, issue.Revision = int(current.Number), tracker.Revision(current.Revision)
+			issue.Title, issue.State, issue.Archived = current.Title, stringValue(current.WorkflowStateName), current.Archived
+			issue.Type, issue.Priority = current.IssueType, current.Priority
+			issue.Actor.Kind, issue.Actor.PrincipalID = stringValue(current.ActorKind), stringValue(current.ActorPrincipalID)
+			issue.CreatedAt, issue.UpdatedAt, issue.LastActivityAt = current.NativeCreatedAt, current.NativeUpdatedAt, current.LastActivityAt
+			if currentSource.OrganizationID == "" {
+				issue.LinkedSource = nil
+			} else {
+				if issue.LinkedSource == nil {
+					issue.LinkedSource = &tracker.LinkedIssueSource{Status: "pending"}
+				}
+				if issue.LinkedSource.Snapshot != nil && issue.LinkedSource.Snapshot.URL != currentSource.URL {
+					return artifact.ErrIntegrity
+				}
+				issue.LinkedSource.URL = currentSource.URL
+				issue.ExternalReferences = append(issue.ExternalReferences, tracker.GitHubIssueSourceReference(currentSource.URL, currentSource.URL))
+			}
+			organization, err := r.AccessOrganization(ctx)
+			if err != nil {
+				return err
+			}
+			issue.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(organization.Slug, project.Slug, issue.Number)}).WebURL
+			return nil
+		}); err != nil {
+			return err
+		}
+		if err := s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue); err != nil {
+			return err
+		}
+		if err := s.hydrateWorkItemActorNames(ctx, scope.organization, []*tracker.NativeIssue{&issue}); err != nil {
+			return err
+		}
+		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			head, err := r.BoardSequence(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			issue.ChangeSequence = head.Sequence
+			issue.OmittedFields = slices.DeleteFunc(slices.Clone(issue.OmittedFields), func(field string) bool { return field == "change_sequence" })
+			return nil
+		})
+	})
+	return scope.reporterIssue(issue), projectRecordError(err)
+}
+
+func (s *Service) hydrateWorkItemWorkpad(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue) error {
+	var outbound projectstore.GitHubOutbound
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if item.Revision != int64(issue.Revision) {
+			return corestore.ErrRevisionConflict
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+			return corestore.ErrNotFound
+		}
+		owner, ok := r.(projectstore.GitHubWorkpadReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		outbound, err = owner.LatestGitHubWorkpad(ctx, scope.project, issue.WorkItemID)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return projectRecordError(err)
+	}
+	if outbound.ID == 0 {
+		return nil
+	}
+	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, outbound.Payload)
+	if err != nil {
+		return err
+	}
+	var desired WorkpadDesired
+	if err := json.Unmarshal(raw, &desired); err != nil {
+		return err
+	}
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+			return corestore.ErrNotFound
+		}
+		if item.Revision != int64(issue.Revision) {
+			return corestore.ErrRevisionConflict
+		}
+		return nil
+	}); err != nil {
+		return projectRecordError(err)
+	}
+	issue.Workpad = &tracker.NativeWorkpad{Phase: desired.Phase, Body: desired.Body, SyncState: outbound.Status, UpdatedAt: outbound.CreatedAt}
+	return nil
 }

@@ -57,7 +57,8 @@ func newOperatorSecurityFixture(t *testing.T, configure ...func(*Config)) operat
 			if org != "org_security" {
 				providerID += "_second"
 			}
-			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: providerID, AllocationGeneration: 1}); err != nil {
+			deployment, generation := cfg.Hosted.deployment()
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: providerID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "test_hub_admin", Name: "Example admin", Hash: apikey.HashToken(testHubAdminToken), Scope: "admin", Kind: "service", KeyScope: "admin", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}); err != nil {

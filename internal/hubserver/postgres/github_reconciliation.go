@@ -2,31 +2,39 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func (s *session) GitHubReconciliation(ctx context.Context, project tracker.ProjectID) (projectstore.GitHubReconciliation, error) {
+	row, err := s.queries.ReadGitHubReconciliation(ctx, pgquery.ReadGitHubReconciliationParams{OrganizationID: s.organization, ProjectID: project})
+	return projectstore.GitHubReconciliation{
+		ProjectID: row.ProjectID, Repository: row.Repository, NodeID: row.NodeID,
+		AfterWorkItem: tracker.NativeWorkItemID(row.AfterWorkItem), Revision: row.Revision, Attempts: row.Attempts, NextAttemptAt: row.NextAttemptAt,
+		LastSuccessfulSweepAt: row.LastSuccessfulSweepAt, LastFailureAt: row.LastFailureAt,
+	}, mapError(ctx, err)
+}
+
 func (s *session) NextGitHubReconciliation(ctx context.Context, now time.Time) (projectstore.GitHubReconciliation, error) {
-	var row projectstore.GitHubReconciliation
-	err := s.db.QueryRow(ctx, `WITH ready AS (
- SELECT r.project_id,r.repository,r.node_id,r.after_work_item,r.revision,r.attempts,r.next_attempt_at
- FROM github_reconciliation r JOIN projects p ON p.organization_id=r.organization_id AND p.id=r.project_id
- WHERE r.organization_id=$1 AND r.next_attempt_at<=$2 AND p.deleted_at IS NULL AND p.profile='native'
- ORDER BY r.next_attempt_at,r.project_id LIMIT 1
-), initializing AS (
- SELECT project_id,lower(COALESCE(NULLIF(repository,''),checkout_repository)) AS repository
- FROM project_settings WHERE organization_id=$1 AND NOT github_reconciliation_initialized AND (repository<>'' OR checkout_repository<>'')
- ORDER BY project_id LIMIT 1
-)
-SELECT * FROM (
- SELECT * FROM ready UNION ALL
- SELECT project_id,repository,''::text,''::text,0::bigint,0::bigint,$2::timestamptz FROM initializing
-) candidates ORDER BY next_attempt_at,project_id LIMIT 1`, s.organization, now).Scan(&row.ProjectID, &row.Repository, &row.NodeID, &row.AfterWorkItem, &row.Revision, &row.Attempts, &row.NextAttemptAt)
-	return row, mapError(ctx, err)
+	row, err := s.queries.NextGitHubReconciliation(ctx, pgquery.NextGitHubReconciliationParams{OrganizationID: s.organization, DueAt: now})
+	if err != nil {
+		return projectstore.GitHubReconciliation{}, mapError(ctx, err)
+	}
+	result := projectstore.GitHubReconciliation{ProjectID: row.ProjectID, Repository: row.Repository, Revision: row.Revision, NextAttemptAt: row.NextAttemptAt}
+	if strings.EqualFold(row.StoredRepository, row.Repository) {
+		result.NodeID = row.NodeID
+		result.AfterWorkItem = tracker.NativeWorkItemID(row.AfterWorkItem)
+		result.Attempts = row.Attempts
+		result.LastSuccessfulSweepAt, result.LastFailureAt = row.LastSuccessfulSweepAt, row.LastFailureAt
+	}
+	return result, nil
 }
 
 func (s *session) NextGitHubLinkedSource(ctx context.Context, project tracker.ProjectID, after tracker.NativeWorkItemID) (eventstore.LinkedSource, error) {
@@ -35,27 +43,41 @@ func (s *session) NextGitHubLinkedSource(ctx context.Context, project tracker.Pr
 	if err != nil {
 		return eventstore.LinkedSource{}, mapError(ctx, err)
 	}
-	return s.LinkedSource(ctx, project, id)
+	source, err := s.LinkedSource(ctx, project, id)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return eventstore.LinkedSource{}, corestore.ErrRevisionConflict
+	}
+	return source, err
 }
 
 func (s *session) SaveGitHubReconciliation(ctx context.Context, row projectstore.GitHubReconciliation) error {
-	tag, err := s.db.Exec(ctx, `INSERT INTO github_reconciliation(organization_id,project_id,repository,node_id,after_work_item,revision,attempts,next_attempt_at) SELECT $1,$2,$3,$4,$5,1,$6,$7 WHERE $8::bigint=0
-ON CONFLICT(organization_id,project_id) DO NOTHING`, s.organization, row.ProjectID, row.Repository, row.NodeID, row.AfterWorkItem, row.Attempts, row.NextAttemptAt, row.Revision)
-	if err != nil {
+	if _, err := s.queries.LockActiveProject(ctx, pgquery.LockActiveProjectParams{OrganizationID: s.organization, ID: row.ProjectID}); err != nil {
 		return mapError(ctx, err)
 	}
+	repository := strings.ToLower(row.Repository)
 	if row.Revision == 0 {
-		if tag.RowsAffected() == 0 {
+		count, err := s.queries.InitializeGitHubReconciliation(ctx, pgquery.InitializeGitHubReconciliationParams{
+			OrganizationID: s.organization, ProjectID: row.ProjectID, Repository: repository, NodeID: row.NodeID,
+			AfterWorkItem: string(row.AfterWorkItem), Attempts: row.Attempts, NextAttemptAt: row.NextAttemptAt,
+			LastSuccessfulSweepAt: row.LastSuccessfulSweepAt, LastFailureAt: row.LastFailureAt,
+		})
+		if err != nil {
+			return mapError(ctx, err)
+		}
+		if count != 1 {
 			return corestore.ErrRevisionConflict
 		}
-		_, err = s.db.Exec(ctx, `UPDATE project_settings SET github_reconciliation_initialized=true WHERE organization_id=$1 AND project_id=$2`, s.organization, row.ProjectID)
-		return mapError(ctx, err)
+		return mapError(ctx, s.queries.MarkGitHubReconciliationInitialized(ctx, pgquery.MarkGitHubReconciliationInitializedParams{OrganizationID: s.organization, ProjectID: row.ProjectID}))
 	}
-	tag, err = s.db.Exec(ctx, `UPDATE github_reconciliation SET after_work_item=$3,attempts=$4,next_attempt_at=$5,revision=revision+1,node_id=$8 WHERE organization_id=$1 AND project_id=$2 AND revision=$6 AND repository=$7 AND (node_id=$8 OR node_id='')`, s.organization, row.ProjectID, row.AfterWorkItem, row.Attempts, row.NextAttemptAt, row.Revision, row.Repository, row.NodeID)
+	count, err := s.queries.AdvanceGitHubReconciliation(ctx, pgquery.AdvanceGitHubReconciliationParams{
+		OrganizationID: s.organization, ProjectID: row.ProjectID, Repository: repository, NodeID: row.NodeID,
+		AfterWorkItem: string(row.AfterWorkItem), ExpectedRevision: row.Revision, Attempts: row.Attempts, NextAttemptAt: row.NextAttemptAt,
+		LastSuccessfulSweepAt: row.LastSuccessfulSweepAt, LastFailureAt: row.LastFailureAt,
+	})
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	if tag.RowsAffected() != 1 {
+	if count != 1 {
 		return corestore.ErrRevisionConflict
 	}
 	return nil

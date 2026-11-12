@@ -1,20 +1,28 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -23,207 +31,199 @@ import (
 
 func TestNativeRetention(t *testing.T) {
 	t.Run("claim reviews retain each reviewer across historical backfill", func(t *testing.T) {
-		f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), retentionTimeout: frozenRetentionTimeout}))
-		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-			t.Fatal(err)
-		}
+		f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{retentionTimeout: frozenRetentionTimeout}))
 		first := f.publish(t, "first", "", true)
 		second := f.publish(t, "second", first.ID, true)
-		db := f.service.database
-		tx, err := db.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		for i := range claimEvidenceLimit + 1 {
-			review := tracker.ChangeReview{VersionID: first.ID, Actor: tracker.Actor{PrincipalID: "reviewer-one"}, Decision: "commented"}
-			if i == 0 {
-				review.Decision = "changes_requested"
+		content := eventstore.NewContent(f.service.runDetailStore())
+		var reviews []tracker.ChangeReview
+		for index := range claimEvidenceLimit + 1 {
+			decision := "commented"
+			if index == 0 {
+				decision = "changes_requested"
 			}
-			raw, err := json.Marshal(review)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, f.change.ID, first.ID, string(raw)); err != nil {
-				t.Fatal(err)
-			}
+			reviews = append(reviews, tracker.ChangeReview{ID: newNativeID("review"), VersionID: first.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-one"}, Decision: decision, CreatedAt: f.service.config.now()})
 		}
 		for _, version := range []string{first.ID, second.ID} {
-			for _, review := range []tracker.ChangeReview{
-				{VersionID: version, Actor: tracker.Actor{PrincipalID: "reviewer-one"}, Decision: "approved"},
-				{VersionID: version, Actor: tracker.Actor{PrincipalID: "reviewer-two"}, Decision: "changes_requested"},
-			} {
-				if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, version, "review", "", review); err != nil {
-					t.Fatal(err)
-				}
-			}
+			reviews = append(reviews,
+				tracker.ChangeReview{ID: newNativeID("review"), VersionID: version, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-one"}, Decision: "approved", CreatedAt: f.service.config.now()},
+				tracker.ChangeReview{ID: newNativeID("review"), VersionID: version, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-two"}, Decision: "changes_requested", CreatedAt: f.service.config.now()})
 		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-		reviewsBefore, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID)
-		if err != nil || len(reviewsBefore) != 2 || reviewsBefore[0].Decision != "approved" || reviewsBefore[1].Decision != "changes_requested" {
-			t.Fatalf("legacy reviews lost current authority: %+v %v", reviewsBefore, err)
-		}
-		beforeSchema := storageSchemaVersion(t, db.reader)
-		for range (claimEvidenceLimit+1)/storageConversionRows + 2 {
-			if err := db.populateClaimFacts(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, version := range []string{first.ID, second.ID} {
-			reviews, err := readClaimReviews(t.Context(), db.reader, f.change.ID, version)
-			if err != nil {
-				t.Fatal(err)
-			}
+		appendRetentionReviewEvidence(t, f, reviews)
+		assertReviews := func(version string, expected map[string]string) {
+			t.Helper()
+			selected := readRetentionReviewEvidence(t, f, version)
 			decisions := make(map[string]string)
-			for _, review := range reviews {
+			for _, review := range selected {
 				decisions[review.Actor.PrincipalID] = review.Decision
 			}
-			if len(reviews) != 2 || decisions["reviewer-one"] != "approved" || decisions["reviewer-two"] != "changes_requested" {
-				t.Fatalf("projected reviews lost current authority: %+v", reviews)
+			if len(selected) != len(expected) || !reflect.DeepEqual(decisions, expected) {
+				t.Fatalf("review authority = %+v, want %+v", selected, expected)
 			}
+		}
+		assertReviews(first.ID, map[string]string{"reviewer-one": "approved", "reviewer-two": "changes_requested"})
+		admin := usagePostgresAdmin(t, f.service)
+		var traceMu sync.Mutex
+		statements, schemaChanges := 0, 0
+		backfillContext := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
+			traceMu.Lock()
+			defer traceMu.Unlock()
+			statements++
+			query = strings.ToUpper(strings.TrimSpace(query))
+			for strings.HasPrefix(query, "--") {
+				_, query, _ = strings.Cut(query, "\n")
+				query = strings.TrimSpace(query)
+			}
+			for _, prefix := range []string{"CREATE ", "ALTER ", "DROP ", "TRUNCATE "} {
+				if strings.HasPrefix(query, prefix) {
+					schemaChanges++
+				}
+			}
+		})
+		repository := f.service.config.TenantRepository.(*postgres.Repository)
+		converted := 0
+		for range (len(reviews)+6)/7 + 1 {
+			count, err := repository.BackfillChangeRecoveryProjections(backfillContext, f.project.OrganizationID, content, 7)
+			if err != nil || count < 0 || count > 7 {
+				t.Fatalf("bounded review backfill = %d: %v", count, err)
+			}
+			converted += count
+		}
+		if converted != len(reviews) {
+			t.Fatalf("projected review history = %d, want %d", converted, len(reviews))
+		}
+		for _, version := range []string{first.ID, second.ID} {
+			assertReviews(version, map[string]string{"reviewer-one": "approved", "reviewer-two": "changes_requested"})
 		}
 		for _, update := range []struct{ actor, decision string }{{"reviewer-two", "approved"}, {"reviewer-one", "changes_requested"}} {
-			tx, err := db.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			review := tracker.ChangeReview{VersionID: first.ID, Actor: tracker.Actor{PrincipalID: update.actor}, Decision: update.decision}
-			if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, first.ID, "review", "", review); err != nil {
-				tx.Rollback()
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			reviews, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID)
-			if err != nil || !slices.ContainsFunc(reviews, func(review tracker.ChangeReview) bool {
+			appendRetentionReviewEvidence(t, f, []tracker.ChangeReview{{ID: newNativeID("review"), VersionID: first.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: update.actor}, Decision: update.decision, CreatedAt: f.service.config.now()}})
+			selected := readRetentionReviewEvidence(t, f, first.ID)
+			if !slices.ContainsFunc(selected, func(review tracker.ChangeReview) bool {
 				return review.Actor.PrincipalID == update.actor && review.Decision == update.decision
 			}) {
-				t.Fatalf("new unknown review lost authority: %+v %v", reviews, err)
+				t.Fatalf("new unknown review lost authority: %+v", selected)
 			}
-			if err := db.populateClaimFacts(t.Context()); err != nil {
-				t.Fatal(err)
+			if count, err := repository.BackfillChangeRecoveryProjections(backfillContext, f.project.OrganizationID, content, 7); err != nil || count != 1 {
+				t.Fatalf("late review backfill = %d: %v", count, err)
 			}
 		}
-		reviews, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID)
-		if err != nil {
-			t.Fatal(err)
+		assertReviews(first.ID, map[string]string{"reviewer-one": "changes_requested", "reviewer-two": "approved"})
+		traceMu.Lock()
+		observedStatements, observedSchemaChanges := statements, schemaChanges
+		traceMu.Unlock()
+		if observedStatements == 0 || observedSchemaChanges != 0 {
+			t.Fatalf("review projection SQL: statements=%d schema changes=%d, want observed statements and no schema changes", observedStatements, observedSchemaChanges)
 		}
-		decisions := make(map[string]string)
-		for _, review := range reviews {
-			decisions[review.Actor.PrincipalID] = review.Decision
-		}
-		if decisions["reviewer-one"] != "changes_requested" || decisions["reviewer-two"] != "approved" {
-			t.Fatalf("new review authority was hidden: %+v", reviews)
-		}
-		if after := storageSchemaVersion(t, db.reader); after != beforeSchema {
-			t.Fatalf("claim projection changed schema: %d -> %d", beforeSchema, after)
-		}
-		if _, err := db.db.ExecContext(t.Context(), `UPDATE change_evidence SET record_json='{}' WHERE change_id=?`, f.change.ID); err == nil {
+		if _, err := admin.ExecContext(t.Context(), "UPDATE change_evidence SET payload_sha256=repeat('f',64) WHERE organization_id=$1 AND change_id=$2", f.project.OrganizationID, f.change.ID); err == nil {
 			t.Fatal("evidence immutability trigger was not restored")
 		}
+		assertReviews(first.ID, map[string]string{"reviewer-one": "changes_requested", "reviewer-two": "approved"})
 	})
 
 	t.Run("claim facts resume from durable unknown rows", func(t *testing.T) {
-		f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), retentionTimeout: frozenRetentionTimeout}))
-		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{retentionTimeout: frozenRetentionTimeout}))
+		version := f.publish(t, "bounded projection", "", true)
+		const budget = corestore.MaxPageSize
+		reviews := make([]tracker.ChangeReview, 0, budget*3+2)
+		for range budget*3 + 2 {
+			reviews = append(reviews, tracker.ChangeReview{ID: newNativeID("review"), VersionID: version.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, Decision: "commented", CreatedAt: f.service.config.now()})
+		}
+		appendRetentionReviewEvidence(t, f, reviews)
+		content := eventstore.NewContent(f.service.runDetailStore())
+		repository := f.service.config.TenantRepository.(*postgres.Repository)
+		unknown := func() int {
+			t.Helper()
+			var count int
+			if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind='review' AND NOT review_session_known", f.project.OrganizationID, f.change.ID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			return count
+		}
+		if count, err := repository.BackfillChangeRecoveryProjections(t.Context(), f.project.OrganizationID, content, budget); err != nil || count != budget || unknown() != budget*2+2 {
+			t.Fatalf("first bounded backfill = %d, unknown=%d: %v", count, unknown(), err)
+		}
+		for _, want := range []int{budget, budget, 2} {
+			if count, err := repository.BackfillChangeRecoveryProjections(t.Context(), f.project.OrganizationID, content, budget); err != nil || count != want {
+				t.Fatalf("resumed backfill = %d, want %d: %v", count, want, err)
+			}
+		}
+		if count := unknown(); count != 0 {
+			t.Fatalf("unknown=%d, want 0", count)
+		}
+		first := appendRetentionReviewEvidence(t, f, []tracker.ChangeReview{{ID: newNativeID("review"), VersionID: version.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, Decision: "approved", CreatedAt: f.service.config.now()}})[0]
+		ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, []byte(`{"version_id":42}`))
+		if err != nil {
 			t.Fatal(err)
 		}
-		db := f.service.database
-		for i := range claimFactsRowsPerTick*3 + 2 {
-			id := fmt.Sprintf("legacy-change-%03d", i)
-			if _, err := db.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,?)`, id, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, `{}`); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := db.populateClaimFacts(t.Context()); err != nil {
+		malformed := eventstore.Evidence{OrganizationID: f.project.OrganizationID, ChangeID: f.change.ID, VersionID: new(version.ID), Kind: "review", ActorKind: "human", ActorPrincipalID: "example-reviewer", Decision: "commented", CreatedAt: f.service.config.now(), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize, PayloadFormatVersion: 2}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), malformed); return err }); err != nil {
 			t.Fatal(err)
 		}
-		var unknown int
-		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL`).Scan(&unknown); err != nil || unknown != claimFactsRowsPerTick*2+2 {
-			t.Fatalf("unknown=%d: %v", unknown, err)
-		}
-		for range 3 {
-			if err := db.populateClaimFacts(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL`).Scan(&unknown); err != nil || unknown != 0 {
-			t.Fatalf("unknown=%d: %v", unknown, err)
-		}
-		for _, row := range []struct{ id, raw string }{
-			{"isolated-first", `{}`},
-			{"isolated-second", `{"current_version_id":42}`},
-		} {
-			if _, err := db.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,?)`, row.id, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, row.raw); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := db.populateClaimFacts(t.Context()); err == nil {
+		if _, err := repository.BackfillChangeRecoveryProjections(t.Context(), f.project.OrganizationID, content, budget); err == nil {
 			t.Fatal("malformed claim fact did not fail")
 		}
 		var projected bool
-		if err := db.reader.QueryRowContext(t.Context(), `SELECT claim_version_id IS NOT NULL FROM change_requests WHERE id='isolated-first'`).Scan(&projected); err != nil || !projected {
+		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT review_session_known FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=$3", f.project.OrganizationID, f.change.ID, first.Sequence).Scan(&projected); err != nil || !projected {
 			t.Fatalf("earlier projection rolled back: projected=%v error=%v", projected, err)
 		}
 	})
 
 	t.Run("archive error preserves independent compaction", func(t *testing.T) {
-		f := newStorageArchiveFixture(t)
-		issue := f.nativeFixture.create(t, "archive failure")
-		f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-73*time.Hour))
-		archiveErr := errors.New("injected archive failure")
-		f.hook = func(entryauthority.ContentRequest) error { return archiveErr }
-		at := f.now.Add(-31 * 24 * time.Hour)
-		record := f.record(f.owner, "old conversation", at)
-		record.Status = conversation.StatusSettled
-		record.SettledAt = &at
-		record.Execution.Status = conversation.ExecutionCompleted
-		record = f.create(t, record)
-		tx := f.tx(t)
-		message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "final answer", Delivery: conversation.DeliveryCompleted, CreatedAt: at, UpdatedAt: at, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "example-runner"}}
-		if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
-			t.Fatal(err)
-		}
+		f := newPostgresStorageArchiveFixture(t)
+		issue := f.closed(t)
+		f.clock.Add(int64(60 * 24 * time.Hour))
+		now := f.now()
+		at := now.Add(-31 * 24 * time.Hour)
+		record := conversationstore.Conversation{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: conversation.NewConversationID(), OwnerPrincipalID: f.scope.credential.ID, Origin: "user", Title: "Old conversation", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusSettled, CreatedAt: at, UpdatedAt: at, SettledAt: new(at), Execution: conversation.Execution{Status: conversation.ExecutionCompleted, Settled: true, Owner: conversation.Owner{LeaseID: "settled_retention"}}}
+		f.write(t, func(w tenantstore.Writer) error {
+			var err error
+			record, err = w.CreateConversation(t.Context(), record)
+			return err
+		})
+		message := postgresContentTestMessage(t, f, record.ID, conversation.RoleAssistant, "final answer", conversation.DeliveryCompleted)
 		for range 2 {
-			if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageDelta, conversationDeltaBody(message.ID, 0, "fragment"), at); err != nil {
-				t.Fatal(err)
-			}
+			postgresContentTestDelta(t, f, message, "fragment", 0)
 		}
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,?,'slots','example',3,'{}')`, f.project.OrganizationID, f.project.ID, at.Truncate(time.Hour).Unix()); err != nil {
+		admin := nativeAttemptTestDatabase(t, f.nativeFixture)
+		if _, err := admin.ExecContext(t.Context(), `UPDATE conversation_events SET created_at=$3 WHERE organization_id=$1 AND conversation_id=$2`, f.project.OrganizationID, record.ID, at); err != nil {
 			t.Fatal(err)
 		}
-		f.commit(t, tx)
-		if err := f.service.maintainNativeRetention(t.Context(), f.now); !errors.Is(err, archiveErr) {
+		if _, err := admin.ExecContext(t.Context(), `UPDATE conversations SET created_at=$3,updated_at=$3,last_message_at=$3,settled_at=$3 WHERE organization_id=$1 AND id=$2`, f.project.OrganizationID, record.ID, at); err != nil {
+			t.Fatal(err)
+		}
+		verifyHistory := retentionSlotHistory(t, f, issue.WorkItemID)
+		archiveErr := errors.New("injected archive failure")
+		f.hook = func(request entryauthority.ContentRequest) error {
+			if request.Write && request.Reference.SchemaVersion == 2 {
+				return archiveErr
+			}
+			return nil
+		}
+		if err := f.service.maintainNativeRetention(t.Context(), now); !errors.Is(err, archiveErr) {
 			t.Fatalf("retention error=%v", err)
 		}
-		var deltas, samples, summaries int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_events WHERE conversation_id=? AND type='message.delta'", record.ID).Scan(&deltas); err != nil {
+		var deltas int
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2 AND type='message.delta'`, f.project.OrganizationID, record.ID).Scan(&deltas); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND metric='slots'", f.project.ID).Scan(&samples); err != nil {
-			t.Fatal(err)
+		if deltas != 0 {
+			t.Fatalf("deltas=%d", deltas)
 		}
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_sample_hours WHERE project_id=? AND metric='slots'", f.project.ID).Scan(&summaries); err != nil {
-			t.Fatal(err)
-		}
-		if deltas != 0 || samples != 0 || summaries != 1 {
-			t.Fatalf("deltas=%d samples=%d summaries=%d", deltas, samples, summaries)
-		}
+		verifyHistory()
 	})
+
 	t.Run("command receipts and storage accounting", func(t *testing.T) {
 		now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
-		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
+		f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 		issue := f.create(t, "receipts")
-		var actor string
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM api_tokens LIMIT 1").Scan(&actor); err != nil {
+		credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+		if err != nil {
 			t.Fatal(err)
 		}
+		actor := credential.ID
+		admin := usagePostgresAdmin(t, f.service)
 		counter := func() int64 {
 			var value int64
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&value); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'", f.project.OrganizationID).Scan(&value); err != nil {
 				t.Fatal(err)
 			}
 			return value
@@ -242,21 +242,22 @@ func TestNativeRetention(t *testing.T) {
 			{"POST " + base + "/conversations/c/link", "link", 25 * time.Hour, false},
 			{"mcp update_runner_routing", "mcp", 25 * time.Hour, false},
 		}
+		content := eventstore.NewContent(f.service.runDetailStore())
 		for _, receipt := range receipts {
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,'hash',?,?)", f.project.OrganizationID, actor, receipt.operation, receipt.key, `{"output":"`+fmt.Sprintf("%0512d", 0)+`"}`, formatHubTime(now.Add(-receipt.age))); err != nil {
+			at := now.Add(-receipt.age)
+			row, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: f.project.OrganizationID, ActorID: actor, Operation: receipt.operation, CommandKey: receipt.key, RequestHash: strings.Repeat("a", 64), CreatedAt: at, ResponseReplayUntilNs: at.Add(receiptstore.ReplayRetention).UnixNano()}, []byte(`{"output":"`+fmt.Sprintf("%0512d", 0)+`"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.PutReceipt(t.Context(), row); return err }); err != nil {
 				t.Fatal(err)
 			}
 		}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: actor}, RecordedAt: now, Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt"}}}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback()
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt"}}, now); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 			t.Fatal(err)
 		}
 		if after := counter(); after != before {
@@ -272,7 +273,7 @@ func TestNativeRetention(t *testing.T) {
 		}
 		for _, receipt := range receipts {
 			var expired bool
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT response_expired FROM native_commands WHERE command_key=?", receipt.key).Scan(&expired); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT response_expired FROM native_command_states WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4", f.project.OrganizationID, actor, receipt.operation, receipt.key).Scan(&expired); err != nil {
 				t.Fatal(err)
 			}
 			if !expired != receipt.kept {
@@ -282,23 +283,37 @@ func TestNativeRetention(t *testing.T) {
 	})
 	t.Run("duplicate challenges", func(t *testing.T) {
 		now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
-		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
+		f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 		other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-challenges")
+		live := make(map[tracker.ProjectID]string)
 		for _, project := range []tracker.NativeProject{f.project, other.project} {
+			fixture := f
+			if project.ID == other.project.ID {
+				fixture = other
+			}
+			candidate := fixture.create(t, "duplicate candidate")
 			for _, test := range []struct {
 				name     string
 				age      time.Duration
-				consumed *string
-			}{
-				{"expired", time.Hour + time.Second, nil},
-				{"boundary", time.Hour, nil},
-				{"live", time.Hour - time.Second, nil},
-				{"consumed", 0, new(formatHubTime(now))},
-			} {
-				token := string(project.ID) + "-" + test.name
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_duplicate_challenges
-(token,organization_id,project_id,principal_id,request_id,content_hash,matches_json,consumed_at,created_at)
-VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "principal", token, "hash", "[]", test.consumed, formatHubTime(now.Add(-test.age))); err != nil {
+				consumed bool
+			}{{"expired", time.Hour + time.Second, false}, {"boundary", time.Hour, false}, {"live", time.Hour - time.Second, false}, {"consumed", 0, true}} {
+				token := "dup_" + artifact.Digest([]byte(string(project.ID) + ":" + test.name))[:32]
+				at := now.Add(-test.age)
+				challenge := corestore.DuplicateChallenge{OrganizationID: project.OrganizationID, ProjectID: project.ID, Token: token, PrincipalID: "principal", RequestID: test.name, ContentHash: strings.Repeat("a", 64), PolicyHash: strings.Repeat("b", 64), CreatedAt: at, ExpiresAt: at.Add(time.Hour), Candidates: []corestore.DuplicateCandidate{{WorkItemID: candidate.WorkItemID, Number: int64(candidate.Number), Revision: int64(candidate.Revision)}}}
+				if test.name == "live" {
+					live[project.ID] = token
+				}
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					owner := w.(corestore.DuplicateChallengeWriter)
+					if err := owner.CreateDuplicateChallenge(t.Context(), challenge); err != nil {
+						return err
+					}
+					if test.consumed {
+						_, err := owner.ConsumeDuplicateChallenge(t.Context(), challenge, now)
+						return err
+					}
+					return nil
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -309,42 +324,42 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 		for _, project := range []tracker.NativeProject{f.project, other.project} {
 			var count int
 			var token string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*), COALESCE(min(token),'') FROM native_duplicate_challenges WHERE project_id=?", project.ID).Scan(&count, &token); err != nil {
+			if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*),COALESCE(min(token),'') FROM native_duplicate_challenges WHERE organization_id=$1 AND project_id=$2", project.OrganizationID, project.ID).Scan(&count, &token); err != nil {
 				t.Fatal(err)
 			}
-			if count != 1 || token != string(project.ID)+"-live" {
+			if count != 1 || token != live[project.ID] {
 				t.Fatalf("retained challenges=%d, token=%s", count, token)
 			}
 		}
+
 	})
 	t.Run("hourly host history", func(t *testing.T) {
 		now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
-		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
+		f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 		r.enroll(t)
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		for index := range 744 {
-			summary := testHostSummary(now.Add(-time.Duration(index) * time.Hour))
-			raw, err := json.Marshal(summary)
-			if err != nil {
-				t.Fatal(err)
+		for offset := 0; offset < 744; offset += 24 {
+			var summaries []hostmetrics.Summary
+			for index := offset; index < min(offset+24, 744); index++ {
+				summaries = append(summaries, testHostSummary(now.Add(-time.Duration(index)*time.Hour)))
 			}
-			if _, err := tx.ExecContext(t.Context(), "INSERT INTO runner_host_hours(organization_id,runner_id,hour,summary_json,segment_ids_json) VALUES(?,?,?,?,'[]')", f.project.OrganizationID, r.binding.RunnerID, formatHubTime(summary.Hour), string(raw)); err != nil {
+			reportedAt := now.Add(-time.Duration(offset) * time.Hour)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.AppendRunnerHostMetricSegments(t.Context(), r.binding.RunnerID, summaries, reportedAt)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
+		var seeded int
+		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(DISTINCT hour) FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, r.binding.RunnerID).Scan(&seeded); err != nil || seeded != 744 {
+			t.Fatalf("seeded host history = %d, want 744: %v", seeded, err)
 		}
 		if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 			t.Fatal(err)
 		}
 		var count int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_host_hours WHERE runner_id=?", r.binding.RunnerID).Scan(&count); err != nil {
+		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(DISTINCT hour) FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, r.binding.RunnerID).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 720 {
@@ -353,7 +368,7 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 		stale := testHostSummary(now.Add(-720 * time.Hour))
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "host_metrics": []hostmetrics.Summary{stale}})
 		requireNativeStatus(t, response, http.StatusOK)
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_host_hours WHERE runner_id=?", r.binding.RunnerID).Scan(&count); err != nil {
+		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(DISTINCT hour) FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, r.binding.RunnerID).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 720 {
@@ -395,126 +410,100 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 		{name: "long cancelled period", state: "Cancelled", age: 8, period: 14},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			now := time.Now().UTC()
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			f := newPostgresStorageArchiveFixture(t)
+			started := f.now()
+			f.write(t, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), f.project.ID)
+				if err != nil {
+					return err
+				}
+				if test.state == "Shipped" || test.state == "Cancelled" {
+					project.States = append(project.States, tracker.NativeState{Name: test.state, Terminal: true})
+					for i := range project.States {
+						if project.States[i].Name == "Todo" || project.States[i].Name == "Done" {
+							project.States[i].Transitions = append(project.States[i].Transitions, test.state)
+						}
+					}
+				}
+				if test.never || test.period != 0 {
+					var days *int64
+					if !test.never {
+						days = new(int64(test.period))
+					}
+					if test.state == "Cancelled" {
+						project.Settings.ArchiveCancelledAfterDays = days
+					} else {
+						project.Settings.ArchiveCompletedAfterDays = days
+					}
+				}
+				_, err = w.UpdateProjectRecord(t.Context(), project)
+				return err
+			})
 			issue := f.create(t, "retention")
-			if test.lease {
-				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-				lease := claimNativeAttempt(t, f, f.worker(t, "worker"), "machine", "session", issue.WorkItemID)
-				if test.expiredLease {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(now.Add(-time.Hour)), lease.ID); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			if test.never || test.period != 0 {
-				current, err := readProjectIntegration(t.Context(), f.service.database.db, scope)
-				if err != nil {
-					t.Fatal(err)
-				}
-				field := "archive_completed_after_days"
-				if test.state == "Cancelled" {
-					field = "archive_cancelled_after_days"
-				}
-				var period any
-				if !test.never {
-					period = test.period
-				}
-				response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, map[string]any{
-					"idempotency_key": "set-period", "expected_revision": fmt.Sprint(current.Revision), "intake": current.Intake, "projection": current.Projection, "repository_enabled": current.RepositoryEnabled, field: period,
-				})
-				requireNativeStatus(t, response, http.StatusOK)
-			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			if test.state == "Shipped" || test.state == "Cancelled" {
-				states := append(append([]tracker.NativeState{}, f.project.States...), tracker.NativeState{Name: test.state, Terminal: true})
-				if err := updateNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.openChange {
-				change := tracker.ChangeRequest{ID: "chg_retention", OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, CurrentVersion: "cv_retention"}
-				if test.landedChange {
-					change.Landed = &tracker.ChangeLanding{VersionID: "cv_retention"}
-				}
-				raw, err := marshalNative(change)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json,claim_version_id) VALUES(?,?,?,?,?,?)", change.ID, scope.organization, scope.project, issue.WorkItemID, raw, change.CurrentVersion); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)", change.ID, scope.organization, scope.project, issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-				versionRaw, err := marshalNative(tracker.ChangeVersion{ID: change.CurrentVersion, ChangeID: change.ID, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40)}, Policy: hubTestPolicy()})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,?)", change.CurrentVersion, change.ID, versionRaw); err != nil {
-					t.Fatal(err)
-				}
-				if err := projectChangeColumns(t.Context(), tx, "change_requests", change.ID, raw); err != nil {
-					t.Fatal(err)
-				}
-			}
 			if test.state != "Todo" {
-				issue.State = test.state
+				state := test.state
 				if test.terminalMove {
-					issue.State = "Done"
+					state = "Done"
 				}
-				event := "workflow.transitioned"
-				if test.noHistory {
-					event = "issue.edited"
-				}
-				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, event, tracker.CollaborationData{FromState: "Todo", ToState: issue.State}, now.Add(-time.Duration(test.age)*24*time.Hour))
-				if err != nil {
+				issue = f.transition(t, issue.WorkItemID, state)
+			}
+			f.clock.Store(started.Add(time.Duration(test.age) * 24 * time.Hour).UnixNano())
+			if test.terminalMove {
+				f.clock.Add(-int64(time.Hour))
+				issue = f.transition(t, issue.WorkItemID, test.state)
+				f.clock.Add(int64(time.Hour))
+			}
+			now := f.now()
+			admin := nativeAttemptTestDatabase(t, f.nativeFixture)
+			if test.noHistory {
+				if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET terminal_entered_at=NULL WHERE organization_id=$1 AND native_id=$2`, f.project.OrganizationID, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				if test.terminalMove {
-					issue.State = test.state
-					issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Done", ToState: test.state}, now.Add(-time.Hour))
-					if err != nil {
-						t.Fatal(err)
+			}
+			if test.restore || test.typedRestore {
+				f.clock.Add(-int64(2 * time.Hour))
+				for _, archived := range []bool{true, false} {
+					operation := "restore"
+					if archived {
+						operation = "archive"
 					}
+					request := archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "retention-" + operation}, ExpectedRevision: issue.Revision}
+					if test.typedRestore {
+						raw, err := f.service.setNativeArchiveCommand(t.Context(), f.scope, string(issue.WorkItemID), request, archived)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := json.Unmarshal(raw, &issue); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/"+operation, f.token, request)
+						requireNativeStatus(t, response, http.StatusOK)
+						decodeHubResponse(t, response, &issue)
+					}
+					f.clock.Add(int64(time.Hour))
 				}
 			}
-			if test.restore {
-				issue, err = setNativeArchiveTx(t.Context(), tx, scope, string(issue.WorkItemID), issue.Revision, true, now.Add(-2*time.Hour))
-				if err != nil {
+			if test.lease {
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES ($1,'machine_retention','example','example',1,'test',$2,$2,$2)`, f.project.OrganizationID, now); err != nil {
 					t.Fatal(err)
 				}
-				issue, err = setNativeArchiveTx(t.Context(), tx, scope, string(issue.WorkItemID), issue.Revision, false, now.Add(-time.Hour))
-				if err != nil {
-					t.Fatal(err)
+				expires := now.Add(time.Hour)
+				if test.expiredLease {
+					expires = now.Add(-time.Minute)
 				}
-			}
-			if test.typedOpen {
-				if _, err := tx.ExecContext(t.Context(), "UPDATE change_requests SET claim_version_id='new-version',claim_head_sha='new-head',landed_version_id='cv_retention' WHERE id='chg_retention'"); err != nil {
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at) SELECT organization_id,'lease_retention',id,'machine_retention','session_retention',revision,$3,$3,$4 FROM issues WHERE organization_id=$1 AND native_id=$2`, f.project.OrganizationID, issue.WorkItemID, now.Add(-time.Hour), expires); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if test.typedRestore {
-				if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "issue.edited", tracker.CollaborationData{}, now.Add(-time.Hour)); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET archive_operation='restore' WHERE work_item_id=? AND type='issue.edited'", issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
+			var change tracker.ChangeRequest
+			if test.openChange {
+				change = seedRetentionChange(t, f, issue.WorkItemID, test.landedChange, test.typedOpen)
 			}
 			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
-			got := readWorkItem(t, f, issue.WorkItemID, "")
+			got := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
 			if got.Archived != test.archived {
 				t.Fatalf("archived=%v, want %v", got.Archived, test.archived)
 			}
@@ -525,12 +514,22 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 				if got.Revision != issue.Revision+1 || got.State != issue.State || got.Body != issue.Body {
 					t.Fatalf("archive changed content: %+v", got)
 				}
-				var data, actor string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT data_json,actor_json FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&data, &actor); err != nil {
+				var stored eventstore.Event
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					events, err := r.HistoryEvents(t.Context(), f.project.ID, issue.WorkItemID, 0, 32)
+					if err != nil {
+						return err
+					}
+					if len(events) == 0 {
+						t.Fatal("archive event missing")
+					}
+					stored = events[len(events)-1]
+					return nil
+				}); err != nil {
 					t.Fatal(err)
 				}
-				var event tracker.CollaborationData
-				if err := json.Unmarshal([]byte(data), &event); err != nil {
+				event, err := eventstore.NewContent(f.service.runDetailStore()).Event(t.Context(), stored)
+				if err != nil {
 					t.Fatal(err)
 				}
 				days := 30
@@ -540,33 +539,32 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 				if test.period != 0 {
 					days = test.period
 				}
-				if event.Operation != "archive" || event.ReasonDetail != fmt.Sprintf("Archived automatically after %d days", days) || actor != `{"kind":"integration","principal_id":"auto_archive"}` {
-					t.Fatalf("archive event=%s actor=%s", data, actor)
+				if event.Data.Operation != "archive" || event.Data.ReasonDetail != fmt.Sprintf("Archived automatically after %d days", days) || event.Actor.Kind != "integration" || event.Actor.PrincipalID != "auto_archive" {
+					t.Fatalf("archive event=%+v actor=%+v", event.Data, event.Actor)
 				}
 				if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 					t.Fatal(err)
 				}
-				if repeated := readWorkItem(t, f, issue.WorkItemID, ""); repeated.Revision != got.Revision {
+				if repeated := readWorkItem(t, f.nativeFixture, issue.WorkItemID, ""); repeated.Revision != got.Revision {
 					t.Fatal("sweep archived twice")
 				}
 			}
 			if test.restore || test.lease && !test.expiredLease || test.openChange && !test.landedChange {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE released_at IS NULL", formatHubTime(now)); err != nil {
+				if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET released_at=$2 WHERE organization_id=$1 AND released_at IS NULL`, f.project.OrganizationID, now); err != nil {
 					t.Fatal(err)
 				}
 				if test.openChange {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_requests SET archive_landed_version_id='cv_retention',record_json=json_set(record_json,'$.landed.version_id','cv_retention') WHERE id='chg_retention'"); err != nil {
-						t.Fatal(err)
-					}
+					landRetentionChange(t, f, change)
 				}
 				retryAt := now.Add(time.Minute)
 				if test.restore {
 					retryAt = now.Add(31 * 24 * time.Hour)
 				}
+				f.clock.Store(retryAt.UnixNano())
 				if err := f.service.maintainNativeRetention(t.Context(), retryAt); err != nil {
 					t.Fatal(err)
 				}
-				if !readWorkItem(t, f, issue.WorkItemID, "").Archived {
+				if !readWorkItem(t, f.nativeFixture, issue.WorkItemID, "").Archived {
 					t.Fatal("eligible retry did not archive")
 				}
 			}
@@ -576,12 +574,16 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 
 func TestProjectArchivePeriods(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	current, err := readProjectIntegration(t.Context(), f.service.database.db, scope)
-	if err != nil {
-		t.Fatal(err)
+	f := newPostgresStorageArchiveFixture(t)
+	read := func() ProjectIntegration {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/integration", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var current ProjectIntegration
+		decodeHubResponse(t, response, &current)
+		return current
 	}
+	current := read()
 	if current.ArchiveCompletedAfterDays == nil || *current.ArchiveCompletedAfterDays != 30 || current.ArchiveCancelledAfterDays == nil || *current.ArchiveCancelledAfterDays != 7 {
 		t.Fatalf("defaults=%+v", current)
 	}
@@ -607,12 +609,9 @@ func TestProjectArchivePeriods(t *testing.T) {
 			if test.sendCancelled {
 				payload["archive_cancelled_after_days"] = test.cancelled
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, payload)
+			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, payload)
 			requireNativeStatus(t, response, test.status)
-			current, err = readProjectIntegration(t.Context(), f.service.database.db, scope)
-			if err != nil {
-				t.Fatal(err)
-			}
+			current = read()
 			if current.ArchiveCompletedAfterDays == nil || *current.ArchiveCompletedAfterDays != test.wantCompleted {
 				t.Fatalf("completed=%v", current.ArchiveCompletedAfterDays)
 			}
@@ -621,11 +620,16 @@ func TestProjectArchivePeriods(t *testing.T) {
 			}
 		})
 	}
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "settings during work")
-	claimNativeAttempt(t, f, f.worker(t, "settings-worker"), "machine", "session", issue.WorkItemID)
+	admin := nativeAttemptTestDatabase(t, f.nativeFixture)
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES ($1,'machine_periods','example','example',1,'test',$2,$2,$2)`, f.project.OrganizationID, f.now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at) SELECT organization_id,'lease_periods',id,'machine_periods','session_periods',revision,$3,$3,$4 FROM issues WHERE organization_id=$1 AND native_id=$2`, f.project.OrganizationID, issue.WorkItemID, f.now(), f.now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	payload := map[string]any{"idempotency_key": "live-settings", "expected_revision": fmt.Sprint(current.Revision), "intake": current.Intake, "projection": current.Projection, "repository_enabled": current.RepositoryEnabled, "archive_completed_after_days": 60}
-	response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, payload)
+	response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, payload)
 	requireNativeStatus(t, response, http.StatusOK)
 	var updated ProjectIntegration
 	decodeHubResponse(t, response, &updated)
@@ -635,15 +639,18 @@ func TestProjectArchivePeriods(t *testing.T) {
 	payload["idempotency_key"] = "live-workflow"
 	payload["expected_revision"] = fmt.Sprint(updated.Revision)
 	payload["states"] = f.project.States
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, payload), http.StatusUnprocessableEntity)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, payload), http.StatusUnprocessableEntity)
 
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository='acme/checkout-only' WHERE id=?", f.project.ID); err != nil {
-		t.Fatal(err)
-	}
-	checkout, err := readProjectIntegration(t.Context(), f.service.database.db, scope)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.write(t, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.Settings.CheckoutRepository = "owner/checkout-example"
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	})
+	checkout := read()
 	delete(payload, "states")
 	for _, test := range []struct {
 		name   string
@@ -661,14 +668,18 @@ func TestProjectArchivePeriods(t *testing.T) {
 		} else {
 			payload["intake"] = test.intake
 		}
-		response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, payload)
+		response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", f.token, payload)
 		requireNativeStatus(t, response, http.StatusOK)
 		decodeHubResponse(t, response, &checkout)
 		if checkout.Intake != "automatic" || checkout.ArchiveCompletedAfterDays == nil || *checkout.ArchiveCompletedAfterDays != test.days {
 			t.Fatalf("archive-only save = %+v", checkout)
 		}
 		var intake string
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT github_intake FROM projects WHERE id=?", f.project.ID).Scan(&intake); err != nil {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			project, err := r.ProjectRecord(t.Context(), f.project.ID)
+			intake = project.Settings.Intake
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		if intake != "disabled" {
@@ -694,64 +705,61 @@ func TestNativeStorageArchiveRetention(t *testing.T) {
 		{"not started", "Backlog", 96 * time.Hour, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
-			objects := map[string][]byte{}
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, Content: func(_ context.Context, r entryauthority.ContentRequest) ([]byte, error) {
-				if r.Write {
-					objects[r.Reference.Key] = slices.Clone(r.Data)
-					return nil, nil
-				}
-				return objects[r.Reference.Key], nil
-			}})
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			f := newPostgresStorageArchiveFixture(t)
+			now := f.now().Add(test.age)
 			issue := f.create(t, "archive cutoff")
 			if test.state != "Todo" {
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback()
-				if test.state == "Cancelled" || test.state == "Backlog" {
-					states := append(append([]tracker.NativeState{}, f.project.States...), tracker.NativeState{Name: test.state, Terminal: test.state == "Cancelled"})
-					if err := updateNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
-						t.Fatal(err)
+				f.write(t, func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), f.project.ID)
+					if err != nil {
+						return err
 					}
-				}
-				issue.State = test.state
-				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: test.state}, now.Add(-test.age))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := tx.Commit(); err != nil {
-					t.Fatal(err)
-				}
+					if !slices.ContainsFunc(project.States, func(state tracker.NativeState) bool { return state.Name == test.state }) {
+						project.States = append(project.States, tracker.NativeState{Name: test.state, Terminal: test.state == "Cancelled"})
+					}
+					for index := range project.States {
+						state := &project.States[index]
+						if state.Name == "Todo" && !slices.Contains(state.Transitions, test.state) {
+							state.Transitions = append(state.Transitions, test.state)
+						}
+					}
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				})
+				issue = f.transition(t, issue.WorkItemID, test.state)
 			}
+			f.clock.Store(now.UnixNano())
 			if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
-			var count int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_storage_archives WHERE work_item_id=?", issue.WorkItemID).Scan(&count); err != nil {
+			var pointer attachmentstore.StorageArchivePointer
+			err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				pointer, err = r.(attachmentstore.StorageArchiveReader).StorageArchivePointer(t.Context(), f.project.ID, issue.WorkItemID)
+				return err
+			})
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatal(err)
 			}
-			if (count == 1) != test.want {
-				t.Fatalf("archives=%d want=%v", count, test.want)
+			if (err == nil) != test.want {
+				t.Fatalf("archive pointer=%+v error=%v want=%v", pointer, err, test.want)
 			}
-			got := readWorkItem(t, f, issue.WorkItemID, "")
+			got := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
 			if got.Archived || got.Revision != issue.Revision {
 				t.Fatalf("storage archival changed board issue: %+v", got)
 			}
 			if test.want {
-				ref, err := scanAttachmentArchive(f.service.database.reader.QueryRowContext(t.Context(), `SELECT a.object_key,a.sha256,a.size,a.uncompressed_size,a.codec,a.schema_version,a.kind,a.retention_class,a.storage_binding_id,a.customer_owned FROM issue_storage_archives p JOIN attachments a ON a.id=p.attachment_id WHERE p.work_item_id=?`, issue.WorkItemID))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if ref.Validate(string(scope.organization)) != nil || artifact.Digest(objects[ref.Key]) != ref.SHA256 || int64(len(objects[ref.Key])) != ref.CompressedSize || int64(len(archiveTestBytes(t, objects[ref.Key]))) != ref.UncompressedSize {
+				ref := pointer.Root.Reference
+				f.mu.Lock()
+				data := slices.Clone(f.objects[ref.Key])
+				f.mu.Unlock()
+				if ref.Validate(string(f.project.OrganizationID)) != nil || artifact.Digest(data) != ref.SHA256 || int64(len(data)) != ref.CompressedSize || int64(len(archiveTestBytes(t, data))) != ref.UncompressedSize {
 					t.Fatalf("invalid root pointer: %+v", ref)
 				}
 				if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
 					t.Fatal(err)
 				}
-				if count := len(storageTestArchiveObjects(t, f.service, objects)); count != 1 {
+				if count := len(f.archiveObjects(t)); count != 1 {
 					t.Fatalf("repeat publication created %d objects", count)
 				}
 			}
@@ -759,140 +767,94 @@ func TestNativeStorageArchiveRetention(t *testing.T) {
 	}
 }
 
-func TestBackgroundStorageCancellationProgress(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		archive    bool
-		aggregates int
-		committed  []int
-	}{
-		{"conversion aggregates", false, 3, []int{3}},
-		{"conversion rows", false, 1, []int{3}},
-		{"archive", true, 3, []int{3}},
-	} {
-		archive := test.archive
-		t.Run(test.name, func(t *testing.T) {
-			f := newStorageArchiveFixture(t)
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			var issue tracker.NativeIssue
-			for index := range 3 {
-				if index < test.aggregates {
-					issue = f.nativeFixture.create(t, fmt.Sprintf("background progress %d", index))
-				}
-				if archive {
-					f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-73*time.Hour))
-				} else {
-					tx := f.tx(t)
-					if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("output", 2048)}}, f.now); err != nil {
-						t.Fatal(err)
-					}
-					f.commit(t, tx)
-				}
-			}
-			count := func() int {
-				t.Helper()
-				query := `SELECT count(*) FROM collaboration_events WHERE payload_version=1 AND type IN ('run.started','run.checkpointed','run.observed','run.finished')`
-				if archive {
-					query = `SELECT count(*) FROM issue_storage_archives`
-				}
-				var value int
-				if err := f.service.database.reader.QueryRowContext(t.Context(), query).Scan(&value); err != nil {
-					t.Fatal(err)
-				}
-				return value
-			}
-			run := func(ctx context.Context) error {
-				if archive {
-					return f.service.archiveClosedNativeIssues(ctx, f.now)
-				}
-				return f.service.convertLegacyStorage(ctx, f.now)
-			}
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			writes := 0
-			var first, interrupted string
-			f.hook = func(r entryauthority.ContentRequest) error {
-				if !r.Write {
-					return nil
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET name=name WHERE id=?", f.project.ID); err != nil {
-					return err
-				}
-				if archive && !strings.HasSuffix(r.Reference.Key, "/issue.json.gz") {
-					return nil
-				}
-				writes++
-				if got := count(); got != writes-1 {
-					t.Fatalf("committed units=%d before unit %d", got, writes)
-				}
-				if writes == 1 {
-					first = r.Reference.Key
-				} else {
-					interrupted = r.Reference.Key
-					cancel()
-				}
-				return nil
-			}
-			if err := run(ctx); !errors.Is(err, context.Canceled) {
-				t.Fatalf("canceled run: %v", err)
-			}
-			if got := count(); got != 1 {
-				t.Fatalf("committed progress after cancellation=%d", got)
-			}
-			resumed := 0
-			f.hook = func(r entryauthority.ContentRequest) error {
-				if !r.Write || archive && !strings.HasSuffix(r.Reference.Key, "/issue.json.gz") {
-					return nil
-				}
-				if r.Reference.Key == first {
-					t.Fatal("repeated committed unit")
-				}
-				if resumed == 0 && r.Reference.Key == interrupted {
-					t.Fatal("interrupted unit starved unattempted work")
-				}
-				if test.aggregates == 1 && resumed == 1 && r.Reference.Key != interrupted {
-					t.Fatal("wrapped pass did not revisit interrupted unit")
-				}
-				resumed++
-				return nil
-			}
-			for tick, want := range test.committed {
-				f.now = f.now.Add(time.Minute)
-				if err := run(t.Context()); err != nil {
-					t.Fatal(err)
-				}
-				if got := count(); got != want || resumed != want-1 {
-					t.Fatalf("tick=%d resumed units=%d committed=%d want=%d", tick, resumed, got, want)
-				}
-			}
-		})
-	}
-}
-
 func TestNativeRetentionCommitsEachIssue(t *testing.T) {
-	f := newStorageArchiveFixture(t)
-	for index := range 3 {
-		issue := f.nativeFixture.create(t, fmt.Sprintf("retention progress %d", index))
-		f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-31*24*time.Hour))
+	f := newPostgresStorageArchiveFixture(t)
+	for range 3 {
+		f.closed(t)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER interrupt_archive BEFORE UPDATE OF archived ON issues WHEN NEW.archived=1 AND (SELECT count(*) FROM issues WHERE archived=1)=1 BEGIN SELECT RAISE(ABORT,'interrupted archive'); END`); err != nil {
+	f.clock.Add(int64(31 * 24 * time.Hour))
+	admin := nativeAttemptTestDatabase(t, f.nativeFixture)
+	if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION interrupt_archive() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.archived AND (SELECT count(*) FROM issues WHERE archived)=1 THEN RAISE EXCEPTION 'interrupted archive'; END IF; RETURN NEW; END $$; CREATE TRIGGER interrupt_archive BEFORE UPDATE OF archived ON issues FOR EACH ROW EXECUTE FUNCTION interrupt_archive()`); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.expireNativeRecords(t.Context(), f.now); err == nil {
+	if err := f.service.expireNativeRecords(t.Context(), f.now()); err == nil {
 		t.Fatal("expected archive interruption")
 	}
 	for _, want := range []int{1, 3} {
 		if want == 3 {
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER interrupt_archive"); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `DROP TRIGGER interrupt_archive ON issues`); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.expireNativeRecords(t.Context(), f.now); err != nil {
+			if err := f.service.expireNativeRecords(t.Context(), f.now()); err != nil {
 				t.Fatal(err)
 			}
 		}
 		var count int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE archived=1").Scan(&count); err != nil || count != want {
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM issues WHERE organization_id=$1 AND archived`, f.project.OrganizationID).Scan(&count); err != nil || count != want {
 			t.Fatalf("archived=%d want=%d err=%v", count, want, err)
 		}
 	}
+}
+
+func appendRetentionReviewEvidence(t *testing.T, f changeFixture, reviews []tracker.ChangeReview) []eventstore.Evidence {
+	t.Helper()
+	content := eventstore.NewContent(f.service.runDetailStore())
+	rows := make([]eventstore.Evidence, 0, len(reviews))
+	for _, review := range reviews {
+		raw, err := json.Marshal(review)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: f.project.OrganizationID, ChangeID: f.change.ID, Kind: "review"}, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row.ReviewKind, row.ReviewSessionKnown = "", false
+		rows = append(rows, row)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		for index, row := range rows {
+			stored, err := w.AppendEvidence(t.Context(), row)
+			if err != nil {
+				return err
+			}
+			rows[index] = stored
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+func readRetentionReviewEvidence(t *testing.T, f changeFixture, version string) []tracker.ChangeReview {
+	t.Helper()
+	var rows []eventstore.Evidence
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		change, err := r.Change(t.Context(), f.change.ID)
+		if err != nil {
+			return err
+		}
+		rows, _, err = r.(eventstore.ChangeRecoveryReader).ChangeSummaryEvidence(t.Context(), f.change.ID, version, change.EvidenceSequence, nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	content := eventstore.NewContent(f.service.runDetailStore())
+	var reviews []tracker.ChangeReview
+	for _, row := range rows {
+		if row.Kind != "review" {
+			continue
+		}
+		raw, err := content.Evidence(t.Context(), row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		review, err := eventstore.DecodeChangeReview(row, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reviews = append(reviews, review)
+	}
+	return reviews
 }

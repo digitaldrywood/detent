@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -35,10 +37,11 @@ func TestRenameProject(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "original")
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			before, err := readProjectIntegration(t.Context(), f.service.database.reader, scope)
+			beforeRecord, err := f.service.readProjectRecord(t.Context(), scope)
 			if err != nil {
 				t.Fatal(err)
 			}
+			before := projectIntegrationRecord(beforeRecord)
 			path := f.base
 			if test.target == "unknown" {
 				path = strings.TrimSuffix(f.base, string(f.project.ID)) + "prj_missing"
@@ -55,10 +58,11 @@ func TestRenameProject(t *testing.T) {
 			if test.status != 200 && strings.TrimSpace(test.value) != "" && strings.Contains(response.Body.String(), test.value) {
 				t.Fatal("error disclosed submitted name")
 			}
-			after, err := readProjectIntegration(t.Context(), f.service.database.reader, scope)
+			afterRecord, err := f.service.readProjectRecord(t.Context(), scope)
 			if err != nil {
 				t.Fatal(err)
 			}
+			after := projectIntegrationRecord(afterRecord)
 			want := before
 			if test.status == 200 {
 				want.Name = "Renamed project"
@@ -67,15 +71,15 @@ func TestRenameProject(t *testing.T) {
 			if !reflect.DeepEqual(after, want) {
 				t.Fatalf("integration changed unexpectedly: got %+v, want %+v", after, want)
 			}
-			project, err := readNativeProject(t.Context(), f.service.database.reader, scope)
+			project, err := f.service.readProjectRecord(t.Context(), scope)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if project.Slug != f.project.Slug {
+			if project.Core.Slug != f.project.Slug {
 				t.Fatal("rename changed slug")
 			}
-			second, err := readNativeProject(t.Context(), f.service.database.reader, nativeScope{organization: other.project.OrganizationID, project: other.project.ID})
-			if err != nil || second.Name != "second" {
+			second, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: other.project.OrganizationID, project: other.project.ID})
+			if err != nil || second.Core.Name != "second" {
 				t.Fatalf("other project = %+v, %v", second, err)
 			}
 		})
@@ -117,10 +121,11 @@ func TestRenameProjectMCP(t *testing.T) {
 				if failure.Code != "revision_conflict" || failure.CurrentRevision != 2 {
 					t.Fatalf("conflict = %+v", failure)
 				}
-				current, err := readProjectIntegration(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+				currentRecord, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 				if err != nil {
 					t.Fatal(err)
 				}
+				current := projectIntegrationRecord(currentRecord)
 				if current.Name != "Tool name" || current.Revision != 2 {
 					t.Fatalf("conflicting rename changed project: %+v", current)
 				}
@@ -161,15 +166,24 @@ func TestHostedProjectRename(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newBrowserHostedFixture(t, true)
 			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
-			before, err := readProjectIntegration(t.Context(), f.service.database.reader, scope)
+			beforeRecord, err := f.service.readProjectRecord(t.Context(), scope)
 			if err != nil {
 				t.Fatal(err)
 			}
+			before := projectIntegrationRecord(beforeRecord)
 			if test.name == "member" {
 				if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_owner", "member"); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET role='member' WHERE user_id='user_browser_owner'"); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					member, err := w.AccessMember(t.Context(), "user_browser_owner")
+					if err != nil {
+						return err
+					}
+					member.Role = "member"
+					member.UpdatedAt = f.service.config.now()
+					return w.UpdateAccessMember(t.Context(), member)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -196,7 +210,7 @@ func TestHostedProjectRename(t *testing.T) {
 			}
 			if test.status == 200 {
 				var count int
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE project_id=? AND route=? AND status=200", f.project, "PATCH /api/v2/organizations/:organization/projects/:project").Scan(&count); err != nil {
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id=$1 AND project_id=$2 AND route=$3 AND status=200", scope.organization, f.project, "PATCH /api/v2/organizations/:organization/projects/:project").Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				if count == 0 {

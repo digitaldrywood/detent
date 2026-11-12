@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -175,6 +176,14 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 					if changeRow.LandedAt == nil || changeRow.LandedVersionID == nil || changeRow.LandedMergeSHA == nil || *changeRow.LandedMergeSHA != strings.Repeat("c", 40) {
 						return errors.New("legacy landing receipt did not populate typed report landing facts")
 					}
+					wantVersion := map[string]string{"change_import_a": "version_a", "change_import_b": "version_b"}[id]
+					if changeRow.CurrentVersionID == nil || *changeRow.CurrentVersionID != wantVersion {
+						return fmt.Errorf("imported current version=%v want=%s", changeRow.CurrentVersionID, wantVersion)
+					}
+					head, err := r.Version(t.Context(), id, *changeRow.CurrentVersionID)
+					if err != nil || head.ID != wantVersion || head.ChangeID != id || head.HeadSHA != strings.Repeat("b", 40) {
+						return fmt.Errorf("imported current head=%+v error=%v", head, err)
+					}
 					change, err := content.Change(t.Context(), changeRow)
 					if err != nil || change.Title != "Change "+id || change.Body != "Preserved discussion" || change.LinkedIssues[0] == "" {
 						return fmt.Errorf("change %s was not preserved: %+v: %w", id, change, err)
@@ -247,6 +256,44 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			var frozenRows []eventstore.VersionLanding
+			if err := repository.ReadRecords(t.Context(), organization, corestore.Serving, func(r eventstore.Reader) error {
+				owner, ok := r.(eventstore.VersionLandingReader)
+				if !ok {
+					return errors.New("version landing owner unavailable")
+				}
+				for _, suffix := range []string{"a", "b"} {
+					version, err := r.Version(t.Context(), "change_import_"+suffix, "version_"+suffix)
+					if err != nil {
+						return err
+					}
+					if !version.LandingHistoryKnown || version.FrozenLanding == nil {
+						return errors.New("verified source version history remained unknown")
+					}
+					frozen, err := owner.VersionLanding(t.Context(), "change_import_"+suffix, "version_"+suffix)
+					if err != nil {
+						return err
+					}
+					frozenRows = append(frozenRows, frozen)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			objects.beforeRead = func(context.Context) error {
+				if held := repository.Stats().AcquiredConns(); held != 0 {
+					return fmt.Errorf("frozen import object read retained %d database connections", held)
+				}
+				return nil
+			}
+			for index, frozen := range frozenRows {
+				value, err := content.VersionLanding(t.Context(), frozen)
+				expected := []string{"Frozen contract a", "Frozen contract b"}[index]
+				if err != nil || value.Quality == nil || value.Quality.IssueBody != expected || len(value.Quality.Criteria) != 1 || value.Quality.Criteria[0] != "Preserved criterion" || !value.LandedAt.Equal(createdAt.Add(time.Minute)) {
+					t.Fatalf("verified frozen source=%+v error=%v", value, err)
+				}
+			}
+			objects.beforeRead = nil
 		})
 	}
 }
@@ -263,8 +310,8 @@ VALUES ($1,$2,$3,'machine_change_import',$4,1,$5,$5,$6,$7,'completed') RETURNING
 	if err != nil {
 		return err
 	}
-	_, err = db.ExecContext(t.Context(), `INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,1,'succeeded',1,1,'example/payload',$7,$7)`, organization, id, issueID, leaseID, fencingToken, runID, at)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at,project_id)
+VALUES ($1,$2,$3,$4,$5,$6,1,'succeeded',1,1,'example/payload',$7,$7,(SELECT project_id FROM work_item_identities WHERE organization_id=$1 AND id=$3))`, organization, id, issueID, leaseID, fencingToken, runID, at)
 	return err
 }
 
@@ -274,7 +321,7 @@ func coreChangeSourceCopy(t *testing.T, organization tracker.OrganizationID, pro
 }
 func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID, project tracker.ProjectID, createdAt time.Time, descriptor policy.Descriptor, policyJSON []byte) *coreNeutralFixture {
 	t.Helper()
-	fixture := newCoreNeutralFixture(t, organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
+	fixture := newCoreNeutralFixture(t, organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
 	fixture.add("policy_revisions", map[string]any{"scope": string(organization) + "/" + string(project), "policy_id": descriptor.ID, "metadata_json": string(policyJSON)})
 	for index, suffix := range []string{"a", "b"} {
 		id := "change_import_" + suffix
@@ -300,6 +347,12 @@ func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID,
 		fixture.add("change_sources", map[string]any{"version_id": version.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
 		fixture.add("change_viewed_files", map[string]any{"version_id": version.ID, "principal_id": "example-owner", "manifest_sha256": strings.Repeat("d", 64), "file_sha256": strings.Repeat("f", 64), "viewed": 1})
 		fixture.add("native_pr_publications", map[string]any{"version_id": version.ID, "change_id": id, "repository": version.Repository, "base_ref": "develop", "branch": "change/" + version.ID, "head_sha": headSHA, "policy_id": descriptor.ID, "source_attempt_id": version.AttemptID, "recorder_attempt_id": "recorder_" + version.ID, "provider": "github", "external_id": externalID, "external_url": version.Repository + "/pull/" + externalID})
+		frozen := tracker.ChangeLanding{VersionID: version.ID, HeadSHA: headSHA, MergeSHA: strings.Repeat("c", 40), BaseRef: "develop", Method: "merge", Actor: version.Actor, LandedAt: createdAt.Add(time.Minute + 123*time.Nanosecond), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 1, IssueBody: "Frozen contract " + suffix, Criteria: []string{"Preserved criterion"}, Missing: []string{}, Evidence: []gate.CriterionEvidence{}}}
+		frozenJSON, err := json.Marshal(frozen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.add("quality_landings", map[string]any{"version_id": version.ID, "record_json": string(frozenJSON), "landed_at": formatHubTime(frozen.LandedAt)})
 		landing := tracker.NativeLandingReceipt{VersionID: version.ID, HeadSHA: headSHA, MergeSHA: strings.Repeat("c", 40), BaseRef: "develop", BaseSHA: baseSHA, Method: "merge", Landed: true, ObservedAt: createdAt.Add(time.Minute + 123*time.Nanosecond)}
 		landingJSON, err := json.Marshal(landing)
 		if err != nil {

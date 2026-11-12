@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/reviewseverity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -31,6 +32,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileR
 	}
 	if r == nil || r.client == nil {
 		return hubserver.ReconcileSnapshot{}, errors.New("github reconciler is not configured")
+	}
+	if request.TargetedPullRequests {
+		return r.reconcileTargetedPullRequest(ctx, request)
 	}
 	repository, err := r.fetchRepository(ctx, request.Repository)
 	if err != nil {
@@ -65,7 +69,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileR
 	snapshot := hubserver.ReconcileSnapshot{
 		Repository: hubserver.RepositorySource{
 			NodeID: repository.NodeID, DatabaseID: positiveID(repository.ID),
-			Owner: repository.Owner.Login, Name: repository.Name, UpdatedAt: repository.UpdatedAt,
+			Owner: repository.Owner.Login, Name: repository.Name, DefaultBranch: repository.DefaultBranch, UpdatedAt: repository.UpdatedAt,
 		},
 		Issues:       make([]hubserver.IssueSource, 0, len(remoteIssues)),
 		PullRequests: make([]hubserver.PullRequestSource, 0, len(remotePulls)),
@@ -96,6 +100,47 @@ func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileR
 		}
 	}
 	return snapshot, nil
+}
+
+func (r *Reconciler) reconcileTargetedPullRequest(ctx context.Context, request hubserver.ReconcileRequest) (hubserver.ReconcileSnapshot, error) {
+	if len(request.Hydrations) != 1 || request.Hydrations[0].ObjectKind != "pull_request" || request.Hydrations[0].GitHubNumber <= 0 || request.Hydrations[0].HeadSHA == "" || strings.TrimSpace(request.Repository.Owner) == "" || strings.TrimSpace(request.Repository.Name) == "" {
+		return hubserver.ReconcileSnapshot{}, errors.New("targeted pull request request is incomplete")
+	}
+	target := request.Hydrations[0]
+	path := repositoryRESTPath(request.Repository.Owner, request.Repository.Name)
+	var pull reconcilePullRequest
+	if err := r.client.REST(ctx, http.MethodGet, path+"/pulls/"+strconv.Itoa(target.GitHubNumber), nil, &pull); err != nil {
+		var status *connectorgithub.StatusError
+		if errors.Is(err, connectorgithub.ErrNotFound) || errors.As(err, &status) && (status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusGone) {
+			err = hubserver.Permanent(err)
+		}
+		return hubserver.ReconcileSnapshot{}, fmt.Errorf("refresh targeted github pull request: %w", err)
+	}
+	repository := pull.Base.Repository
+	if repository == nil || repository.NodeID == "" || repository.Owner.Login == "" || repository.Name == "" || pull.Number <= 0 || pull.Head.SHA == "" {
+		return hubserver.ReconcileSnapshot{}, errors.New("targeted pull request source identity is incomplete")
+	}
+	if !strings.EqualFold(repository.Owner.Login, request.Repository.Owner) || !strings.EqualFold(repository.Name, request.Repository.Name) || request.Repository.NodeID != "" && repository.NodeID != request.Repository.NodeID || pull.Number != target.GitHubNumber || pull.Head.SHA != target.HeadSHA {
+		return hubserver.ReconcileSnapshot{}, hubserver.Permanent(errors.New("targeted pull request source identity changed"))
+	}
+	source := pull.source()
+	if err := validatePullRequestSource(source); err != nil {
+		return hubserver.ReconcileSnapshot{}, err
+	}
+	checks, err := r.fetchCheckSummary(ctx, path, source.HeadSHA)
+	if err != nil {
+		return hubserver.ReconcileSnapshot{}, err
+	}
+	reviews, err := r.fetchReviewSummary(ctx, path, source.Number)
+	if err != nil {
+		return hubserver.ReconcileSnapshot{}, err
+	}
+	mergeable := strings.ToLower(strings.TrimSpace(pull.MergeableState))
+	return hubserver.ReconcileSnapshot{
+		Repository:         hubserver.RepositorySource{NodeID: repository.NodeID, DatabaseID: positiveID(repository.ID), Owner: repository.Owner.Login, Name: repository.Name, DefaultBranch: repository.DefaultBranch, UpdatedAt: repository.UpdatedAt},
+		PullRequests:       []hubserver.PullRequestSource{source},
+		PullRequestDetails: []hubserver.PullRequestDetailSource{{Number: source.Number, HeadSHA: source.HeadSHA, MergeableState: &mergeable, Checks: &checks, Reviews: &reviews}},
+	}, nil
 }
 
 type pullRequestDetailNeed struct {
@@ -268,11 +313,12 @@ func repositoryRESTPath(owner string, name string) string {
 }
 
 type reconcileRepository struct {
-	ID        int64     `json:"id"`
-	NodeID    string    `json:"node_id"`
-	Name      string    `json:"name"`
-	Owner     restActor `json:"owner"`
-	UpdatedAt time.Time `json:"updated_at"`
+	DefaultBranch string    `json:"default_branch"`
+	ID            int64     `json:"id"`
+	NodeID        string    `json:"node_id"`
+	Name          string    `json:"name"`
+	Owner         restActor `json:"owner"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type restActor struct {
@@ -334,8 +380,9 @@ type reconcilePullRequest struct {
 }
 
 type restRef struct {
-	Ref string `json:"ref"`
-	SHA string `json:"sha"`
+	Ref        string               `json:"ref"`
+	SHA        string               `json:"sha"`
+	Repository *reconcileRepository `json:"repo,omitempty"`
 }
 
 func summarizeChecks(checkRuns []restCheckRun, statuses []restStatus) tracker.CheckSummary {

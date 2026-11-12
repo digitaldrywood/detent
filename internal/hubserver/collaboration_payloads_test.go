@@ -572,63 +572,6 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 	}
 }
 
-func restoreLegacyCollaborationPayloads(t *testing.T, service *Service, scope nativeScope) {
-	t.Helper()
-	ctx := service.runDetailContext(t.Context())
-	rows, err := service.database.reader.QueryContext(ctx, "SELECT id,"+collaborationPayloadColumn("")+" FROM collaboration_events WHERE organization_id=? AND project_id=?", scope.organization, scope.project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	type record struct{ id, raw string }
-	var records []record
-	for rows.Next() {
-		var r record
-		if err := rows.Scan(&r.id, &r.raw); err != nil {
-			t.Fatal(err)
-		}
-		records = append(records, r)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		t.Fatal(err)
-	}
-	for i := range records {
-		var data tracker.CollaborationData
-		if err := decodeRunHistory(ctx, service.database.reader, records[i].raw, &data); err != nil {
-			t.Fatal(err)
-		}
-		records[i].raw, err = marshalNative(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := service.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		var trigger string
-		if err := tx.QueryRowContext(ctx, "SELECT sql FROM sqlite_schema WHERE name='collaboration_events_no_update'").Scan(&trigger); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "DROP TRIGGER collaboration_events_no_update"); err != nil {
-			return err
-		}
-		for _, r := range records {
-			if _, err := tx.ExecContext(ctx, "UPDATE collaboration_events SET data_json=?,payload_version=0,payload_attachment_id='',payload_entry='',payload_object_key='',payload_sha256='',payload_bytes=0,payload_content_bytes=0 WHERE id=?", r.raw, r.id); err != nil {
-				return err
-			}
-			metadata, err := activityQueryMetadata([]byte(r.raw))
-			if err != nil {
-				return err
-			}
-			if err := metadata.write(ctx, tx, "collaboration_events", "id=?", r.id); err != nil {
-				return err
-			}
-		}
-		_, err := tx.ExecContext(ctx, trigger)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 type schedulerArchiveFailureStore struct {
 	attachment.DetailStore
 	failure string
@@ -651,8 +594,9 @@ func (s schedulerArchiveFailureStore) ReadDetail(ctx context.Context, organizati
 func TestSchedulerPayloadRequiresArchive(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "scheduler archive required")
-	runner := prepareRunner(t, f, runnerauth.Claim)
+	runner := prepareRunner(t, f, runnerauth.Claim, runnerauth.Heartbeat)
 	runner.enroll(t)
+	reportRunnerCapacity(t, f.service, f.base, runner.redemption.Credential, runner.binding.MachineID, runner.redemption.DisplayName, runner.redemption.BackendIsolation, runner.redemption.Capacity)
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), scope.organization, apikey.HashToken(runner.redemption.Credential), "", "")
 	if err != nil {
@@ -698,7 +642,7 @@ func TestSchedulerPayloadRequiresArchive(t *testing.T) {
 		}
 		unchanged(t)
 	})
-	request := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "scheduler-session", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+	request := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "scheduler-session", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	for _, failure := range []string{"missing storage", "upload rejected", "verification failed"} {
 		t.Run(failure, func(t *testing.T) {
 			now := f.service.config.now()

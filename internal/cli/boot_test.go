@@ -42,7 +42,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/tui"
-	"github.com/digitaldrywood/detent/internal/web"
 )
 
 func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
@@ -765,120 +764,6 @@ func TestTerminalDashboardMessageFilterRoutesInterruptToCtrlC(t *testing.T) {
 	}
 }
 
-func TestRegistryRefresherRequestsProjectOrchestrators(t *testing.T) {
-	t.Parallel()
-
-	registry := projectpkg.NewRegistry()
-	mustSetProject(t, registry, startRefreshProject(t, "alpha"))
-	mustSetProject(t, registry, startRefreshProject(t, "beta"))
-
-	refresher := refresherForRegistry(registry)
-	if refresher == nil {
-		t.Fatal("refresherForRegistry() = nil, want refresher")
-		return
-	}
-
-	response, err := refresher.RequestRefresh(context.Background())
-	if err != nil {
-		t.Fatalf("RequestRefresh() error = %v", err)
-	}
-	assertRefresh(t, response)
-}
-
-func TestMergeRefreshResponseKeepsInProgressWhenSomeProjectsAccepted(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 6, 24, 14, 0, 0, 0, time.UTC)
-	retryAt := now.Add(5 * time.Minute)
-	current := web.RefreshResponse{
-		RequestID:   "manual-refused",
-		Status:      telemetry.RefreshAttemptStatusRefused,
-		Refused:     true,
-		RequestedAt: now,
-		LastError:   "GitHub REST backoff is active",
-		LastErrorAt: &now,
-		RetryAt:     &retryAt,
-		Operations:  []string{"poll"},
-	}
-	next := web.RefreshResponse{
-		RequestID:   "manual-accepted",
-		Status:      telemetry.RefreshAttemptStatusInProgress,
-		Queued:      true,
-		RequestedAt: now.Add(time.Second),
-		Operations:  []string{"reconcile"},
-	}
-
-	got := mergeRefreshResponse(current, next)
-	if got.Status != telemetry.RefreshAttemptStatusInProgress {
-		t.Fatalf("Status = %q, want %q; response = %#v", got.Status, telemetry.RefreshAttemptStatusInProgress, got)
-	}
-	if !got.Refused || !got.Queued {
-		t.Fatalf("Refused/Queued = %v/%v, want true/true; response = %#v", got.Refused, got.Queued, got)
-	}
-	if got.LastError != current.LastError || got.RetryAt == nil || !got.RetryAt.Equal(retryAt) {
-		t.Fatalf("backoff fields = error %q retry %v, want preserved refusal detail", got.LastError, got.RetryAt)
-	}
-	if !hasOperation(got.Operations, "poll") || !hasOperation(got.Operations, "reconcile") {
-		t.Fatalf("Operations = %#v, want merged operations", got.Operations)
-	}
-}
-
-func TestRegistryRefresherTargetsProjectV2WithoutConfiguredRepository(t *testing.T) {
-	t.Parallel()
-
-	registry := projectpkg.NewRegistry()
-	mustSetProject(t, registry, startRefreshProject(t, "project-v2"))
-
-	refresher := refresherForRegistry(registry)
-	targeted, ok := refresher.(web.TargetedRefresher)
-	if !ok {
-		t.Fatal("refresherForRegistry() does not implement TargetedRefresher")
-	}
-	response, err := targeted.RequestTargetedRefresh(context.Background(), web.RefreshTarget{
-		Repository:  "digitaldrywood/detent",
-		Event:       "projects_v2_item",
-		DeliveryID:  "delivery-1",
-		IssueNumber: 666,
-	})
-	if err != nil {
-		t.Fatalf("RequestTargetedRefresh() error = %v", err)
-	}
-	if !hasOperation(response.Operations, "target:digitaldrywood/detent") {
-		t.Fatalf("Operations = %#v, want target marker", response.Operations)
-	}
-	if !hasOperation(response.Operations, "targeted_reconcile:digitaldrywood/detent") {
-		t.Fatalf("Operations = %#v, want targeted reconcile marker", response.Operations)
-	}
-}
-
-func TestRegistryRefresherTargetsBranchOnlyWebhook(t *testing.T) {
-	t.Parallel()
-
-	registry := projectpkg.NewRegistry()
-	mustSetProject(t, registry, startRefreshProject(t, "branch-target"))
-
-	refresher := refresherForRegistry(registry)
-	targeted, ok := refresher.(web.TargetedRefresher)
-	if !ok {
-		t.Fatal("refresherForRegistry() does not implement TargetedRefresher")
-	}
-	response, err := targeted.RequestTargetedRefresh(context.Background(), web.RefreshTarget{
-		Repository: "digitaldrywood/detent",
-		Branch:     "detent/digitaldrywood_detent_1133-feature",
-		Event:      "check_run",
-		DeliveryID: "delivery-branch",
-	})
-	if err != nil {
-		t.Fatalf("RequestTargetedRefresh() error = %v", err)
-	}
-	if !hasOperation(response.Operations, "target:digitaldrywood/detent") {
-		t.Fatalf("Operations = %#v, want target marker", response.Operations)
-	}
-	if !hasOperation(response.Operations, "targeted_reconcile:digitaldrywood/detent") {
-		t.Fatalf("Operations = %#v, want targeted reconcile marker", response.Operations)
-	}
-}
-
 func TestStartupServerURL(t *testing.T) {
 	t.Parallel()
 
@@ -1014,37 +899,6 @@ func TestAcquireRuntimeInstanceLockReportsLiveHolder(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "context deadline exceeded") {
 		t.Fatalf("acquireRuntimeInstanceLock() error = %q, want actionable contention error", err)
-	}
-}
-
-func TestRegistryRefresherSkipsStoppedProjectOrchestrators(t *testing.T) {
-	t.Parallel()
-
-	registry := projectpkg.NewRegistry()
-	mustSetProject(t, registry, newRefreshProject(t, "stopped"))
-
-	refresher := refresherForRegistry(registry)
-	if refresher == nil {
-		t.Fatal("refresherForRegistry() = nil, want refresher")
-		return
-	}
-	_, err := refresher.RequestRefresh(context.Background())
-	if !errors.Is(err, projectpkg.ErrProjectNotFound) {
-		t.Fatalf("RequestRefresh() error = %v, want %v", err, projectpkg.ErrProjectNotFound)
-	}
-}
-
-func TestRegistryRefresherReturnsProjectNotFoundWithoutOrchestrators(t *testing.T) {
-	t.Parallel()
-
-	refresher := refresherForRegistry(projectpkg.NewRegistry())
-	if refresher == nil {
-		t.Fatal("refresherForRegistry() = nil, want refresher")
-		return
-	}
-	_, err := refresher.RequestRefresh(context.Background())
-	if !errors.Is(err, projectpkg.ErrProjectNotFound) {
-		t.Fatalf("RequestRefresh() error = %v, want %v", err, projectpkg.ErrProjectNotFound)
 	}
 }
 
@@ -1647,8 +1501,8 @@ func writeBootLocalProjects(t *testing.T, path string, projects []globalconfig.P
 		t.Fatalf("readLocalConfigurationFile() error = %v", err)
 	}
 	cfg.Projects = projects
-	if err := writeLocalConfigurationFile(path, cfg); err != nil {
-		t.Fatalf("writeLocalConfigurationFile() error = %v", err)
+	if err := globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
+		t.Fatalf("globalconfig.Write() error = %v", err)
 	}
 }
 
@@ -1661,8 +1515,8 @@ func writeBootGlobalConfig(t *testing.T, path string, projects []globalconfig.Pr
 	}
 	cfg.Global.MaxConcurrentAgents = 8
 	cfg.Projects = projects
-	if err := writeLocalConfigurationFile(path, cfg); err != nil {
-		t.Fatalf("writeLocalConfigurationFile() error = %v", err)
+	if err := globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
+		t.Fatalf("globalconfig.Write() error = %v", err)
 	}
 }
 
@@ -1707,20 +1561,6 @@ func mustSetProject(t *testing.T, registry *projectpkg.Registry, project *projec
 
 	if err := registry.Set(project); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
-	}
-}
-
-func assertRefresh(t *testing.T, response web.RefreshResponse) {
-	t.Helper()
-
-	if !response.Queued {
-		t.Fatalf("Queued = false, want true; response = %#v", response)
-	}
-	if response.RequestedAt.IsZero() {
-		t.Fatalf("RequestedAt is zero; response = %#v", response)
-	}
-	if len(response.Operations) != 2 || response.Operations[0] != "poll" || response.Operations[1] != "reconcile" {
-		t.Fatalf("Operations = %#v, want poll/reconcile", response.Operations)
 	}
 }
 

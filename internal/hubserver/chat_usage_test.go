@@ -218,6 +218,11 @@ func TestHostedChatUsageReports(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
 	f.seedPreview(t)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_browser_preview", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateConversationPrice(t.Context(), billingstore.ConversationPrice{OrganizationID: "org_browser_preview", ID: 1, Provider: "openai", Model: "gpt-6-luna", EffectiveAt: time.Unix(0, 0).UTC(), Input: .1, CachedInput: .01, Output: .5})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	usage := ConversationUsage{OrganizationID: "org_browser_preview", ProjectID: tracker.ProjectID(f.project), ConversationID: f.conversation, TurnID: "report-chat", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: 1_000_000, CachedInputTokens: 400_000, OutputTokens: 100_000, ReasoningOutputTokens: 30_000}}
 	if err := f.service.database.RecordConversationUsage(t.Context(), usage); err != nil {
 		t.Fatal(err)
@@ -296,7 +301,6 @@ func TestGenkitCoordinatorPersistsPricedUsage(t *testing.T) {
 	defaults := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	reopenConfig.Postgres = defaults.Postgres
 	reopenConfig.Hosted = defaults.Hosted
-	reopenConfig.Hosted.OrganizationID = string(f.organization)
 	reopenConfig.TenantRepository, reopenConfig.AccessRepository, reopenConfig.BillingRepository = nil, nil, nil
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)

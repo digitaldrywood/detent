@@ -490,8 +490,8 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 	service := &Service{database: &database{postgres: repository}, echo: echo.New(), secretRewrapReady: make(chan struct{}), config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.New(slog.NewTextHandler(&previewLogs, nil)), SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, Clock: func() time.Time { return now }}.normalized()}
 	service.echo.POST(nativeBase+"/claims/preview", service.previewProviderCandidates, service.requireNativeScope(apiScopeWorker))
 	service.echo.GET(nativeBase+"/work-items/:item", service.getNativeIssue, service.requireNativeScope(apiScopeWorker, apiScopeOperator))
-	if service.database.db != nil {
-		t.Fatal("preview fixture has a legacy database")
+	if service.database.postgres == nil {
+		t.Fatal("preview fixture requires PostgreSQL")
 	}
 	content := eventstore.NewContent(details)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -616,7 +616,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 					t.Fatalf("unexpected scoped item %s", actual.Issue.WorkItemID)
 				}
 				issue := actual.Issue
-				if issue.OrganizationID != org || issue.ProjectID != scope.project || issue.Title != expected.Title || issue.Body != "" || !slices.Contains(issue.OmittedFields, "body") || issue.State != expected.State || issue.Actor != expected.Actor || !issue.CreatedAt.Equal(expected.CreatedAt) || !issue.UpdatedAt.Equal(expected.UpdatedAt) {
+				if issue.OrganizationID != org || issue.ProjectID != scope.project || issue.Title != expected.Title || issue.Body != "" || !slices.Contains(issue.OmittedFields, "body") || issue.State != expected.State || issue.Actor.Kind != expected.Actor.Kind || issue.Actor.PrincipalID != expected.Actor.PrincipalID || issue.Actor.DisplayName != "Hub test administrator" || !issue.CreatedAt.Equal(expected.CreatedAt) || !issue.UpdatedAt.Equal(expected.UpdatedAt) {
 					t.Errorf("projected issue identity or payload changed: %+v", issue)
 				}
 				if !reflect.DeepEqual(issue.Provenance, expected.Provenance) || !reflect.DeepEqual(issue.IssueContract, expected.IssueContract) || !reflect.DeepEqual(issue.ReportContext, expected.ReportContext) || !reflect.DeepEqual(issue.ReleaseDelivery, expected.ReleaseDelivery) {
@@ -887,16 +887,16 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: "preview_credential", ProjectID: "example"}); err != nil {
 				return err
 			}
-			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "preview_enrollment", RunnerID: "preview_runner", MachineID: "preview_machine", TokenHash: apikey.HashToken("example-enrollment-" + string(org)), Scope: "projects", ProjectIDs: []tracker.ProjectID{"example"}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_hub_admin"}); err != nil {
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "preview_enrollment", RunnerID: "runner_0123456789abcdef0123456789abcdef", MachineID: "machine_0123456789abcdef0123456789abcdef", TokenHash: apikey.HashToken("example-enrollment-" + string(org)), Scope: "projects", ProjectIDs: []tracker.ProjectID{"example"}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_hub_admin"}); err != nil {
 				return err
 			}
-			if err := w.RedeemRunnerEnrollment(t.Context(), "preview_enrollment", "preview_runner", "preview_machine", now); err != nil {
+			if err := w.RedeemRunnerEnrollment(t.Context(), "preview_enrollment", "runner_0123456789abcdef0123456789abcdef", "machine_0123456789abcdef0123456789abcdef", now); err != nil {
 				return err
 			}
-			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: "preview_machine", Hostname: "example-host", Capacity: 2, Version: "example"}); err != nil {
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: "machine_0123456789abcdef0123456789abcdef", Hostname: "example-host", Capacity: 2, Version: "example"}); err != nil {
 				return err
 			}
-			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: "preview_runner", MachineID: "preview_machine", TokenID: "preview_credential", EnrollmentID: "preview_enrollment", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{"example"}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: "runner_0123456789abcdef0123456789abcdef", MachineID: "machine_0123456789abcdef0123456789abcdef", TokenID: "preview_credential", EnrollmentID: "preview_enrollment", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{"example"}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 				return err
 			}
 			for index := range 2 {
@@ -939,7 +939,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		}
 		base := "/api/v2/organizations/" + string(org) + "/projects/example"
 		for _, session := range []string{"", "example-session"} {
-			request := tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: nextDescriptor.ID, MachineID: "preview_machine", SessionID: session}, Limit: 2}
+			request := tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: nextDescriptor.ID, MachineID: "machine_0123456789abcdef0123456789abcdef", SessionID: session}, Limit: 2}
 			response := performHubAPIRequest(t, service, http.MethodPost, base+"/claims/preview", secret, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			var page tracker.NativeCapacityPage
@@ -966,7 +966,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("current review policy rejected: %v", err)
 		}
-		currentResponse := performHubAPIRequest(t, service, http.MethodPost, base+"/claims/preview", secret, tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: nextDescriptor.ID, MachineID: "preview_machine"}, Limit: 2})
+		currentResponse := performHubAPIRequest(t, service, http.MethodPost, base+"/claims/preview", secret, tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: nextDescriptor.ID, MachineID: "machine_0123456789abcdef0123456789abcdef"}, Limit: 2})
 		requireNativeStatus(t, currentResponse, http.StatusOK)
 		var currentPage tracker.NativeCapacityPage
 		decodeHubResponse(t, currentResponse, &currentPage)
@@ -974,7 +974,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			t.Fatalf("current-policy preview lost scoped candidate: %+v", currentPage.Items)
 		}
 		if org == "org_second" {
-			foreign := performHubAPIRequest(t, service, http.MethodPost, base+"/claims/preview", "example-preview-secret-org_first", tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: nextDescriptor.ID, MachineID: "preview_machine"}})
+			foreign := performHubAPIRequest(t, service, http.MethodPost, base+"/claims/preview", "example-preview-secret-org_first", tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: nextDescriptor.ID, MachineID: "machine_0123456789abcdef0123456789abcdef"}})
 			if foreign.Code != http.StatusUnauthorized && foreign.Code != http.StatusForbidden && foreign.Code != http.StatusNotFound {
 				t.Fatalf("foreign organization preview status=%d", foreign.Code)
 			}

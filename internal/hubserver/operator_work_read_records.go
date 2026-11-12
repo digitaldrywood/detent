@@ -18,7 +18,7 @@ import (
 
 func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativeScope, reference string) (tracker.NativeIssue, error) {
 	if strings.Contains(reference, "/") {
-		id, err := s.readableReference(ctx, nil, scope, reference)
+		id, err := s.readableReference(ctx, scope, reference)
 		if err != nil {
 			return tracker.NativeIssue{}, err
 		}

@@ -2,12 +2,17 @@ package postgres_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -191,6 +196,238 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+	}
+
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org)+"/current_pool_authority", func(t *testing.T) {
+			for _, tc := range []struct {
+				name       string
+				scope      string
+				nativeOnly bool
+				role       string
+				active     bool
+				revoked    bool
+				expired    bool
+				future     bool
+				allowed    bool
+			}{
+				{name: "current_admin", scope: "admin", allowed: true},
+				{name: "native_only_admin", scope: "admin", nativeOnly: true},
+				{name: "current_owner", scope: "operator", nativeOnly: true, role: "owner", active: true, allowed: true},
+				{name: "current_member_admin", scope: "operator", nativeOnly: true, role: "admin", active: true, allowed: true},
+				{name: "demoted_member", scope: "operator", nativeOnly: true, role: "member", active: true},
+				{name: "inactive_owner", scope: "operator", nativeOnly: true, role: "owner"},
+				{name: "revoked_admin", scope: "admin", revoked: true},
+				{name: "expired_admin", scope: "admin", expired: true},
+				{name: "future_admin", scope: "admin", future: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					rollback := errors.New("pool authority rollback")
+					err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						credential := accessstore.Credential{OrganizationID: org, ID: "pool_authority", Name: "pool authority", Hash: apikey.HashToken(string(org) + "/pool_authority"), Scope: tc.scope, NativeOnly: tc.nativeOnly, Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}
+						if tc.revoked {
+							credential.RevokedAt = &now
+						}
+						if tc.expired {
+							credential.ExpiresAt = &now
+						}
+						if tc.future {
+							credential.CreatedAt = now.Add(time.Second)
+						}
+						if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
+							return err
+						}
+						if tc.role != "" {
+							if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: "pool_owner", Email: "owner@example.test", MembershipID: "pool_membership", Role: tc.role, Active: tc.active, PrincipalID: credential.ID, CreatedAt: now, UpdatedAt: now}); err != nil {
+								return err
+							}
+						}
+						owner := w.(postgres.SpriteWriter)
+						row, err := owner.SpritePool(t.Context())
+						if err != nil {
+							return err
+						}
+						row.ConfiguredBy = credential.ID
+						if _, err := owner.PutSpritePool(t.Context(), row, row.Revision); err != nil {
+							return err
+						}
+						actor, err := owner.SpritePoolAuthority(t.Context(), now)
+						if tc.allowed {
+							if err != nil || actor != credential.ID {
+								t.Errorf("current authority=%q error=%v", actor, err)
+							}
+						} else if !errors.Is(err, corestore.ErrNotFound) {
+							t.Errorf("ineligible authority=%q error=%v", actor, err)
+						}
+						return rollback
+					})
+					if !errors.Is(err, rollback) {
+						t.Fatal(err)
+					}
+				})
+			}
+		})
+		t.Run(string(org)+"/current_and_recent_deleted_members", func(t *testing.T) {
+			for index := range 21 {
+				id := fmt.Sprintf("retired_%02d", index)
+				seedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
+				if err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
+					return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: org, Name: id, ProviderOrganization: "example", EnrollmentID: "enrollment_" + id, State: "deleted", BootstrapLog: "log_" + id, IdleSince: now, CreatedAt: now.Add(time.Second), AllocationProjectID: "prj_first", AllocationRevision: 1})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 2 {
+				if err := repository.ReadSprite(t.Context(), org, corestore.Serving, func(r postgres.SpriteReader) error {
+					rows, err := r.SpritePoolMembers(t.Context())
+					if err != nil {
+						return err
+					}
+					if len(rows) != 22 {
+						t.Fatalf("current and recent deleted count=%d; want22", len(rows))
+					}
+					for i, row := range rows {
+						want := "first"
+						if i == 1 {
+							want = "second"
+						}
+						if i >= 2 {
+							want = fmt.Sprintf("retired_%02d", i-1)
+						}
+						if row.OrganizationID != org || row.Name != want || row.RunnerID != want {
+							t.Fatalf("pool member[%d]=%+v; want tenant=%s/name=%s", i, row, org, want)
+						}
+						if i >= 2 && (row.State != "deleted" || row.BootstrapLog != "log_"+want || !row.CreatedAt.Equal(now.Add(time.Second))) {
+							t.Fatalf("retained deleted metadata=%+v", row)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+
+}
+
+func TestSpriteWakeFactsPreserveNullsAndFenceMachineBinding(t *testing.T) {
+	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	now := historyAt()
+	for _, org := range []tracker.OrganizationID{"org_wake_first", "org_wake_second"} {
+		seedRepository(t, repository, org)
+		for _, id := range []string{"first", "second"} {
+			machineID := "machine_" + id
+			seedRunnerIdentity(t, repository, org, id, machineID, now, true)
+			err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				machine, err := w.Machine(t.Context(), machineID)
+				if err != nil {
+					return err
+				}
+				if machine.SpriteWokenAt != nil || machine.SpriteWakeFailedAt != nil {
+					t.Fatalf("new machine has wake facts: %+v", machine)
+				}
+				machine.Hostname, machine.SpriteName = id, id
+				return w.RegisterMachine(t.Context(), machine)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			failed := now.Add(time.Second)
+			woken := now.Add(2 * time.Second)
+			later := now.Add(3 * time.Second)
+			for _, test := range []struct {
+				name                  string
+				update                leasestore.SpriteWake
+				wantWoken, wantFailed *time.Time
+				wantError             error
+			}{
+				{"failed wake preserves null success", leasestore.SpriteWake{MachineID: machineID, RunnerID: id, Name: id, FailedAt: &failed, ObservedAt: failed}, nil, &failed, nil},
+				{"successful wake clears failure", leasestore.SpriteWake{MachineID: machineID, RunnerID: id, Name: id, WokenAt: &woken, ObservedAt: woken}, &woken, nil, nil},
+				{"later failure preserves success", leasestore.SpriteWake{MachineID: machineID, RunnerID: id, Name: id, FailedAt: &later, ObservedAt: later}, &woken, &later, nil},
+				{"wrong runner cannot update facts", leasestore.SpriteWake{MachineID: machineID, RunnerID: "different", Name: id, ObservedAt: later}, &woken, &later, corestore.ErrNotFound},
+				{"wrong name cannot update facts", leasestore.SpriteWake{MachineID: machineID, RunnerID: id, Name: "different", ObservedAt: later}, &woken, &later, corestore.ErrNotFound},
+			} {
+				t.Run(string(org)+"/"+id+"/"+test.name, func(t *testing.T) {
+					err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.UpdateMachineSpriteWake(t.Context(), test.update) })
+					if !errors.Is(err, test.wantError) {
+						t.Fatalf("write error=%v want=%v", err, test.wantError)
+					}
+					err = repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+						machine, err := r.Machine(t.Context(), machineID)
+						if err != nil {
+							return err
+						}
+						for _, fact := range []struct {
+							name      string
+							got, want *time.Time
+						}{{"woken", machine.SpriteWokenAt, test.wantWoken}, {"failed", machine.SpriteWakeFailedAt, test.wantFailed}} {
+							if fact.got == nil && fact.want != nil || fact.got != nil && (fact.want == nil || !fact.got.Equal(*fact.want)) {
+								t.Fatalf("%s=%v want=%v", fact.name, fact.got, fact.want)
+							}
+						}
+						return nil
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestSpriteLeaseUsageCountsUnassignedLeasesAndExpiryBoundary(t *testing.T) {
+	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	for _, org := range []tracker.OrganizationID{"org_usage_first", "org_usage_second"} {
+		seedLeaseFamily(t, repository, org)
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, id := range []string{"machine_1", "machine_2"} {
+				machine, err := w.Machine(t.Context(), id)
+				if err != nil {
+					return err
+				}
+				machine.Hostname, machine.SpriteName = id, id
+				if err := w.RegisterMachine(t.Context(), machine); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		first := claimLease(t, repository, org, leaseClaim(1))
+		second := claimLease(t, repository, org, leaseClaim(2))
+		expired := first.ExpiresAt
+		if second.ExpiresAt.After(expired) {
+			expired = second.ExpiresAt
+		}
+		for _, test := range []struct {
+			name    string
+			at      time.Time
+			joining string
+			want    int
+		}{
+			{"unassigned active leases", second.AcquiredAt, "", 2},
+			{"ordinary lease is not a landing group", second.AcquiredAt, "machine_1/prj_1/batch/", 2},
+			{"exact expiry boundary", expired, "", 0},
+		} {
+			t.Run(string(org)+"/"+test.name, func(t *testing.T) {
+				err := repository.ReadSprite(t.Context(), org, corestore.Serving, func(r postgres.SpriteReader) error {
+					got, err := r.SpriteLeaseUsage(t.Context(), test.at, test.joining)
+					if err != nil {
+						return err
+					}
+					if got != test.want {
+						t.Fatalf("usage=%d want=%d", got, test.want)
+					}
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
 	}
 }

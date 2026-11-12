@@ -47,7 +47,9 @@ func newEntryKeyFixture(t *testing.T, configure ...func(*Config)) entryKeyFixtur
 	project := tracker.ProjectID("prj_security")
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
 	for _, organization := range []tracker.OrganizationID{"org_security", "org_other"} {
-		seedStartupOrganization(t, store.postgres, organization)
+		binding := *cfg.Hosted
+		binding.OrganizationID, binding.WorkOSOrganizationID = string(organization), "provider_"+string(organization)
+		seedStartupOrganization(t, store.postgres, organization, &binding)
 		now := time.Now().UTC()
 		envelope, err := cfg.SecretKeys.Seal(bytes.Repeat([]byte{7}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
 		if err != nil {
@@ -74,8 +76,8 @@ func newEntryKeyFixture(t *testing.T, configure ...func(*Config)) entryKeyFixtur
 			t.Error(err)
 		}
 	})
-	if service.database.db != nil || service.database.reader != nil {
-		t.Fatal("entry key fixture must use PostgreSQL only")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 	for _, organization := range []string{"org_security", "org_other"} {
 		seedNativeFixturePolicy(t, service, organization+"/"+string(project))

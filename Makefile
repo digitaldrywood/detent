@@ -22,12 +22,11 @@ SQLC_VERSION := v1.31.1
 SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 APP_DIR ?= web/conversation
 CHECK_LAND_BASE ?= origin/develop
-SQLC_CONFIG ?= sqlc/sqlc.yaml
-HUB_SQLC_CONFIG := internal/hubserver/postgres/sqlc.yaml
-MIGRATIONS_DIR ?= internal/store/migrations
-GOOSE_DRIVER ?= sqlite3
+SQLC_CONFIG ?= internal/hubserver/postgres/sqlc.yaml
+MIGRATIONS_DIR ?= internal/hubserver/postgres/migrations
+GOOSE_DRIVER ?= postgres
 GOOSE_VERSION := v3.26.0
-DATABASE_URL ?= tmp/detent.db
+DATABASE_URL ?=
 NILAWAY_VERSION ?= v0.0.0-20260612163715-2d8907f431ca
 NILAWAY ?= go run go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
 NILAWAY_INCLUDE_PKGS ?= github.com/digitaldrywood/detent
@@ -73,7 +72,6 @@ generate: assets
 		echo "No templ files found; skipping templ generate."; \
 	fi
 	@$(MAKE) sqlc
-	@$(MAKE) sqlc SQLC_CONFIG=$(HUB_SQLC_CONFIG)
 
 .PHONY: assets generate-docs release-notes
 assets: app css release-notes
@@ -86,7 +84,6 @@ check-migrations:
 
 check-generated: generate-docs
 	$(SQLC) diff -f "$(SQLC_CONFIG)"
-	$(SQLC) diff -f "$(HUB_SQLC_CONFIG)"
 	python3 scripts/check-runner-enrollment-docs.py
 
 css:
@@ -255,7 +252,7 @@ soak:
 
 visual-e2e: build
 	@if [ ! -x node_modules/.bin/playwright ]; then npm ci; fi
-	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test
+	node_modules/.bin/playwright test
 
 lint: $(GOLANGCI_LINT)
 	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m

@@ -96,7 +96,10 @@ func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 			t.Fatal("source bytes lost version immutability")
 		}
 	}
-	f.service = reopenCoordinatorService(t, f.service)
+	if err := f.service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.service = reopenPostgresNativeService(t, f.service)
 	path := f.path + "/versions/" + version.ID + "/source"
 	response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)

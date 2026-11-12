@@ -14,10 +14,6 @@ import (
 )
 
 func TestOperatorRejectionPromotion(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name           string
@@ -72,7 +68,7 @@ func TestOperatorRejectionPromotion(t *testing.T) {
 				cfg.Project.ID = defaultWorkflowMetricsProjectID
 				issue := autoPromoteTickIssue("rejected-head", nil, &connector.PullRequest{Number: 42, URL: "https://github.com/digitaldrywood/detent/pull/42", State: "OPEN", HeadSHA: "rejected", MergeableState: "CLEAN", CIStatus: "success"})
 				db, _ := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
-				backend := &operatorRejectionStore{Store: db}
+				backend := &operatorRejectionStore{runtimeFixture: db}
 				thin := cloneIssue(issue)
 				thin.PullRequest = nil
 				tracker := &operatorRejectionConnector{liveReworkConnector: &liveReworkConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{thin}}, live: issue}}
@@ -211,7 +207,7 @@ func (c *operatorRejectionConnector) HydratePullRequest(ctx context.Context, iss
 }
 
 type operatorRejectionStore struct {
-	store.Store
+	*runtimeFixture
 	readFailure  bool
 	writeFailure bool
 }
@@ -220,12 +216,12 @@ func (s *operatorRejectionStore) IssueWorkflowTimeline(ctx context.Context, issu
 	if s.readFailure {
 		return store.WorkflowTimeline{}, errors.New("history unavailable")
 	}
-	return s.Store.IssueWorkflowTimeline(ctx, issue)
+	return s.runtimeFixture.IssueWorkflowTimeline(ctx, issue)
 }
 
 func (s *operatorRejectionStore) RecordWorkflowPhaseEvent(ctx context.Context, event store.WorkflowPhaseEvent) (int64, error) {
 	if s.writeFailure {
 		return 0, errors.New("history write failed")
 	}
-	return s.Store.RecordWorkflowPhaseEvent(ctx, event)
+	return s.runtimeFixture.RecordWorkflowPhaseEvent(ctx, event)
 }

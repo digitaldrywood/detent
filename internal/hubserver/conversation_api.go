@@ -678,9 +678,6 @@ func renderAnswer(question conversation.Question, answers map[string][]string) s
 	return "Answered"
 }
 
-// linkConversation implements POST /conversations/:conversation/link. The
-// mutation is idempotent by key through nativeMutation; the issue is created
-// with createNativeIssueTx in the same transaction as the link.
 func (s *Service) linkConversation(c echo.Context) error {
 	var request conversationLinkRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -871,7 +868,15 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 		})
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) && diagnoseMissing {
-				return nil, conversationUnsupported("Missing conversation diagnostics require the attachments migration")
+				runtime, err := s.readNativeRuntime(ctx, scope, item, "")
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(struct {
+					Status       string                        `json:"status"`
+					Conversation *conversationResource         `json:"conversation"`
+					Runtime      tracker.NativeRuntimeEvidence `json:"runtime"`
+				}{Status: "unavailable", Runtime: runtime})
 			}
 			return nil, translateConversationError(err)
 		}

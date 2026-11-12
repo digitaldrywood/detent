@@ -163,7 +163,7 @@ func TestUnmappedStorageFailsClosed(t *testing.T) {
 func routingFixture(t *testing.T) (fstest.MapFS, routingManifest) {
 	t.Helper()
 	files := fstest.MapFS{
-		"cmd": {Mode: fs.ModeDir}, "db": {Mode: fs.ModeDir}, "internal/hubserver/postgres/migrations": {Mode: fs.ModeDir},
+		"cmd": {Mode: fs.ModeDir}, "internal/hubserver/postgres/migrations": {Mode: fs.ModeDir},
 		"internal/hubserver/fixture.go": {Data: []byte("package fixture; func read() { db.QueryContext(ctx, `SELECT id FROM projects`) }")},
 	}
 	for _, name := range []string{"internal/hubserver/testdata/hub", "internal/hubserver/testdata/metrics", "tools/storageinventory/sources/v1/registry", "tools/storageinventory/sources/v1/auth"} {

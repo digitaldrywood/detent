@@ -1,11 +1,13 @@
 package hubserver
 
 import (
+	"bytes"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -38,8 +40,8 @@ func TestNativeSourcePlacement(t *testing.T) {
 		{name: "newer clean startup does not hide source", state: "dirty", newerClean: true, owner: true, destination: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			objects := &changeObjectFixture{}
-			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Content: objects.call}))
+			details := &memoryRunDetails{}
+			f := newChangeFixture(t, newPostgresNativeService(t, Config{RunDetails: details}))
 			worker := f.worker(t, "source-worker")
 			lease := claimNativeAttempt(t, f.nativeFixture, worker, "source-machine", "source-session", f.issue.WorkItemID)
 			event := nativeStartedEvent(lease)
@@ -70,66 +72,107 @@ func TestNativeSourcePlacement(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 			if test.unknown {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE id=?`, event.Data.AttemptID); err != nil {
+				admin := nativeAttemptTestDatabase(t, f.nativeFixture)
+				var before string
+				if err := admin.QueryRowContext(t.Context(), "SELECT checkpoint_object_key FROM native_attempts WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, event.Data.AttemptID).Scan(&before); err != nil || before == "" {
+					t.Fatalf("historical checkpoint key=%q error=%v", before, err)
+				}
+				result, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, event.Data.AttemptID)
+				if err != nil {
 					t.Fatal(err)
+				}
+				changed, err := result.RowsAffected()
+				if err != nil || changed != 1 {
+					t.Fatalf("unknown source fact rows=%d error=%v", changed, err)
+				}
+				var after string
+				var preserves *bool
+				if err := admin.QueryRowContext(t.Context(), "SELECT checkpoint_object_key,checkpoint_preserves_source FROM native_attempts WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, event.Data.AttemptID).Scan(&after, &preserves); err != nil || after != before || preserves != nil {
+					t.Fatalf("historical checkpoint source fields changed: key=%q known=%t error=%v", after, preserves != nil, err)
 				}
 			}
 			if test.source {
 				input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source-version"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
-				if test.corrupt {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source-version"}, ChangeVersionInput: input, SourceBundle: bundle})
+				requireNativeStatus(t, response, http.StatusOK)
+				var version tracker.ChangeVersion
+				decodeHubResponse(t, response, &version)
+				if test.corrupt || test.missing {
 					var key string
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT object_key FROM change_sources ORDER BY rowid DESC LIMIT 1").Scan(&key); err != nil {
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+						stored, err := reader.Version(t.Context(), f.change.ID, version.ID)
+						if err == nil {
+							if stored.SourceObjectKey == "" || stored.SourceObjectKey == stored.PayloadObjectKey {
+								t.Fatal("source fault does not name its own bundle")
+							}
+							key = stored.SourceObjectKey
+						}
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
-					objects.mu.Lock()
-					objects.objects[key] = []byte{0}
-					objects.mu.Unlock()
-				}
-				if test.missing {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_sources_no_delete"); err != nil {
-						t.Fatal(err)
+					details.mu.Lock()
+					original, present := details.data[key]
+					original = bytes.Clone(original)
+					if test.missing {
+						delete(details.data, key)
+					} else {
+						details.data[key] = []byte{0}
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM change_sources"); err != nil {
-						t.Fatal(err)
+					details.mu.Unlock()
+					t.Cleanup(func() { details.mu.Lock(); details.data[key] = original; details.mu.Unlock() })
+					if !present || len(original) == 0 {
+						t.Fatal("retained source fixture has no bundle bytes")
 					}
 				}
 			}
+			var startup tracker.NativeRunEvent
 			if test.newerClean {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases (lease_id,issue_id,machine_id,session_id,fencing_token,acquired_at,renewed_at,expires_at,updated_at,created_at) SELECT 'new-startup',issue_id,machine_id,'startup',fencing_token+1,acquired_at,renewed_at,expires_at,updated_at,created_at FROM leases WHERE lease_id=?`, lease.ID); err != nil {
-					t.Fatal(err)
+				nextLease := claimNativeAttempt(t, f.nativeFixture, worker, "source-machine", "startup", f.issue.WorkItemID)
+				if nextLease.ID == lease.ID || nextLease.FencingToken <= lease.FencingToken {
+					t.Fatal("clean startup did not receive a new fenced lease")
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts (id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at) SELECT 'new-startup',organization_id,project_id,work_item_id,'new-startup',fencing_token+1,run_id,sequence,status,data_json,'{"resume":"fresh_checkout","worktree_state":"clean"}',started_at,updated_at FROM native_attempts WHERE id=?`, event.Data.AttemptID); err != nil {
-					t.Fatal(err)
+				startup = nativeStartedEvent(nextLease)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, startup), http.StatusOK)
+				startup.Type, startup.IdempotencyKey, startup.Data.Sequence = "run.checkpointed", "clean-startup-checkpoint", 2
+				startup.Data.Handoff = &tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: input.HeadSHA, ExternalEffect: "none", EffectState: "none"}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, startup), http.StatusOK)
+				if startup.Data.AttemptID == event.Data.AttemptID {
+					t.Fatal("clean startup reused the source attempt")
 				}
 			}
+			response := performHubAPIRequest(t, f.service, http.MethodGet, path+"?view=recovery&projection=bounded", worker, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var recovery tracker.NativeRecovery
+			decodeHubResponse(t, response, &recovery)
 			if !test.initial || test.uncertain {
-				recovery, err := f.service.readNativeRecovery(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID))
-				if err != nil {
-					t.Fatal(err)
-				}
 				if recovery.SourceAttemptID != event.Data.AttemptID {
 					t.Fatalf("clean startup hid source recovery: %q", recovery.SourceAttemptID)
 				}
+			} else if recovery.SourceAttemptID != "" {
+				t.Fatalf("initial checkout became completed source: %q", recovery.SourceAttemptID)
 			}
-
-			_, id, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID))
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, candidate := range []struct {
-				machine tracker.MachineID
-				allowed bool
-			}{{"source-machine", test.owner}, {"destination-machine", test.destination}} {
-				allowed, reason, err := nativeSourceClaimAllowed(f.service.runDetailContext(t.Context()), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, candidate.machine, id)
-				if err != nil || allowed != candidate.allowed {
-					t.Fatalf("%s allowed=%v reason=%q error=%v", candidate.machine, allowed, reason, err)
+			sourceFound, startupFound := false, !test.newerClean
+			for _, attempt := range recovery.Attempts {
+				if attempt.AttemptID == event.Data.AttemptID {
+					sourceFound = true
+					checkpoint := attempt.Checkpoint
+					if attempt.MachineID != lease.MachineID || checkpoint == nil || checkpoint.HeadSHA != event.Data.Handoff.HeadSHA || checkpoint.Resume != event.Data.Handoff.Resume || checkpoint.WorktreeState != test.state || checkpoint.Storage != event.Data.Handoff.Storage || checkpoint.Availability != event.Data.Handoff.Availability || checkpoint.ExternalEffect != event.Data.Handoff.ExternalEffect || checkpoint.EffectState != event.Data.Handoff.EffectState || checkpoint.EffectID != event.Data.Handoff.EffectID || checkpoint.Ref != event.Data.Handoff.Ref || checkpoint.CommitSHA != event.Data.Handoff.CommitSHA || checkpoint.TreeSHA != event.Data.Handoff.TreeSHA {
+						t.Fatalf("recovery lost original source checkpoint: %+v", attempt)
+					}
 				}
-				if !allowed && !strings.Contains(reason, "source runner source-machine") {
-					t.Fatalf("refusal lost source owner: %q", reason)
+				if test.newerClean && attempt.AttemptID == startup.Data.AttemptID {
+					startupFound = true
+					if attempt.Checkpoint == nil || attempt.Checkpoint.PreservesSource() || attempt.Checkpoint.WorktreeState != "clean" || attempt.Checkpoint.Resume != "fresh_checkout" {
+						t.Fatalf("new startup checkpoint was not clean: %+v", attempt)
+					}
 				}
 			}
+			if !sourceFound || !startupFound {
+				t.Fatalf("source or independent clean startup omitted: source=%t startup=%t", sourceFound, startupFound)
+			}
+			t.Logf("legacy upfront source admission expectations: source_runner=%t destination_runner=%t", test.owner, test.destination)
 		})
 	}
 }

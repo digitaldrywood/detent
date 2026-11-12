@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -25,12 +26,13 @@ func prepareCoreNeutralRunDetail(ctx context.Context, source *coreNeutralImport,
 		return artifact.ErrIntegrity
 	}
 	if detail.ObjectKey != "" {
-		value, err := readCoreNeutralObject(ctx, source, organization, objects, detail.ObjectKey)
+		ref, value, err := readCoreNeutralObjectWithReference(ctx, source, organization, objects, detail.ObjectKey)
 		if err != nil {
 			return err
 		}
-		content.payloads[detail.ObjectKey] = value
-		return nil
+		content.mu.Lock()
+		defer content.mu.Unlock()
+		return content.rememberPayload(ref, value)
 	}
 	row, err := source.one(ctx, "attachments", map[string]string{"id": detail.AttachmentID, "organization_id": string(organization), "kind": "archive"}, []string{"id"})
 	if err != nil {
@@ -75,7 +77,7 @@ func validateCoreNeutralUsageScope(ctx context.Context, source *coreNeutralImpor
 			if err := row.Decode(map[string]any{"organization_id": &tenant, "project_id": &project, "attempt_id": &attemptID, "currency": &currency}); err != nil {
 				return err
 			}
-			if currency != "USD" {
+			if len(currency) != 3 || strings.Trim(currency, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
 				return errors.New("report usage source has unsupported currency")
 			}
 			if tenant != organization {

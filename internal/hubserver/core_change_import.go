@@ -39,6 +39,9 @@ func ImportCoreChanges(ctx context.Context, target *postgres.Repository, source 
 			return err
 		}
 		tx := newCoreNeutralImport(bundle)
+		if err := validateCoreQualityLandings(ctx, tx, source); err != nil {
+			return err
+		}
 		copyHash := bundle.Identity().SourceSHA256
 		if err := target.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
@@ -324,6 +327,7 @@ func importCoreChangeVersions(ctx context.Context, tx *coreNeutralImport, target
 			if err != nil {
 				return err
 			}
+			record.LandingHistoryKnown = false
 			if len(bundle) != 0 {
 				ref, err := content.PrepareSourceBundle(ctx, source.OrganizationID, bundle)
 				if err != nil {
@@ -349,6 +353,9 @@ func importCoreChangeVersions(ctx context.Context, tx *coreNeutralImport, target
 				_, err = w.PutReceipt(ctx, receipt)
 				return err
 			}); err != nil {
+				return err
+			}
+			if err := importCoreVersionLandingHistory(ctx, tx, target, content, source, copyHash, value); err != nil {
 				return err
 			}
 			after = row.number
@@ -693,3 +700,71 @@ func importCoreChangeViewedFiles(ctx context.Context, tx *coreNeutralImport, tar
 }
 
 func coreChangeEvidenceKey(sequence int64) string { return strconv.FormatInt(sequence, 10) }
+
+func importCoreVersionLandingHistory(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string, version tracker.ChangeVersion) error {
+	changeRow, err := tx.one(ctx, "change_requests", map[string]string{"id": version.ChangeID, "organization_id": string(source.OrganizationID)}, []string{"id"})
+	if err != nil {
+		return err
+	}
+	var encoded, projectID, itemID string
+	if err := changeRow.Decode(map[string]any{"record_json": &encoded, "project_id": &projectID, "work_item_id": &itemID}); err != nil {
+		return err
+	}
+	raw, err := readCoreChangePayload(ctx, tx, source, encoded)
+	if err != nil {
+		return err
+	}
+	var change tracker.ChangeRequest
+	if json.Unmarshal(raw, &change) != nil || change.OrganizationID != source.OrganizationID || change.ProjectID != tracker.ProjectID(projectID) || change.WorkItemID != tracker.NativeWorkItemID(itemID) || change.ID != version.ChangeID {
+		return eventstore.ErrInvalidRecord
+	}
+	frozen, err := readCoreQualityLanding(ctx, tx, source, version.ChangeID, version.ID)
+	if err != nil {
+		return err
+	}
+	if frozen == nil {
+		if err := restoreCoreReportLanding(ctx, tx, source, &change); err != nil {
+			return err
+		}
+		if change.Landed != nil && change.Landed.VersionID == version.ID {
+			frozen = change.Landed
+		}
+	}
+	var prepared *eventstore.VersionLanding
+	if frozen != nil {
+		if frozen.HeadSHA != version.HeadSHA {
+			return eventstore.ErrInvalidRecord
+		}
+		row, err := content.PrepareVersionLanding(ctx, eventstore.VersionLanding{OrganizationID: source.OrganizationID, ProjectID: change.ProjectID, WorkItemID: change.WorkItemID, ChangeID: change.ID, VersionID: version.ID}, *frozen)
+		if err != nil {
+			return err
+		}
+		row, err = canonicalCoreVersionLanding(ctx, target, content, row, *frozen)
+		if err != nil {
+			return err
+		}
+		prepared = &row
+	}
+	receipt, err := prepareCoreExecutionReceipt(ctx, content, source.OrganizationID, copyHash, "core-version-landing-history", version.ID, struct {
+		VersionID, HeadSHA string
+		Frozen             *eventstore.VersionLanding
+	}{version.ID, version.HeadSHA, prepared})
+	if err != nil {
+		return err
+	}
+	return target.WriteRecords(ctx, source.OrganizationID, corestore.Background, func(w eventstore.Writer) error {
+		replayed, err := checkCoreChangeReceipt(ctx, w, receipt)
+		if err != nil || replayed {
+			return err
+		}
+		if prepared != nil {
+			if err := w.RecordVersionLanding(ctx, *prepared); err != nil {
+				return err
+			}
+		} else if err := w.ConfirmVersionUnlanded(ctx, version.ChangeID, version.ID, version.HeadSHA); err != nil {
+			return err
+		}
+		_, err = w.PutReceipt(ctx, receipt)
+		return err
+	})
+}

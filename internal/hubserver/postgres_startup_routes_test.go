@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubclient/recovery"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -23,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -31,10 +35,305 @@ import (
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
+	t.Run("local startup", func(t *testing.T) {
+		for _, mode := range []string{"fresh", "imported", "foreign"} {
+			t.Run(mode, func(t *testing.T) {
+				existing := mode == "imported"
+				admin := postgresStartupTemplate.Database(t)
+				cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+				cfg.Hosted = nil
+				if mode != "imported" {
+					database := pgx.Identifier{cfg.Postgres.Connection.Database}.Sanitize()
+					connectionLimit := 3*cfg.Postgres.Pool.MaxConnections + 2
+					if _, err := admin.ExecContext(t.Context(), fmt.Sprintf("ALTER DATABASE %s CONNECTION LIMIT %d", database, connectionLimit)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				store, err := openPostgresDatabase(t.Context(), *cfg.Postgres)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := store.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				now := time.Now().UTC()
+				create := func(org tracker.OrganizationID, id, token string, expires *time.Time) error {
+					return store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: id, Name: id, Hash: apikey.HashToken(token), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", Kind: "service", CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now, ExpiresAt: expires})
+					})
+				}
+				open := func(config Config) *Service {
+					t.Helper()
+					service, err := Open(t.Context(), config)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						if err := service.Close(); err != nil {
+							t.Error(err)
+						}
+					})
+					return service
+				}
+				refuseOpen := func(config Config, want error) {
+					t.Helper()
+					service, err := Open(t.Context(), config)
+					if service != nil {
+						t.Error(service.Close())
+					}
+					if service != nil || err == nil || want != nil && !errors.Is(err, want) {
+						t.Fatalf("unexpected startup result: service=%t error=%v", service != nil, err)
+					}
+				}
+				createForeign := func() {
+					t.Helper()
+					if err := store.postgres.WriteTenant(t.Context(), "org_foreign", corestore.Serving, func(w tenantstore.Writer) error {
+						return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_foreign", Name: "Foreign organization", CreatedAt: now})
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if err := create("org_foreign", bootstrapTokenID, "example-foreign-admin", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				type startupResult struct {
+					service *Service
+					err     error
+				}
+				startWhileOrganizationWriteHeld := func(count int, insertForeign bool) []startupResult {
+					t.Helper()
+					ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
+					defer cancel()
+					blocker, err := admin.BeginTx(ctx, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var starts sync.WaitGroup
+					results := make([]startupResult, count)
+					defer func() {
+						cancel()
+						if err := blocker.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+							t.Error(err)
+						}
+						starts.Wait()
+						for _, result := range results {
+							if result.service != nil {
+								t.Cleanup(func() {
+									if err := result.service.Close(); err != nil {
+										t.Error(err)
+									}
+								})
+							}
+						}
+					}()
+					if insertForeign {
+						_, err = blocker.ExecContext(ctx, `INSERT INTO public.organizations (organization_id,name,local,created_at) VALUES ($1,$2,false,$3)`, "org_foreign", "Foreign organization", now)
+					} else {
+						_, err = blocker.ExecContext(ctx, `LOCK TABLE public.organizations IN ROW EXCLUSIVE MODE`)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					finished := make(chan int, count)
+					for index := range results {
+						starts.Go(func() {
+							results[index].service, results[index].err = Open(ctx, cfg)
+							finished <- index
+						})
+					}
+					testenv.WaitUntil(t, ctx, func() error {
+						select {
+						case index := <-finished:
+							t.Fatalf("startup finished while the organization write was held: %v", results[index].err)
+						default:
+						}
+						var waiting, alreadyLocked int
+						if err := admin.QueryRowContext(ctx, `
+WITH waiting AS (
+ SELECT pid,database,relation FROM pg_locks
+ WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database())
+   AND relation='public.organizations'::regclass AND mode='ShareRowExclusiveLock' AND NOT granted
+)
+SELECT count(*),count(*) FILTER (WHERE EXISTS (
+ SELECT 1 FROM pg_locks held
+ WHERE held.pid=waiting.pid AND held.database=waiting.database AND held.relation=waiting.relation AND held.granted
+)) FROM waiting`).Scan(&waiting, &alreadyLocked); err != nil {
+							return err
+						}
+						if alreadyLocked != 0 {
+							t.Fatal("bootstrap touched organizations before acquiring the write lock")
+						}
+						if waiting != count {
+							return fmt.Errorf("%d startup transactions are waiting for the organizations lock, want %d", waiting, count)
+						}
+						return nil
+					})
+					if err := blocker.Commit(); err != nil {
+						t.Fatal(err)
+					}
+					starts.Wait()
+					return results
+				}
+				const supplied = "example-local-bootstrap-token"
+				if mode == "foreign" {
+					cfg.InitialAdminToken = []byte(supplied)
+					result := startWhileOrganizationWriteHeld(1, true)[0]
+					if result.service != nil || !errors.Is(result.err, postgres.ErrLocalOrganizationRequired) {
+						t.Fatalf("startup after concurrent foreign write: service=%t error=%v", result.service != nil, result.err)
+					}
+					refuseOpen(cfg, postgres.ErrLocalOrganizationRequired)
+					cfg.InitialAdminToken = nil
+					refuseOpen(cfg, postgres.ErrLocalOrganizationRequired)
+					var count int
+					if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM organizations WHERE local`).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("refused startup created a local organization: count=%d error=%v", count, err)
+					}
+					if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM api_tokens WHERE token_hash=$1`, apikey.HashToken(supplied)).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("refused startup wrote bootstrap credentials: count=%d error=%v", count, err)
+					}
+					return
+				}
+				if existing {
+					createForeign()
+				}
+				var expectedOrganization tracker.OrganizationID
+				validToken := supplied
+				if existing {
+					expectedOrganization = "org_imported_local"
+					if err := store.postgres.WriteTenant(t.Context(), expectedOrganization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: expectedOrganization, Name: "Imported local organization", Local: true, CreatedAt: now})
+					}); err != nil {
+						t.Fatal(err)
+					}
+					cfg.InitialAdminToken = []byte(supplied)
+					refuseOpen(cfg, corestore.ErrNotFound)
+					if err := store.postgres.WriteTenant(t.Context(), expectedOrganization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: expectedOrganization, ID: "hub_" + strings.Repeat("1", 32), CursorKey: bytes.Repeat([]byte{1}, 32)})
+					}); err != nil {
+						t.Fatal(err)
+					}
+					validToken = "example-imported-admin"
+					if err := create(expectedOrganization, "imported-admin", validToken, nil); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					refuseOpen(cfg, corestore.ErrNotFound)
+					cfg.InitialAdminToken = []byte(supplied)
+					if _, err := admin.ExecContext(t.Context(), `ALTER TABLE hub_server_identities ADD CONSTRAINT refuse_new_identity CHECK (false)`); err != nil {
+						t.Fatal(err)
+					}
+					refuseOpen(cfg, nil)
+					if _, err := store.postgres.DesignatedLocalOrganization(t.Context()); !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("failed identity left a local organization: %v", err)
+					}
+					var count int
+					if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM api_tokens WHERE token_hash=$1`, apikey.HashToken(supplied)).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("failed identity left bootstrap credentials: count=%d error=%v", count, err)
+					}
+					if _, err := admin.ExecContext(t.Context(), `ALTER TABLE hub_server_identities DROP CONSTRAINT refuse_new_identity`); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var service *Service
+				if existing {
+					service = open(cfg)
+				} else {
+					results := startWhileOrganizationWriteHeld(2, false)
+					for _, result := range results {
+						if result.err != nil || result.service == nil {
+							t.Fatalf("concurrent local startup: %v", result.err)
+						}
+					}
+					service = results[0].service
+					if service.accessOrganization() != results[1].service.accessOrganization() {
+						t.Fatal("concurrent startups bound different organizations")
+					}
+					if err := results[1].service.Close(); err != nil {
+						t.Fatal(err)
+					}
+					createForeign()
+				}
+				org := service.accessOrganization()
+				if org == "" || org == "org_foreign" || existing && org != expectedOrganization || len(service.config.InitialAdminToken) != 0 {
+					t.Fatalf("local organization binding = %q, bootstrap token retained = %t", org, len(service.config.InitialAdminToken) != 0)
+				}
+				if err := create(org, "second-admin", "example-second-local-admin", nil); err != nil {
+					t.Fatal(err)
+				}
+				expired := now.Add(-time.Hour)
+				if err := create(org, "expired-admin", "example-expired-local-admin", &expired); err != nil {
+					t.Fatal(err)
+				}
+				check := func(service *Service, token string, want int) {
+					t.Helper()
+					credential, status, err := service.authenticateAPIToken(t.Context(), token, "", "")
+					if status != want || want == http.StatusOK && (err != nil || credential.Scope != apiScopeAdmin || credential.Hosted != nil) {
+						t.Fatalf("local authentication status=%d error=%v, want %d", status, err, want)
+					}
+				}
+				check(service, validToken, http.StatusOK)
+				check(service, "example-second-local-admin", http.StatusOK)
+				check(service, "example-expired-local-admin", http.StatusUnauthorized)
+				check(service, "example-foreign-admin", http.StatusUnauthorized)
+				if existing {
+					check(service, supplied, http.StatusUnauthorized)
+					if err := store.postgres.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+						identity, err := r.HubIdentity(t.Context())
+						if err != nil {
+							return err
+						}
+						if identity.ID != "hub_"+strings.Repeat("1", 32) || !bytes.Equal(identity.CursorKey, bytes.Repeat([]byte{1}, 32)) {
+							return errors.New("imported Hub identity changed")
+						}
+						_, err = r.AccessCredential(t.Context(), bootstrapTokenID)
+						if !errors.Is(err, corestore.ErrNotFound) {
+							return fmt.Errorf("unexpected imported bootstrap credential lookup: %v", err)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.RevokeAccessCredential(t.Context(), bootstrapTokenID, now)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := service.Close(); err != nil {
+					t.Fatal(err)
+				}
+				cfg.InitialAdminToken = []byte("example-replacement-bootstrap")
+				reopened := open(cfg)
+				if reopened.accessOrganization() != org {
+					t.Fatal("restart changed the designated local organization")
+				}
+				check(reopened, supplied, http.StatusUnauthorized)
+				check(reopened, string(cfg.InitialAdminToken), http.StatusUnauthorized)
+				check(reopened, "example-second-local-admin", http.StatusOK)
+				if err := reopened.Close(); err != nil {
+					t.Fatal(err)
+				}
+				deleted, err := admin.ExecContext(t.Context(), `DELETE FROM api_tokens WHERE organization_id=$1 AND id=$2`, org, bootstrapTokenID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if count, err := deleted.RowsAffected(); err != nil || count != 1 {
+					t.Fatalf("delete bootstrap credential: count=%d error=%v", count, err)
+				}
+				reopened = open(cfg)
+				check(reopened, string(cfg.InitialAdminToken), http.StatusUnauthorized)
+				check(reopened, "example-second-local-admin", http.StatusOK)
+			})
+		}
+	})
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
@@ -49,6 +348,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	cfg.Postgres.Pool.ServingConnections = 2
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Workspace = &WorkspaceConfig{Enabled: true}
+	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	provider := cfg.Hosted.Provider
 	if _, err := provider.CreateMembership(t.Context(), "user_owner", "provider_org_startup", "owner"); err != nil {
 		t.Fatal(err)
@@ -60,7 +360,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedStartupOrganization(t, store.postgres, "org_startup")
+	seedStartupOrganization(t, store.postgres, "org_startup", cfg.Hosted)
 	if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES('org_startup','collaboration_bytes',0) ON CONFLICT (organization_id,name) DO NOTHING`); err != nil {
 		t.Fatalf("seed PostgreSQL collaboration byte counter: %v", err)
 	}
@@ -124,7 +424,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if service.database.db != nil || service.config.TenantRepository != service.database.postgres || service.config.AccessRepository != service.database.postgres {
+	if service.database.postgres == nil || service.config.TenantRepository != service.database.postgres || service.config.AccessRepository != service.database.postgres {
 		t.Fatal("Open did not bind native routes to PostgreSQL")
 	}
 	ownerCredential, ownerStatus, ownerErr := service.authenticateAccessHash(t.Context(), ownerHash, "", "")
@@ -201,10 +501,10 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	}
 	workspacePath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/workspaces"
 	workspaceResponse := performHubAPIRequest(t, service, http.MethodPost, workspacePath, ownerToken, map[string]any{})
-	requireNativeStatus(t, workspaceResponse, http.StatusServiceUnavailable)
+	requireNativeStatus(t, workspaceResponse, http.StatusUnprocessableEntity)
 	var workspaceError map[string]any
 	decodeHubResponse(t, workspaceResponse, &workspaceError)
-	if workspaceError["code"] != "storage_owner_unavailable" {
+	if workspaceError["code"] != "invalid_request" {
 		t.Fatalf("PostgreSQL workspace response = %+v", workspaceError)
 	}
 
@@ -219,25 +519,25 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: "credential_runner", ProjectID: project.ID}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_startup", ID: "enrollment_runner", RunnerID: "runner_example", MachineID: "machine_example", TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "credential_owner"}); err != nil {
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_startup", ID: "enrollment_runner", RunnerID: "runner_0123456789abcdef0123456789abcdef", MachineID: "machine_0123456789abcdef0123456789abcdef", TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "credential_owner"}); err != nil {
 			return err
 		}
-		if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_runner", "runner_example", "machine_example", now); err != nil {
+		if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_runner", "runner_0123456789abcdef0123456789abcdef", "machine_0123456789abcdef0123456789abcdef", now); err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_startup", ID: "machine_example", Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_startup", ID: "machine_0123456789abcdef0123456789abcdef", Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_startup", RunnerID: "runner_example", MachineID: "machine_example", TokenID: "credential_runner", EnrollmentID: "enrollment_runner", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_startup", RunnerID: "runner_0123456789abcdef0123456789abcdef", MachineID: "machine_0123456789abcdef0123456789abcdef", TokenID: "credential_runner", EnrollmentID: "enrollment_runner", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 			return err
 		}
-		if err := w.UpdateRunnerCapacityConfig(t.Context(), "runner_example", runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now}); err != nil {
+		if err := w.UpdateRunnerCapacityConfig(t.Context(), "runner_0123456789abcdef0123456789abcdef", runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now}); err != nil {
 			return err
 		}
-		if err := w.ReplaceRunnerProviderReports(t.Context(), "runner_example", []providercapacity.Report{capacity}); err != nil {
+		if err := w.ReplaceRunnerProviderReports(t.Context(), "runner_0123456789abcdef0123456789abcdef", []providercapacity.Report{capacity}); err != nil {
 			return err
 		}
-		if err := w.ReplaceRunnerLocalChecks(t.Context(), "runner_example", project.ID, runnerauth.LocalChecks{Checkout: "passed", Configuration: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: now, CheckoutAt: now, ConfigurationAt: now, DoctorAt: now, ProviderAt: now}); err != nil {
+		if err := w.ReplaceRunnerLocalChecks(t.Context(), "runner_0123456789abcdef0123456789abcdef", project.ID, runnerauth.LocalChecks{Checkout: "passed", Configuration: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: now, CheckoutAt: now, ConfigurationAt: now, DoctorAt: now, ProviderAt: now}); err != nil {
 			return err
 		}
 		return w.SaveProjectOnboardingProgress(t.Context(), project.ID, onboarding.Progress{Revision: 1, Repository: "existing", Doctor: true, Provider: true, Artifacts: "local", UpdatedAt: formatHubTime(now)}, 0)
@@ -255,7 +555,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	requireNativeStatus(t, browserSetupResponse, http.StatusOK)
 	var browserSetup onboarding.Project
 	decodeHubResponse(t, browserSetupResponse, &browserSetup)
-	if len(browserSetup.Runners) != 1 || browserSetup.Runners[0].Runner.RunnerID != "runner_example" || browserSetup.Runners[0].Runner.ConnectionHealth != "online" || browserSetup.Runners[0].LocalChecks == nil || !browserSetup.Runners[0].LocalChecks.Passed() || !slices.Equal(browserSetup.Runners[0].LocalChecks.ProviderKinds, []string{"codex"}) || browserSetup.Policy == nil || browserSetup.Policy.Policy.ID != policy.ID {
+	if len(browserSetup.Runners) != 1 || browserSetup.Runners[0].Runner.RunnerID != "runner_0123456789abcdef0123456789abcdef" || browserSetup.Runners[0].Runner.ConnectionHealth != "online" || browserSetup.Runners[0].LocalChecks == nil || !browserSetup.Runners[0].LocalChecks.Passed() || !slices.Equal(browserSetup.Runners[0].LocalChecks.ProviderKinds, []string{"codex"}) || browserSetup.Policy == nil || browserSetup.Policy.Policy.ID != policy.ID {
 		t.Fatalf("typed browser onboarding lost live runner/policy proofs: %+v", browserSetup)
 	}
 	capabilitiesRequest := performHubAPIRequest(t, service, http.MethodGet, "/api/v2/capabilities", workerToken, nil)
@@ -265,12 +565,12 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if capabilities.ServerID != serverID || capabilities.Version != service.config.Version || !slices.Contains(capabilities.ProtocolMajors, 2) {
 		t.Fatalf("PostgreSQL capabilities = %+v", capabilities)
 	}
-	claim := tracker.NativeClaim{LandingCapacity: 1, PolicyID: policy.ID, WorkItemID: issue.WorkItemID, MachineID: "machine_example", SessionID: "session_example", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, ProviderCandidates: []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: providercapacity.Requirement{Role: "code", Backend: capacity.Backend, Model: capacity.Models[0]}}}}
+	claim := tracker.NativeClaim{LandingCapacity: 1, PolicyID: policy.ID, WorkItemID: issue.WorkItemID, MachineID: "machine_0123456789abcdef0123456789abcdef", SessionID: "session_example", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, ProviderCandidates: []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: providercapacity.Requirement{Role: "code", Backend: capacity.Backend, Model: capacity.Models[0]}}}}
 	claimResponse := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/org_startup/projects/"+url.PathEscape(string(project.ID))+"/claims", workerToken, claim)
 	requireNativeStatus(t, claimResponse, http.StatusOK)
 	var lease tracker.NativeLease
 	decodeHubResponse(t, claimResponse, &lease)
-	if lease.WorkItemID != issue.WorkItemID || lease.MachineID != "machine_example" || lease.ID == "" {
+	if lease.WorkItemID != issue.WorkItemID || lease.MachineID != "machine_0123456789abcdef0123456789abcdef" || lease.ID == "" {
 		t.Fatalf("PostgreSQL claim response = %+v", lease)
 	}
 	bodyFragmentSeen, fragmentRequests := false, 0
@@ -300,7 +600,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	requireNativeStatus(t, validateResponse, http.StatusOK)
 	var validatedRunner runnerauth.Runner
 	decodeHubResponse(t, validateResponse, &validatedRunner)
-	if validatedRunner.RunnerID != "runner_example" || validatedRunner.MachineID != "machine_example" || validatedRunner.OrganizationID != "org_startup" {
+	if validatedRunner.RunnerID != "runner_0123456789abcdef0123456789abcdef" || validatedRunner.MachineID != "machine_0123456789abcdef0123456789abcdef" || validatedRunner.OrganizationID != "org_startup" {
 		t.Fatalf("PostgreSQL validated runner = %+v", validatedRunner)
 	}
 	workerCredential, status, err := service.authenticateAccessHash(t.Context(), workerHash, "", "")
@@ -324,7 +624,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("store typed PostgreSQL runner diagnostics: %v", err)
 	}
-	diagnosticsPath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/runner-diagnostics?runner_id=runner_example&limit=1"
+	diagnosticsPath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/runner-diagnostics?runner_id=runner_0123456789abcdef0123456789abcdef&limit=1"
 	diagnosticsResponse := performHubAPIRequest(t, service, http.MethodGet, diagnosticsPath, workerToken, nil)
 	requireNativeStatus(t, diagnosticsResponse, http.StatusOK)
 	var diagnosticsPage runnerauth.DiagnosticPage
@@ -354,7 +654,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("store reporter PostgreSQL runner diagnostics: %v", err)
 	}
-	reporterDiagnosticsPath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/runner-diagnostics?runner_id=runner_example&limit=10"
+	reporterDiagnosticsPath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/runner-diagnostics?runner_id=runner_0123456789abcdef0123456789abcdef&limit=10"
 	reporterDiagnosticsResponse := performHubAPIRequest(t, service, http.MethodGet, reporterDiagnosticsPath, reporterToken, nil)
 	requireNativeStatus(t, reporterDiagnosticsResponse, http.StatusOK)
 	diagnosticsPage = runnerauth.DiagnosticPage{}
@@ -427,7 +727,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	sourceAttempt := seedAttempt("session_source", &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"})
 	cleanCheckpoint := seedAttempt("session_clean_checkpoint", &tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", ExternalEffect: "none", EffectState: "none"})
 	landingAttempt := seedAttempt("session_landing", nil, true)
-	progressPath := itemsPath + "/" + url.PathEscape(string(issue.WorkItemID)) + "/progress?policy=" + url.QueryEscape(policy.ID) + "&instance=machine_example"
+	progressPath := itemsPath + "/" + url.PathEscape(string(issue.WorkItemID)) + "/progress?policy=" + url.QueryEscape(policy.ID) + "&instance=machine_0123456789abcdef0123456789abcdef"
 	progressResponse := performHubAPIRequest(t, service, http.MethodGet, progressPath, ownerToken, nil)
 	requireNativeStatus(t, progressResponse, http.StatusOK)
 	var progress nativeProgressView
@@ -446,7 +746,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	progressPost := progresscheck.Publication{
 		Mutation:         tracker.Mutation{IdempotencyKey: "progress_publication_example", LeaseID: landingAttempt.LeaseID, FencingToken: landingAttempt.FencingToken},
 		ExpectedRevision: tracker.Revision(currentWorkItem.Revision), RequestID: progressRequestID,
-		PolicyID: policy.ID, Instance: "machine_example",
+		PolicyID: policy.ID, Instance: "machine_0123456789abcdef0123456789abcdef",
 		Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: progress.Request.AvailableSteps[0], Reason: "The failure evidence identifies unfinished implementation work", Diagnosis: progress.Request.Attempts[0].ID + " shows the attempt ended before the required result was produced", Instruction: "Complete the named step and retain its verification receipt", Convergence: "The next attempt can confirm the required result", Evidence: []string{progress.Request.Attempts[0].ID}},
 	}
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
@@ -459,7 +759,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		policy   string
 		instance string
 	}{
-		{name: "reject policy outside lease", policy: "policy_other", instance: "machine_example"},
+		{name: "reject policy outside lease", policy: "policy_other", instance: "machine_0123456789abcdef0123456789abcdef"},
 		{name: "reject instance outside lease", policy: policy.ID, instance: "machine_other"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -507,7 +807,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	}{
 		{name: "receipt rejects revoked credential", mutate: `UPDATE api_tokens SET revoked_at=now() WHERE organization_id='org_startup' AND id='credential_runner'`, restore: `UPDATE api_tokens SET revoked_at=NULL WHERE organization_id='org_startup' AND id='credential_runner'`},
 		{name: "receipt rejects revoked project grant", mutate: `DELETE FROM token_grants WHERE organization_id='org_startup' AND token_id='credential_runner' AND project_id='project_example'`, restore: `INSERT INTO token_grants(organization_id,token_id,project_id) VALUES('org_startup','credential_runner','project_example')`},
-		{name: "receipt rejects disabled runner", mutate: `UPDATE runner_identities SET state='disabled' WHERE organization_id='org_startup' AND runner_id='runner_example'`, restore: `UPDATE runner_identities SET state='active' WHERE organization_id='org_startup' AND runner_id='runner_example'`},
+		{name: "receipt rejects disabled runner", mutate: `UPDATE runner_identities SET state='disabled' WHERE organization_id='org_startup' AND runner_id='runner_0123456789abcdef0123456789abcdef'`, restore: `UPDATE runner_identities SET state='active' WHERE organization_id='org_startup' AND runner_id='runner_0123456789abcdef0123456789abcdef'`},
 		{name: "receipt rejects revoked membership", mutate: `UPDATE hosted_members SET active=false WHERE organization_id='org_startup' AND user_id='user_owner'`, restore: `UPDATE hosted_members SET active=true WHERE organization_id='org_startup' AND user_id='user_owner'`, owner: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -675,7 +975,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	details := service.config.RunDetails.(*memoryRunDetails)
+	details := cfg.RunDetails.(*memoryRunDetails)
 	details.mu.Lock()
 	delete(details.data, unrelatedRunEvent.PayloadObjectKey)
 	details.mu.Unlock()
@@ -812,7 +1112,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		var base runnerstore.Identity
 		if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			base, err = r.RunnerIdentity(t.Context(), "runner_example")
+			base, err = r.RunnerIdentity(t.Context(), "runner_0123456789abcdef0123456789abcdef")
 			return err
 		}); err != nil {
 			t.Fatal(err)

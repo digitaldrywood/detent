@@ -305,8 +305,17 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 
 		running := state.Running[id]
 		refreshed := o.hydrateRunningIssueComments(ctx, mergeIssueTrackerFields(running.Issue, issue))
-		if _, _, err := o.observeLane(ctx, state, refreshed, now); err != nil && o.logger != nil {
-			o.logger.Warn("running lane observation failed", "issue_id", id, "error", err)
+		if _, _, err := o.observeLane(ctx, state, refreshed, now); err != nil {
+			if o.logger != nil {
+				o.logger.Warn("running lane observation failed", "issue_id", id, "error", err)
+			}
+			if (running.Mode == runpkg.RunModeMerge || running.Mode == "" && running.CompletionLane == "" && mergeWorkerIssue(running.Issue)) && normalizeState(refreshed.State) == normalizeState(autoPromoteMergingState) {
+				eligibilityRunning := running
+				eligibilityRunning.Issue = refreshed
+				o.revokeRunningMergeIfIneligible(ctx, state, eligibilityRunning, now)
+				state.Running[id] = running
+			}
+			continue
 		}
 		if normalizeState(running.Issue.State) != normalizeState(refreshed.State) {
 			running.CompletionLane = refreshed.State
@@ -440,6 +449,9 @@ func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue
 	if refreshed.StageUpdatedAt != nil {
 		merged.StageUpdatedAt = refreshed.StageUpdatedAt
 		merged.StageUpdatedActor = refreshed.StageUpdatedActor
+	} else if normalizeState(merged.State) != normalizeState(current.State) || refreshed.Metadata["hub_revision"] != "" && refreshed.Metadata["hub_revision"] != current.Metadata["hub_revision"] {
+		merged.StageUpdatedAt = nil
+		merged.StageUpdatedActor = connector.IssueActor{}
 	} else if strings.TrimSpace(refreshed.StageUpdatedActor.Login) != "" || strings.TrimSpace(refreshed.StageUpdatedActor.Kind) != "" {
 		merged.StageUpdatedActor = refreshed.StageUpdatedActor
 	}

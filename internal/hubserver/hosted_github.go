@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
 	"sort"
@@ -20,59 +19,50 @@ import (
 func (s *Service) hostedGitHubRepositories(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	if s.database.db == nil && s.config.TenantRepository != nil {
-		return s.hostedGitHubRepositoriesPostgres(ctx, c)
-	}
-	rows, err := s.database.reader.QueryContext(ctx, `
-SELECT lower(r.github_owner || '/' || r.github_name) FROM projects p
-JOIN repositories r ON r.id = p.repository_id WHERE p.deleted_at IS NULL AND p.profile = 'native' AND p.organization_id = ?
-UNION
-SELECT lower(checkout_repository) FROM projects
-WHERE deleted_at IS NULL AND profile = 'native' AND organization_id = ? AND checkout_repository != ''`, s.config.Hosted.OrganizationID, s.config.Hosted.OrganizationID)
-	if err != nil {
-		return s.internalAPIError(c, "tenant_unavailable", "Repository bindings are unavailable", err)
-	}
-	defer rows.Close()
-	repositories := []string{}
-	for rows.Next() {
-		var repository string
-		if err := rows.Scan(&repository); err != nil {
-			return err
-		}
-		repositories = append(repositories, repository)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	return c.JSON(http.StatusOK, repositories)
+	return s.hostedGitHubRepositoriesPostgres(ctx, c)
 }
 
 func (s *Service) hostedGitHubRepositoriesPostgres(ctx context.Context, c echo.Context) error {
+	if s.config.TenantRepository == nil {
+		return s.internalAPIError(c, "tenant_unavailable", "Repository bindings are unavailable", errors.New("typed GitHub repository binding reads are unavailable"))
+	}
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return s.internalAPIError(c, "tenant_unavailable", "Repository bindings are unavailable", errors.New("typed GitHub repository snapshots are unavailable"))
+	}
 	const pageSize = corestore.MaxPageSize
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
-	var page []projectstore.GitHubRepositoryBinding
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	repositories := make(map[string]struct{})
+	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		pageReader, ok := reader.(projectstore.GitHubRepositoryBindingsPageReader)
 		if !ok {
 			return errors.New("typed GitHub repository binding reads are unavailable")
 		}
-		var err error
-		page, err = pageReader.GitHubRepositoryBindings(ctx, "", pageSize)
-		return err
+		var after tracker.ProjectID
+		for {
+			page, err := pageReader.GitHubRepositoryBindings(ctx, after, pageSize)
+			if err != nil {
+				return err
+			}
+			more := len(page) > pageSize
+			if more {
+				page = page[:pageSize]
+			}
+			for _, binding := range page {
+				for _, repository := range []string{binding.Repository, binding.CheckoutRepository} {
+					if repository = strings.ToLower(repository); repository != "" {
+						repositories[repository] = struct{}{}
+					}
+				}
+			}
+			if !more {
+				return nil
+			}
+			after = page[len(page)-1].ProjectID
+		}
 	})
 	if err != nil {
 		return s.internalAPIError(c, "tenant_unavailable", "Repository bindings are unavailable", err)
-	}
-	if len(page) > pageSize {
-		return s.internalAPIError(c, "tenant_unavailable", "Repository bindings exceed the supported project limit", corestore.ErrInvalidPage)
-	}
-	repositories := make(map[string]struct{})
-	for _, binding := range page {
-		for _, repository := range []string{binding.Repository, binding.CheckoutRepository} {
-			if repository = strings.ToLower(repository); repository != "" {
-				repositories[repository] = struct{}{}
-			}
-		}
 	}
 	result := make([]string, 0, len(repositories))
 	for repository := range repositories {
@@ -85,19 +75,30 @@ func (s *Service) hostedGitHubRepositoriesPostgres(ctx context.Context, c echo.C
 func (s *Service) hostedGitHubReceipt(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	var received sql.NullString
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT max(last_received_at) FROM github_webhook_inbox").Scan(&received); err != nil {
-		return s.internalAPIError(c, "tenant_unavailable", "GitHub webhook receipt is unavailable", err)
-	}
 	var result struct {
 		ReceivedAt *time.Time `json:"received_at"`
 	}
-	if received.Valid {
-		value, err := time.Parse(time.RFC3339Nano, received.String)
+	if s.config.TenantRepository == nil {
+		return s.internalAPIError(c, "tenant_unavailable", "GitHub webhook receipt is unavailable", ErrPostgresFeatureUnavailable)
+	}
+	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+		owner, ok := reader.(projectstore.GitHubIntakeReader)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		received, err := owner.LatestGitHubWebhookReceipt(ctx)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
-		result.ReceivedAt = &value
+		received = received.UTC()
+		result.ReceivedAt = &received
+		return nil
+	})
+	if err != nil {
+		return s.internalAPIError(c, "tenant_unavailable", "GitHub webhook receipt is unavailable", err)
 	}
 	return c.JSON(http.StatusOK, result)
 }

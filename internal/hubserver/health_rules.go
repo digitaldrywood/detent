@@ -3,6 +3,7 @@ package hubserver
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -12,6 +13,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+var errHealthReadLimit = errors.New("health observation exceeds bounded read")
 
 const (
 	healthInterval       = time.Minute

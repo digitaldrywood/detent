@@ -316,10 +316,10 @@ func TestNativeModelSelectionTools(t *testing.T) {
 	if action.Status != chatpkg.ActionSucceeded || saved.Revision != 2 || saved.Effective.Model("normal") != "native-model" {
 		t.Fatalf("saved=%+v action=%+v", saved, action)
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "organization-operator", "scope": "operator"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var operator tokenResponse
-	decodeHubResponse(t, response, &operator)
+	operator, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "organization-operator", Scope: apiScopeOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/missing-organization/model-tool-test", operator.Token, nil), http.StatusForbidden)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, operator.Token, nil), http.StatusOK)
 	ctx = <-contexts
@@ -365,7 +365,7 @@ func TestNativeModelSelectionTools(t *testing.T) {
 	if action.Status != chatpkg.ActionSucceeded || saved.Revision != organization.Data.Revision+1 || saved.Effective.Model("normal") != "organization-model" {
 		t.Fatalf("organization saved=%+v action=%+v", saved, action)
 	}
-	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/model-selection", f.token, nil)
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/model-selection", f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &saved)
 	if saved.Effective.Model("normal") != "native-model" {

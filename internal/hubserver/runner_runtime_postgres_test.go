@@ -235,6 +235,41 @@ func TestPostgresRunnerUsageAndCheckpointSurviveClientRestart(t *testing.T) {
 		if attempt.Checkpoint == nil || !attempt.Checkpoint.GitRef() || attempt.Checkpoint.CommitSHA != data.Handoff.CommitSHA || len(attempt.Usage) != 1 || attempt.Usage[0].Input != int64(17+index) {
 			t.Fatalf("restart lost fenced checkpoint/usage: %+v", attempt)
 		}
+		name := "normal"
+		if index == 1 {
+			name = "fallback"
+		}
+		t.Run("model selection "+name, func(t *testing.T) {
+			native, ctx := f.client(t, index)
+			sessions := api.NewRunnerSessions(native)
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			identity := agentidentity.Configured("example", "example", "default", "code", "example-model", "", "medium", "", now)
+			identity.Selection = agentidentity.Selection{Policy: "example-policy", Reason: "default_complexity", RequestedModel: "example-model", ModelSource: "preset:normal_model", EffortSource: "preset:levels.normal.effort"}
+			if index == 1 {
+				identity.Selection.RequestedModel = "example-preferred-model"
+				identity.Selection.FallbackReason = "configured model unavailable"
+			}
+			id, err := sessions.StartSession(ctx, store.SessionStart{ProjectID: "local-project", IssueID: string(lease.WorkItemID), StartedAt: now, RuntimeIdentity: identity})
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity = identity.Merge(agentidentity.RuntimeUpdate("example-model", "example", "medium", "default", now))
+			if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: now.Add(time.Second), FinalState: "completed", ProviderThreadID: "thread-" + name, RuntimeIdentity: identity}); err != nil {
+				t.Fatal(err)
+			}
+			replacement, replacementCtx := f.client(t, index)
+			resume, err := api.NewRunnerSessions(replacement).LatestIssueAgentResumeState(replacementCtx, store.IssueIdentity{ProjectID: "local-project", IssueID: string(lease.WorkItemID)})
+			if err != nil || resume.DetentSessionID != id || !resume.RuntimeIdentity.MateriallyEqual(identity) {
+				t.Fatalf("resume identity = %+v, %v, want %+v", resume, err, identity)
+			}
+			var snapshot runnersession.Snapshot
+			if err := replacement.Transport().Request(replacementCtx, http.MethodGet, replacement.Scope()+"/runner-sessions/"+strconv.FormatInt(id, 10), nil, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.ID != id || snapshot.Start.IssueID != string(lease.WorkItemID) || snapshot.Identity.Selection != identity.Selection {
+				t.Fatalf("session provenance = %+v, want %+v", snapshot, identity.Selection)
+			}
+		})
 	}
 	native, ctx := f.client(t, 0)
 	spend, err := native.ProjectDailyTokenSpend(ctx, "local-project", day)
@@ -530,6 +565,7 @@ func newRunnerPGFixtureWithDetails(t *testing.T, decorate func(attachment.Detail
 	if decorate != nil {
 		cfg.RunDetails = decorate(cfg.RunDetails)
 	}
+	seedHostedStartup(t, cfg)
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -545,7 +581,6 @@ func newRunnerPGFixtureWithDetails(t *testing.T, decorate func(attachment.Detail
 func seedRunnerPGFixture(t *testing.T, admin *sql.DB, service *Service, organization tracker.OrganizationID, customize ...func(*policy.Descriptor)) runnerPGFixture {
 	t.Helper()
 	var err error
-	seedStartupOrganization(t, service.config.TenantRepository, organization)
 	f := runnerPGFixture{organization: organization, admin: admin, service: service, server: httptest.NewServer(service.Handler())}
 	t.Cleanup(f.server.Close)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -662,6 +697,7 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 	otherConfig := startupConfig(startupConnection(t, f.admin, "detent_runtime_v2", ""))
 	otherConfig.Hosted.OrganizationID = "org_other"
 	otherConfig.Hosted.WorkOSOrganizationID = "provider_org_other"
+	seedHostedStartup(t, otherConfig)
 	otherService, err := Open(t.Context(), otherConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -672,184 +708,269 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 		}
 	})
 	otherTenant := seedRunnerPGFixture(t, f.admin, otherService, "org_other")
+	progressSessionIDs := make(map[tracker.OrganizationID]int64)
 	for _, pair := range [][2]runnerPGFixture{{f, otherTenant}, {otherTenant, f}} {
 		for index := range pair[0].leases {
 			testRunnerSessionFinalizationRecovery(t, pair[0], pair[1], index)
 		}
+		native, ctx := pair[0].client(t, 0)
+		id, err := api.NewRunnerSessions(native).StartSession(ctx, store.SessionStart{IssueID: string(pair[0].leases[0].WorkItemID), StartedAt: time.Now().UTC().Truncate(time.Microsecond)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		progressSessionIDs[pair[0].organization] = id
 	}
 
-	for index := range f.leases {
-		native, ctx := f.client(t, index)
-		sessions := api.NewRunnerSessions(native)
-		started := time.Now().UTC().Truncate(time.Microsecond)
-		start := store.SessionStart{ProjectID: "local-project", IssueID: string(f.leases[index].WorkItemID), StartedAt: started, RequestedModel: "example-model", Model: "example-model", AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code"}
-		committed := make(chan runnersession.Snapshot, 1)
-		lostResponse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, r)
-			var snapshot runnersession.Snapshot
-			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &snapshot) != nil || snapshot.ID < 1 {
-				t.Error("session start did not commit before response loss")
-			}
-			committed <- snapshot
-			w.Header().Set("Content-Length", strconv.Itoa(response.Body.Len()+1))
-			w.WriteHeader(response.Code)
-			if _, err := w.Write(response.Body.Bytes()); err != nil {
-				t.Error(err)
-			}
-		}))
-		t.Cleanup(lostResponse.Close)
-		transport, err := api.New(api.Config{URL: lostResponse.URL, TokenSource: func() string { return f.tokens[index] }, HTTPClient: &http.Client{Transport: &http.Transport{}}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		uncertainNative, err := transport.Native("org_startup", "prj_runner")
-		if err != nil {
-			t.Fatal(err)
-		}
-		uncertainID, err := api.NewRunnerSessions(uncertainNative).StartSession(ctx, start)
-		if uncertainID != 0 || !errors.Is(err, api.ErrUnavailable) {
-			t.Fatalf("lost start response: id=%d error=%v", uncertainID, err)
-		}
-		orphan := <-committed
-		lostResponse.Close()
-		var persistedStart runnersession.Snapshot
-		if err := native.Transport().Request(ctx, http.MethodGet, native.Scope()+"/runner-sessions/"+strconv.FormatInt(orphan.ID, 10), nil, &persistedStart); err != nil {
-			t.Fatal(err)
-		}
-		if persistedStart.Revision != 1 || persistedStart.Start.IssueID != start.IssueID || persistedStart.Provider.ThreadID != "" || persistedStart.Provider.SessionID != "" || persistedStart.Worker != nil || persistedStart.Progress != nil || persistedStart.Finish != nil || orphan.ReceiptID < 1 {
-			t.Fatalf("lost response changed committed pre-provider session: %+v", persistedStart)
-		}
-		if stopped, err := native.ReleasedProvidersStopped(ctx, f.data[index].AttemptID); err != nil || stopped {
-			t.Fatalf("pre-provider session process observation: stopped=%t error=%v", stopped, err)
-		}
-		if _, err := sessions.LatestIssueAgentResumeState(ctx, store.IssueIdentity{IssueID: start.IssueID}); !errors.Is(err, store.ErrNotFound) {
-			t.Fatalf("pre-provider session selected for current-attempt resume: %v", err)
-		}
-		id, err := sessions.StartSession(ctx, start)
-		if id == orphan.ID {
-			t.Fatal("new start reused an uncertain request's session")
-		}
-		if err != nil || id < 1 {
-			t.Fatalf("start: id=%d error=%v", id, err)
-		}
-		provider := store.SessionProviderIdentity{ThreadID: fmt.Sprintf("thread_%d", index), SessionID: fmt.Sprintf("provider_%d", index)}
-		identity := agentidentity.Identity{BackendID: "example", BackendKind: "example", Role: "code", ResolvedModel: agentidentity.NewValue("example-model", agentidentity.ProvenanceConfigured)}
-		if err := sessions.UpdateSessionIdentity(ctx, id, identity); err != nil {
-			t.Fatal(err)
-		}
-		if err := sessions.UpdateSessionProviderIdentity(ctx, id, provider); err != nil {
-			t.Fatal(err)
-		}
-		progress := store.SessionProgress{HeadSHA: strings.Repeat("a", 40), LastProgressAt: started}
-		if err := sessions.SaveSessionProgress(ctx, id, progress); err != nil {
-			t.Fatal(err)
-		}
-		if err := sessions.UpdateSessionResumeState(ctx, id, store.SessionResumeState{ResumedFromSessionID: id, OrphanRecoveryOutcome: "resumed"}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := sessions.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{SessionID: id, PhaseName: "agent_active", StartedAt: started, FinishedAt: started.Add(time.Second)}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := sessions.SaveWorkflowActivityProfile(ctx, 0, store.WorkflowPhaseEvent{SessionID: id, PhaseName: "profile"}, workflowmetrics.ActivityProfile{Schema: 1, SessionID: id, Status: "running"}); err != nil {
-			t.Fatal(err)
-		}
-		usageReceipt, err := sessions.RecordUsageEvent(ctx, store.UsageEvent{SessionID: id, Model: "example-model", InputTokens: 17, OutputTokens: 3})
-		if err != nil {
-			t.Fatal(err)
-		}
-		restartedNative, restartedCtx := f.client(t, index)
-		restarted := api.NewRunnerSessions(restartedNative)
-		resume, err := restarted.LatestAgentResumeState(restartedCtx, store.AgentResumeLookup{NativeAttemptID: f.data[index].AttemptID, IssueID: string(f.leases[index].WorkItemID), AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code", RequestedModel: "example-model"})
-		if err != nil || resume.DetentSessionID != id || resume.ProviderThreadID != provider.ThreadID || resume.ProviderSessionID != provider.SessionID || !resume.Orphaned || resume.RuntimeIdentity.ResolvedModel.Value != "example-model" {
-			t.Fatalf("restart lost provider identity: %+v %v", resume, err)
-		}
-		replacement, replacementCtx := f.client(t, 1-index)
-		recovered, err := api.NewRunnerSessions(replacement).LatestAgentResumeState(replacementCtx, store.AgentResumeLookup{NativeAttemptID: f.data[index].AttemptID, IssueID: string(f.leases[index].WorkItemID), AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code", RequestedModel: "example-model"})
-		if err != nil || recovered.DetentSessionID != id || recovered.ProviderThreadID != provider.ThreadID {
-			t.Fatalf("replacement runner lost Hub resume identity: %+v %v", recovered, err)
-		}
-		persisted, err := restarted.SessionProgress(restartedCtx, id)
-		if err != nil || persisted.HeadSHA != progress.HeadSHA || !persisted.LastProgressAt.Equal(started) {
-			t.Fatalf("restart lost progress: %+v %v", persisted, err)
-		}
-		pinned, err := restarted.SessionPolicy(restartedCtx, "local-project", id)
-		if err != nil || pinned.ID != f.policy.PolicyID {
-			t.Fatalf("restart lost policy: %+v %v", pinned, err)
-		}
-		if err := restarted.FinishSession(restartedCtx, id, store.SessionFinish{CompletedAt: started.Add(time.Second), FinalState: "completed", ProviderThreadID: provider.ThreadID, ProviderSessionID: provider.SessionID}); err != nil {
-			t.Fatal(err)
-		}
-		for _, test := range []struct {
-			name   string
-			parent int64
-			turns  int64
-		}{
-			{name: "fresh startup"},
-			{name: "resumed failure", parent: id, turns: 1},
-		} {
-			t.Run(fmt.Sprintf("runner_%d/%s", index, test.name), func(t *testing.T) {
-				nextStart := start
-				nextStart.ResumedFromSessionID = test.parent
-				if test.parent > 0 {
-					nextStart.ProviderThreadID, nextStart.ProviderSessionID = provider.ThreadID, provider.SessionID
-					nextStart.OrphanRecoveryOutcome = store.OrphanRecoveryResumed
-				}
-				nextID, err := restarted.StartSession(restartedCtx, nextStart)
+	for _, pair := range [][2]runnerPGFixture{{f, otherTenant}, {otherTenant, f}} {
+		f := pair[0]
+		t.Run(string(f.organization), func(t *testing.T) {
+			for index := range f.leases {
+				native, ctx := f.client(t, index)
+				sessions := api.NewRunnerSessions(native)
+				started := time.Now().UTC().Truncate(time.Microsecond)
+				start := store.SessionStart{ProjectID: "local-project", IssueID: string(f.leases[index].WorkItemID), StartedAt: started, RequestedModel: "example-model", Model: "example-model", AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code"}
+				committed := make(chan runnersession.Snapshot, 1)
+				lostResponse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					response := httptest.NewRecorder()
+					f.service.Handler().ServeHTTP(response, r)
+					var snapshot runnersession.Snapshot
+					if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &snapshot) != nil || snapshot.ID < 1 {
+						t.Error("session start did not commit before response loss")
+					}
+					committed <- snapshot
+					w.Header().Set("Content-Length", strconv.Itoa(response.Body.Len()+1))
+					w.WriteHeader(response.Code)
+					if _, err := w.Write(response.Body.Bytes()); err != nil {
+						t.Error(err)
+					}
+				}))
+				t.Cleanup(lostResponse.Close)
+				transport, err := api.New(api.Config{URL: lostResponse.URL, TokenSource: func() string { return f.tokens[index] }, HTTPClient: &http.Client{Transport: &http.Transport{}}})
 				if err != nil {
 					t.Fatal(err)
 				}
-				finish := store.SessionFinish{CompletedAt: started.Add(2 * time.Second), FinalState: "failed", Turns: test.turns, ResumedFromSessionID: test.parent}
-				if err := restarted.FinishSession(restartedCtx, nextID, finish); err != nil {
+				uncertainNative, err := transport.Native(f.organization, "prj_runner")
+				if err != nil {
 					t.Fatal(err)
 				}
-				reader, readCtx := f.client(t, index)
-				var snapshot runnersession.Snapshot
-				if err := reader.Transport().Request(readCtx, http.MethodGet, reader.Scope()+"/runner-sessions/"+strconv.FormatInt(nextID, 10), nil, &snapshot); err != nil {
+				uncertainID, err := api.NewRunnerSessions(uncertainNative).StartSession(ctx, start)
+				if uncertainID != 0 || !errors.Is(err, api.ErrUnavailable) {
+					t.Fatalf("lost start response: id=%d error=%v", uncertainID, err)
+				}
+				orphan := <-committed
+				lostResponse.Close()
+				var persistedStart runnersession.Snapshot
+				if err := native.Transport().Request(ctx, http.MethodGet, native.Scope()+"/runner-sessions/"+strconv.FormatInt(orphan.ID, 10), nil, &persistedStart); err != nil {
 					t.Fatal(err)
 				}
-				if snapshot.Start.ResumedFromSessionID != test.parent || snapshot.Resume.ResumedFromSessionID != test.parent || snapshot.Finish == nil || snapshot.Finish.Turns != test.turns || snapshot.Finish.FinalState != "failed" {
-					t.Fatalf("Hub restart lost session provenance or actual turns: %+v", snapshot)
+				if persistedStart.Revision != 1 || persistedStart.Start.IssueID != start.IssueID || persistedStart.Provider.ThreadID != "" || persistedStart.Provider.SessionID != "" || persistedStart.Worker != nil || persistedStart.Progress != nil || persistedStart.Finish != nil || orphan.ReceiptID < 1 {
+					t.Fatalf("lost response changed committed pre-provider session: %+v", persistedStart)
 				}
-				if snapshot.Provider.ThreadID != nextStart.ProviderThreadID || snapshot.Provider.SessionID != nextStart.ProviderSessionID {
-					t.Fatalf("Hub restart mixed fresh and resumed provider identities: %+v", snapshot.Provider)
+				if stopped, err := native.ReleasedProvidersStopped(ctx, f.data[index].AttemptID); err != nil || stopped {
+					t.Fatalf("pre-provider session process observation: stopped=%t error=%v", stopped, err)
 				}
-			})
-		}
-		var history []runnersession.History
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			history, err = r.(runnersession.Reader).RunnerSessionHistory(t.Context(), "prj_runner", id, 0, 20)
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if len(history) != 9 {
-			t.Fatalf("session history lost writes: %d", len(history))
-		}
-		if usageReceipt <= 0 || history[7].ID != usageReceipt {
-			t.Fatalf("usage receipt does not identify durable history: receipt=%d history=%+v", usageReceipt, history[7])
-		}
-		var archived runnersession.Mutation
-		if err := restartedNative.Transport().Request(restartedCtx, http.MethodGet, restartedNative.Scope()+"/runner-sessions/"+strconv.FormatInt(id, 10)+"/history/7", nil, &archived); err != nil {
-			t.Fatal(err)
-		}
-		if archived.Profile == nil || archived.Profile.Profile.SessionID != id {
-			t.Fatalf("activity profile was not retained in Hub history: %+v", archived)
-		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(f.leases[index].ID), FencingToken: int64(f.leases[index].FencingToken)}, "released")
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if err := restarted.SaveSessionProgress(restartedCtx, id, progress); err == nil {
-			t.Fatal("revoked lease accepted a session mutation")
-		}
-		other, _ := f.client(t, 1-index)
-		if err := api.NewRunnerSessions(other).UpdateSessionProviderIdentity(restartedCtx, id, provider); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-			t.Fatalf("other runner accepted identity mutation: %v", err)
-		}
+				if _, err := sessions.LatestIssueAgentResumeState(ctx, store.IssueIdentity{IssueID: start.IssueID}); !errors.Is(err, store.ErrNotFound) {
+					t.Fatalf("pre-provider session selected for current-attempt resume: %v", err)
+				}
+				id, err := sessions.StartSession(ctx, start)
+				if id == orphan.ID {
+					t.Fatal("new start reused an uncertain request's session")
+				}
+				if err != nil || id < 1 {
+					t.Fatalf("start: id=%d error=%v", id, err)
+				}
+				provider := store.SessionProviderIdentity{ThreadID: fmt.Sprintf("thread_%d", index), SessionID: fmt.Sprintf("provider_%d", index)}
+				identity := agentidentity.Identity{BackendID: "example", BackendKind: "example", Role: "code", ResolvedModel: agentidentity.NewValue("example-model", agentidentity.ProvenanceConfigured)}
+				if err := sessions.UpdateSessionIdentity(ctx, id, identity); err != nil {
+					t.Fatal(err)
+				}
+				if err := sessions.UpdateSessionProviderIdentity(ctx, id, provider); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessions.SessionProgress(ctx, id); !errors.Is(err, store.ErrNotFound) {
+					t.Fatalf("missing progress error = %v", err)
+				}
+				var progress store.SessionProgress
+				for _, head := range []string{"first", "second"} {
+					progress = store.SessionProgress{HeadSHA: head, CommitFingerprint: "patch", TrackedFingerprint: "tracked-" + head, WorkspaceFingerprint: "workspace-" + head, WorkpadFingerprint: "workpad-" + head, Local: true, LastProgressAt: started}
+					if err := sessions.SaveSessionProgress(ctx, id, progress); err != nil {
+						t.Fatal(err)
+					}
+					got, err := sessions.SessionProgress(ctx, id)
+					if err != nil || got.HeadSHA != progress.HeadSHA || got.CommitFingerprint != progress.CommitFingerprint || got.TrackedFingerprint != progress.TrackedFingerprint || got.WorkspaceFingerprint != progress.WorkspaceFingerprint || got.WorkpadFingerprint != progress.WorkpadFingerprint || got.Local != progress.Local || !got.LastProgressAt.Equal(progress.LastProgressAt) {
+						t.Fatalf("progress = %+v, %v, want %+v", got, err, progress)
+					}
+				}
+				var beforeRejected runnersession.Snapshot
+				if err := native.Transport().Request(ctx, http.MethodGet, native.Scope()+"/runner-sessions/"+strconv.FormatInt(id, 10), nil, &beforeRejected); err != nil {
+					t.Fatal(err)
+				}
+				foreign, foreignCtx := pair[1].client(t, 0)
+				var beforeForeign runnersession.Snapshot
+				if err := foreign.Transport().Request(foreignCtx, http.MethodGet, foreign.Scope()+"/runner-sessions/"+strconv.FormatInt(progressSessionIDs[pair[1].organization], 10), nil, &beforeForeign); err != nil {
+					t.Fatal(err)
+				}
+				if beforeForeign.Progress != nil {
+					t.Fatal("foreign fixture already has progress")
+				}
+				for _, test := range []struct {
+					name     string
+					id       int64
+					progress store.SessionProgress
+					status   int
+					code     string
+				}{
+					{name: "missing progress timestamp", id: id, status: http.StatusUnprocessableEntity, code: "invalid_request"},
+					{name: "unknown progress session", id: int64(1<<63 - 1), progress: progress, status: http.StatusNotFound, code: "not_found"},
+					{name: "foreign tenant progress session", id: progressSessionIDs[pair[1].organization], progress: progress, status: http.StatusNotFound, code: "not_found"},
+					{name: "zero progress session", progress: progress, status: http.StatusNotFound, code: "not_found"},
+				} {
+					t.Run(fmt.Sprintf("runner_%d/%s", index, test.name), func(t *testing.T) {
+						err := sessions.SaveSessionProgress(ctx, test.id, test.progress)
+						var apiErr *api.APIError
+						if !errors.As(err, &apiErr) || apiErr.Status != test.status || apiErr.Code != test.code {
+							t.Fatalf("progress mutation error = %v, want %d %s", err, test.status, test.code)
+						}
+						if test.id == progressSessionIDs[pair[1].organization] {
+							var afterForeign runnersession.Snapshot
+							if err := foreign.Transport().Request(foreignCtx, http.MethodGet, foreign.Scope()+"/runner-sessions/"+strconv.FormatInt(test.id, 10), nil, &afterForeign); err != nil {
+								t.Fatal(err)
+							}
+							if afterForeign.Revision != beforeForeign.Revision || afterForeign.Progress != nil {
+								t.Fatalf("foreign session changed after rejection: %+v", afterForeign)
+							}
+						}
+						var afterRejected runnersession.Snapshot
+						if err := native.Transport().Request(ctx, http.MethodGet, native.Scope()+"/runner-sessions/"+strconv.FormatInt(id, 10), nil, &afterRejected); err != nil {
+							t.Fatal(err)
+						}
+						if afterRejected.Revision != beforeRejected.Revision || afterRejected.Progress == nil {
+							t.Fatalf("rejected progress mutation changed the session: %+v", afterRejected)
+						}
+						got := *afterRejected.Progress
+						if got.HeadSHA != progress.HeadSHA || got.CommitFingerprint != progress.CommitFingerprint || got.TrackedFingerprint != progress.TrackedFingerprint || got.WorkspaceFingerprint != progress.WorkspaceFingerprint || got.WorkpadFingerprint != progress.WorkpadFingerprint || got.Local != progress.Local || !got.LastProgressAt.Equal(progress.LastProgressAt) {
+							t.Fatalf("rejected progress mutation changed progress: %+v, want %+v", got, progress)
+						}
+					})
+				}
+				if err := sessions.UpdateSessionResumeState(ctx, id, store.SessionResumeState{ResumedFromSessionID: id, OrphanRecoveryOutcome: "resumed"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessions.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{SessionID: id, PhaseName: "agent_active", StartedAt: started, FinishedAt: started.Add(time.Second)}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessions.SaveWorkflowActivityProfile(ctx, 0, store.WorkflowPhaseEvent{SessionID: id, PhaseName: "profile"}, workflowmetrics.ActivityProfile{Schema: 1, SessionID: id, Status: "running"}); err != nil {
+					t.Fatal(err)
+				}
+				usageReceipt, err := sessions.RecordUsageEvent(ctx, store.UsageEvent{SessionID: id, Model: "example-model", InputTokens: 17, OutputTokens: 3})
+				if err != nil {
+					t.Fatal(err)
+				}
+				restartedNative, restartedCtx := f.client(t, index)
+				restarted := api.NewRunnerSessions(restartedNative)
+				resume, err := restarted.LatestAgentResumeState(restartedCtx, store.AgentResumeLookup{NativeAttemptID: f.data[index].AttemptID, IssueID: string(f.leases[index].WorkItemID), AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code", RequestedModel: "example-model"})
+				if err != nil || resume.DetentSessionID != id || resume.ProviderThreadID != provider.ThreadID || resume.ProviderSessionID != provider.SessionID || !resume.Orphaned || resume.RuntimeIdentity.ResolvedModel.Value != "example-model" {
+					t.Fatalf("restart lost provider identity: %+v %v", resume, err)
+				}
+				replacement, replacementCtx := f.client(t, 1-index)
+				recovered, err := api.NewRunnerSessions(replacement).LatestAgentResumeState(replacementCtx, store.AgentResumeLookup{NativeAttemptID: f.data[index].AttemptID, IssueID: string(f.leases[index].WorkItemID), AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code", RequestedModel: "example-model"})
+				if err != nil || recovered.DetentSessionID != id || recovered.ProviderThreadID != provider.ThreadID {
+					t.Fatalf("replacement runner lost Hub resume identity: %+v %v", recovered, err)
+				}
+				persisted, err := restarted.SessionProgress(restartedCtx, id)
+				if err != nil || persisted.HeadSHA != progress.HeadSHA || persisted.CommitFingerprint != progress.CommitFingerprint || persisted.TrackedFingerprint != progress.TrackedFingerprint || persisted.WorkspaceFingerprint != progress.WorkspaceFingerprint || persisted.WorkpadFingerprint != progress.WorkpadFingerprint || persisted.Local != progress.Local || !persisted.LastProgressAt.Equal(progress.LastProgressAt) {
+					t.Fatalf("restart lost progress: %+v %v", persisted, err)
+				}
+				pinned, err := restarted.SessionPolicy(restartedCtx, "local-project", id)
+				if err != nil || pinned.ID != f.policy.PolicyID {
+					t.Fatalf("restart lost policy: %+v %v", pinned, err)
+				}
+				t.Run(fmt.Sprintf("runner_%d/unknown project policy", index), func(t *testing.T) {
+					unknownProject, err := native.Transport().Native(f.organization, "prj_other")
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = api.NewRunnerSessions(unknownProject).SessionPolicy(restartedCtx, "local-project", id)
+					var denial *api.APIError
+					if !errors.As(err, &denial) || denial.Status != http.StatusForbidden || denial.Code != "access_denied" {
+						t.Fatalf("unknown project policy read = %v, want 403 access_denied", err)
+					}
+				})
+				if err := restarted.FinishSession(restartedCtx, id, store.SessionFinish{CompletedAt: started.Add(time.Second), FinalState: "completed", ProviderThreadID: provider.ThreadID, ProviderSessionID: provider.SessionID}); err != nil {
+					t.Fatal(err)
+				}
+				for _, test := range []struct {
+					name   string
+					parent int64
+					turns  int64
+				}{
+					{name: "fresh startup"},
+					{name: "resumed failure", parent: id, turns: 1},
+				} {
+					t.Run(fmt.Sprintf("runner_%d/%s", index, test.name), func(t *testing.T) {
+						nextStart := start
+						nextStart.ResumedFromSessionID = test.parent
+						if test.parent > 0 {
+							nextStart.ProviderThreadID, nextStart.ProviderSessionID = provider.ThreadID, provider.SessionID
+							nextStart.OrphanRecoveryOutcome = store.OrphanRecoveryResumed
+						}
+						nextID, err := restarted.StartSession(restartedCtx, nextStart)
+						if err != nil {
+							t.Fatal(err)
+						}
+						finish := store.SessionFinish{CompletedAt: started.Add(2 * time.Second), FinalState: "failed", Turns: test.turns, ResumedFromSessionID: test.parent}
+						if err := restarted.FinishSession(restartedCtx, nextID, finish); err != nil {
+							t.Fatal(err)
+						}
+						reader, readCtx := f.client(t, index)
+						var snapshot runnersession.Snapshot
+						if err := reader.Transport().Request(readCtx, http.MethodGet, reader.Scope()+"/runner-sessions/"+strconv.FormatInt(nextID, 10), nil, &snapshot); err != nil {
+							t.Fatal(err)
+						}
+						if snapshot.Start.ResumedFromSessionID != test.parent || snapshot.Resume.ResumedFromSessionID != test.parent || snapshot.Finish == nil || snapshot.Finish.Turns != test.turns || snapshot.Finish.FinalState != "failed" {
+							t.Fatalf("Hub restart lost session provenance or actual turns: %+v", snapshot)
+						}
+						if snapshot.Provider.ThreadID != nextStart.ProviderThreadID || snapshot.Provider.SessionID != nextStart.ProviderSessionID {
+							t.Fatalf("Hub restart mixed fresh and resumed provider identities: %+v", snapshot.Provider)
+						}
+					})
+				}
+				var history []runnersession.History
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					history, err = r.(runnersession.Reader).RunnerSessionHistory(t.Context(), "prj_runner", id, 0, 20)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if len(history) != 10 {
+					t.Fatalf("session history lost writes: %d", len(history))
+				}
+				if usageReceipt <= 0 || history[8].ID != usageReceipt {
+					t.Fatalf("usage receipt does not identify durable history: receipt=%d history=%+v", usageReceipt, history[7])
+				}
+				var archived runnersession.Mutation
+				if err := restartedNative.Transport().Request(restartedCtx, http.MethodGet, restartedNative.Scope()+"/runner-sessions/"+strconv.FormatInt(id, 10)+"/history/8", nil, &archived); err != nil {
+					t.Fatal(err)
+				}
+				if archived.Profile == nil || archived.Profile.Profile.SessionID != id {
+					t.Fatalf("activity profile was not retained in Hub history: %+v", archived)
+				}
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(f.leases[index].ID), FencingToken: int64(f.leases[index].FencingToken)}, "released")
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := restarted.SaveSessionProgress(restartedCtx, id, progress); err == nil {
+					t.Fatal("revoked lease accepted a session mutation")
+				}
+				other, _ := f.client(t, 1-index)
+				if err := api.NewRunnerSessions(other).UpdateSessionProviderIdentity(restartedCtx, id, provider); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("other runner accepted identity mutation: %v", err)
+				}
+			}
+		})
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -113,7 +115,9 @@ func TestWorkBoardWorkingSet(t *testing.T) {
 			requireNativeStatus(t, read(viewer, base, test.ids, state), http.StatusUnprocessableEntity)
 		})
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE project_id=? AND user_id=?", second.ID, viewer.identity.Subject); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), second.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteAccessProjectGrant(t.Context(), viewer.identity.Subject, second.ID)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, read(viewer, base, ids, state), http.StatusNotFound)

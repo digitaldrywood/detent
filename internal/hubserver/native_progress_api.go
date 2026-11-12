@@ -2,11 +2,8 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -22,12 +19,6 @@ const nativeProgressAttemptsSQL = `SELECT id FROM native_attempts WHERE organiza
 type nativeProgressView struct {
 	Request progresscheck.Request `json:"request"`
 	Record  *progresscheck.Record `json:"record,omitempty"`
-}
-
-func progressRevision(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (int64, error) {
-	var sequence int64
-	err := q.QueryRowContext(ctx, "SELECT progress_evidence_revision FROM issues WHERE organization_id=? AND project_id=? AND native_id=?", scope.organization, scope.project, item).Scan(&sequence)
-	return sequence, err
 }
 
 func (s *Service) nativeProgressRequest(ctx context.Context, scope nativeScope, item, policy, instance string) (progresscheck.Request, int64, error) {
@@ -86,35 +77,27 @@ func (s *Service) nativeProgressDefectReceiptTenant(ctx context.Context, scope n
 	var defectState string
 	var defectCreated time.Time
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		cursor := corestore.RelationshipCursor{}
+		cursor := corestore.WorkItemBlockerCursor{}
 		for range claimPreparationLimit {
-			page, err := reader.Relationships(ctx, scope.project, tracker.NativeWorkItemID(item), cursor, corestore.MaxPageSize)
+			page, err := reader.ProgressDependencies(ctx, scope.project, tracker.NativeWorkItemID(item), cursor, corestore.MaxPageSize)
 			if err != nil {
 				return err
 			}
-			for _, relationship := range page.Items {
-				if relationship.Type != "dependency" || relationship.Direction != "blocked_by" {
-					continue
-				}
-				blocker, err := reader.WorkItemByNativeID(ctx, relationship.RelatedWorkItemID)
+			for _, relationship := range page[:min(corestore.MaxPageSize, len(page))] {
+				blocker, err := reader.WorkItemByNativeID(ctx, relationship.WorkItemID)
 				if err != nil {
 					return err
 				}
-				if blocker.NativeSourceKey == nil || !strings.HasPrefix(*blocker.NativeSourceKey, "progress-check:") {
-					continue
-				}
-				state := ""
-				if blocker.WorkflowStateName != nil {
-					state = *blocker.WorkflowStateName
-				}
-				if relationship.CreatedAt.After(defectCreated) || relationship.CreatedAt.Equal(defectCreated) && relationship.RelatedWorkItemID > defectID {
-					defectID, defectState, defectCreated = relationship.RelatedWorkItemID, state, relationship.CreatedAt
+				state := stringValue(blocker.WorkflowStateName)
+				if relationship.CreatedAt.After(defectCreated) || relationship.CreatedAt.Equal(defectCreated) && relationship.WorkItemID > defectID {
+					defectID, defectState, defectCreated = relationship.WorkItemID, state, relationship.CreatedAt
 				}
 			}
-			if page.Next == (corestore.RelationshipCursor{}) {
+			if len(page) <= corestore.MaxPageSize {
 				return nil
 			}
-			cursor = page.Next
+			last := page[corestore.MaxPageSize-1]
+			cursor = corestore.WorkItemBlockerCursor{ProjectID: last.ProjectID, IssueID: last.IssueID}
 		}
 		return corestore.ErrInvalidPage
 	})
@@ -125,16 +108,6 @@ func (s *Service) nativeProgressDefectReceiptTenant(ctx context.Context, scope n
 		return progresscheck.Receipt{}, false, nil
 	}
 	return progresscheck.Receipt{ID: string(defectID) + ":done", Step: "system_defect", Outcome: "fixed"}, true, nil
-}
-
-func readNativeProgressDefect(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (string, string, error) {
-	var defect, state string
-	err := q.QueryRowContext(ctx, `SELECT d.defect_issue_id,ws.detent_state FROM native_progress_decisions d JOIN issues i ON i.native_id=d.defect_issue_id AND i.organization_id=d.organization_id AND i.project_id=d.project_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
- WHERE d.organization_id=? AND d.project_id=? AND d.work_item_id=? AND d.outcome='system_defect' ORDER BY d.created_at DESC,d.request_id DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&defect, &state)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", nil
-	}
-	return defect, state, err
 }
 
 func (s *Service) getNativeProgress(c echo.Context) error {

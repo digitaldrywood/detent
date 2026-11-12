@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql/driver"
 	"encoding/hex"
@@ -10,8 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -20,10 +21,23 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -40,9 +54,13 @@ type changeFixture struct {
 	rules  tracker.ChangeReviewPolicy
 }
 
-func newChangeFixture(t *testing.T, service *Service) changeFixture {
+func newChangeFixture(t *testing.T, service *Service, organizations ...tracker.OrganizationID) changeFixture {
 	t.Helper()
-	f := newNativeFixture(t, service, "", "changes")
+	organization := tracker.OrganizationID("")
+	if len(organizations) > 0 {
+		organization = organizations[0]
+	}
+	f := newNativeFixture(t, service, organization, "changes")
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
@@ -142,7 +160,7 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 		{name: "ordinary human review remains oversized", sourceVerdict: "pass", oversizedHuman: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
+			f := newChangeFixture(t, nil)
 			var version, historical tracker.ChangeVersion
 			if test.historicalReview {
 				historical = f.publish(t, "historical-version", "", true)
@@ -270,17 +288,27 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 					want = append(want, review)
 				}
 			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
+			evidence := make([]eventstore.Evidence, 0, len(history))
+			content := eventstore.NewContent(f.service.runDetailStore())
 			for _, review := range history {
-				if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, review.VersionID, "review", review.ID, review); err != nil {
+				raw, err := json.Marshal(review)
+				if err != nil {
 					t.Fatal(err)
 				}
+				row, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: f.project.OrganizationID, ChangeID: f.change.ID, Kind: "review"}, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				evidence = append(evidence, row)
 			}
-			if err := tx.Commit(); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				for _, row := range evidence {
+					if _, err := w.AppendEvidence(t.Context(), row); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if test.aggregatePressure {
@@ -513,8 +541,8 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
-	f := newChangeFixture(t, openTestService(t, config))
+	config := Config{now: func() time.Time { return now }}
+	f := newChangeFixture(t, newPostgresNativeService(t, config))
 	if detail := f.detail(t); detail.Summary.Status != "draft" || len(detail.Versions) != 0 {
 		t.Fatalf("draft = %#v", detail)
 	}
@@ -542,7 +570,13 @@ func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
 	checkRequest := changeTestResult(first)
 	checkRequest.Evidence = append(checkRequest.Evidence, legacyVisual)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/checks", f.token, checkRequest), http.StatusOK)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		return w.UpdateProjectContent(t.Context(), f.project.ID, record.Core.ContentSettingsRevision, true)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request), http.StatusOK)
@@ -569,15 +603,20 @@ func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
 	late := checkRequest
 	late.IdempotencyKey = "late-replay"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/checks", f.token, late), http.StatusOK)
-	for _, statement := range []string{"UPDATE change_versions SET number = 10", "DELETE FROM change_versions", "UPDATE change_evidence SET kind = 'review'", "DELETE FROM change_evidence"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err == nil {
+	for _, statement := range []string{"UPDATE change_versions SET number = 10 WHERE organization_id=$1 AND change_id=$2", "DELETE FROM change_versions WHERE organization_id=$1 AND change_id=$2", "UPDATE change_evidence SET kind = 'review' WHERE organization_id=$1 AND change_id=$2", "DELETE FROM change_evidence WHERE organization_id=$1 AND change_id=$2"} {
+		_, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), statement, f.project.OrganizationID, f.change.ID)
+		if err == nil {
 			t.Fatalf("immutable storage accepted %s", statement)
+		}
+		var refusal *pgconn.PgError
+		if !errors.As(err, &refusal) || refusal.Code != "23514" {
+			t.Fatalf("immutable storage failed without its integrity refusal: %v", err)
 		}
 	}
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.service = openTestService(t, config)
+	f.service = reopenPostgresNativeService(t, f.service)
 	detail := f.detail(t)
 	if detail.Change.ID != f.change.ID || detail.Change.CurrentVersion != second.ID || len(detail.Versions) != 2 || detail.Summary.NativeReview != "stale" || detail.Summary.Checks != "missing" || len(detail.Checks) != 1 {
 		t.Fatalf("restarted version history = %#v", detail)
@@ -643,19 +682,51 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	snapshot := linkedSnapshot()
 	snapshot.URL = "https://github.com/digitaldrywood/detent/issues/12"
 	f.service.config.ImportBackend = linkedTestImporter{snapshot: snapshot}
-	repositoryID, _ := seedProjection(t, f.service.database.db)
-	for _, statement := range []struct {
-		query string
-		args  []any
-	}{
-		{"UPDATE projects SET repository_id = NULL WHERE repository_id = ?", []any{repositoryID}},
-		{"UPDATE projects SET repository_id = ? WHERE id = ?", []any{repositoryID, f.project.ID}},
-		{"UPDATE issues SET repository_id = ?, github_node_id = 'I_original', github_number = 3410, url = 'https://github.com/wrong/repo/issues/29', source_updated_at = ?, synchronized_at = ? WHERE native_id = ?", []any{repositoryID, testTimestamp, testTimestamp, f.issue.WorkItemID}},
-	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
-			t.Fatal(err)
+	fixture := coreWorkItemNeutralFixtureBody(t, f.project.OrganizationID, f.project.ID, false, issueContractTestSections+"\n"+strings.Repeat("x", 8192))
+	fixture.set("repositories", map[string]string{"id": "1"}, map[string]any{"github_owner": "digitaldrywood", "github_name": "detent", "github_node_id": "R_original"})
+	fixture.set("issues", map[string]string{"id": "41"}, map[string]any{"number": 100, "github_node_id": "I_original", "github_number": 3410, "url": "https://github.com/wrong/repo/issues/29", "source_updated_at": testTimestamp, "synchronized_at": testTimestamp})
+	fixture.set("issues", map[string]string{"id": "43"}, map[string]any{"number": 102})
+	original := fixture.write()
+	if err := postgres.ReadNeutralImportBundle(t.Context(), original, f.project.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		source := CoreWorkItemImportSource{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+		reader := newCoreNeutralImport(bundle)
+		for _, item := range []struct {
+			id     string
+			number int
+		}{{"wi_core_import", 100}, {"wi_core_import_second", 102}} {
+			for revision := int64(1); revision <= 2; revision++ {
+				raw, err := reconstructCoreNeutralVersion(t.Context(), reader, source.Objects, string(source.OrganizationID), string(source.ProjectID), item.id, item.id, revision)
+				if err != nil {
+					return err
+				}
+				var issue tracker.NativeIssue
+				if err := json.Unmarshal(raw, &issue); err != nil {
+					return err
+				}
+				issue.Number = item.number
+				raw, err = json.Marshal(issue)
+				if err != nil {
+					return err
+				}
+				fixture.set("collaboration_versions", map[string]string{"record_id": item.id, "revision": fmt.Sprint(revision)}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	for range 2 {
+		if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, source); err != nil || count != 2 {
+			t.Fatalf("verified issue import = %d, error = %v", count, err)
 		}
 	}
+	f.issue = readWorkItem(t, f.nativeFixture, "wi_core_import", "")
+	f.path = f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes"
+	created := performHubAPIRequest(t, f.service, http.MethodPost, f.path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "imported-change"}, Title: "Imported change"})
+	requireNativeStatus(t, created, http.StatusOK)
+	decodeHubResponse(t, created, &f.change)
+	f.path += "/" + f.change.ID
 	migrated := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
 	wantImported := tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410")
 	if migrated.Number == 3410 || !reflect.DeepEqual(migrated.ExternalReferences, []tracker.ExternalReference{wantImported}) {
@@ -734,7 +805,13 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 	worker := f.worker(t, "worker")
 	lease := claimNativeAttempt(t, f.nativeFixture, worker, "machine", "session", f.issue.WorkItemID)
 	event := nativeStartedEvent(lease)
+	event.Data.Identity.Role, event.Data.MachineID = "code", lease.MachineID
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, event), http.StatusOK)
+	input := changeTestInput()
+	input.RunID, input.AttemptID = event.Data.RunID, event.Data.AttemptID
+	bundle := changeTestSource(t, &input)
+	diff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: event.Data.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+event.Data.AttemptID+"/diff", worker, diff), http.StatusAccepted)
 	for _, test := range []struct {
 		name string
 		edit func(*tracker.PublishChangeVersion)
@@ -752,9 +829,9 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 		{"current", func(_ *tracker.PublishChangeVersion) {}, http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name, LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: changeTestInput()}
-			request.RunID, request.AttemptID = event.Data.RunID, event.Data.AttemptID
-			request.SourceBundle = changeTestSource(t, &request.ChangeVersionInput)
+			request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name, LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: bundle}
+			source := *input.Source
+			request.Source = &source
 			test.edit(&request)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, request), test.want)
 		})
@@ -767,8 +844,89 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 
 func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 	t.Parallel()
+	t.Run("compacted history", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
+		for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+			t.Run(string(organization), func(t *testing.T) {
+				f := newChangeFixture(t, service, organization)
+				descriptor := hubTestPolicy()
+				descriptor.Gates.GitHubPullRequest = true
+				descriptor = descriptor.WithID()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
+				rules := f.rules
+				rules.PolicyID = descriptor.ID
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "push-policy"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
+				worker := f.worker(t, "retained-push-worker")
+				lease := claimNativeAttempt(t, f.nativeFixture, worker, "retained-machine", "retained-session", f.issue.WorkItemID, descriptor.ID)
+				start := nativeStartedEvent(lease)
+				start.Data.Identity.Role, start.Data.MachineID = "code", lease.MachineID
+				path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
+				input := changeTestInput()
+				input.PolicyID, input.RunID, input.AttemptID = descriptor.ID, start.Data.RunID, start.Data.AttemptID
+				bundle := changeTestSource(t, &input)
+				diff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: start.Data.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+start.Data.AttemptID+"/diff", worker, diff), http.StatusAccepted)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "push-source", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: bundle})
+				requireNativeStatus(t, response, http.StatusOK)
+				var version tracker.ChangeVersion
+				decodeHubResponse(t, response, &version)
+				reference := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+				binding := tracker.NativePRPublication{ChangeID: version.ChangeID, VersionID: version.ID, Repository: version.Repository, HeadSHA: version.HeadSHA, PolicyID: version.PolicyID, BaseRef: "main", Branch: "retained", SourceVersion: reference, SourceAttemptID: version.AttemptID}
+				checkpoint := start
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", "retained-confirmed-push", 2
+				checkpoint.Data.Handoff = nativeTestCheckpoint()
+				checkpoint.Data.Handoff.Change, checkpoint.Data.Handoff.HeadSHA = &reference, version.HeadSHA
+				checkpoint.Data.Handoff.ExternalEffect, checkpoint.Data.Handoff.EffectState, checkpoint.Data.Handoff.EffectID = "git_push", "confirmed", binding.EffectID("git_push")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				scope := nativeAttemptListingScope(t, f.nativeFixture)
+				baseline := f.detail(t)
+				var original eventstore.Version
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					original, err = r.Version(t.Context(), version.ChangeID, version.ID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				content := eventstore.NewContent(f.service.runDetailStore())
+				originalPayload, err := content.Version(t.Context(), original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					if err := f.service.maintainNativeRetention(t.Context(), now.Add(31*24*time.Hour)); err != nil {
+						t.Fatal(err)
+					}
+					pushes, err := f.service.readBoundedChangePushes(t.Context(), scope, string(f.issue.WorkItemID), []tracker.ChangeVersion{version})
+					if err != nil || len(pushes) != 1 || pushes[0].Change != reference || pushes[0].RecordingAttemptID != start.Data.AttemptID || pushes[0].EffectID != binding.EffectID("git_push") {
+						t.Fatalf("retained checkpoint attribution changed after release: %+v error=%v", pushes, err)
+					}
+					after := f.detail(t)
+					if !reflect.DeepEqual(after.Versions, baseline.Versions) || !reflect.DeepEqual(after.Reviews, baseline.Reviews) || !reflect.DeepEqual(after.Summary, baseline.Summary) || after.External != nil {
+						t.Fatalf("push proof mutated source or review evidence: detail=%+v", after)
+					}
+					var current eventstore.Version
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						current, err = r.Version(t.Context(), version.ChangeID, version.ID)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					currentPayload, err := content.Version(t.Context(), current)
+					if err != nil || !reflect.DeepEqual(current, original) || !reflect.DeepEqual(currentPayload, originalPayload) {
+						t.Fatalf("immutable source snapshot changed: error=%v", err)
+					}
+				}
+			})
+		}
+	})
+
 	now := time.Date(2026, time.October, 25, 12, 0, 0, 0, time.UTC)
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+	service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
 	f := newChangeFixture(t, service)
 	descriptor := hubTestPolicy()
 	descriptor.Gates.GitHubPullRequest = true
@@ -780,11 +938,14 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 	worker := f.worker(t, "push-worker")
 	lease := claimNativeAttempt(t, f.nativeFixture, worker, "push-machine", "push-session", f.issue.WorkItemID, descriptor.ID)
 	start := nativeStartedEvent(lease)
+	start.Data.Identity.Role, start.Data.MachineID = "code", lease.MachineID
 	path := f.base + "/work-items/" + string(f.issue.WorkItemID)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
 	input := changeTestInput()
 	input.PolicyID, input.RunID, input.AttemptID = descriptor.ID, start.Data.RunID, start.Data.AttemptID
 	bundle := changeTestSource(t, &input)
+	initialDiff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: start.Data.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/attempts/"+start.Data.AttemptID+"/diff", worker, initialDiff), http.StatusAccepted)
 	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "push-source", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: bundle}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, request)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -796,22 +957,151 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
 	ref := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 	binding := tracker.NativePRPublication{ChangeID: version.ChangeID, VersionID: version.ID, Repository: version.Repository, HeadSHA: version.HeadSHA, PolicyID: version.PolicyID, BaseRef: "main", Branch: "retained", SourceVersion: ref, SourceAttemptID: version.AttemptID}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := nativeAttemptListingScope(t, f.nativeFixture)
 	foreignProject := newNativeFixture(t, f.service, f.project.OrganizationID, "other-push-project")
-	foreignOrganization := newNativeFixture(t, f.service, "", "other-push-organization")
-	foreignProjectItem := foreignProject.create(t, "foreign project work")
-	foreignOrganizationItem := foreignOrganization.create(t, "foreign organization work")
+	foreignOrganization := newNativeFixture(t, f.service, "org_first_second", "other-push-organization")
+	foreignProject.create(t, "foreign project work")
+	foreignOrganization.create(t, "foreign organization work")
 	foreignItem := f.create(t, "foreign work")
 	baseline := f.detail(t)
-	var snapshot string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT record_json FROM change_versions WHERE id=?", version.ID).Scan(&snapshot); err != nil {
-		t.Fatal(err)
+	sourceSnapshot := func(t *testing.T, fixture changeFixture, version tracker.ChangeVersion) (eventstore.Version, tracker.ChangeVersion) {
+		t.Helper()
+		var row eventstore.Version
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			row, err = r.Version(t.Context(), version.ChangeID, version.ID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		payload, err := eventstore.NewContent(service.runDetailStore()).Version(t.Context(), row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return row, payload
+	}
+	snapshot, snapshotPayload := sourceSnapshot(t, f, version)
+	verifyHistoricalAttempt := func(t *testing.T, local changeFixture, id string, includePolicy bool) {
+		t.Helper()
+		scope := nativeAttemptListingScope(t, local.nativeFixture)
+		snapshot, err := service.readNativeAttemptSnapshotTenant(t.Context(), scope, string(local.issue.WorkItemID), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual, err := service.readNativeAttemptRunTenant(t.Context(), snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if actual.AttemptID != id || actual.RunID != snapshot.attempt.RunID || actual.LeaseID != tracker.LeaseID(snapshot.lease.LeaseID) || actual.FencingToken != tracker.FencingToken(snapshot.lease.FencingToken) || actual.Sequence != snapshot.attempt.Sequence {
+			t.Fatal("historical attempt fixture lost independent identity")
+		}
+		if snapshot.payload == nil {
+			t.Fatal("historical fixture requires its registered immutable payload")
+		}
+		payload, err := service.runDetailStore().ReadDetail(t.Context(), string(scope.organization), *snapshot.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var checkpoint any
+		if snapshot.checkpointPayload != nil {
+			raw, err := service.runDetailStore().ReadDetail(t.Context(), string(scope.organization), *snapshot.checkpointPayload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint = string(raw)
+		}
+		var pinned policystore.LeasePolicy
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			pinned, err = r.LeasePolicy(t.Context(), actual.LeaseID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		fixture := newCoreNeutralFixture(t, scope.organization, "issues", "native_attempts", "leases", "lease_policies")
+		fixture.add("issues", map[string]any{"id": snapshot.attempt.IssueID, "organization_id": scope.organization, "project_id": scope.project, "native_id": local.issue.WorkItemID})
+		fixture.add("native_attempts", map[string]any{"id": id, "organization_id": scope.organization, "project_id": scope.project, "work_item_id": local.issue.WorkItemID, "lease_id": actual.LeaseID, "fencing_token": actual.FencingToken, "run_id": actual.RunID, "sequence": actual.Sequence, "status": snapshot.attempt.Status, "work_item_revision": snapshot.attempt.WorkItemRevision, "dispatch_generation": snapshot.attempt.DispatchGeneration, "data_json": string(payload), "checkpoint_json": checkpoint, "artifact_ids_json": "[]", "started_at": formatHubTime(snapshot.attempt.StartedAt), "updated_at": formatHubTime(snapshot.attempt.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
+		lease := snapshot.lease
+		var released any
+		if lease.ReleasedAt != nil {
+			released = formatHubTime(*lease.ReleasedAt)
+		}
+		fixture.add("leases", map[string]any{"fencing_token": lease.FencingToken, "lease_id": lease.LeaseID, "issue_id": lease.IssueID, "machine_id": lease.MachineID, "session_id": lease.SessionID, "work_item_revision": lease.WorkItemRevision, "landing_capacity": lease.LandingCapacity, "acquired_at": formatHubTime(lease.AcquiredAt), "renewed_at": formatHubTime(lease.RenewedAt), "expires_at": formatHubTime(lease.ExpiresAt), "released_at": released})
+		fixture.add("lease_policies", map[string]any{"lease_id": lease.LeaseID, "scope": string(scope.organization) + "/" + string(scope.project), "policy_id": pinned.PolicyID})
+		source := CoreExecutionImportSource{BundlePath: fixture.write(), OrganizationID: scope.organization, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
+		repository := service.config.TenantRepository.(*postgres.Repository)
+		err = postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, scope.organization, func(bundle *postgres.VerifiedNeutralImport) error {
+			input := newCoreNeutralImport(bundle)
+			rows, err := readCoreAttemptImportPage(t.Context(), input, scope.organization, 0)
+			if err != nil {
+				return err
+			}
+			if len(rows) != 1 || rows[0].Attempt.ID != id || rows[0].Payload != string(payload) {
+				t.Fatal("verified attempt source changed identity or bytes")
+			}
+			prepared, err := prepareCoreExecutionAttempt(t.Context(), input, eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, rows[0])
+			if err != nil {
+				return err
+			}
+			if prepared.Attempt.PayloadObjectKey != snapshot.attempt.PayloadObjectKey || prepared.Attempt.LeaseID != lease.LeaseID || prepared.Attempt.Sequence != actual.Sequence {
+				t.Fatal("attempt import lost the stored payload or fence")
+			}
+			if err := repository.ImportCoreAttempt(t.Context(), prepared); err != nil {
+				return err
+			}
+			if err := repository.CompleteCoreAttemptImport(t.Context(), prepared.Attempt, prepared.Receipt); err != nil {
+				return err
+			}
+			if includePolicy {
+				leases, err := readCoreLeaseImportPage(t.Context(), input, scope.organization, 0)
+				if err != nil {
+					return err
+				}
+				if len(leases) != 1 || leases[0].LeasePolicy == nil || leases[0].LeasePolicy.PolicyID != pinned.PolicyID || leases[0].LeasePolicy.LeaseID != actual.LeaseID || leases[0].LeasePolicy.ProjectID != scope.project {
+					t.Fatal("verified policy source lost its binding")
+				}
+				row := leases[0]
+				receipt, err := prepareCoreExecutionReceipt(t.Context(), eventstore.NewContent(source.Objects), scope.organization, bundle.Identity().SourceSHA256, "core-lease", row.Lease.LeaseID, row)
+				if err != nil {
+					return err
+				}
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Background, func(w tenantstore.Writer) error { _, err := w.PutReceipt(t.Context(), receipt); return err }); err != nil {
+					return err
+				}
+				if err := repository.ImportCoreLease(t.Context(), postgres.CoreLeaseImport{Lease: row.Lease, LeasePolicy: row.LeasePolicy, Receipt: receipt}); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recovered, err := service.readNativeAttemptSnapshotTenant(t.Context(), scope, string(local.issue.WorkItemID), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := service.readNativeAttemptRunTenant(t.Context(), recovered)
+		if err != nil || !reflect.DeepEqual(run, actual) || !reflect.DeepEqual(recovered.attempt, snapshot.attempt) {
+			t.Fatalf("historical import changed attempt payload or metadata: run=%+v error=%v", run, err)
+		}
+		if includePolicy {
+			if err := service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				current, err := r.LeasePolicy(t.Context(), actual.LeaseID)
+				if err == nil && !reflect.DeepEqual(current, pinned) {
+					t.Fatal("policy import changed the pinned policy")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	for _, test := range []struct {
 		name string
 		want bool
 	}{
-		{"confirmed", true}, {"overwritten latest checkpoint", true}, {"compacted history", true},
+		{"confirmed", true}, {"overwritten latest checkpoint", true},
 		{"pending", false}, {"ambiguous", false}, {"missing checkpoint", false},
 		{"foreign organization", false}, {"foreign project", false}, {"foreign work item", false},
 		{"wrong recorder", false}, {"wrong run", false}, {"wrong lease", false}, {"wrong fence", false},
@@ -821,40 +1111,85 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 		{"legacy overflow confirmed", true}, {"legacy overflow wrong recorder", false}, {"legacy overflow newer invalid", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			run := checkpoint.Data
-			handoff := *checkpoint.Data.Handoff
-			reference := ref
-			handoff.Change, handoff.HeadSHA = &reference, version.HeadSHA
-			handoff.ExternalEffect, handoff.EffectState, handoff.EffectID = "git_push", "confirmed", binding.EffectID("git_push")
+			local := newChangeFixture(t, service)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, local.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
+			localRules := local.rules
+			localRules.PolicyID = descriptor.ID
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, local.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "push-policy"}, ExpectedID: local.rules.ID, Policy: localRules}), http.StatusOK)
+			localWorker := local.worker(t, "checkpoint-worker")
+			localLease := claimNativeAttempt(t, local.nativeFixture, localWorker, newNativeID("machine"), newNativeID("session"), local.issue.WorkItemID, descriptor.ID)
+			localStart := nativeStartedEvent(localLease)
+			localStart.Data.Identity.Role, localStart.Data.MachineID = "code", localLease.MachineID
+			localStart.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42}
+			localPath := local.base + "/work-items/" + string(local.issue.WorkItemID) + "/events"
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, localPath, localWorker, localStart), http.StatusOK)
+			localInput := changeTestInput()
+			localInput.PolicyID, localInput.RunID, localInput.AttemptID = descriptor.ID, localStart.Data.RunID, localStart.Data.AttemptID
+			localBundle := changeTestSource(t, &localInput)
+			localDiff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: localStart.Data.AttemptID, LeaseID: localLease.ID, FencingToken: localLease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: localInput.BaseSHA, HeadSHA: localInput.HeadSHA}
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, local.base+"/attempts/"+localStart.Data.AttemptID+"/diff", localWorker, localDiff), http.StatusAccepted)
+			response := performHubAPIRequest(t, service, http.MethodPost, local.path+"/versions", localWorker, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "push-source", LeaseID: localLease.ID, FencingToken: localLease.FencingToken}, ChangeVersionInput: localInput, SourceBundle: localBundle})
+			requireNativeStatus(t, response, http.StatusOK)
+			var localVersion tracker.ChangeVersion
+			decodeHubResponse(t, response, &localVersion)
+			localCheckpoint := localStart
+			localCheckpoint.Type, localCheckpoint.IdempotencyKey, localCheckpoint.Data.Sequence = "run.checkpointed", "ordinary-checkpoint", 2
+			localCheckpoint.Data.Handoff = nativeTestCheckpoint()
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, localPath, localWorker, localCheckpoint), http.StatusOK)
+			localScope := nativeAttemptListingScope(t, local.nativeFixture)
+			localRef := tracker.NativeChangeReference{ChangeID: localVersion.ChangeID, VersionID: localVersion.ID, HeadSHA: localVersion.HeadSHA}
+			localBinding := tracker.NativePRPublication{ChangeID: localVersion.ChangeID, VersionID: localVersion.ID, Repository: localVersion.Repository, HeadSHA: localVersion.HeadSHA, PolicyID: localVersion.PolicyID, BaseRef: "main", Branch: "retained", SourceVersion: localRef, SourceAttemptID: localVersion.AttemptID}
+			localBaseline := local.detail(t)
+			original, originalPayload := sourceSnapshot(t, local, localVersion)
+			content := eventstore.NewContent(service.runDetailStore())
+			admin := nativeAttemptTestDatabase(t, local.nativeFixture)
+			run := localCheckpoint.Data
+			handoff := *run.Handoff
+			reference := localRef
+			handoff.Change, handoff.HeadSHA = &reference, localVersion.HeadSHA
+			handoff.ExternalEffect, handoff.EffectState, handoff.EffectID = "git_push", "confirmed", localBinding.EffectID("git_push")
 			run.Handoff = &handoff
-			eventScope, eventItem := scope, f.issue.WorkItemID
-			appendCheckpoint := func() {
+			eventScope, eventItem := localScope, local.issue.WorkItemID
+			var retained []eventstore.Event
+			appendCheckpoint := func(unknown bool) {
 				t.Helper()
-				if err := appendLegacyNativeHistory(t.Context(), tx, eventScope, string(eventItem), "run.checkpointed", tracker.CollaborationData{Run: &run}, f.service.config.now()); err != nil {
+				raw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: eventScope.organization, ProjectID: eventScope.project, AggregateType: "issue", AggregateID: eventItem, Type: "run.checkpointed", SchemaVersion: 1, Actor: eventScope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Run: &run}})
+				if err != nil {
 					t.Fatal(err)
 				}
+				row, err := content.PrepareEvent(t.Context(), eventScope.organization, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if unknown {
+					row.PushKnown = false
+				}
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), eventScope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					var err error
+					row, err = w.AppendEvent(t.Context(), row)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				retained = append(retained, row)
 			}
-			// Inject corrupt retained rows below the validated event API to prove
-			// the read boundary rejects mismatched attribution independently.
 			switch test.name {
 			case "pending", "ambiguous":
 				handoff.EffectState = test.name
 			case "missing checkpoint":
 				run.Handoff = nil
-			case "foreign organization":
-				eventScope = nativeScope{organization: foreignOrganization.project.OrganizationID, project: foreignOrganization.project.ID}
-				eventItem = foreignOrganizationItem.WorkItemID
-			case "foreign project":
-				eventScope.project, eventItem = foreignProject.project.ID, foreignProjectItem.WorkItemID
+			case "foreign organization", "foreign project":
+				organization := localScope.organization
+				if test.name == "foreign organization" {
+					organization = "org_first_second"
+				}
+				foreign := newNativeFixture(t, service, organization, "foreign-checkpoint")
+				eventScope = nativeAttemptListingScope(t, foreign)
+				eventItem = foreign.create(t, "foreign checkpoint").WorkItemID
 			case "foreign work item":
-				eventItem = foreignItem.WorkItemID
+				eventItem = local.create(t, "foreign checkpoint").WorkItemID
 			case "legacy overflow newer invalid", "latest malformed recorder":
-				appendCheckpoint()
+				appendCheckpoint(strings.HasPrefix(test.name, "legacy "))
 				fallthrough
 			case "wrong recorder", "legacy wrong recorder", "legacy overflow wrong recorder":
 				run.AttemptID = newNativeID("attempt")
@@ -867,24 +1202,34 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			case "wrong policy":
 				run.PolicyID = hubTestPolicy().ID
 			case "wrong pinned policy":
-				if _, err := tx.ExecContext(t.Context(), "UPDATE lease_policies SET policy_id=? WHERE lease_id=?", hubTestPolicy().ID, lease.ID); err != nil {
+				if _, err := admin.ExecContext(t.Context(), "UPDATE lease_policy_bindings SET policy_id=$1 WHERE organization_id=$2 AND lease_id=$3", hubTestPolicy().ID, localScope.organization, localLease.ID); err != nil {
 					t.Fatal(err)
 				}
 			case "wrong attempt policy":
-				var raw string
-				if err := tx.QueryRowContext(t.Context(), "SELECT payload_object_key FROM native_attempts WHERE id=?", run.AttemptID).Scan(&raw); err != nil {
-					t.Fatal(err)
-				}
-				var attempt tracker.NativeRunData
-				if err := decodeRunDetail(f.service.runDetailContext(t.Context()), tx, raw, &attempt); err != nil {
-					t.Fatal(err)
-				}
-				attempt.PolicyID = hubTestPolicy().ID
-				encoded, err := json.Marshal(attempt)
+				snapshot, err := service.readNativeAttemptSnapshotTenant(t.Context(), localScope, string(local.issue.WorkItemID), localStart.Data.AttemptID)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,payload_object_key='',policy_id=? WHERE id=?", string(encoded), attempt.PolicyID, run.AttemptID); err != nil {
+				actual, err := service.readNativeAttemptRunTenant(t.Context(), snapshot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				actual.PolicyID = hubTestPolicy().ID
+				raw, err := json.Marshal(actual)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref, err := service.runDetailStore().StoreDetail(t.Context(), string(localScope.organization), raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), localScope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: localScope.organization, ID: newNativeID("archive"), Reference: ref, CreatedAt: now})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key=$1 WHERE organization_id=$2 AND id=$3", ref.Key, localScope.organization, localStart.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 			case "unrecorded sequence":
@@ -898,79 +1243,173 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			case "wrong checkpoint head":
 				handoff.HeadSHA = strings.Repeat("e", 40)
 			}
-			appendCheckpoint()
+			appendCheckpoint(strings.HasPrefix(test.name, "legacy "))
 			if strings.HasPrefix(test.name, "legacy overflow") {
 				run.Handoff = nil
 				for range claimEvidenceLimit + 1 {
-					appendCheckpoint()
+					appendCheckpoint(true)
 				}
-			}
-			if strings.HasPrefix(test.name, "legacy ") {
-				if _, err := tx.ExecContext(t.Context(), `UPDATE collaboration_events SET claim_attempt_id=NULL WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='run.checkpointed'`, scope.organization, scope.project, f.issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET claim_facts_known=NULL WHERE id=?`, start.Data.AttemptID); err != nil {
-					t.Fatal(err)
+				if _, err := service.readBoundedChangePushes(t.Context(), localScope, string(local.issue.WorkItemID), []tracker.ChangeVersion{localVersion}); !errors.Is(err, corestore.ErrInvalidPage) {
+					t.Fatalf("unknown overflow refusal = %v", err)
 				}
 			}
 			if test.name == "overwritten latest checkpoint" {
-				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET checkpoint_json=NULL WHERE id=?", run.AttemptID); err != nil {
+				if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET checkpoint_object_key=NULL,checkpoint_preserves_source=NULL WHERE organization_id=$1 AND id=$2", localScope.organization, localStart.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if test.name == "compacted history" {
-				if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", f.issue.WorkItemID); err != nil {
-					t.Fatal(err)
+			backfill := func() {
+				t.Helper()
+				total := 0
+				for {
+					count, err := service.config.TenantRepository.(*postgres.Repository).BackfillChangeRecoveryProjections(t.Context(), eventScope.organization, content, 7)
+					if err != nil || count < 0 || count > 7 {
+						t.Fatalf("bounded checkpoint recovery=%d error=%v", count, err)
+					}
+					total += count
+					if count == 0 {
+						break
+					}
+					if total > len(retained)+corestore.MaxPageSize {
+						t.Fatal("checkpoint recovery did not converge")
+					}
 				}
-				if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(f.service.config.now()), lease.ID); err != nil {
-					t.Fatal(err)
-				}
-				plans, err := planEventCompaction(t.Context(), tx, f.service.config.now().Add(31*24*time.Hour))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, _, err := applyEventCompaction(t.Context(), tx, plans, f.service.config.now().Add(31*24*time.Hour)); err != nil {
-					t.Fatal(err)
+				var remaining int
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='run.checkpointed' AND NOT push_known", eventScope.organization, eventScope.project, eventItem).Scan(&remaining); err != nil || remaining != 0 {
+					t.Fatalf("checkpoint projection incomplete: remaining=%d error=%v", remaining, err)
 				}
 			}
+			backfill()
 			for _, projection := range []string{"typed", "unconverted event", "unconverted attempt", "unconverted policy"} {
-				if _, err := tx.ExecContext(t.Context(), "SAVEPOINT projection"); err != nil {
-					t.Fatal(err)
-				}
-				if projection != "typed" {
-					if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET claim_attempt_id=NULL WHERE type='run.checkpointed'"); err != nil {
-						t.Fatal(err)
+				t.Run(projection, func(t *testing.T) {
+					if projection == "unconverted event" {
+						for _, row := range retained {
+							value, err := content.Event(t.Context(), row)
+							if err != nil {
+								t.Fatal(err)
+							}
+							value.ID, value.AggregateSequence = newNativeID("event"), 0
+							raw, err := json.Marshal(value)
+							if err != nil {
+								t.Fatal(err)
+							}
+							historical, err := content.PrepareEvent(t.Context(), eventScope.organization, raw)
+							if err != nil {
+								t.Fatal(err)
+							}
+							historical.PushKnown = false
+							if err := service.config.TenantRepository.WriteTenant(t.Context(), eventScope.organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), historical); return err }); err != nil {
+								t.Fatal(err)
+							}
+						}
+						backfill()
 					}
-				}
-				if projection == "unconverted attempt" {
-					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET claim_facts_known=NULL WHERE id=?", start.Data.AttemptID); err != nil {
-						t.Fatal(err)
+					if projection == "unconverted attempt" || projection == "unconverted policy" {
+						verifyHistoricalAttempt(t, local, localStart.Data.AttemptID, projection == "unconverted policy")
 					}
-				}
-				if projection == "unconverted policy" {
-					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET claim_facts_known=NULL,policy_id='' WHERE id=? AND policy_id=?", start.Data.AttemptID, descriptor.ID); err != nil {
-						t.Fatal(err)
+					proofs, err := service.readBoundedChangePushes(t.Context(), localScope, string(local.issue.WorkItemID), []tracker.ChangeVersion{localVersion})
+					found := len(proofs) == 1
+					if err != nil || found != test.want || len(proofs) > 1 {
+						t.Fatalf("%s: proof=%+v want=%v error=%v", projection, proofs, test.want, err)
 					}
+					if found && (proofs[0].Change != localRef || proofs[0].RecordingAttemptID != localStart.Data.AttemptID || proofs[0].EffectID != localBinding.EffectID("git_push")) {
+						t.Fatalf("%s: checkpoint attribution changed: %+v", projection, proofs[0])
+					}
+					if detail := local.detail(t); !reflect.DeepEqual(detail.Versions, localBaseline.Versions) || !reflect.DeepEqual(detail.Reviews, localBaseline.Reviews) || !reflect.DeepEqual(detail.Summary, localBaseline.Summary) || detail.External != nil {
+						t.Fatalf("push proof mutated source or review evidence: detail=%+v", detail)
+					}
+					current, currentPayload := sourceSnapshot(t, local, localVersion)
+					if !reflect.DeepEqual(current, original) || !reflect.DeepEqual(currentPayload, originalPayload) {
+						t.Fatal("immutable source snapshot changed")
+					}
+				})
+			}
+			if test.name == "confirmed" {
+				for _, payloadCase := range []string{"missing attempt payload", "mismatched attempt payload"} {
+					t.Run(payloadCase, func(t *testing.T) {
+						snapshot, err := service.readNativeAttemptSnapshotTenant(t.Context(), localScope, string(local.issue.WorkItemID), localStart.Data.AttemptID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if snapshot.payload == nil {
+							t.Fatal("payload refusal fixture requires its registered immutable payload")
+						}
+						originalRef := *snapshot.payload
+						payload, err := service.runDetailStore().ReadDetail(t.Context(), string(localScope.organization), originalRef)
+						if err != nil {
+							t.Fatal(err)
+						}
+						switch payloadCase {
+						case "missing attempt payload":
+							details, ok := service.runDetailStore().(*memoryRunDetails)
+							if !ok {
+								t.Fatal("payload refusal fixture requires its existing object store")
+							}
+							t.Cleanup(func() {
+								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+								defer cancel()
+								restored, err := details.StoreDetail(cleanup, string(localScope.organization), payload)
+								if err != nil || restored != originalRef {
+									t.Errorf("restore missing attempt object: reference=%+v error=%v", restored, err)
+								}
+							})
+							details.mu.Lock()
+							delete(details.data, originalRef.Key)
+							details.mu.Unlock()
+						case "mismatched attempt payload":
+							var mismatched tracker.NativeRunData
+							if err := json.Unmarshal(payload, &mismatched); err != nil {
+								t.Fatal(err)
+							}
+							mismatched.RunID = newNativeID("run")
+							raw, err := json.Marshal(mismatched)
+							if err != nil {
+								t.Fatal(err)
+							}
+							ref, err := service.runDetailStore().StoreDetail(t.Context(), string(localScope.organization), raw)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if err := service.config.TenantRepository.WriteTenant(t.Context(), localScope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+								_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: localScope.organization, ID: newNativeID("archive"), Reference: ref, CreatedAt: now})
+								return err
+							}); err != nil {
+								t.Fatal(err)
+							}
+							t.Cleanup(func() {
+								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+								defer cancel()
+								if _, err := admin.ExecContext(cleanup, "UPDATE native_attempts SET payload_object_key=$1 WHERE organization_id=$2 AND id=$3", originalRef.Key, localScope.organization, localStart.Data.AttemptID); err != nil {
+									t.Errorf("restore attempt payload reference: %v", err)
+								}
+							})
+							if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key=$1 WHERE organization_id=$2 AND id=$3", ref.Key, localScope.organization, localStart.Data.AttemptID); err != nil {
+								t.Fatal(err)
+							}
+						}
+						proofs, err := service.readBoundedChangePushes(t.Context(), localScope, string(local.issue.WorkItemID), []tracker.ChangeVersion{localVersion})
+						if err == nil || proofs != nil {
+							t.Fatalf("unavailable required attempt evidence yielded a successful read: proofs=%+v error=%v", proofs, err)
+						}
+						switch payloadCase {
+						case "missing attempt payload":
+							if !errors.Is(err, artifact.ErrMissing) || !errors.Is(err, artifact.ErrIntegrity) {
+								t.Fatalf("missing attempt payload error = %v", err)
+							}
+						case "mismatched attempt payload":
+							var mismatch *nativeAttemptIdentityMismatch
+							if !errors.Is(err, artifact.ErrIntegrity) || !errors.As(err, &mismatch) || mismatch.Field != "run_id" || mismatch.AttemptID != localStart.Data.AttemptID || mismatch.WorkItemID != local.issue.WorkItemID {
+								t.Fatalf("mismatched attempt payload error = %v", err)
+							}
+						}
+					})
 				}
-				proof, found, err := resolveVersionPublicationPush(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID), version)
-				if err != nil || found != test.want {
-					t.Fatalf("%s: proof=%+v want=%v error=%v", projection, proof, test.want, err)
-				}
-				if found && (proof.Change != ref || proof.RecordingAttemptID != start.Data.AttemptID || proof.EffectID != binding.EffectID("git_push")) {
-					t.Fatalf("%s: checkpoint attribution changed: %+v", projection, proof)
-				}
-				if _, err := tx.ExecContext(t.Context(), "ROLLBACK TO projection; RELEASE projection"); err != nil {
-					t.Fatal(err)
+				proofs, err := service.readBoundedChangePushes(t.Context(), localScope, string(local.issue.WorkItemID), []tracker.ChangeVersion{localVersion})
+				if err != nil || len(proofs) != 1 || proofs[0].Change != localRef || proofs[0].RecordingAttemptID != localStart.Data.AttemptID || proofs[0].EffectID != localBinding.EffectID("git_push") {
+					t.Fatalf("restored attempt payload lost original attribution: proofs=%+v error=%v", proofs, err)
 				}
 			}
-			detail, err := readChangeDetail(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID), version.ChangeID, f.service.config.now())
-			if err != nil || !reflect.DeepEqual(detail.Versions, baseline.Versions) || !reflect.DeepEqual(detail.Reviews, baseline.Reviews) || !reflect.DeepEqual(detail.Summary, baseline.Summary) || detail.External != nil {
-				t.Fatalf("push proof mutated source or review evidence: detail=%+v error=%v", detail, err)
-			}
-			var after string
-			if err := tx.QueryRowContext(t.Context(), "SELECT record_json FROM change_versions WHERE id=?", version.ID).Scan(&after); err != nil || after != snapshot {
-				t.Fatalf("immutable source snapshot changed: error=%v", err)
-			}
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, local.base+"/leases/"+string(localLease.ID)+"/release", localWorker, tracker.NativeLeaseMutation{FencingToken: localLease.FencingToken, Reason: "released"}), http.StatusNoContent)
 		})
 	}
 	t.Run("confirmed PR receipt", func(t *testing.T) {
@@ -1065,6 +1504,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 		t.Run("linked foreign item with its own lease", func(t *testing.T) {
 			foreignLease := claimNativeAttempt(t, f.nativeFixture, worker, "linked-machine", "linked-session", foreignItem.WorkItemID, descriptor.ID)
 			foreignStart := nativeStartedEvent(foreignLease)
+			foreignStart.Data.Identity.Role, foreignStart.Data.MachineID = "code", foreignLease.MachineID
 			foreignPath := f.base + "/work-items/" + string(foreignItem.WorkItemID) + "/events"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreignPath, worker, foreignStart), http.StatusOK)
 			foreignCheckpoint := foreignStart
@@ -1080,12 +1520,9 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_issue_links (change_id, organization_id, project_id, work_item_id) VALUES (?,?,?,?)", version.ChangeID, scope.organization, scope.project, foreignItem.WorkItemID); err != nil {
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: foreignItem.WorkItemID, ChangeID: version.ChangeID, CreatedAt: now})
+			}); err != nil {
 				t.Fatal(err)
 			}
 			foreignCheckpoint.IdempotencyKey, foreignCheckpoint.Data.Sequence = "linked-pr-receipt", 3
@@ -1095,7 +1532,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			}
 			foreignScope := scope
 			foreignScope.credential = credential
-			_, _, err = recordNativeAttempt(f.service.runDetailContext(t.Context()), tx, foreignScope, foreignItem.WorkItemID, &foreignCheckpoint, f.service.config.now(), false)
+			_, err = service.appendNativeRunEventTenant(t.Context(), foreignScope, string(foreignItem.WorkItemID), foreignCheckpoint)
 			var refusal *nativeError
 			if !errors.As(err, &refusal) || refusal.Code != "run_sequence_conflict" || !strings.Contains(refusal.Message, "PR publication no longer matches") {
 				t.Fatalf("a linked item's independent owner acquired publication authority: %v", err)
@@ -1112,9 +1549,9 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 		if detail.Versions[0].External == nil || *detail.Versions[0].External != binding.External || !reflect.DeepEqual(detail.Reviews, baseline.Reviews) || detail.Summary.NativeReview != baseline.Summary.NativeReview {
 			t.Fatalf("early linkage changed source or review authority: %+v", detail)
 		}
-		var after string
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT record_json FROM change_versions WHERE id=?", version.ID).Scan(&after); err != nil || after != snapshot {
-			t.Fatalf("early linkage rewrote immutable source: %v", err)
+		after, afterPayload := sourceSnapshot(t, f, version)
+		if !reflect.DeepEqual(after, snapshot) || !reflect.DeepEqual(afterPayload, snapshotPayload) {
+			t.Fatal("early linkage rewrote immutable source")
 		}
 		for _, sequence := range []int64{5, 6} {
 			if sequence == 6 {
@@ -1146,15 +1583,12 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 				t.Fatalf("publication lost historical or current binding: %+v", version)
 			}
 		}
-		var status string
-		var sequence int64
-		var recorded string
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT status,sequence,data_json FROM native_attempts WHERE id=?", start.Data.AttemptID).Scan(&status, &sequence, &recorded); err != nil || status != "running" || sequence != 7 {
-			t.Fatalf("early publication changed attempt completion: status=%s sequence=%d error=%v", status, sequence, err)
+		attempt, err := service.readNativeAttemptTenant(t.Context(), scope, string(f.issue.WorkItemID), start.Data.AttemptID)
+		if err != nil || attempt.Status != "running" || attempt.Sequence != 7 {
+			t.Fatalf("early publication changed attempt completion: status=%s sequence=%d error=%v", attempt.Status, attempt.Sequence, err)
 		}
-		var run tracker.NativeRunData
-		if err := decodeRunDetail(f.service.runDetailContext(t.Context()), f.service.database.reader, recorded, &run); err != nil || run.Finalization != nil {
-			t.Fatalf("early publication finalized the attempt: finalization=%+v error=%v", run.Finalization, err)
+		if attempt.Finalization != nil {
+			t.Fatalf("early publication finalized the attempt: finalization=%+v", attempt.Finalization)
 		}
 		diff.Generation.Seq = 8
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+start.Data.AttemptID+"/diff", worker, diff), http.StatusAccepted)
@@ -1167,7 +1601,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(f.service.config.now()), credential.ID); err != nil {
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.RevokeAccessCredential(t.Context(), credential.ID, now) }); err != nil {
 			t.Fatal(err)
 		}
 		checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "revoked-pr-receipt", 8
@@ -1175,22 +1609,93 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			t.Fatalf("revoked owner recorded publication: %d", response.Code)
 		}
 	})
-	rows, err := f.service.database.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+versionPublicationPushSQL, scope.organization, scope.project, f.issue.WorkItemID, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, f.issue.WorkItemID)
+	admin := nativeAttemptTestDatabase(t, f.nativeFixture)
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,event_revision,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,push_known)
+ SELECT organization_id,project_id,work_item_id,$4||n,10000+n,'run.checkpointed',schema_version,actor_kind,actor_principal_id,event_revision,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,true FROM (SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 ORDER BY sequence LIMIT 1) source CROSS JOIN generate_series(1,4000)n`, scope.organization, scope.project, f.issue.WorkItemID, newNativeID("plan")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), "ANALYZE collaboration_events"); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := admin.Conn(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	var plan strings.Builder
-	for rows.Next() {
-		var id, parent, unused int
-		var description string
-		if err := rows.Scan(&id, &parent, &unused, &description); err != nil {
-			t.Fatal(err)
+	defer connection.Close()
+	err = connection.Raw(func(driverConnection any) error {
+		native, ok := driverConnection.(*stdlib.Conn)
+		if !ok {
+			return errors.New("native PostgreSQL fixture connection is required")
 		}
-		plan.WriteString(description + "\n")
-	}
-	if err := rows.Err(); err != nil || !strings.Contains(plan.String(), "USING INDEX collaboration_events_publication_push") || strings.Contains(plan.String(), "SCAN collaboration_events") || strings.Contains(plan.String(), "USE TEMP B-TREE") {
-		t.Fatalf("checkpoint lookup is not indexed and bounded: %s error=%v", plan.String(), err)
+		tx, err := native.Conn().Begin(t.Context())
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(t.Context())
+		if _, err := tx.Exec(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(scope.organization)); err != nil {
+			return err
+		}
+		capture := &activityQueryCapture{DBTX: tx}
+		rows, err := pgquery.New(capture).RecordChangePublicationCheckpoints(t.Context(), pgquery.RecordChangePublicationCheckpointsParams{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: f.issue.WorkItemID, ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA})
+		if err != nil {
+			return err
+		}
+		if len(rows) > corestore.MaxPageSize+1 {
+			t.Fatalf("checkpoint lookup exceeded its candidate bound: %d", len(rows))
+		}
+		var raw []byte
+		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+capture.query, capture.args...).Scan(&raw); err != nil {
+			return err
+		}
+		type planNode struct {
+			Type     string            `json:"Node Type"`
+			Relation string            `json:"Relation Name"`
+			Index    string            `json:"Index Name"`
+			Rows     float64           `json:"Actual Rows"`
+			Loops    float64           `json:"Actual Loops"`
+			Removed  float64           `json:"Rows Removed by Filter"`
+			Plans    []json.RawMessage `json:"Plans"`
+		}
+		var plans []struct{ Plan json.RawMessage }
+		if err := json.Unmarshal(raw, &plans); err != nil {
+			return err
+		}
+		if len(plans) != 1 {
+			t.Fatalf("missing checkpoint query plan: %s", raw)
+		}
+		indexes := map[string]bool{}
+		var visited float64
+		var walk func(json.RawMessage)
+		walk = func(raw json.RawMessage) {
+			var node planNode
+			if err := json.Unmarshal(raw, &node); err != nil {
+				t.Fatal(err)
+			}
+			indexes[node.Index] = true
+			if node.Relation == "collaboration_events" {
+				if node.Type == "Seq Scan" {
+					t.Fatalf("checkpoint lookup scanned event history: %s", raw)
+				}
+				visited += (node.Rows + node.Removed) * node.Loops
+			}
+			if node.Type == "Sort" && node.Rows > float64(corestore.MaxPageSize+1) {
+				t.Fatalf("checkpoint lookup sorted unbounded history: %s", raw)
+			}
+			for _, child := range node.Plans {
+				walk(child)
+			}
+		}
+		walk(plans[0].Plan)
+		if !indexes["change_publication_checkpoint_idx"] || !indexes["change_publication_unprojected_idx"] || visited > float64(2*(corestore.MaxPageSize+1)) {
+			t.Fatalf("checkpoint lookup is not indexed and bounded: visited=%.0f plan=%s", visited, raw)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1255,67 +1760,118 @@ func TestChangeInvalidVersionAndReviewPolicy(t *testing.T) {
 
 func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 	t.Parallel()
-	backend := &recordingOutboxBackend{verifyFailures: []error{Permanent(errors.New("required GitHub review and fresh checks unavailable"))}}
-	service := openManualOutboxService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}, backend)
-	f := newChangeFixture(t, service)
-	repositoryID, _ := seedProjection(t, service.database.db)
-	for _, statement := range []struct {
-		query string
-		args  []any
-	}{
-		{"UPDATE projects SET repository_id = NULL WHERE repository_id = ?", []any{repositoryID}},
-		{"UPDATE projects SET repository_id = ?, github_repository_enabled = 1 WHERE id = ?", []any{repositoryID, f.project.ID}},
-		{"UPDATE issues SET repository_id = ? WHERE native_id = ?", []any{repositoryID, f.issue.WorkItemID}},
-		{"UPDATE pull_requests SET issue_id = (SELECT id FROM issues WHERE native_id = ?), url = 'https://github.com/example/repo/pull/1', head_sha = ?, reviews_summary_json = ?", []any{f.issue.WorkItemID, strings.Repeat("b", 40), `{"decision":"changes_requested"}`}},
-	} {
-		if _, err := service.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	input := changeTestInput()
-	input.External = &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: "https://github.com/example/repo/pull/1"}
-	response := performHubAPIRequest(t, service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "external-version"}, ChangeVersionInput: input})
-	requireNativeStatus(t, response, http.StatusOK)
-	var version tracker.ChangeVersion
-	decodeHubResponse(t, response, &version)
 	for _, pending := range []bool{false, true} {
-		if pending {
-			if _, err := service.database.db.ExecContext(t.Context(), `UPDATE change_versions SET head_sha=NULL,external_id=NULL,external_url=NULL WHERE id=?`, version.ID); err != nil {
+		t.Run(fmt.Sprintf("historical_pending_%t", pending), func(t *testing.T) {
+			backend := &recordingOutboxBackend{verifyFailures: []error{Permanent(errors.New("required GitHub review and fresh checks unavailable"))}}
+			service := newPostgresNativeService(t, Config{})
+			service.config.OutboxBackend = backend
+			f := newChangeFixture(t, service)
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), f.project.ID)
+				if err != nil {
+					return err
+				}
+				project.Settings.Repository, project.Settings.CheckoutRepository, project.Settings.RepositoryEnabled = "example/repo", "example/repo", true
+				_, err = w.UpdateProjectRecord(t.Context(), project)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
-		}
-		projected, _, err := readNativeIssueProjection(service.runDetailContext(t.Context()), service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), true)
-		if err != nil || projected.PullRequest == nil || projected.PullRequest.Number != 1 || projected.PullRequest.URL != "https://github.com/example/repo/pull/1" {
-			t.Fatalf("pending=%v external change projection=%+v error=%v", pending, projected.PullRequest, err)
-		}
-	}
-	if err := service.populateChangeColumns(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	path := f.path + "/versions/" + version.ID
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "native-approval"}, Decision: "approved"}), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/checks", f.token, changeTestResult(version)), http.StatusOK)
-	detail := f.detail(t)
-	if detail.Summary.NativeReview != "approved" || detail.Summary.ExternalReview != "snapshot: changes_requested" || detail.External == nil || detail.External.Merge.Ready {
-		t.Fatalf("native and external review authority = %#v", detail)
-	}
-	var issueID int64
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", f.issue.WorkItemID).Scan(&issueID); err != nil {
-		t.Fatal(err)
-	}
-	_, err := service.AppendWorkEvent(t.Context(), WorkEventChange{IssueID: issueID, Kind: "merge_requested", Mutation: MergePullRequestMutation{IdempotencyKey: "protected-merge", RepositoryID: repositoryID, IssueID: issueID, PullRequestNumber: 1, HeadSHA: version.HeadSHA, MergeMethod: "squash"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	processed, err := service.ProcessOutbox(t.Context())
-	if !processed || err == nil || backend.verifyCalls != 1 || backend.executeCalls != 0 || backend.effects != 0 {
-		t.Fatalf("protected merge bypassed: processed=%v error=%v backend=%#v", processed, err, backend)
-	}
-	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE pull_requests SET head_sha = ?", strings.Repeat("c", 40)); err != nil {
-		t.Fatal(err)
-	}
-	if got := f.detail(t).Summary.ExternalReview; got != "stale_head" {
-		t.Fatalf("moved external head review = %s", got)
+			input := changeTestInput()
+			input.External = &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: "https://github.com/example/repo/pull/1"}
+			var version tracker.ChangeVersion
+			if !pending {
+				response := performHubAPIRequest(t, service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "external-version"}, ChangeVersionInput: input})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &version)
+			} else {
+				now := service.config.now().UTC().Truncate(time.Microsecond)
+				version = tracker.ChangeVersion{ChangeVersionInput: input, ID: "version_historical", ChangeID: "change_historical", Number: 1, Policy: hubTestPolicy(), ReviewPolicy: f.rules, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: now}
+				for index, check := range f.rules.RequiredChecks {
+					version.Checks = append(version.Checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: check, CheckRunID: fmt.Sprintf("check_historical_%d", index)})
+				}
+				f.change = tracker.ChangeRequest{ID: version.ChangeID, OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, LinkedIssues: []tracker.NativeWorkItemID{f.issue.WorkItemID}, Title: "Imported external change", CurrentVersion: version.ID, Revision: 2, CreatedAt: now, UpdatedAt: now}
+				policyRaw, err := json.Marshal(hubTestPolicy())
+				if err != nil {
+					t.Fatal(err)
+				}
+				fixture := coreChangeNeutralFixture(t, f.project.OrganizationID, f.project.ID, now, hubTestPolicy(), policyRaw)
+				for table := range fixture.records {
+					fixture.records[table] = nil
+				}
+				changeRaw, err := json.Marshal(f.change)
+				if err != nil {
+					t.Fatal(err)
+				}
+				versionRaw, err := json.Marshal(version)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fixture.add("policy_revisions", map[string]any{"scope": string(f.project.OrganizationID) + "/" + string(f.project.ID), "policy_id": version.PolicyID, "metadata_json": string(policyRaw)})
+				fixture.add("change_requests", map[string]any{"id": f.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "record_json": string(changeRaw)})
+				fixture.add("change_issue_links", map[string]any{"change_id": f.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID})
+				fixture.add("change_versions", map[string]any{"id": version.ID, "change_id": f.change.ID, "number": 1, "record_json": string(versionRaw), "policy_revision_id": version.PolicyID, "payload_object_key": "", "repository": version.Repository, "created_at": formatHubTime(now), "head_sha": nil, "external_id": nil, "external_url": nil})
+				source := CoreChangeImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
+				for range 2 {
+					if count, err := ImportCoreChanges(t.Context(), service.database.postgres, source); err != nil || count != 1 {
+						t.Fatalf("pending historical version import = %d, error = %v", count, err)
+					}
+				}
+				f.path = f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes/" + f.change.ID
+			}
+			projected := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
+			if projected.Change == nil || projected.Change.Number != 1 || projected.Change.URL != "https://github.com/example/repo/pull/1" {
+				t.Fatalf("pending=%v external change projection=%+v", pending, projected.Change)
+			}
+			key := projectstore.GitHubPullRequestRefreshKey{ProjectID: f.project.ID, ChangeID: version.ChangeID, Repository: "example/repo", Number: 1}
+			observe := func(head string) {
+				t.Helper()
+				at := service.config.now().UTC()
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.(projectstore.GitHubPullRequestRefreshWriter).RequestGitHubPullRequests(t.Context(), []projectstore.GitHubPullRequestRefresh{{GitHubPullRequestRefreshKey: key, WorkItemID: f.issue.WorkItemID, RequestedVersion: version.ID, RequestedHeadSHA: version.HeadSHA, RequestedAt: at}})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				provider := &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_example", Owner: "example", Name: "repo", UpdatedAt: at}, PullRequests: []PullRequestSource{{Number: 1, HeadSHA: head, UpdatedAt: at, State: "open"}}, PullRequestDetails: []PullRequestDetailSource{{Number: 1, HeadSHA: head, MergeableState: new("blocked"), Checks: &tracker.CheckSummary{Status: "completed", Conclusion: "failure", Total: 1, Failed: 1}, Reviews: &tracker.ReviewSummary{State: "known", Decision: "changes_requested", ChangesRequested: 1}}}}}}}
+				service.config.ReconcileBackend = provider
+				if err := service.maintainGitHubPullRequestRefresh(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				requests := provider.Requests()
+				if len(requests) != 1 || len(requests[0].Hydrations) != 1 || requests[0].Hydrations[0].HeadSHA != version.HeadSHA || requests[0].Hydrations[0].GitHubNumber != 1 {
+					t.Fatalf("refresh request lost immutable version authority: %+v", requests)
+				}
+			}
+			observe(version.HeadSHA)
+			path := f.path + "/versions/" + version.ID
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "native-approval"}, Decision: "approved"}), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/checks", f.token, changeTestResult(version)), http.StatusOK)
+			detail := f.detail(t)
+			if detail.Summary.NativeReview != "approved" || detail.Summary.ExternalReview != "snapshot: changes_requested" || detail.External == nil || detail.External.Merge.Ready {
+				t.Fatalf("native and external review authority = %#v", detail)
+			}
+			raw, err := json.Marshal(MergePullRequestDesired{PullRequestNumber: 1, HeadSHA: version.HeadSHA, MergeMethod: "squash"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := eventstore.NewContent(service.runDetailStore()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: f.project.OrganizationID}, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Key: "protected-merge", Repository: "example/repo", IssueNumber: int64(f.issue.Number), Kind: string(MutationMergePullRequest), CreatedAt: service.config.now(), Payload: payload})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			processed, err := service.ProcessOutbox(t.Context())
+			if processed || err == nil || backend.verifyCalls != 1 || backend.executeCalls != 0 || backend.effects != 0 {
+				t.Fatalf("protected merge bypassed: processed=%v error=%v backend=%#v", processed, err, backend)
+			}
+			observe(strings.Repeat("c", 40))
+			if got := f.detail(t).Summary.ExternalReview; got != "stale_head" {
+				t.Fatalf("moved external head review = %s", got)
+			}
+		})
 	}
 }
 
@@ -1325,25 +1881,25 @@ type landingCapacityFixture struct {
 	requirement providercapacity.Requirement
 }
 
+func setChangeFixtureStates(t *testing.T, f nativeFixture, states []tracker.NativeState) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		record.States = states
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newLandingCapacityFixture(t *testing.T, service *Service, name string, github bool) landingCapacityFixture {
 	t.Helper()
 	f := newNativeFixture(t, service, "", name)
-	states := HostedProjectStates()
-	raw, err := marshalNative(states)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id=?", f.project.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", raw, f.project.ID); err != nil {
-		t.Fatal(err)
-	}
-	for _, state := range states {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
-			t.Fatal(err)
-		}
-	}
+	setChangeFixtureStates(t, f, HostedProjectStates())
 	descriptor := hubTestPolicy()
 	descriptor.Gates.GitHubPullRequest = github
 	descriptor = descriptor.WithID()
@@ -1433,7 +1989,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if test.boundary == "fractional" {
 					now = now.Add(800 * time.Millisecond)
 				}
-				service = openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+				service = newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
 			}
 			f := newLandingCapacityFixture(t, service, "landing-capacity", !test.nativeOnly)
 			first := f.ready(t, "first change")
@@ -1443,16 +1999,16 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			}
 			second := secondFixture.ready(t, "second change")
 			if test.direct {
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", f.project.ID, second.WorkItemID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET workflow_state_name='In Progress' WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, second.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.directRace {
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id IN (?,?)", f.project.ID, first.WorkItemID, second.WorkItemID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET workflow_state_name='In Progress' WHERE organization_id=$1 AND project_id=$2 AND native_id IN ($3,$4)", f.project.OrganizationID, f.project.ID, first.WorkItemID, second.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
-			owner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim)
+			owner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			if test.sprite {
 				owner.redemption.SpriteName = owner.redemption.Hostname
 				placement := policy.Placement{Mode: "blended", MaxSpriteSlots: 1}
@@ -1463,22 +2019,29 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				setPlacementFixture(t, f.nativeFixture, placement, 1)
 			}
 			owner.enroll(t)
+			reportRunnerCapacity(t, f.service, f.base, owner.redemption.Credential, owner.binding.MachineID, owner.redemption.DisplayName, owner.redemption.BackendIsolation, owner.redemption.Capacity)
 			if test.provider {
 				f.requirement = providercapacity.Requirement{Role: "merge", Backend: "git", Model: "git"}
 				report := capacityReport(f.service.config.now())
 				report.Backend, report.Models = "git", []string{"git"}
-				raw, err := json.Marshal([]providercapacity.Report{report})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE runner_identities SET provider_reports_json=? WHERE id=?", string(raw), owner.binding.RunnerID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.ReplaceRunnerProviderReports(t.Context(), owner.binding.RunnerID, []providercapacity.Report{report})
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			waiter := prepareRunner(t, secondFixture.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Events)
+			waiter := prepareRunner(t, secondFixture.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Events, runnerauth.Heartbeat)
 			waiter.enroll(t)
+			reportRunnerCapacity(t, secondFixture.service, secondFixture.base, waiter.redemption.Credential, waiter.binding.MachineID, waiter.redemption.DisplayName, waiter.redemption.BackendIsolation, waiter.redemption.Capacity)
 			if test.overflow {
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE runner_identities SET state='disabled' WHERE id=?", waiter.binding.RunnerID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), secondFixture.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), waiter.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					identity.State = "disabled"
+					return w.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1491,10 +2054,10 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			if test.sameBatch {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, owner.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "Batch runner", "state": "active", "capacity_limit": 1, "project_ids": []tracker.ProjectID{f.project.ID}, "project_capacity_limits": map[tracker.ProjectID]int{f.project.ID: 1}, "idempotency_key": "batch-project-limit"}), http.StatusOK)
 				waiter = owner
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE runner_identities SET capacity_limit=1, reported_capacity=1 WHERE id=?", owner.binding.RunnerID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET capacity_limit=1, reported_capacity=1 WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, owner.binding.RunnerID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE machines SET capacity=1 WHERE id=?", owner.binding.MachineID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE machines SET capacity=1 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, owner.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 				ownerSession, waiterSession = "landing/shared/owner", "landing/shared/waiter"
@@ -1509,7 +2072,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusOK)
 					var lease tracker.NativeLease
 					decodeHubResponse(t, response, &lease)
-					if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(f.service.config.now().Add(-time.Second)), lease.ID); err != nil {
+					if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.now().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
 						t.Fatal(err)
 					}
 					acquire = func() *httptest.ResponseRecorder {
@@ -1566,7 +2129,11 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				t.Fatal("claim replay changed the lease owner or fence")
 			}
 			var pinned int
-			if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT landing_capacity FROM leases WHERE lease_id=?", lease.ID).Scan(&pinned); err != nil {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.Lease(t.Context(), string(lease.ID))
+				pinned = int(row.LandingCapacity)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 			wantPinned := test.ownerCapacity
@@ -1596,10 +2163,22 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				requireNativeStatus(t, admit(test.contenderCapacity), http.StatusConflict)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(direct.ID)+"/validate", waiter.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: direct.FencingToken}), http.StatusOK)
 				var change, version string
-				if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT id,json_extract(record_json,'$.current_version_id') FROM change_requests WHERE work_item_id=?", second.WorkItemID).Scan(&change, &version); err != nil {
+				var versionRow eventstore.Version
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), secondFixture.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					row, err := r.LatestChange(t.Context(), secondFixture.project.ID, second.WorkItemID)
+					if err != nil {
+						return err
+					}
+					if row.CurrentVersionID == nil {
+						return errors.New("landing fixture has no current version")
+					}
+					change, version = row.ID, *row.CurrentVersionID
+					versionRow, err = r.Version(t.Context(), change, version)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
-				published, err := readChangeVersion(f.service.runDetailContext(t.Context()), f.service.database.reader, change, version)
+				published, err := eventstore.NewContent(f.service.runDetailStore()).Version(t.Context(), versionRow)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1631,7 +2210,11 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 				requireNativeStatus(t, admit(test.contenderCapacity), http.StatusOK)
 				requireNativeStatus(t, admit(test.contenderCapacity+1), http.StatusOK)
-				if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT landing_capacity FROM leases WHERE lease_id=?", direct.ID).Scan(&pinned); err != nil {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					row, err := r.Lease(t.Context(), string(direct.ID))
+					pinned = int(row.LandingCapacity)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 				if pinned != test.contenderCapacity {
@@ -1639,7 +2222,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 				third := f.ready(t, "third change")
 				requireNativeStatus(t, f.claim(t, owner, third, "next-landing", test.ownerCapacity), http.StatusConflict)
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE issues SET revision=revision+1 WHERE native_id=?", second.WorkItemID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, second.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
@@ -1654,12 +2237,12 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				return
 			}
 			if test.laneChanged {
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", f.project.ID, first.WorkItemID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET workflow_state_name='In Progress' WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, first.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.expired {
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(f.service.config.now().Add(-time.Second)), lease.ID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.now().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1671,7 +2254,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				case "fractional":
 					expiry = expiry.Add(time.Nanosecond)
 				}
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(expiry), lease.ID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", expiry, f.project.OrganizationID, lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1709,10 +2292,10 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					var last tracker.NativeLease
 					decodeHubResponse(t, response, &last)
 					fourth := f.ready(t, "different batch")
-					if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE machines SET capacity=4 WHERE id=?", owner.binding.MachineID); err != nil {
+					if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE machines SET capacity=4 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, owner.binding.MachineID); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE runner_identities SET capacity_limit=4, reported_capacity=4 WHERE id=?", owner.binding.RunnerID); err != nil {
+					if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET capacity_limit=4, reported_capacity=4 WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, owner.binding.RunnerID); err != nil {
 						t.Fatal(err)
 					}
 					other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim)
@@ -1728,12 +2311,18 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					projectRunner.redemption.SpriteName = owner.redemption.SpriteName
 					projectRunner.enroll(t)
 					if test.provider {
-						var reports string
-						if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT provider_reports_json FROM runner_identities WHERE id=?", owner.binding.RunnerID).Scan(&reports); err != nil {
+						var reports []providercapacity.Report
+						if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+							var err error
+							reports, err = r.RunnerProviderReports(t.Context(), owner.binding.RunnerID)
+							return err
+						}); err != nil {
 							t.Fatal(err)
 						}
-						for _, r := range []runnerFixture{other, projectRunner} {
-							if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE runner_identities SET provider_reports_json=? WHERE id=?", reports, r.binding.RunnerID); err != nil {
+						for _, runner := range []runnerFixture{other, projectRunner} {
+							if err := f.service.config.TenantRepository.WriteTenant(t.Context(), runner.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+								return w.ReplaceRunnerProviderReports(t.Context(), runner.binding.RunnerID, reports)
+							}); err != nil {
 								t.Fatal(err)
 							}
 						}
@@ -1743,17 +2332,28 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 						requireNativeStatus(t, independent.claim(t, projectRunner, otherItem, "landing/shared/project", 1), http.StatusConflict)
 						requireNativeStatus(t, f.claim(t, owner, fourth, "landing/different/owner", 1), http.StatusConflict)
 						if test.sprite {
-							used, err := readPlacementSpriteUsage(f.service.runDetailContext(t.Context()), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, f.service.config.now())
+							var used int
+							err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+								var err error
+								used, err = readPlacementSpriteUsage(t.Context(), reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, f.service.config.now())
+								return err
+							})
 							if err != nil || used != 1 {
 								t.Fatalf("Sprite usage=%d, err=%v, want 1", used, err)
 							}
 						}
 						if test.provider {
-							report := capacityReport(f.service.config.now())
-							report.Backend, report.Models = "git", []string{"git"}
-							view, err := providerView(f.service.runDetailContext(t.Context()), f.service.database.reader, f.project.OrganizationID, owner.binding.RunnerID, report, f.service.config.now())
-							if err != nil || view.Used != 1 {
-								t.Fatalf("provider usage=%d, err=%v, want 1", view.Used, err)
+							credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+							if err != nil {
+								t.Fatalf("routing reader status=%d error=%v", status, err)
+							}
+							routing, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, owner.binding.RunnerID)
+							if err != nil {
+								t.Fatal(err)
+							}
+							index := slices.IndexFunc(routing.ProviderCapacity, func(view providercapacity.View) bool { return view.Backend == "git" })
+							if index < 0 || routing.ProviderCapacity[index].Used != 1 {
+								t.Fatalf("provider capacity=%+v, want git usage 1", routing.ProviderCapacity)
 							}
 						}
 						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(active.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: active.FencingToken, TTLSeconds: 90}), http.StatusOK)
@@ -1771,25 +2371,24 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					name, change, restore, code string
 					args                        []any
 				}{
-					{"draining", "UPDATE runner_identities SET state='draining' WHERE id=?", "UPDATE runner_identities SET state='active' WHERE id=?", "runner_draining", []any{owner.binding.RunnerID}},
-					{"disabled", "UPDATE runner_identities SET state='disabled' WHERE id=?", "UPDATE runner_identities SET state='active' WHERE id=?", "runner_disabled", []any{owner.binding.RunnerID}},
-					{"offline", "UPDATE runner_identities SET last_heartbeat_at='2000-01-01T00:00:00Z' WHERE id=?", "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", "runner_offline", []any{owner.binding.RunnerID}},
-					{"runner paused", "UPDATE runner_identities SET capacity_limit=0 WHERE id=?", "UPDATE runner_identities SET capacity_limit=1 WHERE id=?", "runner_capacity", []any{owner.binding.RunnerID}},
-					{"host paused", "UPDATE machines SET capacity=0 WHERE id=?", "UPDATE machines SET capacity=1 WHERE id=?", "host_capacity", []any{owner.binding.MachineID}},
-					{"provider incompatible", `UPDATE runner_identities SET provider_reports_json=? WHERE id=?`, `UPDATE runner_identities SET provider_reports_json='[]' WHERE id=?`, "provider_incompatible", nil},
+					{"draining", "UPDATE runner_identities SET state='draining' WHERE organization_id=$1 AND runner_id=$2", "UPDATE runner_identities SET state='active' WHERE organization_id=$1 AND runner_id=$2", "runner_draining", []any{f.project.OrganizationID, owner.binding.RunnerID}},
+					{"disabled", "UPDATE runner_identities SET state='disabled' WHERE organization_id=$1 AND runner_id=$2", "UPDATE runner_identities SET state='active' WHERE organization_id=$1 AND runner_id=$2", "runner_disabled", []any{f.project.OrganizationID, owner.binding.RunnerID}},
+					{"offline", "UPDATE runner_identities SET last_heartbeat_at='2000-01-01T00:00:00Z' WHERE organization_id=$1 AND runner_id=$2", "UPDATE runner_identities SET last_heartbeat_at=$3 WHERE organization_id=$1 AND runner_id=$2", "runner_offline", []any{f.project.OrganizationID, owner.binding.RunnerID}},
+					{"runner paused", "UPDATE runner_identities SET capacity_limit=0 WHERE organization_id=$1 AND runner_id=$2", "UPDATE runner_identities SET capacity_limit=1 WHERE organization_id=$1 AND runner_id=$2", "runner_capacity", []any{f.project.OrganizationID, owner.binding.RunnerID}},
+					{"host paused", "UPDATE machines SET capacity=0 WHERE organization_id=$1 AND id=$2", "UPDATE machines SET capacity=1 WHERE organization_id=$1 AND id=$2", "host_capacity", []any{f.project.OrganizationID, owner.binding.MachineID}},
+					{"provider incompatible", "", "", "provider_incompatible", nil},
 				} {
 					t.Run(exclusion.name, func(t *testing.T) {
 						args := exclusion.args
 						if exclusion.name == "provider incompatible" {
 							report := capacityReport(f.service.config.now())
 							report.Availability = "exhausted"
-							raw, err := json.Marshal([]providercapacity.Report{report})
-							if err != nil {
+							if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+								return w.ReplaceRunnerProviderReports(t.Context(), owner.binding.RunnerID, []providercapacity.Report{report})
+							}); err != nil {
 								t.Fatal(err)
 							}
-							args = []any{string(raw), owner.binding.RunnerID}
-						}
-						if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), exclusion.change, args...); err != nil {
+						} else if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), exclusion.change, args...); err != nil {
 							t.Fatal(err)
 						}
 						response := f.claim(t, owner, second, waiterSession, test.contenderCapacity)
@@ -1800,12 +2399,15 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 							t.Fatalf("refusal=%s, want %s", refusal.Code, exclusion.code)
 						}
 						if exclusion.name == "offline" {
-							args = []any{formatHubTime(f.service.config.now()), owner.binding.RunnerID}
+							args = []any{f.project.OrganizationID, owner.binding.RunnerID, f.service.config.now()}
 						}
 						if exclusion.name == "provider incompatible" {
-							args = []any{owner.binding.RunnerID}
-						}
-						if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), exclusion.restore, args...); err != nil {
+							if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+								return w.ReplaceRunnerProviderReports(t.Context(), owner.binding.RunnerID, nil)
+							}); err != nil {
+								t.Fatal(err)
+							}
+						} else if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), exclusion.restore, args...); err != nil {
 							t.Fatal(err)
 						}
 					})
@@ -1817,23 +2419,21 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if member.ID == lease.ID || member.FencingToken <= lease.FencingToken {
 					t.Fatal("batch member did not acquire its own fenced lease")
 				}
-				tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				available, err := machineClaimCapacity(f.service.runDetailContext(t.Context()), tx, owner.binding.MachineID, f.service.config.now(), "", "")
-				if rollbackErr := tx.Rollback(); err != nil || rollbackErr != nil {
-					t.Fatal(err, rollbackErr)
-				}
+				runner := assertRunnerAdmissionFacts(t, f.nativeFixture, owner)
+				available := runner.HostCapacity - runner.HostUsed
 				if available != 0 {
 					t.Fatalf("two native batch owners consumed more than one host slot: available=%d, want0", available)
 				}
-				runner, err := readRunner(f.service.runDetailContext(t.Context()), f.service.database.db, f.project.OrganizationID, owner.binding.RunnerID, f.service.config.now())
-				if err != nil || runner.Used != 1 || runner.ProjectUsed[f.project.ID] != 1 || len(runner.Leases) != 2 {
-					t.Fatalf("native batch project accounting=%+v error=%v", runner, err)
+				credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+				if err != nil || status != http.StatusOK {
+					t.Fatalf("batch display authority status=%d error=%v", status, err)
+				}
+				display, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, owner.binding.RunnerID)
+				if err != nil || runner.Used != 1 || runner.ProjectUsed[f.project.ID] != 1 || len(display.Leases) != 2 {
+					t.Fatalf("native batch project accounting=%+v display=%+v error=%v", runner, display, err)
 				}
 				third := f.ready(t, "different batch")
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE machines SET capacity=2 WHERE id=?", owner.binding.MachineID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE machines SET capacity=2 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, owner.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 				response = f.claim(t, owner, third, "landing/different/owner", 1)
@@ -1843,7 +2443,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if refusal.Code != "runner_capacity" {
 					t.Fatalf("different batch refusal=%s, want runner_capacity", refusal.Code)
 				}
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE machines SET capacity=1 WHERE id=?", owner.binding.MachineID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE machines SET capacity=1 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, owner.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, f.claim(t, owner, third, "landing/different/owner", 1), http.StatusConflict)
@@ -1975,7 +2575,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 func TestChangeLanding(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 29, 1, 0, 0, 0, time.UTC)
-	f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}))
+	f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }}))
 	first := f.publish(t, "v1", "")
 	landing := func(key, version string, request tracker.LandChangeVersion) *httptest.ResponseRecorder {
 		request.IdempotencyKey = key
@@ -2020,12 +2620,12 @@ func TestChangeLanding(t *testing.T) {
 	if landed.Landed.Quality == nil || landed.Landed.Quality.IssueBody != f.issue.Body || landed.Landed.Quality.IssueRevision != f.issue.Revision {
 		t.Fatalf("landing must freeze the contract: %+v", landed.Landed.Quality)
 	}
-	stored, err := readQualityLanding(f.service.runDetailContext(t.Context()), f.service.database.db, landed, first.ID)
-	if err != nil || stored == nil || stored.Quality == nil || stored.Quality.IssueBody != landed.Landed.Quality.IssueBody {
-		t.Fatalf("persistent landing context = %+v, %v", stored, err)
+	stored := f.detail(t).Change.Landed
+	if stored == nil || stored.VersionID != first.ID || stored.Quality == nil || stored.Quality.IssueBody != landed.Landed.Quality.IssueBody {
+		t.Fatalf("persistent landing context = %+v", stored)
 	}
 
-	projected, _, err := readNativeIssueProjection(f.service.runDetailContext(t.Context()), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), true)
+	projected, err := f.service.readWorkItem(t.Context(), analyticsTestScope(t, f.nativeFixture), string(f.issue.WorkItemID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2033,6 +2633,16 @@ func TestChangeLanding(t *testing.T) {
 		t.Fatalf("list change = %#v", projected.ListChange)
 	}
 
+	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "Foreign landing query scope")
+	foreignItem := foreign.create(t, "Foreign item")
+	scopeCredential := analyticsTestScope(t, f.nativeFixture).credential
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: scopeCredential.ID, ProjectID: foreign.project.ID})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	foreignScope := nativeScope{organization: foreign.project.OrganizationID, project: foreign.project.ID, credential: scopeCredential}
+	seedAnalyticsTestChange(t, f.service, foreignScope, foreignItem.WorkItemID, "foreign-landed", now, &tracker.ChangeLanding{MergeSHA: strings.Repeat("f", 40), BaseRef: "develop", LandedAt: now})
 	for _, test := range []struct {
 		name     string
 		scope    nativeScope
@@ -2042,15 +2652,24 @@ func TestChangeLanding(t *testing.T) {
 		{"landed version", nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, now.Add(-time.Hour), now.Add(time.Hour), 1},
 		{"exclusive end", nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, now.Add(-time.Hour), now, 0},
 		{"outside window", nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, now.Add(time.Second), now.Add(time.Hour), 0},
-		{"foreign project", nativeScope{organization: f.project.OrganizationID, project: "prj_foreign"}, now.Add(-time.Hour), now.Add(time.Hour), 0},
+		{"foreign project", nativeScope{organization: f.project.OrganizationID, project: foreign.project.ID}, now.Add(-time.Hour), now.Add(time.Hour), 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := readNativeAnalytics(f.service.runDetailContext(t.Context()), f.service.database.db, test.scope, operatortool.AnalyticsRequest{Limit: 1}, operatortool.AnalyticsWindow{From: test.from, To: test.to, Bucket: time.Hour})
+			scope := test.scope
+			scope.credential = scopeCredential
+			got, err := f.service.readNativeAnalyticsTenant(f.service.runDetailContext(t.Context()), scope, operatortool.AnalyticsRequest{Limit: 1}, operatortool.AnalyticsWindow{From: test.from, To: test.to, Bucket: time.Hour})
+
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got.CostPerOutcome.Shipped != test.want || len(got.Landings.Items) != test.want {
 				t.Fatalf("shipping evidence %#v", got)
+			}
+			if test.name == "foreign project" {
+				if len(got.Landings.Items) != 1 || got.Landings.Items[0].ChangeID != "foreign-landed" {
+					t.Fatalf("foreign query leaked main landing=%+v", got.Landings)
+				}
+				return
 			}
 			if test.want == 1 && (got.Landings.Items[0].Landing.MergeSHA != land.MergeSHA || got.Landings.Items[0].Landing.VersionID != first.ID || got.Digest[1].Shipped != 1) {
 				t.Fatalf("lost exact-version provenance %#v", got)
@@ -2112,21 +2731,7 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "landing")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			raw, err := marshalNative(test.states)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			for _, state := range test.states {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
-					t.Fatal(err)
-				}
-			}
+			setChangeFixtureStates(t, f, test.states)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Land me", State: test.from})
 			requireNativeStatus(t, response, http.StatusOK)
@@ -2173,15 +2778,22 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 					}
 					// Finish credential bookkeeping before measuring decision writes.
 					f.service.tokenUseWork.Wait()
-					var before, after int64
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&before); err != nil {
-						t.Fatal(err)
-					}
+					var statements, writes atomic.Int64
+					writeSQL := regexp.MustCompile(`(?im)^\s*(INSERT|UPDATE|DELETE|MERGE|TRUNCATE)\b`)
+					traced := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, statement string) {
+						statements.Add(1)
+						if writeSQL.MatchString(statement) {
+							writes.Add(1)
+						}
+					})
 					for range 16 {
-						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+						request := newHubAPIRequest(t, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim).WithContext(traced)
+						response := httptest.NewRecorder()
+						f.service.Handler().ServeHTTP(response, request)
+						requireNativeStatus(t, response, http.StatusConflict)
 					}
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&after); err != nil || after != before {
-						t.Fatalf("unchanged decisions wrote %d rows, err=%v", after-before, err)
+					if statements.Load() == 0 || writes.Load() != 0 {
+						t.Fatalf("unchanged decisions executed %d statements and %d writes", statements.Load(), writes.Load())
 					}
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
@@ -2190,7 +2802,7 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 				if evidence.Attempt != nil || evidence.LatestDecision == nil || evidence.LatestDecision.Actor.Kind != "runner" || evidence.LatestDecision.Data.Decision.Source != "native_runner_routing" || evidence.LatestDecision.Data.Decision.Outcome != "skipped" || evidence.LatestDecision.Data.Decision.RunnerID != r.binding.RunnerID || evidence.LatestDecision.Data.Decision.WorkItemRevision != issue.Revision {
 					t.Fatalf("recorded routing refusal=%#v", evidence)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE id=?", r.binding.MachineID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
@@ -2203,7 +2815,7 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 				if evidence.LatestDecision.Data.Change == nil || evidence.LatestDecision.Data.Change.VersionID != version.ID {
 					t.Fatalf("decision lost Change evidence=%#v", evidence.LatestDecision)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", issue.WorkItemID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
@@ -2212,7 +2824,7 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 				if evidence.LatestDecision.ID == previousDecision || evidence.LatestDecision.Data.Decision.WorkItemRevision != issue.Revision+1 {
 					t.Fatalf("changed revision lost decision=%#v", evidence.LatestDecision)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=2 WHERE id=?", r.binding.MachineID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE machines SET capacity=2 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 2, "display_name": "Landing runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}), http.StatusOK)
@@ -2220,9 +2832,32 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 					claim.ProviderCandidates[0].Revision = issue.Revision + 1
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusOK)
+				var decisions []eventstore.Event
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					var err error
+					decisions, err = reader.Events(t.Context(), f.project.ID, issue.WorkItemID, 0, 100)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if len(decisions) == 100 {
+					t.Fatal("decision fixture history exceeds complete read bound")
+				}
 				var evaluatedReady int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision' AND scheduler_source='native_claim_eligibility' AND scheduler_outcome='ready' AND scheduler_version_id=?", issue.WorkItemID, version.ID).Scan(&evaluatedReady); err != nil || evaluatedReady != 1 {
-					t.Fatalf("actual reviewed Change evaluation missing: count=%d error=%v", evaluatedReady, err)
+				for _, row := range decisions {
+					if row.Type != "scheduler.decision" {
+						continue
+					}
+					event, err := eventstore.NewContent(f.service.runDetailStoreFor(t.Context())).Event(t.Context(), row)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if event.Data.Decision != nil && event.Data.Decision.Source == "native_claim_eligibility" && event.Data.Decision.Outcome == "ready" && event.Data.Change != nil && event.Data.Change.VersionID == version.ID {
+						evaluatedReady++
+					}
+				}
+				if evaluatedReady != 1 {
+					t.Fatalf("actual reviewed Change evaluation missing: count=%d", evaluatedReady)
 				}
 			}
 		})
@@ -2252,30 +2887,16 @@ func TestReviewedChangePromotesOnAnyEvidence(t *testing.T) {
 			var clock atomic.Int64
 			if test.expireDuringPreparation {
 				clock.Store(time.Now().UTC().UnixNano())
-				service = openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
+				service = newClockedPostgresNativeService(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
 			}
 			f := newNativeFixture(t, service, "", "promote")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			states := HostedProjectStates()
-			raw, err := marshalNative(states)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			for _, state := range states {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
-					t.Fatal(err)
-				}
-			}
+			setChangeFixtureStates(t, f, HostedProjectStates())
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			var principal string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = 'operator-promote'").Scan(&principal); err != nil {
-				t.Fatal(err)
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil {
+				t.Fatalf("operator credential status=%d error=%v", status, err)
 			}
+			principal := credential.ID
 			rules := tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: test.require, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Promote me", State: "Human Review"})
@@ -2357,22 +2978,7 @@ func TestRequestChangesReturnsToWork(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "rework")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			states := HostedProjectStates()
-			raw, err := marshalNative(states)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			for _, state := range states {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
-					t.Fatal(err)
-				}
-			}
+			setChangeFixtureStates(t, f, HostedProjectStates())
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Rework me", Body: issueContractTestSections, State: test.from})
 			requireNativeStatus(t, response, http.StatusOK)
@@ -2466,22 +3072,7 @@ func TestPublishUnderTheDefaultPolicyLands(t *testing.T) {
 		t.Run(test.from+"/"+test.landingMode, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "default")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			states := HostedProjectStates()
-			raw, err := marshalNative(states)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			for _, state := range states {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
-					t.Fatal(err)
-				}
-			}
+			setChangeFixtureStates(t, f, HostedProjectStates())
 			descriptor := hubTestPolicy()
 			if test.landingMode != "" {
 				descriptor.Gates.LandingMode = test.landingMode
@@ -2567,23 +3158,22 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 			t.Parallel()
 			f := newLandingCapacityFixture(t, nil, "review-refusal", true)
 			issue := f.ready(t, "refused change")
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Events, runnerauth.Collaborate, runnerauth.Heartbeat)
+			runner.enroll(t)
+			reportRunnerCapacity(t, f.service, f.base, runner.redemption.Credential, runner.binding.MachineID, runner.redemption.DisplayName, runner.redemption.BackendIsolation, runner.redemption.Capacity)
+			claimNumber := 0
 			ready := func() bool {
 				t.Helper()
-				tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
-				if err != nil {
-					t.Fatal(err)
+				claimNumber++
+				response := f.claim(t, runner, issue, fmt.Sprintf("readiness-%d", claimNumber), 1)
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.ID == "" || lease.WorkItemID != issue.WorkItemID {
+					t.Fatalf("landing claim = %+v", lease)
 				}
-				defer tx.Rollback()
-				var id tracker.WorkItemID
-				if err := tx.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT id FROM issues WHERE native_id = ?", issue.WorkItemID).Scan(&id); err != nil {
-					t.Fatal(err)
-				}
-				ready, evaluated, _, err := nativeLandingCandidateReady(f.service.runDetailContext(t.Context()), tx, &scope, id, "machine_landing", 0, f.service.config.now())
-				if err != nil || !evaluated {
-					t.Fatalf("landing eligibility evaluated = %t, error = %v", evaluated, err)
-				}
-				return ready
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+				return lease.ID != "" && lease.WorkItemID == issue.WorkItemID
 			}
 			if !ready() {
 				t.Fatal("reviewed version was not ready before any refusal")
@@ -2591,10 +3181,7 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/workflow"
 			move := func(state, detail string) {
 				t.Helper()
-				current, _, err := readNativeIssue(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(issue.WorkItemID))
-				if err != nil {
-					t.Fatal(err)
-				}
+				current := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "move-" + state}, ExpectedRevision: current.Revision, State: state, Reason: "user_requested", ReasonDetail: detail}), http.StatusOK)
 			}
 			move("In Progress", test.detail)
@@ -2610,21 +3197,47 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 				if test.resolved {
 					reentryDetail += " " + workspace.ReviewConversationsResolvedText
 				}
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", f.project.ID, issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'runner-reentry',organization_id,project_id,work_item_id,sequence+1,'workflow.transitioned',1,'{"kind":"runner","principal_id":"runner_landing"}',json_object('from_state','In Progress','to_state','Merging','reason','worker_progress','reason_detail',?),recorded_at FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1`, reentryDetail, issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				current := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
+				response := f.claim(t, runner, current, "runner-reentry", 1)
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "runner-reentry", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedRevision: current.Revision, State: "Merging", Reason: "worker_progress", ReasonDetail: reentryDetail}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
 			}
-			var actor string
-			if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT json_extract(actor_json,'$.kind') FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&actor); err != nil || actor != test.reentry {
-				t.Fatalf("re-entry actor = %q, error = %v, want %s", actor, err, test.reentry)
+			var transition eventstore.Event
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				reader, ok := r.(eventstore.WorkflowTransitionReader)
+				if !ok {
+					return ErrPostgresFeatureUnavailable
+				}
+				var err error
+				transition, err = reader.LatestWorkflowTransition(t.Context(), f.project.ID, issue.WorkItemID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if transition.ActorKind != test.reentry || transition.ToState != "Merging" {
+				t.Fatalf("re-entry actor = %q, state = %q, want %s in Merging", transition.ActorKind, transition.ToState, test.reentry)
 			}
 			if test.publish {
-				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'republished',organization_id,project_id,work_item_id,sequence+1,'change.version_published',1,actor_json,'{}',recorded_at FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1`, issue.WorkItemID); err != nil {
-					t.Fatal(err)
+				response := performHubAPIRequest(t, f.service, http.MethodGet, strings.TrimSuffix(path, "/workflow")+"/changes", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var changes []tracker.ChangeRequest
+				decodeHubResponse(t, response, &changes)
+				if len(changes) != 1 {
+					t.Fatalf("changes = %+v", changes)
 				}
+				changePath := strings.TrimSuffix(path, "/workflow") + "/changes/" + changes[0].ID
+				input := changeTestInput()
+				input.PolicyID = f.descriptor.ID
+				input.HeadSHA = strings.Repeat("c", 40)
+				bundle := changeTestSource(t, &input)
+				response = performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "republished"}, ExpectedVersionID: changes[0].CurrentVersion, ChangeVersionInput: input, SourceBundle: bundle})
+				requireNativeStatus(t, response, http.StatusOK)
+				var version tracker.ChangeVersion
+				decodeHubResponse(t, response, &version)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve-republished"}, Decision: "approved"}), http.StatusOK)
 			}
 			if got := ready(); got != test.want {
 				t.Fatalf("landing ready = %t, want %t", got, test.want)

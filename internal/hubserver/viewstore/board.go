@@ -147,11 +147,47 @@ type BoardSequence struct {
 	ReplayFloor int64
 }
 
+type BoardDeliverySubject struct {
+	CredentialID   string
+	CredentialHash string
+	UserID         string
+	MembershipID   string
+	SessionHash    string
+}
+
+type BoardDeliveryAccess struct {
+	Live                    bool
+	ExpiresAt               time.Time
+	Revisions               [4]int64
+	CredentialScope         string
+	CredentialKeyScope      string
+	CredentialProjectAccess string
+	CredentialNativeOnly    bool
+	MemberRole              string
+	MemberPrincipalID       string
+}
+
+type BoardDeliveryState struct {
+	Head        BoardSequence
+	ProjectLive bool
+	Access      []BoardDeliveryAccess
+}
+
+type BoardDeliveryReader interface {
+	BoardDeliveryState(context.Context, tracker.ProjectID, []BoardDeliverySubject, time.Time) (BoardDeliveryState, error)
+}
+
 type BoardDelta struct {
-	Sequence   int64
-	WorkItemID tracker.NativeWorkItemID
-	Previous   *attachment.ArchiveReference
-	Current    *attachment.ArchiveReference
+	Sequence       int64
+	WorkItemID     tracker.NativeWorkItemID
+	Previous       *attachment.ArchiveReference
+	Current        *attachment.ArchiveReference
+	Topic          string
+	EntityID       string
+	EntityRevision *int64
+	Kind           string
+	Status         string
+	RelatedID      string
 }
 
 type BoardUpdate struct {
@@ -178,4 +214,5 @@ type BoardReader interface {
 type BoardWriter interface {
 	BoardReader
 	ReplaceBoardItem(context.Context, BoardUpdate) error
+	TrimBoardDeltas(context.Context, tracker.ProjectID) (tracker.ProjectID, error)
 }

@@ -25,7 +25,7 @@ type preparedValidatorReview struct {
 }
 
 func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, source eventstore.Version, request tracker.ReviewChange) (*preparedValidatorReview, tracker.MachineID, error) {
-	if scope.credential.Scope != apiScopeWorker {
+	if scope.credential.Scope != apiScopeWorker || request.Validator == nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
 		machine, err := validateValidatorReviewEvidence(scope, change, version, request, validatorReviewEvidence{})
 		return nil, machine, err
 	}
@@ -38,7 +38,7 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 	if request.SecurityAudit != nil {
 		resultID = request.SecurityAudit.SessionID
 	}
-	if resultID <= 0 || source.ImplementingSessionID <= 0 || source.SourceObjectKey == "" {
+	if source.ImplementingSessionID < 0 || source.SourceObjectKey == "" || source.ImplementingMachineID == "" {
 		return nil, "", nativePublicInvalid("worker review requires recorded source and review sessions")
 	}
 	p := &preparedValidatorReview{}
@@ -50,6 +50,12 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 			return fmt.Errorf("read review authority: %w", err)
 		}
 		p.attempt = attempt
+		if resultID <= 0 {
+			if _, err := validateValidatorReviewEvidence(scope, change, version, request, validatorReviewEvidence{}); err != nil {
+				return err
+			}
+			return nativePublicInvalid("worker review requires a recorded review session")
+		}
 		p.change, err = r.Change(ctx, change.ID)
 		if err != nil {
 			return fmt.Errorf("read review change: %w", err)
@@ -73,6 +79,16 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 		p.session, err = reader.RunnerSession(ctx, scope.project, resultID)
 		if err != nil {
 			return fmt.Errorf("read review session: %w", err)
+		}
+		if p.session.AttemptID != p.attempt.ID && p.session.ID == source.ImplementingSessionID && source.ImplementingMachineID == string(scope.credential.Runner.MachineID) {
+			if request.SecurityAudit != nil {
+				return securityAuditRejection("security audit must come from a session separate from the implementing session under its active execution authority", "execution_session")
+			}
+			refusal := nativeInvalid("validator review must come from a session separate from the implementing session under its active execution authority")
+			if request.Validator != nil && request.ImplementationReview == nil {
+				return nativeRejection(refusal, "acceptance_validation", "validator.session_id")
+			}
+			return refusal
 		}
 		if p.session.AttemptID != p.attempt.ID || p.session.IssueID != string(change.WorkItemID) || p.session.PolicyID != approved.PolicyID || p.session.CompletedAt == nil || p.session.FinalState != "completed" {
 			return tracker.ErrStaleFencingToken

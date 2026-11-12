@@ -10,15 +10,16 @@ import (
 )
 
 type ProjectConfigurationRequest struct {
-	RequestID              string `json:"request_id,omitempty"`
-	Operation              string `json:"operation,omitempty"`
-	AllowLocalBinding      *bool  `json:"allow_local_binding,omitempty"`
-	ProjectID              string `json:"project_id"`
-	ExpectedConfigRevision string `json:"expected_config_revision,omitempty"`
-	ExpectedPolicyID       string `json:"expected_policy_id,omitempty"`
-	PolicyID               string `json:"policy_id,omitempty"`
-	SourceRevision         string `json:"source_revision,omitempty"`
-	Checkpoint             string `json:"checkpoint,omitempty"`
+	Desired                *ProjectConfiguration `json:"desired,omitempty"`
+	RequestID              string                `json:"request_id,omitempty"`
+	Operation              string                `json:"operation,omitempty"`
+	AllowLocalBinding      *bool                 `json:"allow_local_binding,omitempty"`
+	ProjectID              string                `json:"project_id"`
+	ExpectedConfigRevision string                `json:"expected_config_revision,omitempty"`
+	ExpectedPolicyID       string                `json:"expected_policy_id,omitempty"`
+	PolicyID               string                `json:"policy_id,omitempty"`
+	SourceRevision         string                `json:"source_revision,omitempty"`
+	Checkpoint             string                `json:"checkpoint,omitempty"`
 }
 
 type ProjectConfigurationCommand struct {
@@ -84,7 +85,7 @@ func (c ProjectConfiguration) Validate() error {
 	if err := c.Diagnostics.Validate(); err != nil {
 		return err
 	}
-	if c.ProjectID == "" || len(c.ProjectID) > 256 || len(c.RequestID) > 128 || c.Authority != "local_global_configuration" || c.UnsettledAttempts < 0 || c.ObservedAt.IsZero() || len(c.Constraint) > 1120 {
+	if c.ProjectID == "" || len(c.ProjectID) > 256 || len(c.RequestID) > 128 || (c.Authority != "local_global_configuration" && c.Authority != "hub_configuration") || c.UnsettledAttempts < 0 || c.ObservedAt.IsZero() || len(c.Constraint) > 1120 {
 		return errors.New("invalid project configuration evidence")
 	}
 	if c.ConfigRevision != "" {

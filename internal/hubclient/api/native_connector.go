@@ -612,10 +612,19 @@ func (c *NativeConnector) SetField(ctx context.Context, id, field, value string)
 		request.Title = &value
 	case "body":
 		request.Body = &value
-	case "priority":
+	case "priority", "Priority":
 		priority, err := strconv.Atoi(value)
 		if err != nil {
-			return err
+			found := false
+			for level := tracker.QueuePriorityUrgent; level <= tracker.QueuePriorityLow; level++ {
+				if strings.EqualFold(strings.TrimSpace(value), QueuePriorityName(level)) {
+					priority, found = level, true
+					break
+				}
+			}
+			if !found {
+				return err
+			}
 		}
 		request.Priority = tracker.SetPriority(&priority)
 	default:
@@ -623,6 +632,13 @@ func (c *NativeConnector) SetField(ctx context.Context, id, field, value string)
 	}
 	_, err = c.client.UpdateIssue(ctx, issue.WorkItemID, request)
 	return err
+}
+
+func (c *NativeConnector) SetIssuePriority(ctx context.Context, id string, rank int) error {
+	if rank < 1 || rank > 4 {
+		return errors.New("priority rank must be between 1 and 4")
+	}
+	return c.SetField(ctx, id, "priority", strconv.Itoa(rank-1))
 }
 
 func (c *NativeConnector) UpdateIssueBody(ctx context.Context, id, body string) error {

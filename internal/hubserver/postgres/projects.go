@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"slices"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
@@ -98,7 +99,13 @@ func (s *session) DeleteProject(ctx context.Context, id tracker.ProjectID) error
 		OrganizationID: s.organization,
 		ID:             id,
 	})
-	return affected(ctx, rows, err)
+	if err := affected(ctx, rows, err); err != nil {
+		return err
+	}
+	s.boardDeltas = slices.DeleteFunc(s.boardDeltas, func(entry boardAppend) bool {
+		return entry.project == id
+	})
+	return nil
 }
 
 func (s *session) Projects(ctx context.Context, after tracker.ProjectID, limit int) ([]corestore.Project, error) {

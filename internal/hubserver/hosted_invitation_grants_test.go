@@ -1,12 +1,17 @@
 package hubserver
 
 import (
+	"errors"
 	"net/http"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -59,6 +64,7 @@ func TestHostedInvitationGrants(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newHostedSecurityFixture(t)
+			organization := f.service.accessOrganization()
 			actorRole := "owner"
 			if test.admin {
 				actorRole = "admin"
@@ -71,7 +77,14 @@ func TestHostedInvitationGrants(t *testing.T) {
 				f.user(t, "invitee", "member", "invitee@example.test", "write", "")
 			}
 			if test.existingOther {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) SELECT 'prj_second',organization_id,'Second project',profile,states_json,created_at,0 FROM projects WHERE id=?", f.project); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					primary, err := w.ProjectRecord(t.Context(), f.project)
+					if err != nil {
+						return err
+					}
+					_, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_second", Name: "Second project", Profile: primary.Core.Profile}, States: primary.States})
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 				other := f
@@ -79,7 +92,9 @@ func TestHostedInvitationGrants(t *testing.T) {
 				invitee := f.user(t, "invitee", "member", "invitee@example.test", "", "")
 				other.grant(t, invitee, true, true)
 				if test.principalOnly {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", invitee.identity.Subject, other.project); err != nil {
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.DeleteAccessProjectGrant(t.Context(), invitee.identity.Subject, other.project)
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -98,7 +113,27 @@ func TestHostedInvitationGrants(t *testing.T) {
 			if test.duplicate {
 				grants = append(grants, grants[0])
 			}
-			base := "/api/v2/organizations/org_security"
+			if test.project == "prj_other" {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_foreign", corestore.Serving, func(w tenantstore.Writer) error {
+					if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_foreign", Name: "Foreign organization", CreatedAt: time.Now()}); err != nil {
+						return err
+					}
+					_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_foreign", ID: "prj_other", Name: "foreign-project-sentinel", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_foreign", corestore.Serving, func(r tenantstore.Reader) error {
+					row, err := r.ProjectRecord(t.Context(), "prj_other")
+					if err == nil && (row.Core.OrganizationID != "org_foreign" || row.Core.Name != "foreign-project-sentinel") {
+						return errors.New("foreign grant fixture is unavailable in its own tenant")
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			base := "/api/v2/organizations/" + string(organization)
 			status := test.status
 			if status == 0 {
 				status = http.StatusCreated
@@ -156,7 +191,7 @@ func TestHostedInvitationGrants(t *testing.T) {
 				requireNativeStatus(t, f.request(t, owner, http.MethodDelete, path, nil), http.StatusNoContent)
 			}
 			if test.rollback {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER fail_invitation_grant BEFORE INSERT ON hosted_project_grants WHEN NEW.user_id='user_invitee' BEGIN SELECT RAISE(ABORT,'grant insert failure'); END`); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `CREATE FUNCTION fail_invitation_grant() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.organization_id='org_security' AND NEW.user_id='user_invitee' THEN RAISE EXCEPTION 'grant insert failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_invitation_grant BEFORE INSERT ON hosted_project_grants FOR EACH ROW EXECUTE FUNCTION fail_invitation_grant()`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -175,20 +210,65 @@ func TestHostedInvitationGrants(t *testing.T) {
 					query string
 					want  int
 				}{
-					{"SELECT count(*) FROM hosted_members WHERE user_id='user_invitee'", originalCount},
-					{"SELECT count(*) FROM hosted_project_grants WHERE user_id='user_invitee'", originalCount},
-					{"SELECT count(*) FROM token_grants WHERE token_id=(SELECT principal_id FROM hosted_members WHERE user_id='user_invitee')", originalCount},
-					{"SELECT count(*) FROM hosted_invitations WHERE accepted_user_id='user_invitee'", 0},
+					{"SELECT count(*) FROM hosted_members WHERE organization_id=$1 AND user_id='user_invitee'", originalCount},
+					{"SELECT count(*) FROM hosted_project_grants WHERE organization_id=$1 AND user_id='user_invitee'", originalCount},
+					{"SELECT count(*) FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT principal_id FROM hosted_members WHERE organization_id=$1 AND user_id='user_invitee')", originalCount},
+					{"SELECT count(*) FROM hosted_invitations WHERE organization_id=$1 AND accepted_user_id='user_invitee'", 0},
 				} {
 					var count int
-					if err := f.service.database.db.QueryRowContext(t.Context(), check.query).Scan(&count); err != nil || count != check.want {
+					if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), check.query, organization).Scan(&count); err != nil || count != check.want {
 						t.Fatalf("failed acceptance changed local access: count=%d want=%d err=%v", count, check.want, err)
 					}
+				}
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					member, err := r.AccessMember(t.Context(), identity.Subject)
+					if originalCount == 0 {
+						if !errors.Is(err, corestore.ErrNotFound) {
+							return errors.Join(errors.New("failed acceptance created a member"), err)
+						}
+					} else {
+						if err != nil {
+							return err
+						}
+						if member.UserID != identity.Subject || member.Role != "member" || !member.Active {
+							return errors.New("failed acceptance changed existing member")
+						}
+						principal, err := r.AccessTokenGrants(t.Context(), member.PrincipalID, "", 2)
+						if err != nil {
+							return err
+						}
+						if len(principal) != originalCount || principal[0].ProjectID != "prj_second" {
+							return errors.New("failed acceptance changed principal grants")
+						}
+					}
+					projects, err := r.AccessProjectGrants(t.Context(), identity.Subject, "", 2)
+					if err != nil {
+						return err
+					}
+					if len(projects) != originalCount || originalCount == 1 && (projects[0].ProjectID != "prj_second" || !projects[0].CanWrite || !projects[0].ManageRunner) {
+						return errors.New("failed acceptance changed project grants")
+					}
+					current, err := r.AccessInvitation(t.Context(), invitation.ID)
+					if test.revoke {
+						if !errors.Is(err, corestore.ErrNotFound) {
+							return errors.Join(errors.New("revoked invitation remains"), err)
+						}
+						return nil
+					}
+					if err != nil {
+						return err
+					}
+					if current.AcceptedUserID != "" {
+						return errors.New("failed acceptance committed invitation")
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
 				}
 				if test.revoke {
 					return
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER fail_invitation_grant"); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DROP TRIGGER fail_invitation_grant ON hosted_project_grants; DROP FUNCTION fail_invitation_grant()"); err != nil {
 					t.Fatal(err)
 				}
 				if err := f.service.acceptHostedInvitationFor(t.Context(), identity, invitation.ID); err != nil {
@@ -210,23 +290,21 @@ func TestHostedInvitationGrants(t *testing.T) {
 			if len(members.Members) != 1 || !slices.Equal(members.Members[0].Grants, grants) {
 				t.Fatalf("accepted member = %#v, want grants %v", members.Members, grants)
 			}
-			rows, err := f.service.database.db.QueryContext(t.Context(), "SELECT project_id FROM token_grants WHERE token_id=(SELECT principal_id FROM hosted_members WHERE user_id='user_invitee') ORDER BY project_id")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer rows.Close()
 			var principalProjects []string
-			for rows.Next() {
-				var project string
-				if err := rows.Scan(&project); err != nil {
-					t.Fatal(err)
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				member, err := r.AccessMember(t.Context(), identity.Subject)
+				if err != nil {
+					return err
 				}
-				principalProjects = append(principalProjects, project)
-			}
-			if err := rows.Err(); err != nil {
-				t.Fatal(err)
-			}
-			if err := rows.Close(); err != nil {
+				rows, err := r.AccessTokenGrants(t.Context(), member.PrincipalID, "", 2)
+				if err != nil {
+					return err
+				}
+				for _, row := range rows {
+					principalProjects = append(principalProjects, string(row.ProjectID))
+				}
+				return nil
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if len(principalProjects) != len(grants) || len(grants) > 0 && principalProjects[0] != grants[0].ProjectID {

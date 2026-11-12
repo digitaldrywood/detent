@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -144,8 +145,62 @@ func (s *session) BindAttachment(ctx context.Context, reference attachmentstore.
 	if count != 1 {
 		return corestore.ErrRevisionConflict
 	}
-	_, err = s.db.Exec(ctx, `UPDATE attachments SET retention_class='work_item' WHERE organization_id=$1 AND project_id=$2 AND id=$3 AND retention_class IN ('','expiring')`, s.organization, project, id)
+	return s.refreshAttachmentReferenceHeader(ctx, project, id)
+}
+
+func (s *session) refreshAttachmentReferenceHeader(ctx context.Context, project tracker.ProjectID, id string) error {
+	references, err := s.AttachmentReferences(ctx, project, id, 201)
+	if err != nil {
+		return err
+	}
+	if len(references) > 200 {
+		return attachment.ErrInvalid
+	}
+	var item tracker.NativeWorkItemID
+	var comment string
+	retention := "expiring"
+	if len(references) != 0 {
+		item, comment, retention = references[0].WorkItemID, references[0].CommentID, "work_item"
+	}
+	_, err = s.db.Exec(ctx, `UPDATE attachments SET work_item_id=CASE WHEN evidence_attempt_id IS NULL THEN NULLIF($4,'') ELSE work_item_id END,comment_id=CASE WHEN evidence_attempt_id IS NULL THEN NULLIF($5,'') ELSE comment_id END,retention_class=CASE WHEN retention_class IN ('','expiring','work_item') THEN $6 ELSE retention_class END WHERE organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, project, id, item, comment, retention)
 	return mapError(ctx, err)
+}
+
+func (s *session) ReplaceAttachmentReferences(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, comment string, previous, current []string) error {
+	if len(previous) > 200 || len(current) > 200 {
+		return attachment.ErrInvalid
+	}
+	ids := append(slices.Clone(previous), current...)
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	for _, id := range ids {
+		if slices.Contains(previous, id) && slices.Contains(current, id) {
+			continue
+		}
+		record, err := scanAttachmentRecord(s.db.QueryRow(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE`, s.organization, project, id))
+		if errors.Is(err, pgx.ErrNoRows) && !slices.Contains(current, id) {
+			continue
+		}
+		if err != nil {
+			return mapError(ctx, err)
+		}
+		if slices.Contains(current, id) {
+			if record.Metadata.DeletedAt != nil || record.ObjectDeletedAt != nil || record.PendingContent != nil {
+				return corestore.ErrNotFound
+			}
+			if err := s.BindAttachment(ctx, attachmentstore.Reference{ProjectID: project, AttachmentID: id, WorkItemID: item, CommentID: comment}); err != nil {
+				return err
+			}
+		} else {
+			if _, err := s.db.Exec(ctx, `DELETE FROM attachment_item_references WHERE organization_id=$1 AND project_id=$2 AND attachment_id=$3 AND work_item_id=$4 AND comment_id=$5 AND NOT retain_with_work_item`, s.organization, project, id, item, comment); err != nil {
+				return mapError(ctx, err)
+			}
+			if err := s.refreshAttachmentReferenceHeader(ctx, project, id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *session) DeleteAttachment(ctx context.Context, project tracker.ProjectID, id string, at time.Time) error {

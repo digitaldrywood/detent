@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -1118,8 +1117,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contains no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "automatic selection disabled", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "no Detent-owned cache roots", "is a git worktree", "contains no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -1128,8 +1127,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "automatic selection disabled", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "no Detent-owned cache roots", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "workflow and source repo valid",
@@ -1137,8 +1136,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contains no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "automatic selection disabled", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "no Detent-owned cache roots", "is a git worktree", "contains no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -1180,7 +1179,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 				t.Fatalf("len(checks) = %d, want %d", len(got), len(tt.wantStatus))
 			}
 			if len(tt.wantStatus) > 10 {
-				for i, name := range []string{"workflow_source_drift", "instruction_budget", "gate_instruction_conflict", "model_policy", "token_accounting", "ci_trigger_shape"} {
+				for i, name := range []string{"workflow_source_drift", "instruction_budget", "gate_instruction_conflict", "model_policy", "ci_trigger_shape"} {
 					if got[i+2].Name != "Project alpha "+name {
 						t.Fatalf("check %d name = %q, want %s", i+1, got[i+2].Name, name)
 					}
@@ -2819,7 +2818,7 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 	cfg := validDoctorDependencyWorkflow(true)
 	cfg.Tracker.BlockedRecovery.Enabled = true
 
-	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, "", doctorDeps{
+	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, doctorDeps{
 		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 			return fake, nil
 		},
@@ -2843,9 +2842,6 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 	}
 	if len(got.PermanentlyHeldRecoveries) != 1 || got.PermanentlyHeldRecoveries[0].IssueID != humanOnly.ID {
 		t.Fatalf("human hold diagnostics = %#v", got.PermanentlyHeldRecoveries)
-	}
-	if !strings.Contains(got.Detail, manual.ID) || len(got.BlockedWithoutRecovery) != 1 || got.BlockedWithoutRecovery[0].IssueID != manual.ID || got.BlockedWithoutRecovery[0].Reason != "no_recovery_predicate" {
-		t.Fatalf("relation-less diagnostics = %#v; detail = %q", got.BlockedWithoutRecovery, got.Detail)
 	}
 	if !stringSliceContains(fake.verifyStates, "Blocked") || !stringSliceContains(fake.verifyStates, "Rework") {
 		t.Fatalf("VerifyStatusOptions states = %#v, want Blocked and Rework", fake.verifyStates)
@@ -2892,8 +2888,6 @@ func TestDoctorBlockedRecoveryDistinguishesHeldFromDeferred(t *testing.T) {
 				"Project alpha blocked recovery",
 				&fakeDoctorAutoPromoteConnector{issues: tt.issues},
 				validDoctorDependencyWorkflow(true),
-				time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC),
-				nil,
 			)
 
 			if check.Status != tt.wantStatus || len(check.PermanentlyHeldRecoveries) != tt.wantHeld {
@@ -2967,8 +2961,6 @@ func TestDoctorBlockedRecoveryClassifiesHumanHolds(t *testing.T) {
 				"Project alpha blocked recovery",
 				&fakeDoctorAutoPromoteConnector{issues: []connector.Issue{tt.issue}},
 				cfg,
-				time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC),
-				nil,
 			)
 
 			if check.Status != doctorWarn || len(check.PermanentlyHeldRecoveries) != 1 {
@@ -3008,7 +3000,7 @@ func TestCheckDoctorBlockedRecoveryUsesConfiguredStates(t *testing.T) {
 	cfg.Tracker.BlockedRecovery.SourceStates = []string{"Parked"}
 	cfg.Tracker.BlockedRecovery.TargetState = "Repair"
 
-	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, "", doctorDeps{
+	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, doctorDeps{
 		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 			return fake, nil
 		},
@@ -3027,84 +3019,6 @@ func TestCheckDoctorBlockedRecoveryUsesConfiguredStates(t *testing.T) {
 	}
 }
 
-func TestCheckDoctorBlockedRecoveryWarnsOnlyWithoutCurrentPredicate(t *testing.T) {
-	t.Parallel()
-
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-	if _, err := db.ExecContext(t.Context(), `
-CREATE TABLE workflow_phase_events (
-  id INTEGER PRIMARY KEY,
-  issue_id TEXT,
-  identifier TEXT,
-  issue_url TEXT,
-  phase_type TEXT,
-  phase_name TEXT,
-  reason TEXT,
-  status TEXT,
-  started_at TEXT,
-  metadata_json TEXT
-)`); err != nil {
-		t.Fatalf("CREATE TABLE error = %v", err)
-	}
-
-	currentAt := time.Date(2026, 7, 29, 19, 0, 0, 0, time.UTC)
-	current := doctorDependencyIssue("issue-current-predicate", nil)
-	current.StageUpdatedAt = &currentAt
-	triage := doctorDependencyIssue("issue-triage-predicate", nil)
-	triage.StageUpdatedAt = &currentAt
-	stale := doctorDependencyIssue("issue-stale-predicate", nil)
-	staleAt := currentAt.Add(time.Hour)
-	stale.StageUpdatedAt = &staleAt
-	metadata := `{"blocked_recovery":{"owner":"orchestrator","cause":"no_progress_limit","predicate":"fingerprint_changed","cause_fingerprint":"fingerprint"}}`
-	for _, row := range []struct {
-		issue    connector.Issue
-		at       time.Time
-		reason   string
-		metadata string
-	}{
-		{issue: current, at: currentAt, metadata: metadata},
-		{issue: triage, at: currentAt, reason: "attempt_allowance_exhausted", metadata: `{"pull_request":{"repository":"digitaldrywood/detent","number":123,"head_sha":"current-head"}}`},
-		{issue: stale, at: currentAt, metadata: metadata},
-	} {
-		if _, err := db.ExecContext(t.Context(),
-			`INSERT INTO workflow_phase_events (issue_id, identifier, issue_url, phase_type, phase_name, reason, status, started_at, metadata_json) VALUES (?, ?, ?, 'lane', 'Blocked', ?, 'entered', ?, ?)`,
-			row.issue.ID,
-			row.issue.Identifier,
-			row.issue.URL,
-			row.reason,
-			row.at.Format(time.RFC3339Nano),
-			row.metadata,
-		); err != nil {
-			t.Fatalf("INSERT error = %v", err)
-		}
-	}
-
-	cfg := validDoctorDependencyWorkflow(true)
-	cfg.Tracker.BlockedRecovery.Enabled = false
-	check := checkDoctorBlockedRecoveryLive(
-		t.Context(),
-		"Project alpha blocked recovery",
-		&fakeDoctorAutoPromoteConnector{issues: []connector.Issue{current, triage, stale}},
-		cfg,
-		currentAt.Add(2*time.Hour),
-		db,
-	)
-
-	if check.Status != doctorWarn || len(check.BlockedWithoutRecovery) != 1 {
-		t.Fatalf("check = %#v, want one stale-predicate warning", check)
-	}
-	if check.BlockedWithoutRecovery[0].IssueID != stale.ID {
-		t.Fatalf("BlockedWithoutRecovery = %#v, want %q", check.BlockedWithoutRecovery, stale.ID)
-	}
-}
-
 func TestCheckDoctorBlockedRecoveryScansEveryBlockedIssue(t *testing.T) {
 	t.Parallel()
 
@@ -3120,12 +3034,10 @@ func TestCheckDoctorBlockedRecoveryScansEveryBlockedIssue(t *testing.T) {
 		"Project alpha blocked recovery",
 		tracker,
 		cfg,
-		time.Date(2026, 7, 29, 19, 0, 0, 0, time.UTC),
-		nil,
 	)
 
-	if check.Status != doctorWarn || len(check.BlockedWithoutRecovery) != len(issues) {
-		t.Fatalf("check = %#v, want all relation-less issues reported", check)
+	if check.Status != doctorOK || !strings.Contains(check.Detail, "scanned 7 blocked-recovery source candidate(s)") {
+		t.Fatalf("check = %#v, want every blocked issue scanned", check)
 	}
 	if tracker.limit != 0 {
 		t.Fatalf("FetchIssuesByStatesLimit limit = %d, want full scan", tracker.limit)
@@ -4542,74 +4454,6 @@ func TestCheckDoctorInstanceLock(t *testing.T) {
 	}
 }
 
-func TestCheckDoctorDailyBudgetAccuracy(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
-	tests := []struct {
-		name       string
-		schema     string
-		seed       string
-		want       doctorStatus
-		wantDetail string
-	}{
-		{
-			name:       "migration missing",
-			schema:     "CREATE TABLE codex_sessions (completed_at TEXT)",
-			want:       doctorWarn,
-			wantDetail: "migration has not been applied",
-		},
-		{
-			name:       "unattributed session today",
-			schema:     "CREATE TABLE codex_sessions (completed_at TEXT, project_id TEXT)",
-			seed:       "INSERT INTO codex_sessions (completed_at) VALUES ('2026-07-12T19:00:00Z')",
-			want:       doctorWarn,
-			wantDetail: "count toward every project",
-		},
-		{
-			name:       "all sessions attributed",
-			schema:     "CREATE TABLE codex_sessions (completed_at TEXT, project_id TEXT)",
-			seed:       "INSERT INTO codex_sessions (completed_at, project_id) VALUES ('2026-07-12T19:00:00Z', 'detent')",
-			want:       doctorOK,
-			wantDetail: "all completed sessions today have project attribution",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			dir := t.TempDir()
-			dbPath := filepath.Join(dir, "detent.db")
-			db, err := sql.Open("sqlite", dbPath)
-			if err != nil {
-				t.Fatalf("sql.Open() error = %v", err)
-			}
-			if _, err := db.ExecContext(t.Context(), tt.schema); err != nil {
-				t.Fatalf("create schema error = %v", err)
-			}
-			if tt.seed != "" {
-				if _, err := db.ExecContext(t.Context(), tt.seed); err != nil {
-					t.Fatalf("seed session error = %v", err)
-				}
-			}
-			if err := db.Close(); err != nil {
-				t.Fatalf("db.Close() error = %v", err)
-			}
-
-			got := checkDoctorDailyBudgetAccuracy(context.Background(), globalconfig.PathResolution{Path: filepath.Join(dir, "global.yaml")}, doctorDeps{
-				openSQLiteReadOnly: openDoctorSQLiteReadOnly,
-			}, now)
-			if got.Status != tt.want || !strings.Contains(got.Detail, tt.wantDetail) {
-				t.Fatalf("check = %#v, want status %s detail containing %q", got, tt.want, tt.wantDetail)
-			}
-		})
-	}
-}
-
 func TestCheckDoctorFilesystemWorkspaceValidatesRootAndOutput(t *testing.T) {
 	t.Parallel()
 
@@ -4628,21 +4472,6 @@ func TestCheckDoctorFilesystemWorkspaceValidatesRootAndOutput(t *testing.T) {
 		if !strings.Contains(got.Detail, want) {
 			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
 		}
-	}
-}
-
-func TestDoctorSQLitePingErrorWrapsPingAndCloseErrors(t *testing.T) {
-	t.Parallel()
-
-	pingErr := errors.New("ping failed")
-	closeErr := errors.New("close failed")
-
-	err := doctorSQLitePingError(pingErr, closeErr)
-	if !errors.Is(err, pingErr) {
-		t.Fatalf("doctorSQLitePingError() error = %v, want ping error in chain", err)
-	}
-	if !errors.Is(err, closeErr) {
-		t.Fatalf("doctorSQLitePingError() error = %v, want close error in chain", err)
 	}
 }
 
@@ -5393,7 +5222,6 @@ func TestParallelDoctorValidationDoesNotMutateCachedWorkflow(t *testing.T) {
 	wantLanes := slices.Clone(cfg.Observability.Staleness.Lanes)
 	workflow := workflowconfig.Workflow{Config: cfg}
 	project := globalconfig.Project{ID: "detent", Workflow: "WORKFLOW.md", Workdir: "/repo"}
-	global := globalconfig.Config{Projects: []globalconfig.Project{project}}
 	deps := doctorDeps{
 		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
 			return workflow, nil
@@ -5412,13 +5240,9 @@ func TestParallelDoctorValidationDoesNotMutateCachedWorkflow(t *testing.T) {
 			},
 		},
 		{
-			Name: doctorWorkflowOptimizationCheckName,
+			Name: "Project detent checks again",
 			Run: func(ctx context.Context) []doctorCheck {
-				report, err := doctorWorkflowOptimization(ctx, nil, "", global, deps, "", doctorWorkflowOptimizationOptions{})
-				if err != nil {
-					return []doctorCheck{{Name: doctorWorkflowOptimizationCheckName, Status: doctorFail, Detail: err.Error()}}
-				}
-				return []doctorCheck{{Name: doctorWorkflowOptimizationCheckName, Status: doctorOK, WorkflowOptimization: report}}
+				return checkDoctorProject(ctx, project, deps, RuntimeSecret{}, false)
 			},
 		},
 	}
@@ -6024,9 +5848,6 @@ func successfulDoctorDeps() doctorDeps {
 		cacheCapacityBytes:   func(string) (uint64, error) { return 1 << 50, nil },
 		inspectCaches: func(context.Context) toolcache.Report {
 			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
-		},
-		proposalLaneWriter: func(ctx context.Context, _ string, _ workflowconfig.Config, tracker connector.Connector, issue connector.Issue, target string) error {
-			return tracker.UpdateIssueState(ctx, issue.ID, target)
 		},
 		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
 			return workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")}, nil

@@ -14,15 +14,10 @@ import (
 	"github.com/labstack/echo/v4"
 
 	detent "github.com/digitaldrywood/detent"
-	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 const (
 	staticURLPrefix        = "/static/"
-	defaultFaviconPath     = "/static/img/detent-mark.svg"
-	defaultStylesheetPath  = "/static/css/output.css"
-	defaultChartJSPath     = "/static/vendor/chartjs/chart.umd.min.js"
-	defaultDashboardJSPath = "/static/js/dashboard-charts.js"
 	headerETag             = "ETag"
 	fingerprintHashLength  = 12
 	immutableCacheControl  = "public, max-age=31536000, immutable"
@@ -55,29 +50,6 @@ func newStaticAssets(staticDir string) staticAssets {
 	}
 	assets.index()
 	return assets
-}
-
-func (a staticAssets) templatePaths() templates.AssetPaths {
-	return templates.AssetPaths{
-		Favicon:         a.optionalAssetPath(defaultFaviconPath),
-		Stylesheet:      a.assetPath(defaultStylesheetPath),
-		ChartJS:         a.assetPath(defaultChartJSPath),
-		DashboardCharts: a.assetPath(defaultDashboardJSPath),
-	}
-}
-
-func (a staticAssets) optionalAssetPath(original string) string {
-	if asset, ok := a.originals[cleanStaticPath(original)]; ok {
-		return asset.fingerprinted
-	}
-	return ""
-}
-
-func (a staticAssets) assetPath(original string) string {
-	if asset, ok := a.originals[cleanStaticPath(original)]; ok {
-		return asset.fingerprinted
-	}
-	return original
 }
 
 func (a staticAssets) serve(c echo.Context) (err error) {

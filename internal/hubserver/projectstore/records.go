@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -110,4 +112,46 @@ func Slug(name string) string {
 func CollisionSlug(base string, id tracker.ProjectID) string {
 	digest := sha256.Sum256([]byte(id))
 	return base + "-" + hex.EncodeToString(digest[:6])
+}
+
+func TriageStates(states []tracker.NativeState) []tracker.NativeState {
+	triage := tracker.NativeState{Name: "Triage", Transitions: []string{}}
+	result := make([]tracker.NativeState, 0, len(states)+1)
+	for _, state := range states {
+		if state.Name == "Triage" {
+			triage.Transitions = append(triage.Transitions, state.Transitions...)
+			continue
+		}
+		result = append(result, state)
+	}
+	for _, state := range result {
+		if slices.Contains([]string{"Backlog", "Todo", "Cancelled"}, state.Name) && !slices.Contains(triage.Transitions, state.Name) {
+			triage.Transitions = append(triage.Transitions, state.Name)
+		}
+	}
+	if len(triage.Transitions) == 0 {
+		for _, state := range result {
+			if !state.OperatorOnly && (len(triage.Transitions) == 0 || !state.Terminal) {
+				triage.Transitions = []string{state.Name}
+				if !state.Terminal {
+					break
+				}
+			}
+		}
+	}
+	return append([]tracker.NativeState{triage}, result...)
+}
+
+func HistoricalHostedStates(states []tracker.NativeState) []tracker.NativeState {
+	for _, upgrade := range []struct{ before, after []tracker.NativeState }{
+		{before: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, after: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}}, {Name: "Human Review", Transitions: []string{"Done", "In Progress"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}},
+		{before: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}}, {Name: "Human Review", Transitions: []string{"Done", "In Progress"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, after: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}}, {Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}}, {Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "In Progress"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}},
+		{before: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}}, {Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}}, {Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "In Progress"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, after: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Merging", "Done"}}, {Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}}, {Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "In Progress"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}},
+		{before: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Merging", "Done"}}, {Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}}, {Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "In Progress"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, after: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done"}}, {Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done"}}, {Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging"}}, {Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}},
+	} {
+		if reflect.DeepEqual(states, upgrade.before) {
+			states = upgrade.after
+		}
+	}
+	return states
 }

@@ -20,7 +20,7 @@ func (p *Template) DatabaseConnection(t *testing.T) pgtransport.Connection {
 	return connection
 }
 
-func (p *Template) NativeConfig(t *testing.T, fixture *sql.DB, role, password string) *pgxpool.Config {
+func (p *Template) NativeConfig(t testing.TB, fixture *sql.DB, role, password string) *pgxpool.Config {
 	t.Helper()
 	var name string
 	if err := fixture.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&name); err != nil {

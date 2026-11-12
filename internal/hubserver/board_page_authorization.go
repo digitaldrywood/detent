@@ -64,6 +64,12 @@ func (s *Service) authorizeBoardModel(ctx context.Context, reader tenantstore.Re
 			row := &records[index]
 			if row.Display.Change != nil && !allowed.Changes[row.Display.Change.ID] {
 				row.Display.Change = nil
+				if row.PageIssue == nil {
+					return viewstore.ErrInvalidView
+				}
+				issue := *row.PageIssue
+				issue.Change, issue.ListChange, issue.PullRequest = nil, nil, nil
+				row.PageIssue = &issue
 			}
 			if allowed.Items[row.WorkItemID] != scope.project {
 				return accessstore.ErrDenied

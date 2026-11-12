@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -18,24 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func validateReviewBundle(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, bundle tracker.ChangeReviewBundle, now time.Time) error {
-	if !artifact.ValidID(bundle.ArtifactID, "artifact") || bundle.Revision < 1 || !artifact.ValidHash(bundle.SHA256, 64) || bundle.HeadSHA != version.HeadSHA {
-		return nativePublicInvalid("Review bundle identity does not match the version")
-	}
-	var raw []byte
-	if err := tx.QueryRowContext(ctx, "SELECT reference_json FROM artifact_references WHERE organization_id=? AND project_id=? AND work_item_id=? AND artifact_id=? AND revision=?", scope.organization, scope.project, change.WorkItemID, bundle.ArtifactID, bundle.Revision).Scan(&raw); err != nil {
-		return err
-	}
-	var ref artifact.Reference
-	if err := json.Unmarshal(raw, &ref); err != nil {
-		return err
-	}
-	if ref.SHA256 != bundle.SHA256 || !changerequest.ReviewBundleMatches(version, ref) || !now.Before(ref.ExpiresAt) || ref.Availability != "available" {
-		return nativePublicInvalid("Review bundle is unavailable or does not match the version")
-	}
-	return nil
-}
 
 func (s *Service) validateReviewBundleRecord(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, bundle tracker.ChangeReviewBundle, now time.Time) error {
 	if !artifact.ValidID(bundle.ArtifactID, "artifact") || bundle.Revision < 1 || !artifact.ValidHash(bundle.SHA256, 64) || bundle.HeadSHA != version.HeadSHA {
@@ -91,46 +72,14 @@ func (s *Service) changeViewedFiles(c echo.Context) error {
 }
 
 func (s *Service) viewChangeFile(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		var request tracker.ViewChangeFile
-		if err := decodeAPIJSON(c, &request); err != nil {
-			return s.invalidAPIRequest(c, err)
-		}
-		return s.viewChangeFileRecord(c, request)
-	}
 	var request tracker.ViewChangeFile
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return s.viewChangeFileCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
-	})
-}
-
-func (s *Service) viewChangeFileCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.ViewChangeFile, now time.Time) (any, error) {
-	change, err := readChange(ctx, tx, scope, item, changeID)
-	if err != nil {
-		return nil, err
+	if s.config.TenantRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
 	}
-	version, err := readChangeVersion(ctx, tx, change.ID, versionID)
-	if err != nil {
-		return nil, err
-	}
-	if !artifact.ValidHash(request.FileSHA256, 64) {
-		return nil, nativePublicInvalid("An opaque file digest is required")
-	}
-	if err := validateReviewBundle(ctx, tx, scope, change, version, request.Bundle, now); err != nil {
-		return nil, err
-	}
-	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM change_viewed_files WHERE version_id=? AND principal_id=? AND NOT (manifest_sha256=? AND file_sha256=?)", version.ID, scope.credential.ID, request.Bundle.SHA256, request.FileSHA256).Scan(&count); err != nil {
-		return nil, err
-	}
-	if count >= 4096 {
-		return nil, nativePublicInvalid("Viewed file limit reached for this version")
-	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO change_viewed_files(version_id,principal_id,manifest_sha256,file_sha256,viewed) VALUES(?,?,?,?,?) ON CONFLICT(version_id,principal_id,manifest_sha256,file_sha256) DO UPDATE SET viewed=excluded.viewed", version.ID, scope.credential.ID, request.Bundle.SHA256, request.FileSHA256, request.Viewed)
-	return tracker.ChangeViewedFile{ManifestSHA256: request.Bundle.SHA256, FileSHA256: request.FileSHA256, Viewed: request.Viewed}, err
+	return s.viewChangeFileRecord(c, request)
 }
 
 func (s *Service) viewChangeFileRecord(c echo.Context, request tracker.ViewChangeFile) error {

@@ -3,7 +3,6 @@ package hubserver
 import (
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -13,7 +12,6 @@ import (
 
 func TestProjectContentSettings(t *testing.T) {
 	t.Parallel()
-	cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}
 	var first, second nativeFixture
 	read := func(t *testing.T, f nativeFixture) projectsettings.Content {
 		t.Helper()
@@ -24,7 +22,7 @@ func TestProjectContentSettings(t *testing.T) {
 		return value
 	}
 	t.Run("updates without workflow or runner", func(t *testing.T) {
-		first = newDefaultNativeFixture(t, cfg)
+		first = newDefaultNativeFixture(t, Config{})
 		second = newNativeFixture(t, first.service, first.project.OrganizationID, "other-project")
 		clearNativeFixturePolicy(t, first)
 		clearNativeFixturePolicy(t, second)
@@ -75,7 +73,7 @@ func TestProjectContentSettings(t *testing.T) {
 		}
 	})
 	t.Run("restart retains project isolation", func(t *testing.T) {
-		service := openTestService(t, cfg)
+		service := reopenPostgresNativeService(t, first.service)
 		first.service, second.service = service, service
 		if got := read(t, first); !got.RequireVisualAttachments || got.Revision != 1 {
 			t.Fatalf("first=%+v", got)

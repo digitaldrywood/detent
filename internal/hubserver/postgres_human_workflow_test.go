@@ -582,10 +582,10 @@ func verifyPostgresHumanTenantIsolation(t *testing.T, first *Service, project tr
 	const organization tracker.OrganizationID = "org_human_other"
 	const token = "example_other_human_token"
 	repository := first.config.TenantRepository
-	seedStartupOrganization(t, repository, organization)
 	cfg := first.config
 	hosted := *cfg.Hosted
 	hosted.OrganizationID, hosted.WorkOSOrganizationID = string(organization), "provider_org_human_other"
+	seedStartupOrganization(t, repository, organization, &hosted)
 	cfg.Hosted = &hosted
 	if _, err := cfg.Hosted.Provider.CreateMembership(t.Context(), "user_human_other", "provider_org_human_other", "owner"); err != nil {
 		t.Fatal(err)

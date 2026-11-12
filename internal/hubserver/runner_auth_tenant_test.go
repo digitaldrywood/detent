@@ -47,7 +47,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 	credential := "tenant_scoped_runner_token"
 	hash := apikey.HashToken(credential)
 	if err := repository.WriteTenant(t.Context(), first.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: first.ID, Name: first.Name, Slug: first.Slug, Local: true, CreatedAt: now}); err != nil {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: first.ID, Name: first.Name, Slug: first.Slug, CreatedAt: now}); err != nil {
 			return fmt.Errorf("create access organization: %w", err)
 		}
 		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: first.ID, ProviderID: "provider_first", AllocationGeneration: 1}); err != nil {
@@ -85,7 +85,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 	hostedMember.Role.Slug = "admin"
 	provider.members[hostedMember.ID] = hostedMember
 	if err := repository.WriteTenant(t.Context(), second.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: second.ID, Name: second.Name, Slug: second.Slug, Local: true, CreatedAt: now})
+		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: second.ID, Name: second.Name, Slug: second.Slug, CreatedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}

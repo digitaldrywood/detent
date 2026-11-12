@@ -493,6 +493,21 @@ func (s *Service) readAttachmentRecordWith(ctx context.Context, r tenantstore.Re
 	if len(references) > 200 {
 		return nativePublicInvalid("Attachment references exceed the read bound")
 	}
+	if len(references) > 0 {
+		record.Metadata.WorkItemID, record.Metadata.CommentID = string(references[0].WorkItemID), references[0].CommentID
+	}
+	if len(references) == 0 && record.Metadata.WorkItemID != "" {
+		_, sourceErr := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(record.Metadata.WorkItemID))
+		if sourceErr == nil && record.Metadata.CommentID != "" {
+			_, sourceErr = r.Comment(ctx, scope.project, tracker.NativeWorkItemID(record.Metadata.WorkItemID), record.Metadata.CommentID)
+		}
+		if errors.Is(sourceErr, corestore.ErrNotFound) {
+			return nativeNotFound()
+		}
+		if sourceErr != nil {
+			return sourceErr
+		}
+	}
 	*metadata = record.Metadata
 	visible := scope.credential.HostedRole != "reporter" || metadata.Uploader == scope.credential.ID || metadata.Uploader == scope.actor().PrincipalID
 	if !visible {
@@ -539,49 +554,54 @@ func (s *Service) readAttachmentRecordWith(ctx context.Context, r tenantstore.Re
 	return nil
 }
 
-func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope nativeScope, plan workItemRecordPlan) ([]string, error) {
+type workItemAttachmentReferences struct {
+	previous []string
+	current  []string
+}
+
+func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope nativeScope, plan workItemRecordPlan) (workItemAttachmentReferences, error) {
+	result := workItemAttachmentReferences{}
 	if plan.existing {
-		return nil, nil
+		return result, nil
 	}
 	body := plan.comment.Body
 	if plan.comment.ID == "" {
 		body = plan.issue.Title + "\n" + plan.issue.Body
 	}
-	references, err := cloudContentAttachmentReferences(body, scope)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(references))
-	for _, reference := range references {
-		ids = append(ids, reference.ID)
-	}
-	slices.Sort(ids)
-	ids = slices.Compact(ids)
-	if len(ids) > 200 {
-		return nil, nativePublicInvalid("Work item attachment references exceed the write bound")
-	}
-	if !plan.create {
-		previous, err := cloudContentAttachmentReferences(plan.previousContent, scope)
+	for _, source := range []struct {
+		body string
+		ids  *[]string
+	}{{plan.previousContent, &result.previous}, {body, &result.current}} {
+		references, err := cloudContentAttachmentReferences(source.body, scope)
 		if err != nil {
-			return nil, err
+			return result, err
 		}
-		previousIDs := make(map[string]bool, len(previous))
-		for _, reference := range previous {
-			previousIDs[reference.ID] = true
+		for _, reference := range references {
+			*source.ids = append(*source.ids, reference.ID)
 		}
-		for _, id := range ids {
-			if !previousIDs[id] {
-				return nil, workItemStorageUnavailable()
-			}
+		slices.Sort(*source.ids)
+		*source.ids = slices.Compact(*source.ids)
+		if len(*source.ids) > 200 {
+			return result, nativePublicInvalid("Work item attachment references exceed the write bound")
 		}
-		return nil, nil
 	}
-	for _, id := range ids {
+	valid := result.current[:0]
+	for _, id := range result.current {
+		if slices.Contains(result.previous, id) {
+			valid = append(valid, id)
+			continue
+		}
 		if _, err := s.readAttachmentRecordTenant(ctx, scope, id); err != nil {
-			return nil, err
+			var failure *nativeError
+			if errors.Is(err, corestore.ErrNotFound) || errors.As(err, &failure) && failure.status == http.StatusNotFound {
+				continue
+			}
+			return result, err
 		}
+		valid = append(valid, id)
 	}
-	return ids, nil
+	result.current = valid
+	return result, nil
 }
 
 func (s *Service) authorizeAttachmentCommentLease(ctx context.Context, w tenantstore.Writer, scope nativeScope, row corestore.WorkItem, command tracker.Mutation) error {

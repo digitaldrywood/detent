@@ -14,7 +14,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -67,6 +66,7 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 		e.GET("/projects/:project/events", s.hostedEvents)
 		e.GET(hostedOrganizationBase+"/activity", s.hostedActivity, s.operatorAuthority)
 		e.GET(hostedOrganizationBase+"/fleet", s.hostedFleet, s.hostedSessionOnly)
+		e.GET(hostedOrganizationBase+"/usage", s.hostedUsageReport, s.usageSessionOnly)
 		e.GET(hostedOrganizationBase+"/diagnostics", s.hostedDiagnostics, s.usageSessionOnly, s.operatorAuthority)
 		e.GET(hostedOrganizationBase+"/diagnostics/requests", s.hostedRequestMetrics, s.operatorAuthority)
 		e.GET(hostedOrganizationBase+"/reports", s.hostedReports, s.usageSessionOnly, s.operatorAuthority)
@@ -215,7 +215,10 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential apiCr
 	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator != nil && s.conversations.coordinator.Available()
 	payload.Feature = s.appBootstrapFeature()
 	payload.Feature.Workspaces = s.config.Workspace != nil && s.config.Workspace.Enabled && !s.config.CredentialMaintenance
-	payload.Preferences = s.postgresAppBootstrapPreferences()
+	payload.Preferences, err = s.appBootstrapPreferences(ctx, string(organizationID), projects)
+	if err != nil {
+		return appBootstrap{}, err
+	}
 	seen, err := s.releaseSeenTime(ctx, credential)
 	if err != nil {
 		return appBootstrap{}, err
@@ -292,21 +295,6 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential apiCredent
 		projects = append(projects, project)
 	}
 	return projects, nil
-}
-
-func (s *Service) postgresAppBootstrapPreferences() appBootstrapPreferences {
-	preferences := appBootstrapPreferences{Models: []appBootstrapChoice{}, Efforts: []appBootstrapChoice{}, Access: []appBootstrapChoice{}}
-	if s.conversations == nil {
-		return preferences
-	}
-	configured := s.conversationDefaultModel()
-	preferences.Models = append(preferences.Models, appBootstrapChoice{ID: conversation.PreferenceAuto, Label: "Auto", Default: configured == ""})
-	if configured != "" {
-		preferences.Models = append(preferences.Models, appBootstrapChoice{ID: configured, Label: configured, Default: true})
-	}
-	preferences.Efforts = appBootstrapChoices(conversation.ReasoningEfforts()[1:], conversationChoiceLabel, strings.TrimSpace(s.conversations.config.ReasoningEffort))
-	preferences.Access = appBootstrapChoices(conversation.AccessLevels()[1:], conversationChoiceLabel, "")
-	return preferences
 }
 
 func (s *Service) postgresAppShell(c echo.Context) error {

@@ -11,6 +11,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -86,153 +89,80 @@ func (s *Service) createWorkspace(c echo.Context) error {
 	return c.JSONBlob(http.StatusCreated, value)
 }
 
-// openWorkspace validates the request, applies the limits and creates the
-// workspace together with the work item that dispatches it.
-func (w *workspaceService) openWorkspace(ctx context.Context, tx *sql.Tx, scope nativeScope, request workspaceRequest, now time.Time) (workspaceRecord, error) {
+func (w *workspaceService) workspaceCreationSubject(ctx context.Context, r tenantstore.Reader, scope nativeScope, request workspaceRequest) (corestore.WorkItem, bool, error) {
 	item := request.WorkItemID
-	attemptID := strings.TrimSpace(request.AttemptID)
-	if attemptID != "" {
-		resolved, err := workspaceAttemptItem(ctx, tx, scope, attemptID)
-		if err != nil {
-			return workspaceRecord{}, err
-		}
-		if item != "" && item != resolved {
-			return workspaceRecord{}, nativePublicInvalid("attempt_id belongs to a different work item")
-		}
-		item = resolved
-	}
-	issue, _, err := readNativeIssue(ctx, tx, scope, item)
-	if err != nil {
-		return workspaceRecord{}, err
-	}
-	// A workspace on a workspace item, or on a coordinator item, would be a
-	// surface onto a dispatch record rather than onto work.
-	if _, found, err := readWorkspaceItem(ctx, tx, string(issue.WorkItemID)); err != nil {
-		return workspaceRecord{}, err
-	} else if found {
-		return workspaceRecord{}, nativeNotFound()
-	}
 	running := false
-	if attemptID != "" {
-		if running, err = workspaceAttemptRunning(ctx, tx, scope, attemptID); err != nil {
-			return workspaceRecord{}, err
+	if request.AttemptID != "" {
+		attempt, err := r.Attempt(ctx, strings.TrimSpace(request.AttemptID))
+		if err != nil {
+			return corestore.WorkItem{}, false, projectRecordError(err)
 		}
+		subject, err := r.WorkItemByID(ctx, scope.project, attempt.IssueID)
+		if err != nil {
+			return corestore.WorkItem{}, false, projectRecordError(err)
+		}
+		if item != "" && item != string(subject.NativeID) {
+			return corestore.WorkItem{}, false, nativePublicInvalid("attempt_id belongs to a different work item")
+		}
+		item, running = string(subject.NativeID), attempt.Status == "running"
 	}
-	// A workspace on an attempt that is still running is allowed with files
-	// and diff only, read-only, and refuses terminal until the attempt
-	// finishes, so a person cannot type into a worktree the model is editing.
+	subject, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+	if err != nil {
+		return subject, false, projectRecordError(err)
+	}
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(subject.ActorPrincipalID)}) {
+		return subject, false, nativeNotFound()
+	}
+	reader, ok := r.(postgres.WorkspaceReader)
+	if !ok {
+		return subject, false, workspaceUnavailable()
+	}
+	workspace, err := reader.IsWorkspaceWorkItem(ctx, scope.project, subject.NativeID)
+	if err != nil {
+		return subject, false, err
+	}
+	if workspace {
+		return subject, false, nativeNotFound()
+	}
 	if running {
 		for _, name := range request.Requires {
 			if name == workspacesession.CapabilityTerminal {
-				return workspaceRecord{}, &nativeError{
-					Code: "forbidden", Message: "A terminal is refused while the attempt is running",
-					status:        http.StatusForbidden,
-					publicMessage: true,
-				}
+				return subject, false, &nativeError{Code: "forbidden", Message: "A terminal is refused while the attempt is running", status: http.StatusForbidden, publicMessage: true}
 			}
 		}
 	}
-	if err := w.authorizeRequires(ctx, tx, scope, request.Requires); err != nil {
-		return workspaceRecord{}, err
+	if err := w.authorizeWorkspaceCreationRequires(ctx, r, scope, request.Requires); err != nil {
+		return subject, false, err
 	}
-	if attemptID != "" {
-		if existing, found, err := readOpenWorkspaceForAttempt(ctx, tx, scope, attemptID); err != nil {
-			return workspaceRecord{}, err
-		} else if found {
-			return workspaceRecord{}, workspaceExists(existing.ID)
-		}
-	}
-	total, mine, err := countOpenWorkspaces(ctx, tx, scope.organization, scope.credential.ID)
-	if err != nil {
-		return workspaceRecord{}, err
-	}
-	if total >= w.config.PlanMaxOpen {
-		return workspaceRecord{}, workspaceLimit("organization", w.config.PlanMaxOpen)
-	}
-	if mine >= w.config.PersonMaxOpen {
-		return workspaceRecord{}, workspaceLimit("person", w.config.PersonMaxOpen)
-	}
-	ref := strings.TrimSpace(request.Ref)
-	record := workspaceRecord{
-		ID: payloadNativeID(ctx, "ws"), OrganizationID: scope.organization, ProjectID: scope.project,
-		SubjectWorkItemID: string(issue.WorkItemID), AttemptID: attemptID, Ref: ref,
-		State: workspacesession.StateRequested, Requires: request.Requires, ReadOnly: running,
-		IdleTimeoutSeconds: w.config.idleTimeoutSeconds(),
-		ExpiresAt:          now.Add(w.config.MaxLifetime),
-		RequestedExpiresAt: now.Add(w.config.RequestTimeout),
-		CreatedBy:          scope.credential.ID, Revision: 1, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := insertWorkspace(ctx, tx, record); err != nil {
-		return workspaceRecord{}, err
-	}
-	if _, err := w.ensureWorkspaceItem(ctx, tx, scope, record, now); err != nil {
-		return workspaceRecord{}, err
-	}
-	w.logger.Info("workspace.requested", "workspace_id", record.ID, "work_item_id", record.SubjectWorkItemID,
-		"attempt_id", record.AttemptID, "requires", strings.Join(record.Requires, ","), "read_only", record.ReadOnly)
-	return record, nil
+	return subject, running, nil
 }
 
-// authorizeRequires applies the extra authority a requirement needs beyond
-// write on the project. Only the terminal has one today: the grant's runners
-// flag, because a terminal is the runner account's authority handed to a
-// person.
-func (w *workspaceService) authorizeRequires(ctx context.Context, tx *sql.Tx, scope nativeScope, requires []string) error {
+func (w *workspaceService) authorizeWorkspaceCreationRequires(ctx context.Context, r tenantstore.Reader, scope nativeScope, requires []string) error {
 	terminal := false
 	for _, name := range requires {
-		if name == workspacesession.CapabilityTerminal {
-			terminal = true
-		}
+		terminal = terminal || name == workspacesession.CapabilityTerminal
 	}
 	if !terminal {
 		return nil
 	}
 	if !w.config.Terminal.Enabled {
-		return &nativeError{
-			Code: "forbidden", Message: "Terminals are turned off for this organization",
-			status:        http.StatusForbidden,
-			publicMessage: true,
-		}
+		return &nativeError{Code: "forbidden", Message: "Terminals are turned off for this organization", status: http.StatusForbidden, publicMessage: true}
 	}
 	if scope.credential.Hosted == nil {
-		// A worker or operator token is not a person, and a terminal is a
-		// person's surface.
 		return &nativeError{Code: "forbidden", Message: "A terminal requires a hosted session", status: http.StatusForbidden, publicMessage: true}
 	}
-	if !hostedRunnerGrants(ctx, tx, string(scope.organization), scope.credential.Hosted.Subject, []tracker.ProjectID{scope.project}) {
-		return &nativeError{
-			Code: "forbidden", Message: "A terminal requires the project's runner grant",
-			status:        http.StatusForbidden,
-			publicMessage: true,
-		}
+	grant, err := r.AccessProjectGrant(ctx, scope.credential.Hosted.Subject, scope.project)
+	if errors.Is(err, corestore.ErrNotFound) || err == nil && !grant.ManageRunner {
+		return &nativeError{Code: "forbidden", Message: "A terminal requires the project's runner grant", status: http.StatusForbidden, publicMessage: true}
 	}
-	// The isolation rule. `user` runs the shell as the runner's
-	// own account, with its credential store, its provider logins and its other
-	// checkouts in reach; it is allowed "only when the organization has set
-	// workspaces.terminal.isolation: user explicitly and the person is an owner
-	// or admin with the runners grant". `container` is the level a member with
-	// write and the runners grant may use, and it is the one the setting
-	// recommends.
-	if w.config.Terminal.Isolation == workspacesession.IsolationUser &&
-		scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
-		return &nativeError{
-			Code: "forbidden",
-			Message: "This organization runs terminals as the runner's own user, " +
-				"which only an owner or admin may open",
-			status: http.StatusForbidden, publicMessage: true,
-		}
+	if err != nil {
+		return err
 	}
-	// A support actor gets a terminal "only with a support reason recorded and
-	// only at container". The reason is recorded by the session
-	// itself; this is the level.
-	if scope.credential.Hosted.SupportReason != "" &&
-		w.config.Terminal.Isolation != workspacesession.IsolationContainer {
-		return &nativeError{
-			Code:          "forbidden",
-			Message:       "A support session may open a terminal only at container isolation",
-			status:        http.StatusForbidden,
-			publicMessage: true,
-		}
+	if w.config.Terminal.Isolation == workspacesession.IsolationUser && scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
+		return &nativeError{Code: "forbidden", Message: "This organization runs terminals as the runner's own user, which only an owner or admin may open", status: http.StatusForbidden, publicMessage: true}
+	}
+	if scope.credential.Hosted.SupportReason != "" && w.config.Terminal.Isolation != workspacesession.IsolationContainer {
+		return &nativeError{Code: "forbidden", Message: "A support session may open a terminal only at container isolation", status: http.StatusForbidden, publicMessage: true}
 	}
 	return nil
 }
@@ -283,23 +213,6 @@ func (s *Service) deleteWorkspace(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// presentWorkspace projects a record for one reader, attaching the relay
-// session rows only for an owner or an admin. A reader who is
-// neither sees the workspace and not who has been inside it.
-func (w *workspaceService) presentWorkspace(ctx context.Context, q nativeQueryer, scope nativeScope, record workspaceRecord) workspacesession.Session {
-	resource := record.resource()
-	if !workspaceAuditReadable(scope, record) {
-		return resource
-	}
-	sessions, err := readWorkspaceRelaySessions(ctx, q, record.ID)
-	if err != nil {
-		w.logger.Warn("workspace.relay_sessions_unavailable", "workspace_id", record.ID, "error", err)
-		return resource
-	}
-	resource.RelaySessions = sessions
-	return resource
-}
-
 // workspaceAuditReadable reports whether this actor may see the workspace's
 // relay session rows.
 //
@@ -337,27 +250,165 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return nil, err
 	}
-	var closed workspaceRecord
-	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-			return err
-		}
-		record, err := service.readWorkspaceForActor(ctx, tx, scope, id)
-		if err != nil {
-			return err
-		}
-		if workspacesession.Terminal(record.State) {
-			closed = record
-			return nil
-		}
-		closed, err = service.endWorkspace(ctx, tx, record, workspacesession.StateClosed, workspacesession.ReasonClosedByActor, now)
-		return err
-	})
-	if err != nil {
-		return nil, err
+	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+		return nil, workspaceUnavailable()
 	}
-	service.committed(ctx, closed)
-	return json.RawMessage(`{"deleted":true}`), nil
+	ctx = allowWorkspaceLabel(ctx)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+			return nil, err
+		}
+		var current postgres.WorkspaceSession
+		var dispatchItem string
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
+				return err
+			}
+			owner, ok := r.(postgres.WorkspaceReader)
+			if !ok {
+				return workspaceUnavailable()
+			}
+			var err error
+			current, err = owner.WorkspaceSession(ctx, scope.project, id)
+			if err != nil {
+				return projectRecordError(err)
+			}
+			if err := workspaceReadableSubject(ctx, r, scope, current.SubjectWorkItemID); err != nil {
+				return projectRecordError(err)
+			}
+			if workspacesession.Terminal(current.State) {
+				return nil
+			}
+			item, err := owner.WorkspaceDispatchItem(ctx, scope.project, id)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if item.ClosedAt == nil {
+				dispatchItem = string(item.WorkItemID)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if workspacesession.Terminal(current.State) {
+			return json.RawMessage(`{"deleted":true}`), nil
+		}
+		now := s.config.now().UTC().Truncate(time.Microsecond)
+		closure, err := s.prepareWorkspaceIssueClose(ctx, scope, dispatchItem, now)
+		if err != nil {
+			return nil, err
+		}
+		authority, err := s.beginProjectRecordAuthority(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.LockAccessOrganization(ctx); err != nil {
+				return err
+			}
+			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+				return err
+			}
+			if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
+				return err
+			}
+			owner, ok := w.(postgres.WorkspaceWriter)
+			if !ok {
+				return workspaceUnavailable()
+			}
+			row, err := owner.WorkspaceSession(ctx, scope.project, id)
+			if err != nil {
+				return projectRecordError(err)
+			}
+			if row.Revision != current.Revision || row.LeaseID != current.LeaseID || row.FencingToken != current.FencingToken || row.RunnerID != current.RunnerID {
+				return corestore.ErrSerializationFailure
+			}
+			if err := workspaceReadableSubject(ctx, w, scope, row.SubjectWorkItemID); err != nil {
+				return projectRecordError(err)
+			}
+			item, err := owner.WorkspaceDispatchItem(ctx, scope.project, id)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if dispatchItem == "" && err == nil && item.ClosedAt == nil {
+				return corestore.ErrSerializationFailure
+			}
+			if dispatchItem != "" && (err != nil || item.ClosedAt != nil || string(item.WorkItemID) != dispatchItem) {
+				return corestore.ErrSerializationFailure
+			}
+			if err := closure.write(ctx, w); err != nil {
+				return err
+			}
+			if dispatchItem != "" {
+				if err := owner.CloseWorkspaceItem(ctx, scope.project, item.WorkItemID, now); err != nil {
+					return err
+				}
+			}
+			for !workspacesession.Terminal(row.State) {
+				state := workspacesession.StateClosed
+				if !workspacesession.Transition(row.State, state) {
+					state = workspacesession.StateClosing
+				}
+				row, err = owner.UpdateWorkspaceSession(ctx, postgres.WorkspaceUpdate{OrganizationID: scope.organization, ProjectID: scope.project, ID: id, ExpectedRevision: row.Revision, ExpectedRunnerID: row.RunnerID, ExpectedLeaseID: row.LeaseID, ExpectedFencingToken: row.FencingToken, State: state, Reason: workspacesession.ReasonClosedByActor, RunnerID: row.RunnerID, MachineID: row.MachineID, LeaseID: row.LeaseID, FencingToken: row.FencingToken, HeadSHA: row.HeadSHA, Capabilities: row.Capabilities, Isolation: row.Isolation, Worktree: row.Worktree, MachineHostname: row.MachineHostname, WorktreePath: row.WorktreePath, ReadOnly: row.ReadOnly, OpenedAt: row.OpenedAt, LastActivityAt: row.LastActivityAt, LastHeartbeatAt: row.LastHeartbeatAt, RebindDeadline: row.RebindDeadline, UpdatedAt: now})
+				if err != nil {
+					return err
+				}
+			}
+			if row.RunnerID != "" {
+				if err := owner.EndWorkspaceOccupancy(ctx, postgres.WorkspaceOccupancyEnd{OrganizationID: scope.organization, ProjectID: scope.project, WorkspaceID: id, RunnerID: row.RunnerID, EndedAt: &now}); err != nil {
+					return err
+				}
+			}
+			return s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusNoContent)
+		})
+		err = errors.Join(err, releaseWorkItemAuthority(authority))
+		if errors.Is(err, corestore.ErrSerializationFailure) {
+			continue
+		}
+		if err != nil {
+			return nil, projectRecordError(err)
+		}
+		service.committed(ctx, workspaceRecord{ID: id, OrganizationID: scope.organization, ProjectID: scope.project, State: workspacesession.StateClosed, Reason: workspacesession.ReasonClosedByActor, RunnerID: current.RunnerID, MachineID: tracker.MachineID(current.MachineID), LeaseID: tracker.LeaseID(current.LeaseID), FencingToken: tracker.FencingToken(current.FencingToken)})
+		return json.RawMessage(`{"deleted":true}`), nil
+	}
+}
+
+func workspaceReadableSubject(ctx context.Context, r tenantstore.Reader, scope nativeScope, id string) error {
+	row, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(id))
+	if err != nil {
+		return err
+	}
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+		return corestore.ErrNotFound
+	}
+	return nil
+}
+
+func (w *workspaceService) presentWorkspaceRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, row postgres.WorkspaceSession) (workspacesession.Session, error) {
+	record := workspaceTenantRecord(row)
+	resource := record.resource()
+	if !workspaceAuditReadable(scope, record) {
+		return resource, nil
+	}
+	owner, ok := r.(postgres.RelayActionReader)
+	if !ok {
+		return resource, workspaceUnavailable()
+	}
+	rows, err := owner.RelaySessions(ctx, postgres.RelaySessionsInput{OrganizationID: scope.organization, ProjectID: scope.project, WorkspaceID: row.ID, Limit: workspaceListLimit})
+	if err != nil {
+		return resource, err
+	}
+	for _, session := range rows {
+		resource.RelaySessions = append(resource.RelaySessions, workspacesession.RelaySession{ID: session.ID, WorkspaceID: session.WorkspaceID, PrincipalID: session.PrincipalID, Subject: session.Subject, ConnectionID: session.ConnectionID, Channels: session.Channels, OpenedAt: session.OpenedAt, ClosedAt: session.ClosedAt, CloseReason: session.CloseReason, BytesIn: session.BytesIn, BytesOut: session.BytesOut, SupportReason: session.SupportReason})
+	}
+	return resource, nil
 }
 
 func (s *Service) readWorkspaces(ctx context.Context, scope nativeScope, item, state string, limit int) (json.RawMessage, error) {
@@ -367,43 +418,62 @@ func (s *Service) readWorkspaces(ctx context.Context, scope nativeScope, item, s
 	if err != nil {
 		return nil, err
 	}
-	state = strings.TrimSpace(state)
+	state, item = strings.TrimSpace(state), strings.TrimSpace(item)
 	if state != "" && !workspacesession.ValidState(state) {
 		return nil, nativePublicInvalid("state names no workspace state")
 	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return nil, err
+	response := workspaceListResponse{Workspaces: make([]workspacesession.Session, 0)}
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, workItemStorageUnavailable()
 	}
-	defer tx.Rollback()
-	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
-	if err != nil {
-		return nil, err
-	}
-	item = strings.TrimSpace(item)
-	if item != "" {
-		if _, _, err := readNativeIssue(ctx, tx, scope, item); err != nil {
-			return nil, err
+	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
 		}
-	}
-	records, err := listWorkspaceRows(ctx, tx, scope, item, state, limit)
-	if err != nil {
-		return nil, err
-	}
-	response := workspaceListResponse{ChangeSequence: watermark, Workspaces: make([]workspacesession.Session, 0, len(records))}
-	for _, record := range records {
-		if item == "" {
-			// The listing follows the issue's read rule one row at a time, so
-			// a reader who can see some of a project's issues sees exactly
-			// the workspaces on those.
-			if _, _, err := readNativeIssue(ctx, tx, scope, record.SubjectWorkItemID); err != nil {
-				if isNativeNotFound(err) {
-					continue
-				}
-				return nil, err
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		head, err := r.BoardSequence(ctx, scope.project)
+		response.ChangeSequence = head.Sequence
+		if err != nil {
+			return err
+		}
+		if item != "" {
+			if err := workspaceReadableSubject(ctx, r, scope, item); err != nil {
+				return err
 			}
 		}
-		response.Workspaces = append(response.Workspaces, service.presentWorkspace(ctx, tx, scope, record))
+		owner, ok := r.(postgres.WorkspaceReader)
+		if !ok {
+			return workspaceUnavailable()
+		}
+		rows, err := owner.WorkspaceListing(ctx, scope.project, item, state, limit)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if item == "" {
+				if err := workspaceReadableSubject(ctx, r, scope, row.SubjectWorkItemID); errors.Is(err, corestore.ErrNotFound) {
+					continue
+				} else if err != nil {
+					return err
+				}
+			}
+			resource, err := service.presentWorkspaceRecord(ctx, r, scope, row)
+			if err != nil {
+				return err
+			}
+			response.Workspaces = append(response.Workspaces, resource)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, projectRecordError(err)
 	}
 	return json.Marshal(response)
 }
@@ -415,21 +485,42 @@ func (s *Service) readWorkspace(ctx context.Context, scope nativeScope, id strin
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	var resource workspacesession.Session
+	var watermark int64
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		owner, ok := r.(postgres.WorkspaceReader)
+		if !ok {
+			return workspaceUnavailable()
+		}
+		row, err := owner.WorkspaceSession(ctx, scope.project, strings.TrimSpace(id))
+		if err != nil {
+			return err
+		}
+		if err := workspaceReadableSubject(ctx, r, scope, row.SubjectWorkItemID); err != nil {
+			return err
+		}
+		watermark, err = r.ProjectEventSequence(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		resource, err = service.presentWorkspaceRecord(ctx, r, scope, row)
+		return err
+	})
 	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
-	if err != nil {
-		return nil, err
-	}
-	record, err := service.readWorkspaceForActor(ctx, tx, scope, id)
-	if err != nil {
-		return nil, err
+		return nil, projectRecordError(err)
 	}
 	return json.Marshal(struct {
 		workspacesession.Session
 		ChangeSequence int64 `json:"change_sequence"`
-	}{service.presentWorkspace(ctx, tx, scope, record), watermark})
+	}{resource, watermark})
 }

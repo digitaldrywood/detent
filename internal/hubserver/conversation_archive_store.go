@@ -35,6 +35,13 @@ func (s conversationArchiveStore) PublishContent(ctx context.Context, organizati
 }
 
 func (s conversationArchiveStore) ReadContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{call: s.call})
+	content := &changeContent{call: s.call, readOrganization: organization}
+	if prior, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && prior.readOrganization != "" {
+		if prior.readOrganization != organization {
+			return nil, artifact.ErrIntegrity
+		}
+		content.readOrganization, content.readReference = prior.readOrganization, prior.readReference
+	}
+	ctx = context.WithValue(ctx, changeContentKey{}, content)
 	return readChangeContent(ctx, organization, ref)
 }

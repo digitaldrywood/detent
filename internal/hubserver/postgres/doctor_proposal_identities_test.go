@@ -150,7 +150,7 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 	lookup := func(t *testing.T, org tracker.OrganizationID, selection postgres.DoctorProposalIdentitySelection) (postgres.DoctorProposalIdentityResult, error) {
 		t.Helper()
 		var result postgres.DoctorProposalIdentityResult
-		err := repository.ReadDoctorProposalIdentities(t.Context(), org, corestore.Serving, func(r postgres.DoctorProposalIdentityReader) error {
+		err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			result, err = r.LookupDoctorProposalIdentity(t.Context(), selection)
 			return err
@@ -239,7 +239,7 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 						}
 					}
 					for range 2 {
-						if err := repository.WriteDoctorProposalIdentities(t.Context(), org, corestore.Serving, func(w postgres.DoctorProposalIdentityWriter) error {
+						if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 							return w.BindDoctorProposalIdentities(t.Context(), binding)
 						}); err != nil {
 							t.Fatal(err)
@@ -259,6 +259,28 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 					if err != nil || result.WorkItemID != bindings[0].WorkItemID || result.Terminal || result.VersionSHA256 != bindings[0].VersionSHA256 {
 						t.Fatalf("open full-body identity match = %+v, error %v", result, err)
 					}
+				}
+				if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET workflow_state_name='Open' WHERE organization_id=$1 AND project_id=$2 AND native_id=$3`, org, project, bindings[1].WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				for _, order := range []struct {
+					name     string
+					earliest bool
+					want     tracker.NativeWorkItemID
+				}{{"default latest open", false, bindings[1].WorkItemID}, {"earliest open", true, bindings[0].WorkItemID}} {
+					t.Run(order.name, func(t *testing.T) {
+						ordered := selection
+						ordered.OpenOnly = true
+						ordered.Earliest = order.earliest
+						result, err := lookup(t, org, ordered)
+						if err != nil || result.WorkItemID != order.want || result.Terminal {
+							t.Fatalf("ordered open identity match = %+v, error %v", result, err)
+						}
+						assertDoctorProposalIdentitySeek(t, admin, org, trace)
+					})
+				}
+				if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET workflow_state_name='Done' WHERE organization_id=$1 AND project_id=$2 AND native_id=$3`, org, project, bindings[1].WorkItemID); err != nil {
+					t.Fatal(err)
 				}
 				assertDoctorProposalIdentitySeek(t, admin, org, trace)
 				result, err := lookup(t, org, selection)

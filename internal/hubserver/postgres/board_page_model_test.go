@@ -101,11 +101,20 @@ func TestBoardPageRetainsTypedIssueContract(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
-				before, err := w.BoardSequence(ctx, record.ProjectID)
-				if err != nil {
+			readHead := func() viewstore.BoardSequence {
+				t.Helper()
+				var head viewstore.BoardSequence
+				if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					head, err = r.BoardSequence(ctx, record.ProjectID)
 					return err
+				}); err != nil {
+					t.Fatal(err)
 				}
+				return head
+			}
+			before := readHead()
+			if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
 				replay, err := w.BoardItem(ctx, record.ProjectID, id)
 				if err != nil {
 					return err
@@ -147,13 +156,6 @@ func TestBoardPageRetainsTypedIssueContract(t *testing.T) {
 				if err := w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{ProjectID: record.ProjectID, WorkItemID: id, ExpectedRevision: 1, Current: &replay}); err != nil {
 					return err
 				}
-				after, err := w.BoardSequence(ctx, record.ProjectID)
-				if err != nil {
-					return err
-				}
-				if after != before {
-					t.Errorf("tenant=%s variant=%d replay advanced sequence: before=%+v after=%+v", org, index, before, after)
-				}
 				if index < 2 {
 					updated, err := summary.BoardSummaryModel(ctx, viewstore.BoardSelection{ProjectID: record.ProjectID})
 					if err != nil {
@@ -174,7 +176,24 @@ func TestBoardPageRetainsTypedIssueContract(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-
+			after := readHead()
+			if after != before {
+				t.Errorf("tenant=%s variant=%d replay advanced sequence: before=%+v after=%+v", org, index, before, after)
+			}
+			if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
+				updated, err := w.BoardItem(ctx, record.ProjectID, id)
+				if err != nil {
+					return err
+				}
+				updated.Position.Identifier += "-updated"
+				return w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{ProjectID: record.ProjectID, WorkItemID: id, ExpectedRevision: 1, Current: &updated})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			changed := readHead()
+			if changed.Sequence != after.Sequence+1 || changed.ReplayFloor != after.ReplayFloor {
+				t.Errorf("tenant=%s variant=%d real card change did not advance exactly once: before=%+v after=%+v", org, index, after, changed)
+			}
 		}
 		if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
 			rows, err := r.(interface {

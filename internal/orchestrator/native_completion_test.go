@@ -1920,3 +1920,79 @@ func TestFindingAttributionSurvivesOutcomeAdapters(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeDependencyWaitRequiresCurrentNativeRelations(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		source       string
+		nativeIDs    []string
+		external     bool
+		unverifiable bool
+		human        bool
+		want         bool
+	}{
+		{name: "current native relation", nativeIDs: []string{"wi_prerequisite"}, want: true},
+		{name: "alias resolves to native relation", source: "alias", nativeIDs: []string{"wi_prerequisite"}, want: true},
+		{name: "holding issue without native relation"},
+		{name: "different native relation", nativeIDs: []string{"wi_other"}},
+		{name: "native and external holding issues", nativeIDs: []string{"wi_prerequisite"}, external: true},
+		{name: "workpad relation is not native authority", source: "workpad", nativeIDs: []string{"wi_prerequisite"}},
+		{name: "unverifiable holding condition", nativeIDs: []string{"wi_prerequisite"}, unverifiable: true},
+		{name: "human holding condition", nativeIDs: []string{"wi_prerequisite"}, human: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			reference := "prj_example#2"
+			if test.source == "alias" {
+				reference = "example-org/example-project#2"
+			}
+			issue := connector.Issue{DependencySource: connector.BlockedRefSourceNative}
+			if test.source == "workpad" {
+				issue.DependencySource = connector.BlockedRefSourceWorkpad
+			}
+			for _, id := range test.nativeIDs {
+				issue.BlockedBy = append(issue.BlockedBy, connector.BlockedRef{ID: id, Source: connector.BlockedRefSourceNative})
+			}
+			evidence := recordedBlockerEvaluation{Found: true, Holds: true, Unverifiable: test.unverifiable, HumanOwned: test.human, Evidence: []telemetry.BlockerEvidence{{Type: workpad.PredicateIssueState, Owner: workpad.BlockerOwnerOrchestrator, Status: blockerEvidenceStatusHolds, Reference: reference}}}
+			resolved := map[string]connector.Issue{normalizedIssueIdentifier(reference): {ID: "wi_prerequisite", Identifier: "prj_example#2"}}
+			if test.external {
+				evidence.Evidence = append(evidence.Evidence, telemetry.BlockerEvidence{Type: workpad.PredicateIssueState, Owner: workpad.BlockerOwnerOrchestrator, Status: blockerEvidenceStatusHolds, Reference: "other/project#3"})
+				resolved[normalizedIssueIdentifier("other/project#3")] = connector.Issue{ID: "wi_external"}
+			}
+			if got := nativeDependencyWaitOwned(issue, evidence, resolved); got != test.want {
+				t.Fatalf("native owner=%t want=%t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNativeDependencyWaitLaneKeepsConfiguredFallback(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		current  string
+		merge    bool
+		operator bool
+		rework   bool
+		todo     bool
+		want     string
+	}{
+		{name: "merging lane remains current", current: "Merging", merge: true, rework: true, todo: true, want: "Merging"},
+		{name: "non-dispatchable merging falls back to rework", current: "Merging", rework: true, todo: true, want: "Rework"},
+		{name: "operator merging falls back to rework", current: "Merging", merge: true, operator: true, rework: true, todo: true, want: "Rework"},
+		{name: "unavailable rework falls back to Todo", current: "Merging", todo: true, want: "Todo"},
+		{name: "missing dispatchable lane refuses", current: "Merging"},
+		{name: "started work returns to rework", current: "In Progress", rework: true, todo: true, want: "Rework"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			transitions := []string{"Merging", "Rework", "Todo"}
+			states := []connector.WorkflowState{{Name: "In Progress", Dispatchable: true, Transitions: transitions}, {Name: "Merging", Dispatchable: test.merge, OperatorOnly: test.operator, Transitions: transitions}, {Name: "Rework", Dispatchable: test.rework, Transitions: transitions}, {Name: "Todo", Dispatchable: test.todo, Transitions: transitions}}
+			got, ok := nativeDependencyWaitLane(states, connector.Issue{State: test.current}, "Rework")
+			if got != test.want || ok != (test.want != "") {
+				t.Fatalf("lane=%s allowed=%t want=%s", got, ok, test.want)
+			}
+		})
+	}
+}

@@ -24,6 +24,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -59,13 +62,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			u := f.user(t, "reporter", "reporter", "reporter@example.test", "write", "")
 			member := f.user(t, "member", "member", "member@example.test", "write", "")
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
-			created := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: "/api/v2/organizations/org_security/projects", csrf: cloudassert.CSRFToken("shared-"+owner.identity.Subject, "org_security"), body: `{"idempotency_key":"default-project","name":"Reporter default project","grant_access":true}`})
-			requireNativeStatus(t, created, http.StatusCreated)
 			var project tracker.NativeProject
-			decodeHubResponse(t, created, &project)
-			f.project = project.ID
-			f.base = "/api/v2/organizations/org_security/projects/" + string(project.ID)
-			seedNativeFixturePolicy(t, f.service, "org_security/"+string(project.ID))
 			if test.upgraded {
 				previousStates := reporterPreviousHostedStates()
 				if test.triage != nil {
@@ -75,16 +72,45 @@ func TestReporterNativeCommands(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET states_json=? WHERE id=?", string(previous), project.ID)
-				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM workflow_states WHERE project_id=? AND source_name IN ('Triage','Backlog','Cancelled')", project.ID)
-				if test.triage != nil {
-					operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Triage','Triage',?,?,?,?)", project.ID, test.triage.Terminal, test.triage.Dispatchable, testTimestamp, testTimestamp)
+				id := tracker.ProjectID(newNativeID("prj"))
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+					_, err := r.ProjectRecord(t.Context(), id)
+					return err
+				}); !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("historical import target already exists: %v", err)
 				}
-				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hub_schema_version WHERE version_id IN (20261013050001,20261013085000)")
-				if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
+				source := newCoreNeutralFixture(t, "org_security", "projects", "repositories")
+				source.add("projects", map[string]any{"id": id, "organization_id": "org_security", "name": "Reporter imported project", "profile": "native", "states_json": string(previous), "created_at": testTimestamp, "workflow_source": "", "workflow_markdown": "", "content_settings_revision": 1, "integration_revision": 1, "model_selection_revision": 0, "duplicate_challenge": 1})
+				if count, err := f.service.config.TenantRepository.(*postgres.Repository).ImportCoreProjects(t.Context(), postgres.CoreProjectImportSource{BundlePath: source.write(), OrganizationID: "org_security", Objects: f.service.runDetailStore()}); err != nil || count != 1 {
+					t.Fatalf("historical reporter project import=%d error=%v", count, err)
+				}
+				var record projectstore.Record
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					record, err = r.ProjectRecord(t.Context(), id)
+					if err != nil {
+						return err
+					}
+					if !reflect.DeepEqual(record.States, reporterUpgradedHostedStates()) {
+						return fmt.Errorf("historical reporter workflow=%+v", record.States)
+					}
+					return nil
+				}); err != nil {
 					t.Fatal(err)
 				}
+				project, err = f.service.projectRecordNative(t.Context(), record)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				created := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: "/api/v2/organizations/org_security/projects", csrf: cloudassert.CSRFToken("shared-"+owner.identity.Subject, "org_security"), body: `{"idempotency_key":"default-project","name":"Reporter default project","grant_access":true}`})
+				requireNativeStatus(t, created, http.StatusCreated)
+				decodeHubResponse(t, created, &project)
 			}
+			f.project = project.ID
+			f.base = "/api/v2/organizations/org_security/projects/" + string(project.ID)
+			f.grant(t, owner, true, false)
+			seedNativeFixturePolicy(t, f.service, "org_security/"+string(project.ID))
 
 			f.grant(t, u, true, false)
 			f.grant(t, member, true, false)
@@ -120,7 +146,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			attachmentResponse := request(u, http.MethodPost, f.base+"/attachment-metadata", record)
 			requireNativeStatus(t, attachmentResponse, http.StatusCreated)
 			decodeHubResponse(t, attachmentResponse, &record)
-			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project)
+			updateReporterProject(t, f.service, f.project, func(record *projectstore.Record) { record.Settings.RequireVisualAttachments = true })
 			for _, issueType := range []string{"", "question"} {
 				refused := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "missing-type-" + issueType}, Title: "Tester report", Type: issueType})
 				requireNativeStatus(t, refused, http.StatusUnprocessableEntity)
@@ -153,6 +179,7 @@ func TestReporterNativeCommands(t *testing.T) {
 					requireNativeStatus(t, r, http.StatusOK)
 				}
 				decodeHubResponse(t, r, &own)
+				refreshNativeDuplicateSearchFixture(t, f.service, "org_security")
 				if i == 0 {
 					sharedVisualIssue = own
 				}
@@ -160,12 +187,11 @@ func TestReporterNativeCommands(t *testing.T) {
 					t.Fatalf("requested %q: state=%s", state, own.State)
 				}
 			}
-			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
+			updateReporterProject(t, f.service, f.project, func(record *projectstore.Record) { record.Settings.DuplicateChallenge = false })
 			hiddenImage := record
 			hiddenImage.ID = conversation.NewAttachmentID()
 			requireNativeStatus(t, request(member, http.MethodPost, f.base+"/attachment-metadata", hiddenImage), http.StatusCreated)
 			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/work-items/"+string(own.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "unreadable-visual"}, Body: "https://figma.com/design/example " + hiddenImage.Markdown("org_security")}), http.StatusUnprocessableEntity)
-			operatorSQL(t, f.hostedSecurityFixture, "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE project_id=?", f.project)
 			attachmentResponse = request(u, http.MethodGet, f.base+"/attachment-metadata/"+record.ID, nil)
 			requireNativeStatus(t, attachmentResponse, http.StatusOK)
 			var fetched attachment.Metadata
@@ -280,15 +306,41 @@ func TestReporterNativeCommands(t *testing.T) {
 			r = request(u, http.MethodPatch, commentPath+"/"+parent.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-deleted"}, ExpectedRevision: parent.Revision + 1, Body: "Restored"})
 			requireNativeStatus(t, r, http.StatusUnprocessableEntity)
 			var snapshot tracker.NativeComment
-			var encoded string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM collaboration_versions WHERE record_id=? AND revision=?", parent.ID, parent.Revision).Scan(&encoded); err != nil {
+			var version eventstore.CollaborationVersion
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				version, err = r.CollaborationVersion(t.Context(), parent.ID, int64(parent.Revision))
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := json.Unmarshal([]byte(encoded), &snapshot); err != nil || snapshot.Body != parent.Body || snapshot.Deleted {
+			if version.ProjectID != f.project || version.WorkItemID != own.WorkItemID {
+				t.Fatalf("comment history escaped its scope: %+v", version)
+			}
+			encoded, err := eventstore.NewContent(f.service.runDetailStore()).CollaborationVersion(t.Context(), version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(encoded, &snapshot); err != nil || snapshot.Body != parent.Body || snapshot.Deleted {
 				t.Fatalf("revision=%#v, error=%v", snapshot, err)
 			}
 			var references int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_references WHERE attachment_id=? AND comment_id=?", record.ID, parent.ID).Scan(&references); err != nil || references != 1 {
+			referenceErr := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+				rows, err := r.AttachmentReferences(t.Context(), f.project, record.ID, 201)
+				if err != nil {
+					return err
+				}
+				if len(rows) > 200 {
+					return fmt.Errorf("comment attachment references exceeded bounded fixture population")
+				}
+				for _, row := range rows {
+					if row.CommentID == parent.ID && row.WorkItemID == own.WorkItemID {
+						references++
+					}
+				}
+				return nil
+			})
+			if err := referenceErr; err != nil || references != 1 {
 				t.Fatalf("attachment references=%d, error=%v", references, err)
 			}
 			for _, suffix := range []string{"", "/comments", "/history"} {
@@ -310,7 +362,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			auditPart := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "audit.txt", ContentType: "text/plain", Size: int64(len(auditBytes)), SHA256: artifact.Digest(auditBytes)}
 			requireNativeStatus(t, request(member, http.MethodPost, f.base+"/attachment-metadata", auditPart), http.StatusCreated)
 			checkpoint.Parts = []releaseaudit.Part{{AttachmentID: auditPart.ID, Index: 0, Bytes: len(auditBytes), Digest: auditPart.SHA256}}
-			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET checkout_repository=? WHERE id=?", checkpoint.Identity.Repository, f.project)
+			updateReporterProject(t, f.service, f.project, func(record *projectstore.Record) { record.Settings.CheckoutRepository = checkpoint.Identity.Repository })
 			auditRequest := struct {
 				tracker.Mutation
 				releaseaudit.Checkpoint
@@ -351,7 +403,11 @@ func TestReporterNativeCommands(t *testing.T) {
 					t.Fatalf("%s release audit evidence: %v", name, err)
 				}
 			}
-			operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=?", u.identity.Subject)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				return w.DeleteAccessProjectGrant(t.Context(), u.identity.Subject, f.project)
+			}); err != nil {
+				t.Fatal(err)
+			}
 			requireNativeStatus(t, request(u, http.MethodGet, f.base+"/work-items", nil), http.StatusNotFound)
 		})
 	}
@@ -361,16 +417,8 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
 			f, ctx := newHostedKeyMCPFixture(t, deployment, "reporter")
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := applyNativeProjectStates(t.Context(), tx, nativeScope{organization: "org_security", project: f.project}, nativeFixtureStates(), f.service.config.now()); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
+			updateReporterProject(t, f.service, f.project, func(record *projectstore.Record) { record.States = nativeTriageStates(nativeFixtureStates()) })
+
 			executor := hostedOperatorExecutor{f.service}
 			definitions, err := executor.ListTools(ctx)
 			if err != nil {
@@ -436,7 +484,12 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 				}
 			}
 			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project).Scan(&count); err != nil || count != 0 {
+			countErr := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+				rows, err := r.WorkItems(t.Context(), f.project, 0, 1)
+				count = len(rows)
+				return err
+			})
+			if err := countErr; err != nil || count != 0 {
 				t.Fatalf("rejected filings created %d issues: %v", count, err)
 			}
 			for i, state := range []string{"", "Todo", "Cancelled", "Triage", "Missing"} {
@@ -482,6 +535,7 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 				if content.Data.State != "Triage" || content.Data.Type != []string{"bug", "change_request"}[i%2] {
 					t.Fatalf("result=%s", result.Content)
 				}
+				refreshNativeDuplicateSearchFixture(t, f.service, "org_security")
 				wantContext := (*tracker.ReportContext)(nil)
 				if i == 0 {
 					wantContext = &tracker.ReportContext{URL: "https://app.example.test/settings", AppBuild: "v1.4.2", Browser: "Chrome 130", OS: "macOS 15", Viewport: "1440x900", CapturedAt: "2026-10-13T12:00:00Z"}
@@ -570,7 +624,11 @@ func TestReporterRoleAssignment(t *testing.T) {
 			f, _ := newHostedKeyMCPFixture(t, deployment, "owner")
 			member := f.hostedSecurityFixture.user(t, "tester", "member", "tester@example.test", "write", "")
 			var membership string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT membership_id FROM hosted_members WHERE user_id=?", member.identity.Subject).Scan(&membership); err != nil {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.AccessMember(t.Context(), member.identity.Subject)
+				membership = row.MembershipID
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 			call := func(name string, arguments map[string]any, target any) {
@@ -615,7 +673,15 @@ func TestReporterRoleAssignment(t *testing.T) {
 				}
 			}
 			var role string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT role FROM hosted_members WHERE membership_id=?", membership).Scan(&role); err != nil || role != "reporter" {
+			roleErr := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.AccessMember(t.Context(), member.identity.Subject)
+				if err == nil && row.MembershipID != membership {
+					return fmt.Errorf("role change replaced member identity")
+				}
+				role = row.Role
+				return err
+			})
+			if err := roleErr; err != nil || role != "reporter" {
 				t.Fatalf("persisted role=%s err=%v", role, err)
 			}
 
@@ -729,6 +795,7 @@ func TestReporterCustomHostedProjectCreation(t *testing.T) {
 						if issue.State != "Triage" {
 							t.Fatalf("requested=%q resulting=%q", state, issue.State)
 						}
+						refreshNativeDuplicateSearchFixture(t, f.service, "org_security")
 						seedNativeFixturePolicyContext(ctx, t, f.service, "org_security/"+string(issue.ProjectID))
 						response = f.request(t, member, http.MethodPost, base+"/work-items/"+string(issue.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("promote-%s-%d", entry, i)}, ExpectedRevision: issue.Revision, State: test.promotion, Reason: "user_requested"})
 						requireNativeStatus(t, response, http.StatusOK)
@@ -786,14 +853,9 @@ func TestNativeProjectCreationWorkflowBounds(t *testing.T) {
 					if hosted {
 						body["grant_access"] = true
 					}
-					var before, after int
-					if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects").Scan(&before); err != nil {
-						t.Fatal(err)
-					}
+					before := reporterProjectCount(t, service)
 					response := request(body)
-					if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects").Scan(&after); err != nil {
-						t.Fatal(err)
-					}
+					after := reporterProjectCount(t, service)
 					if !test.allowed {
 						requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 						if after != before {
@@ -861,7 +923,15 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.repair {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository='example-org/example-project', github_repository_enabled=0 WHERE id=?", f.project); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), f.project)
+					if err != nil {
+						return err
+					}
+					project.Settings.CheckoutRepository, project.Settings.RepositoryEnabled = "example-org/example-project", false
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -922,11 +992,8 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 				t.Fatalf("Reporter filing confirmed engineering sections: %+v", issue.IssueContract.ConfirmedSections)
 			}
 			scope := nativeScope{organization: "org_security", project: f.project}
-			_, id, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(issue.WorkItemID))
-			if err != nil {
-				t.Fatal(err)
-			}
-			claimable, reason, err := nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
+			evaluation, err := nativeIssueContractEvaluationForTest(t.Context(), f.service, scope, issue.WorkItemID)
+			claimable, reason := evaluation.Allowed, evaluation.Reason
 			if err != nil || !claimable || reason != "" {
 				t.Fatalf("Triage contract exemption=%t, %s, %v", claimable, reason, err)
 			}
@@ -938,7 +1005,8 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &issue)
 			}
-			claimable, reason, err = nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
+			evaluation, err = nativeIssueContractEvaluationForTest(t.Context(), f.service, scope, issue.WorkItemID)
+			claimable, reason = evaluation.Allowed, evaluation.Reason
 			wantReason := required[0]
 			var bodyBuilder strings.Builder
 			bodyBuilder.WriteString(test.body)
@@ -960,10 +1028,45 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 				response = f.request(t, member, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "promote-confirmed"}, ExpectedRevision: issue.Revision, State: "Todo", Reason: "user_requested"})
 				requireNativeStatus(t, response, http.StatusOK)
 			}
-			claimable, reason, err = nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
+			evaluation, err = nativeIssueContractEvaluationForTest(t.Context(), f.service, scope, issue.WorkItemID)
+			claimable, reason = evaluation.Allowed, evaluation.Reason
 			if err != nil || !claimable || reason != "" {
 				t.Fatalf("engineered contract=%t, %s, %v", claimable, reason, err)
 			}
 		})
 	}
+}
+
+func updateReporterProject(t *testing.T, service *Service, project tracker.ProjectID, update func(*projectstore.Record)) {
+	t.Helper()
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), project)
+		if err != nil {
+			return err
+		}
+		update(&record)
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reporterProjectCount(t *testing.T, service *Service) int {
+	t.Helper()
+	count := 0
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+		rows, err := r.Projects(t.Context(), "", corestore.MaxPageSize)
+		if err != nil {
+			return err
+		}
+		if len(rows) == corestore.MaxPageSize {
+			return fmt.Errorf("project count exceeds bounded fixture population")
+		}
+		count = len(rows)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }

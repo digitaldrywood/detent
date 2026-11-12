@@ -8,10 +8,15 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -21,7 +26,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -203,13 +210,15 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 
 	t.Run("lease recovery during retention", func(t *testing.T) {
 		type ownership struct {
-			leases     map[string]leasestore.Lease
-			attempts   map[string]leasestore.Attempt
-			checkpoint attachment.ArchiveReference
+			leases       map[string]leasestore.Lease
+			attempts     map[string]leasestore.Attempt
+			checkpoint   attachment.ArchiveReference
+			cancellation *leasestore.AttemptCancellation
 		}
 		owners := make(map[tracker.OrganizationID]ownership)
 		for _, org := range organizations {
-			checkpoint, err := content.PreparePayload(t.Context(), org, encode(nativeTestCheckpoint()))
+			retainedCheckpoint := nativeTestCheckpoint()
+			checkpoint, err := content.PreparePayload(t.Context(), org, encode(retainedCheckpoint))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -237,13 +246,13 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 					if kind == "recoverable" {
 						status = "interrupted"
 					}
-					body := encode(tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: "attempt_" + kind, RunID: "run_" + kind, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1}, Status: status, StartedAt: lease.AcquiredAt, UpdatedAt: lease.AcquiredAt, Checkpoint: nativeTestCheckpoint()})
+					body := encode(tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: "attempt_" + kind, RunID: "run_" + kind, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1}, Status: status, StartedAt: lease.AcquiredAt, UpdatedAt: lease.AcquiredAt, Checkpoint: retainedCheckpoint})
 					payload, err := content.PreparePayload(t.Context(), org, body)
 					if err != nil {
 						return err
 					}
 					fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
-					attempt, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt_" + kind, RunID: "run_" + kind, Fence: fence, Sequence: 1, Status: status, PayloadObjectKey: payload.Key, PayloadReference: payload, CheckpointObjectKey: &checkpoint.Key, CheckpointReference: checkpoint})
+					attempt, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt_" + kind, RunID: "run_" + kind, Fence: fence, Sequence: 1, Status: status, PayloadObjectKey: payload.Key, PayloadReference: payload, CheckpointObjectKey: &checkpoint.Key, CheckpointReference: checkpoint, CheckpointPreservesSource: new(retainedCheckpoint.PreservesSource())})
 					if err != nil {
 						return err
 					}
@@ -258,6 +267,25 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 			}
 			if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET acquired_at=clock_timestamp()-interval '2 hours',renewed_at=clock_timestamp()-interval '1 hour',expires_at=clock_timestamp()-interval '1 second' WHERE organization_id=$1 AND lease_id=$2`, org, owner.leases["orphan"].LeaseID); err != nil {
 				t.Fatal(err)
+			}
+			orphan := owner.attempts["orphan"]
+			run := tracker.NativeRunData{AttemptID: orphan.ID, RunID: orphan.RunID, LeaseID: tracker.LeaseID(orphan.LeaseID), FencingToken: tracker.FencingToken(orphan.FencingToken),
+				Sequence: orphan.Sequence + 1, Outcome: "cancelled", TerminalFailure: &tracker.NativeTerminalFailure{ErrorClass: "lease_released", Stage: "lease_release", ObservedAt: now, Error: "Example lease expired"}}
+			payload, err := content.PreparePayload(t.Context(), org, encode(run))
+			if err != nil {
+				t.Fatal(err)
+			}
+			history, err := content.PrepareEvent(t.Context(), org, encode(tracker.CollaborationEvent{
+				ID: "evt_orphan_expired", OrganizationID: org, ProjectID: project, AggregateType: "issue", AggregateID: "wi_orphan", Type: "run.finished", SchemaVersion: 1,
+				RecordedAt: now, Actor: tracker.Actor{Kind: "integration", PrincipalID: "lease_release"}, Data: tracker.CollaborationData{Run: &run},
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner.cancellation = &leasestore.AttemptCancellation{
+				Attempt: leasestore.AttemptEvent{ID: orphan.ID, RunID: orphan.RunID, Fence: leasestore.Fence{LeaseID: orphan.LeaseID, FencingToken: orphan.FencingToken},
+					Sequence: run.Sequence, Status: "cancelled", DispatchGeneration: orphan.DispatchGeneration, PayloadObjectKey: payload.Key, PayloadReference: payload},
+				History: history,
 			}
 			owners[org] = owner
 		}
@@ -278,7 +306,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 				if _, err := blocker.ExecContext(ctx, "LOCK TABLE native_duplicate_challenges IN SHARE MODE"); err != nil {
 					t.Fatal(err)
 				}
-				service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}}}
+				service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, retentionTimeout: frozenRetentionTimeout}}
 				retained := make(chan error, 1)
 				workers.Go(func() { retained <- service.expireNativeRecords(ctx, now.Add(2*time.Hour)) })
 				testenv.WaitUntil(t, testenv.WaitContext(t, ctx), func() error {
@@ -322,7 +350,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 						if _, err := w.Renew(ctx, leasestore.Fence{LeaseID: live.LeaseID, FencingToken: live.FencingToken}, 2*time.Hour); err != nil {
 							return err
 						}
-						_, err := w.Expire(ctx, leasestore.Fence{LeaseID: orphan.LeaseID, FencingToken: orphan.FencingToken})
+						_, err := w.ExpireWithCancellation(ctx, leasestore.Fence{LeaseID: orphan.LeaseID, FencingToken: orphan.FencingToken}, owner.cancellation)
 						return err
 					})
 				})
@@ -366,7 +394,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 								t.Fatalf("renewed live ownership changed: lease=%+v attempt=%+v", lease, attempt)
 							}
 						case "orphan":
-							if lease.ReleasedAt == nil || lease.ReleaseReason != "expired" || attempt.Status != "cancelled" || attempt.Sequence != 2 {
+							if lease.ReleasedAt == nil || lease.ReleaseReason != "expired" || attempt.Status != "cancelled" || attempt.Sequence != 2 || attempt.PayloadObjectKey != owner.cancellation.Attempt.PayloadObjectKey {
 								t.Fatalf("expired orphan was not recovered: lease=%+v attempt=%+v", lease, attempt)
 							}
 						case "recoverable":
@@ -415,4 +443,198 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 			})
 		}
 	})
+	t.Run("live worker expiry", func(t *testing.T) {
+		base := time.Now().UTC().Truncate(time.Microsecond)
+		stale := base.Add(-90 * 24 * time.Hour)
+		liveUntil := base.Add(24 * time.Hour)
+		workerOrgs := []tracker.OrganizationID{tracker.OrganizationID(artifact.NewID("org")), tracker.OrganizationID(artifact.NewID("org"))}
+		workerProject := tracker.ProjectID(artifact.NewID("prj"))
+		workerItem := tracker.NativeWorkItemID(artifact.NewID("wi"))
+		for _, org := range workerOrgs {
+			payload, err := content.PreparePayload(t.Context(), org, []byte(`{"accepted":true}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding := runnerauth.NewBinding()
+			serviceID := artifact.NewID("service")
+			reference := artifact.Reference{SchemaVersion: 1, Scope: artifact.Scope{OrganizationID: string(org), ProjectID: string(workerProject), WorkItemID: string(workerItem), RunID: artifact.NewID("run"), AttemptID: artifact.NewID("attempt")}, ServiceID: serviceID, ArtifactID: artifact.NewID("artifact"), ManifestID: artifact.NewID("manifest"), Revision: 1, SHA256: artifact.Digest([]byte("manifest")), Kind: "log", State: "complete", Availability: "available", Bytes: 1, Objects: 1, ExpiresAt: liveUntil, ObservedAt: base}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: stale}); err != nil {
+					return err
+				}
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: workerProject, Name: "Maintenance", Slug: "maintenance", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+					return err
+				}
+				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: workerProject, NativeID: workerItem, Number: 1, Title: "Maintenance"}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "credential_maintenance", Name: "Maintenance", Hash: apikey.HashToken(string(org)), Scope: "worker", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: stale, UpdatedAt: stale}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: "credential_maintenance", ProjectID: workerProject}); err != nil {
+					return err
+				}
+				if err := w.BindArtifactService(t.Context(), workerProject, artifact.Binding{ServiceID: serviceID, Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: "credential_maintenance"}); err != nil {
+					return err
+				}
+				if _, err := w.AppendArtifactReference(t.Context(), reference); err != nil {
+					return err
+				}
+				operations := []string{runnerauth.Read, runnerauth.Heartbeat}
+				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "enrollment_maintenance", RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("enrollment_" + string(org)), Scope: "projects", ProjectIDs: []tracker.ProjectID{workerProject}, Operations: operations, CreatedAt: stale, ExpiresAt: liveUntil, CreatedBy: "credential_maintenance"}); err != nil {
+					return err
+				}
+				if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_maintenance", binding.RunnerID, binding.MachineID, stale); err != nil {
+					return err
+				}
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: "test"}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: "credential_maintenance", EnrollmentID: "enrollment_maintenance", Scope: "projects", State: "active", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{workerProject}, CreatedAt: stale, ExpiresAt: liveUntil, LastHeartbeatAt: base}); err != nil {
+					return err
+				}
+				for _, key := range []string{"live", "expired"} {
+					created, expires, hash := base, liveUntil, strings.Repeat("e", 64)
+					if key == "expired" {
+						created, expires, hash = stale, stale.Add(time.Hour), strings.Repeat("f", 64)
+					}
+					if err := w.CreateArtifactReadGrant(t.Context(), artifactstore.ReadGrant{ProjectID: workerProject, WorkItemID: workerItem, TokenHash: hash, PrincipalID: "credential_maintenance", ServiceID: serviceID, ArtifactID: reference.ArtifactID, Revision: 1, ExpiresAt: expires}, created); err != nil {
+						return err
+					}
+					if err := w.AuthorizeArtifactUpload(t.Context(), artifact.Reservation{Scope: reference.Scope, ServiceID: serviceID, Key: key, Kind: "log", Bytes: 1}, created); err != nil {
+						return err
+					}
+					challenge := corestore.DuplicateChallenge{OrganizationID: org, ProjectID: workerProject, Token: "dup_" + hash[:32], PrincipalID: "credential_maintenance", RequestID: key, ContentHash: strings.Repeat("b", 64), PolicyHash: strings.Repeat("c", 64), CreatedAt: created, ExpiresAt: created.Add(time.Hour), Candidates: []corestore.DuplicateCandidate{{WorkItemID: workerItem, Number: 1, Revision: 1}}}
+					if err := w.(corestore.DuplicateChallengeWriter).CreateDuplicateChallenge(t.Context(), challenge); err != nil {
+						return err
+					}
+					if _, err := w.PutReceipt(t.Context(), receiptstore.Record{OrganizationID: org, ActorID: "credential_maintenance", Operation: "POST /maintenance", CommandKey: "worker-" + key, RequestHash: strings.Repeat("a", 64), CreatedAt: created, PayloadObjectKey: payload.Key, PayloadSHA256: payload.SHA256, PayloadBytes: payload.CompressedSize, PayloadContentBytes: payload.UncompressedSize, ResponseReplayUntilNs: created.Add(receiptstore.ReplayRetention).UnixNano()}); err != nil {
+						return err
+					}
+					segment := hostmetrics.Summary{Hour: created.Truncate(time.Hour), SegmentID: created, SampleCount: 1, LogicalCores: 1}
+					if _, err := w.AppendRunnerHostMetricSegments(t.Context(), binding.RunnerID, []hostmetrics.Summary{segment}, created); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.MergeRequestMetrics(t.Context(), org, stale, []metricsstore.Metric{{At: stale, Route: "GET /maintenance", CallerKind: "browser", CallerID: "credential_maintenance", StatusClass: 2, Latency: metricsstore.Latency{Count: 1, Sum: 1, Max: 1, Histogram: [64]int64{1}}}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		readState := func(ctx context.Context, org tracker.OrganizationID) ([10]int, error) {
+			var state [10]int
+			err := admin.QueryRowContext(ctx, `SELECT
+(SELECT count(*) FROM artifact_grants WHERE organization_id=$1 AND expires_at<=$2),
+(SELECT count(*) FROM artifact_grants WHERE organization_id=$1 AND expires_at>$2),
+(SELECT count(*) FROM artifact_upload_authorizations WHERE organization_id=$1 AND expires_at<=$2),
+(SELECT count(*) FROM artifact_upload_authorizations WHERE organization_id=$1 AND expires_at>$2),
+(SELECT count(*) FROM native_duplicate_challenges WHERE organization_id=$1 AND expires_at<=$2),
+(SELECT count(*) FROM native_duplicate_challenges WHERE organization_id=$1 AND expires_at>$2),
+(SELECT count(*) FROM runner_host_metric_segments WHERE organization_id=$1 AND hour<$3),
+(SELECT count(*) FROM runner_host_metric_segments WHERE organization_id=$1 AND hour>=$3),
+(SELECT count(*) FROM native_command_states WHERE organization_id=$1 AND command_key='worker-expired' AND response_expired),
+(SELECT count(*) FROM native_command_states WHERE organization_id=$1 AND command_key='worker-live' AND NOT response_expired)`, org, base, base.Truncate(time.Hour).Add(-720*time.Hour)).Scan(&state[0], &state[1], &state[2], &state[3], &state[4], &state[5], &state[6], &state[7], &state[8], &state[9])
+			return state, err
+		}
+		for index, org := range workerOrgs {
+			t.Run([]string{"org_first", "org_second"}[index], func(t *testing.T) {
+				initial, err := readState(t.Context(), org)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantInitial := [10]int{1, 1, 1, 1, 1, 1, 1, 1, 0, 1}
+				if index == 1 {
+					wantInitial[2] = 0
+				}
+				if initial != wantInitial {
+					t.Fatalf("initial expiry rows=%v, want %v", initial, wantInitial)
+				}
+				var clock atomic.Int64
+				clock.Store(base.Add(-2 * time.Hour).UnixNano())
+				var stages atomic.Int64
+				var wrongBudget atomic.Bool
+				schedulerDone := make(chan struct{})
+				service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, RunDetails: objects, Logger: discardLogger(), WebhookMaintenanceInterval: time.Millisecond,
+					now: func() time.Time { return time.Unix(0, clock.Load()).UTC() },
+					retentionTimeout: func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+						if budget != backgroundStorageBudget {
+							wrongBudget.Store(true)
+						}
+						if stages.Add(1) == 1 {
+							return context.WithDeadline(ctx, time.Now().Add(-time.Second))
+						}
+						return context.WithTimeout(ctx, budget)
+					},
+					runMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+						defer close(schedulerDone)
+						<-ctx.Done()
+						return ctx.Err()
+					},
+				}, database: &database{postgres: repository}, workerDone: make(chan struct{}), boardRefresh: make(chan struct{}, 1), requestMetrics: &tenantRequestMetrics{repository: repository, organization: org}}
+				ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
+				defer func() { cancel(); <-service.workerDone; <-schedulerDone }()
+				go service.runPostgresMaintenance(ctx)
+				testenv.WaitUntil(t, ctx, func() error {
+					var minutes int
+					if err := admin.QueryRowContext(ctx, "SELECT count(*) FROM request_minutes WHERE organization_id=$1", org).Scan(&minutes); err != nil {
+						return err
+					}
+					if minutes != 0 {
+						return fmt.Errorf("live worker has not completed its first metric-retention tick")
+					}
+					return nil
+				})
+				if state, err := readState(ctx, org); err != nil || state != initial || stages.Load() != 0 {
+					t.Fatalf("expiry ran before the hourly boundary: state=%v stages=%d error=%v", state, stages.Load(), err)
+				}
+				clock.Store(base.Add(-time.Hour).UnixNano())
+				wantAfterFailure := initial
+				wantAfterFailure[8] = 1
+				testenv.WaitUntil(t, ctx, func() error {
+					state, err := readState(ctx, org)
+					if err != nil {
+						return err
+					}
+					if state != wantAfterFailure || stages.Load() != 2 {
+						return fmt.Errorf("receipt expiry did not survive the failed native-prune stage: state=%v stages=%d", state, stages.Load())
+					}
+					return nil
+				})
+				if index == 0 {
+					if state, err := readState(ctx, workerOrgs[1]); err != nil || state != [10]int{1, 1, 1, 1, 1, 1, 1, 1, 0, 1} {
+						t.Fatalf("failed current-tenant prune changed foreign rows: state=%v error=%v", state, err)
+					}
+				}
+				clock.Store(base.UnixNano())
+				testenv.WaitUntil(t, ctx, func() error {
+					state, err := readState(ctx, org)
+					if err != nil {
+						return err
+					}
+					if state != [10]int{0, 1, 0, 1, 0, 1, 0, 1, 1, 1} || stages.Load() != 4 {
+						return fmt.Errorf("live native expiry did not finish: state=%v stages=%d", state, stages.Load())
+					}
+					return nil
+				})
+				if wrongBudget.Load() {
+					t.Fatal("live expiry changed a retention-stage deadline")
+				}
+				if index == 0 {
+					if state, err := readState(ctx, workerOrgs[1]); err != nil || state != [10]int{1, 1, 0, 1, 1, 1, 1, 1, 0, 1} {
+						t.Fatalf("native expiry crossed tenant scope or lost live uploads: state=%v error=%v", state, err)
+					}
+				}
+				cancel()
+				<-service.workerDone
+				<-schedulerDone
+				if state, err := readState(t.Context(), org); err != nil || state != [10]int{0, 1, 0, 1, 0, 1, 0, 1, 1, 1} {
+					t.Fatalf("stopped worker changed retained rows: state=%v error=%v", state, err)
+				}
+			})
+		}
+	})
+
 }

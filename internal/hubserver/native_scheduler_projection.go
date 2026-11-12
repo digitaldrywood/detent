@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -17,70 +16,6 @@ type analyticsEventProjection struct {
 	Run       *struct {
 		AttemptID string `json:"attempt_id"`
 	} `json:"run"`
-}
-
-func (s *Service) convertSchedulerDecisions(ctx context.Context) error {
-	ctx = s.runDetailContext(ctx)
-	const statement = `SELECT id,CASE WHEN payload_version=1 THEN 'event:' || id ELSE data_json END,recorded_at
-FROM collaboration_events WHERE id IN (
- SELECT id FROM (SELECT id FROM collaboration_events WHERE analytics_projection_version IS NULL ORDER BY id LIMIT ?)
- UNION
- SELECT id FROM (SELECT id FROM collaboration_events WHERE type='scheduler.decision' AND scheduler_outcome IS NULL ORDER BY id LIMIT ?)
- ORDER BY id LIMIT ?
-) ORDER BY id`
-	rows, err := s.database.reader.QueryContext(ctx, statement, storageConversionRows, storageConversionRows, storageConversionRows)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type candidate struct {
-		id, raw string
-		at      time.Time
-	}
-	candidates := []candidate{}
-	for rows.Next() {
-		var c candidate
-		var at string
-		if err := rows.Scan(&c.id, &c.raw, &at); err != nil {
-			return errors.Join(err, rows.Close())
-		}
-		c.at, err = parseTimeValue(at)
-		if err != nil {
-			return errors.Join(err, rows.Close())
-		}
-		candidates = append(candidates, c)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	for _, c := range candidates {
-		raw, err := resolveCollaborationPayload(ctx, s.database.reader, c.raw)
-		if err != nil {
-			return err
-		}
-		var data analyticsEventProjection
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
-			return err
-		}
-		if err := updateAnalyticsEventProjection(ctx, s.database.db, c.id, data, c.at); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func updateAnalyticsEventProjection(ctx context.Context, writer *sql.DB, id string, data analyticsEventProjection, at time.Time) error {
-	decision := tracker.NativeSchedulerDecision{}
-	if data.Decision != nil {
-		decision = *data.Decision
-	}
-	attempt := ""
-	if data.Run != nil {
-		attempt = data.Run.AttemptID
-	}
-	key := analyticsDimension(decision.Source, decision.Reason)
-	_, err := writer.ExecContext(ctx, `UPDATE collaboration_events SET scheduler_outcome=?,scheduler_reason=?,scheduler_source=?,scheduler_runner_id=?,analytics_from_state=?,analytics_to_state=?,analytics_attempt_id=?,analytics_skip_key=?,analytics_recorded_ns=?,analytics_projection_version=1 WHERE id=?`, decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, data.FromState, data.ToState, attempt, key, at.UnixNano(), id)
-	return err
 }
 
 func previousSchedulingDecision(ctx context.Context, q nativeQueryer, scope nativeScope, item string, decision tracker.NativeSchedulerDecision) (string, error) {

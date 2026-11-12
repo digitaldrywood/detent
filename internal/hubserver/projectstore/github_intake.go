@@ -17,6 +17,7 @@ type GitHubWebhook struct {
 }
 
 type GitHubIntakeReader interface {
+	LatestGitHubWebhookReceipt(context.Context) (time.Time, error)
 	NextGitHubIntake(context.Context, time.Time) (tracker.ProjectID, error)
 	GitHubWebhook(context.Context, string) (GitHubWebhook, error)
 	NextGitHubWebhook(context.Context, time.Time) (GitHubWebhook, error)
@@ -26,9 +27,62 @@ type GitHubIntakeReader interface {
 type GitHubIntakeWriter interface {
 	GitHubIntakeReader
 	CreateGitHubWebhook(context.Context, GitHubWebhook) (bool, error)
+	ObserveGitHubWebhookReceipt(context.Context, GitHubWebhook) error
 	UpdateGitHubWebhook(context.Context, GitHubWebhook, tracker.ProjectID, int64) error
 	PurgeGitHubWebhookPayloads(context.Context, time.Time, int) error
 	DeferGitHubIntake(context.Context, tracker.ProjectID, time.Time, float64) error
+	RecordGitHubPullRequestSource(context.Context, tracker.ProjectID, GitHubWebhook, GitHubPullRequestObservation) error
+}
+
+type GitHubPullRequestRefreshKey struct {
+	ProjectID  tracker.ProjectID
+	ChangeID   string
+	Repository string
+	Number     int
+}
+
+type GitHubPullRequestRefresh struct {
+	GitHubPullRequestRefreshKey
+	WorkItemID           tracker.NativeWorkItemID
+	RequestedVersion     string
+	RequestedHeadSHA     string
+	RequestCount         int64
+	ObservedRequestCount int64
+	RequestedAt          time.Time
+	NextAttemptAt        time.Time
+	Pending              bool
+	Attempts             int64
+	Observation          *GitHubPullRequestObservation
+}
+
+type GitHubPullRequestObservation struct {
+	RepositoryDefaultBranch     *string
+	MergeSHA, BaseRef, MergedBy *string
+	MergedAt                    *time.Time
+	Repository                  string
+	Number                      int
+	HeadSHA                     string
+	SourceUpdatedAt             time.Time
+	ObservedAt                  time.Time
+	State                       string
+	Draft                       bool
+	Mergeable                   *bool
+	Checks                      tracker.CheckSummary
+	Reviews                     tracker.ReviewSummary
+}
+
+type GitHubPullRequestRefreshReader interface {
+	GitHubPullRequestRefresh(context.Context, GitHubPullRequestRefreshKey) (GitHubPullRequestRefresh, error)
+	NextGitHubPullRequestRefresh(context.Context, time.Time) (GitHubPullRequestRefresh, error)
+}
+
+type GitHubPullRequestRefreshWriter interface {
+	GitHubPullRequestRefreshReader
+	RequestGitHubPullRequests(context.Context, []GitHubPullRequestRefresh) error
+	CompleteGitHubPullRequestRefresh(context.Context, GitHubPullRequestRefresh, GitHubPullRequestObservation) error
+	RetryGitHubPullRequestRefresh(context.Context, GitHubPullRequestRefresh, time.Time) error
+	CancelGitHubPullRequestRefresh(context.Context, GitHubPullRequestRefresh) error
+	SupersedeGitHubPullRequestRefresh(context.Context, GitHubPullRequestRefresh) error
 }
 
 type GitHubOutbound struct {
@@ -36,6 +90,7 @@ type GitHubOutbound struct {
 	ProjectID                                            tracker.ProjectID
 	WorkItemID                                           tracker.NativeWorkItemID
 	Key, Repository, Kind, TargetNodeID, Status, LeaseID string
+	CoalesceKey                                          string
 	IssueNumber, Attempts                                int64
 	CreatedAt, NextAttemptAt                             time.Time
 	Payload                                              eventstore.Receipt
@@ -58,6 +113,8 @@ type GitHubOutboundObservation struct {
 }
 
 type GitHubOutboxWriter interface {
+	SupersedeGitHubSummaries(context.Context, tracker.ProjectID, string, time.Time) error
+	SupersedeGitHubCompatibilityWrites(context.Context, tracker.ProjectID, bool, time.Time) error
 	GitHubOutbound(context.Context, string) (GitHubOutbound, error)
 	EnqueueGitHubOutbound(context.Context, GitHubOutbound) error
 	ClaimGitHubOutbound(context.Context, time.Time, time.Time, string) (GitHubOutbound, error)
@@ -66,14 +123,17 @@ type GitHubOutboxWriter interface {
 }
 
 type GitHubReconciliation struct {
-	ProjectID          tracker.ProjectID
-	Repository, NodeID string
-	AfterWorkItem      tracker.NativeWorkItemID
-	Revision, Attempts int64
-	NextAttemptAt      time.Time
+	ProjectID             tracker.ProjectID
+	Repository, NodeID    string
+	AfterWorkItem         tracker.NativeWorkItemID
+	Revision, Attempts    int64
+	NextAttemptAt         time.Time
+	LastSuccessfulSweepAt *time.Time
+	LastFailureAt         *time.Time
 }
 
 type GitHubReconciliationReader interface {
+	GitHubReconciliation(context.Context, tracker.ProjectID) (GitHubReconciliation, error)
 	NextGitHubReconciliation(context.Context, time.Time) (GitHubReconciliation, error)
 	NextGitHubLinkedSource(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (eventstore.LinkedSource, error)
 }
@@ -81,4 +141,8 @@ type GitHubReconciliationReader interface {
 type GitHubReconciliationWriter interface {
 	GitHubReconciliationReader
 	SaveGitHubReconciliation(context.Context, GitHubReconciliation) error
+}
+
+type GitHubWorkpadReader interface {
+	LatestGitHubWorkpad(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (GitHubOutbound, error)
 }

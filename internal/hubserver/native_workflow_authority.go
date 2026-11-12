@@ -67,8 +67,8 @@ func canonicalWorkflowStates(states []tracker.NativeState) []tracker.NativeState
 
 func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Writer, scope nativeScope, lease leasestore.Lease, request tracker.Transition, prepared *preparedNativeLeaseCancellation, stopState string) error {
 	fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
-	if !lease.ExpiresAt.After(s.config.now().UTC()) {
-		_, err := w.Expire(ctx, fence)
+	if prepared.expiresLease(lease) || !lease.ExpiresAt.After(s.config.now().UTC()) {
+		_, err := w.ExpireWithCancellation(ctx, fence, prepared.attemptCancellation())
 		if errors.Is(err, tracker.ErrStaleFencingToken) {
 			return tracker.ErrLeaseConflict
 		}
@@ -81,7 +81,7 @@ func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Wr
 	if err := (tenantNativeRunEventParticipant{service: s}).validateNativeLeaseMutation(ctx, w, &leaseAuthority, true); err != nil {
 		return err
 	}
-	if prepared == nil {
+	if prepared == nil || prepared.expired {
 		return corestore.ErrSerializationFailure
 	}
 	if prepared.attempt.ID == "" {
@@ -109,7 +109,7 @@ func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Wr
 		if err := (tenantNativeRunEventParticipant{service: s}).validateNativeRunEvent(ctx, w, &authority, true); err != nil {
 			return err
 		}
-		event := leasestore.AttemptEvent{ID: attempt.ID, Fence: fence, RunID: attempt.RunID, Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: authority.DispatchGeneration, PayloadObjectKey: prepared.payloadReference.Key, PayloadReference: prepared.payloadReference}
+		event := leasestore.AttemptEvent{ID: attempt.ID, Fence: fence, RunID: attempt.RunID, Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: authority.DispatchGeneration, PayloadObjectKey: prepared.payloadReference.Key, PayloadReference: prepared.payloadReference, WorkerCleanupRequired: new(nativeRunCleanupRequired(prepared.event.Data))}
 		stored, duplicate, err := w.RecordAttemptEvent(ctx, event)
 		if err != nil {
 			return err
@@ -137,6 +137,10 @@ func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Wr
 }
 
 func (s *Service) prepareHumanWorkflowCancellation(ctx context.Context, scope nativeScope, issueID int64, request tracker.Transition, stopState string) (*preparedNativeLeaseCancellation, bool, error) {
+	expired, err := s.prepareExpiredNativeLeaseCancellation(ctx, scope, issueID, false)
+	if err != nil || expired != nil {
+		return expired, expired != nil, err
+	}
 	if request.State != "Cancelled" && !strings.EqualFold(request.State, "Blocked") && request.State != stopState {
 		return nil, false, nil
 	}
@@ -144,7 +148,7 @@ func (s *Service) prepareHumanWorkflowCancellation(ctx context.Context, scope na
 		return nil, false, nativeRunEventStorageUnavailable()
 	}
 	var lease leasestore.Lease
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeNativeWorkflowScope(ctx, r, scope); err != nil {
 			return err
 		}

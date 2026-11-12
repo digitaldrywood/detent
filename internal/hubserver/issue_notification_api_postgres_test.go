@@ -80,16 +80,16 @@ func TestPostgresIssueNotificationPreferenceReadWrite(t *testing.T) {
 	}
 }
 
-func disableLegacyPostgresTestHandles(t *testing.T, service *Service, repository *postgres.Repository) {
+func configurePostgresTestRoutes(t *testing.T, service *Service, repository *postgres.Repository) {
 	t.Helper()
 	database := service.database
-	db, reader, authReader, claimReader, previousRepository := database.db, database.reader, database.authReader, database.claimReader, database.postgres
-	database.db, database.reader, database.authReader, database.claimReader, database.postgres = nil, nil, nil, nil, repository
+	previousRepository := database.postgres
+	database.postgres = repository
 	previousEcho := service.echo
 	service.echo = echo.New()
 	service.registerRoutes(service.echo)
 	t.Cleanup(func() {
 		service.echo = previousEcho
-		database.db, database.reader, database.authReader, database.claimReader, database.postgres = db, reader, authReader, claimReader, previousRepository
+		database.postgres = previousRepository
 	})
 }

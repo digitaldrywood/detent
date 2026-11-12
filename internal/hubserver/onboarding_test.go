@@ -22,6 +22,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -32,7 +35,7 @@ import (
 
 func TestOnboardingProgressRetryAndProjectIsolation(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "setup")
+	f := newDefaultNativeFixture(t, Config{})
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
 	request := map[string]any{"idempotency_key": "setup-1", "progress": onboarding.Progress{Repository: "existing", Doctor: true, Artifacts: "local"}}
 	for _, tt := range []struct {
@@ -51,11 +54,15 @@ func TestOnboardingProgressRetryAndProjectIsolation(t *testing.T) {
 			requireNativeStatus(t, response, tt.status)
 		})
 	}
-	cfg := f.service.config
-	if err := f.service.Close(); err != nil {
+	databaseName, previousRepository := f.service.config.Postgres.Connection.Database, f.service.config.TenantRepository
+	previous := f.service
+	if err := previous.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.service = openTestService(t, cfg)
+	f.service = reopenPostgresNativeService(t, previous)
+	if f.service.config.Postgres.Connection.Database != databaseName || f.service.config.TenantRepository == previousRepository {
+		t.Fatal("restart did not reopen the same PostgreSQL database with a fresh repository")
+	}
 	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var setup onboarding.Project
@@ -192,7 +199,7 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 				if configuration == "missing" {
 					checks.Doctor, checks.Provider = "pending", "pending"
 				}
-				response = performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "local_checks": checks})
+				response = performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "local_checks": checks})
 				requireNativeStatus(t, response, http.StatusOK)
 				response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
@@ -208,27 +215,29 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 					t.Fatalf("missing configuration not distinct: %+v", setup.Steps[2])
 				}
 			}
-			for _, visibility := range []struct {
-				name, statement string
-			}{
-				{"removed", "UPDATE runner_identities SET removed_at='2026-01-01T00:00:00Z' WHERE id=?"},
-				{"another organization", "UPDATE runner_identities SET removed_at=NULL, organization_id='org_onboarding_other' WHERE id=?"},
-			} {
-				if visibility.name == "another organization" {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,created_at) VALUES ('org_onboarding_other','Other organization','2026-01-01T00:00:00Z')"); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), visibility.statement, r.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
-				response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				decodeHubResponse(t, response, &setup)
-				if len(setup.Runners) != 0 {
-					t.Fatalf("%s runner exposed: %+v", visibility.name, setup.Runners)
-				}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, r.identityPath(), adminToken, nil), http.StatusNoContent)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &setup)
+			if len(setup.Runners) != 0 {
+				t.Fatalf("removed runner exposed: %+v", setup.Runners)
 			}
+			foreign := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "foreign onboarding")
+			foreignRunner := prepareRunner(t, foreign, runnerauth.Read, runnerauth.Heartbeat)
+			foreignRunner.enroll(t)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, foreign.base+"/onboarding", foreign.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &setup)
+			if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != foreignRunner.binding.RunnerID {
+				t.Fatalf("foreign tenant runner is not usable in its own project: %+v", setup.Runners)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &setup)
+			if len(setup.Runners) != 0 {
+				t.Fatalf("another organization runner exposed: %+v", setup.Runners)
+			}
+
 		})
 	}
 }
@@ -255,12 +264,16 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 		{"ungranted owner", "owner", "", 404, 404, 404, false, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newHostedSecurityFixture(t)
-			ref, _, _ := seedHostedArtifact(t, f)
+			f := newPostgresArtifactFixture(t, func(cfg *Config) {
+				plans := pilotHostedPlans()
+				cfg.Hosted.Plans = &plans
+				cfg.Hosted.PublicURL = "http://127.0.0.1:7777"
+			})
+			organization := f.service.accessOrganization()
+			seedNativeFixturePolicy(t, f.service, string(organization)+"/"+string(f.project))
+			ref, _, _ := seedPostgresHostedArtifact(t, f)
 			owner := f.user(t, "runner-owner", "owner", "owner@example.test", "write", "")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT 'prj_onboarding_sibling',organization_id,'Sibling project',profile,states_json,created_at FROM projects WHERE id=?", f.project); err != nil {
-				t.Fatal(err)
-			}
+			createOnboardingFixtureProject(t, f.service, organization, f.project, "prj_onboarding_sibling", "Sibling project", "native")
 			user := f.user(t, "setup-user", tt.role, "setup@example.test", tt.grant, "")
 			if tt.manage {
 				f.grant(t, user, true, true)
@@ -276,7 +289,7 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 			if tt.routed {
 				projects = append(projects, f.project)
 			}
-			enrollmentResponse := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments", runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: projects, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 60})
+			enrollmentResponse := f.request(t, owner, http.MethodPost, "/api/v2/organizations/"+string(organization)+"/runner-enrollments", runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: projects, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 60})
 			requireNativeStatus(t, enrollmentResponse, http.StatusCreated)
 			var enrollment runnerauth.Enrollment
 			decodeHubResponse(t, enrollmentResponse, &enrollment)
@@ -285,13 +298,11 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 				t.Fatal(err)
 			}
 			redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "example-host", DisplayName: "Example runner", Capacity: 2, Version: "test"}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(organization)+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 			if tt.manage {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT 'prj_onboarding_unrelated',organization_id,'Unrelated project',profile,states_json,created_at FROM projects WHERE id=?", f.project); err != nil {
-					t.Fatal(err)
-				}
+				createOnboardingFixtureProject(t, f.service, organization, f.project, "prj_onboarding_unrelated", "Unrelated project", "native")
 			}
-			route := "/api/v2/organizations/org_security/runners/" + binding.RunnerID + "/routing"
+			route := "/api/v2/organizations/" + string(organization) + "/runners/" + binding.RunnerID + "/routing"
 			routeRead := f.request(t, user, http.MethodGet, route, nil)
 			wantRoute := http.StatusNotFound
 			if tt.role == "owner" || tt.role == "admin" || tt.manage {
@@ -308,7 +319,7 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 			if wantRoute == http.StatusNotFound && strings.Contains(routeRead.Body.String(), "Sibling project") {
 				t.Fatal("runner read disclosed an inaccessible project name")
 			}
-			requireNativeStatus(t, f.request(t, user, http.MethodGet, strings.Replace(route, "org_security", "org_other", 1), nil), http.StatusNotFound)
+			requireNativeStatus(t, f.request(t, user, http.MethodGet, strings.Replace(route, string(organization), "org_other", 1), nil), http.StatusNotFound)
 			response := f.request(t, user, http.MethodGet, f.base+"/onboarding", nil)
 			requireNativeStatus(t, response, tt.read)
 			if tt.read == 200 {
@@ -372,7 +383,18 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT token_id FROM runner_identities WHERE id=?)", binding.RunnerID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					for _, project := range []tracker.ProjectID{f.project, "prj_onboarding_sibling"} {
+						if err := w.DeleteAccessTokenGrant(t.Context(), identity.TokenID, project); err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, f.request(t, user, http.MethodGet, route, nil), http.StatusOK)
@@ -436,12 +458,17 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", issue), http.StatusOK)
 	}
 	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", first).Scan(&count); err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_browser_preview", corestore.Serving, func(r tenantstore.Reader) error {
+		page, err := r.ScanWorkItems(t.Context(), tracker.ProjectID(first), corestore.ScanCursor{}, 2)
+		count = len(page.Items)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
 		t.Fatalf("issues=%d", count)
 	}
+
 	requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {first}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
 }
 
@@ -474,18 +501,13 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 			if test.report != "" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusOK)
 			}
-			if test.bound != "" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository=? WHERE id=?", test.bound, f.project); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.appBinding {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO repositories(id, github_node_id, github_owner, github_name, created_at, updated_at) VALUES(1, 'repo_other', 'Other', 'Repository', ?, ?)", formatHubTime(time.Now()), formatHubTime(time.Now())); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=1 WHERE id=?", f.project); err != nil {
-					t.Fatal(err)
-				}
+			if test.bound != "" || test.appBinding {
+				updateOnboardingFixtureProject(t, f.service, "org_browser_preview", tracker.ProjectID(f.project), func(project *projectstore.Record) {
+					project.Settings.CheckoutRepository = test.bound
+					if test.appBinding {
+						project.Settings.Repository, project.Settings.RepositoryEnabled = "Other/Repository", true
+					}
+				})
 			}
 			before := f.setupRequest(t, "owner", http.MethodGet, base+"/onboarding", nil)
 			requireNativeStatus(t, before, http.StatusOK)
@@ -498,7 +520,11 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 			if test.repository != "" {
 				repository = test.repository
 			}
-			request := map[string]any{"idempotency_key": "checkout-association", "expected_revision": "1", "repository": repository, "source": "runner_checkout"}
+			expectedRevision := "1"
+			if test.bound != "" || test.appBinding {
+				expectedRevision = "2"
+			}
+			request := map[string]any{"idempotency_key": "checkout-association", "expected_revision": expectedRevision, "repository": repository, "source": "runner_checkout"}
 			requireNativeStatus(t, f.setupRequest(t, "viewer", http.MethodPost, base+"/onboarding/repository", request), http.StatusNotFound)
 			response := f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
 			requireNativeStatus(t, response, test.status)
@@ -542,7 +568,11 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 			heartbeat["checkout_repository"] = "Acme/Private"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusOK)
 			var reported string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT repository FROM runner_checkout_repositories WHERE runner_id=? AND project_id=?", runner.RunnerID, f.project).Scan(&reported); err != nil || reported != "Acme/Private" {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_browser_preview", corestore.Serving, func(r tenantstore.Reader) error {
+				report, err := r.RunnerCheckoutReport(t.Context(), runner.RunnerID, tracker.ProjectID(f.project))
+				reported = report.Repository
+				return err
+			}); err != nil || reported != "Acme/Private" {
 				t.Fatalf("checkout report = %q: %v", reported, err)
 			}
 			response = f.setupRequest(t, "owner", http.MethodGet, base+"/integration", nil)
@@ -552,31 +582,48 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 				t.Fatal("matching checkout was not verified")
 			}
 			if test.report == "" {
-				for _, observation := range []struct {
-					name, sql string
-					value     string
-				}{
-					{name: "revoked runner", sql: "UPDATE api_tokens SET revoked_at=? WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", value: formatHubTime(time.Now())},
-					{name: "stale checkout", sql: "UPDATE runner_checkout_repositories SET reported_at=? WHERE runner_id=?", value: formatHubTime(time.Now().Add(-10 * time.Minute))},
-				} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), observation.sql, observation.value, runner.RunnerID); err != nil {
+				for _, observation := range []string{"stale checkout", "revoked runner"} {
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_browser_preview", corestore.Serving, func(w tenantstore.Writer) error {
+						if observation == "stale checkout" {
+							report, err := w.RunnerCheckoutReport(t.Context(), runner.RunnerID, tracker.ProjectID(f.project))
+							if err != nil {
+								return err
+							}
+							report.ReportedAt = f.service.config.now().Add(-10 * time.Minute)
+							return w.ReplaceRunnerCheckoutReport(t.Context(), report)
+						}
+						identity, err := w.RunnerIdentity(t.Context(), runner.RunnerID)
+						if err != nil {
+							return err
+						}
+						return w.RevokeAccessCredential(t.Context(), identity.TokenID, f.service.config.now())
+					}); err != nil {
 						t.Fatal(err)
 					}
 					response = f.setupRequest(t, "owner", http.MethodGet, base+"/integration", nil)
 					requireNativeStatus(t, response, http.StatusOK)
 					decodeHubResponse(t, response, &integration)
 					if integration.CheckoutVerified {
-						t.Fatalf("%s verified a checkout", observation.name)
+						t.Fatalf("%s verified a checkout", observation)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=NULL WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", runner.RunnerID); err != nil {
-						t.Fatal(err)
+					if observation == "stale checkout" {
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusOK)
+						response = f.setupRequest(t, "owner", http.MethodGet, base+"/integration", nil)
+						requireNativeStatus(t, response, http.StatusOK)
+						decodeHubResponse(t, response, &integration)
+						if !integration.CheckoutVerified {
+							t.Fatal("refresh did not restore checkout verification before revocation")
+						}
 					}
 				}
 			}
-			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM repositories").Scan(&count); err != nil || count != 0 {
-				t.Fatalf("GitHub repository projection count = %d: %v", count, err)
+			response = f.setupRequest(t, "owner", http.MethodGet, base+"/integration", nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &integration)
+			if integration.Repository != "" || integration.RepositoryEnabled {
+				t.Fatalf("checkout association created a GitHub integration: %+v", integration)
 			}
+
 			if calls := backend.Requests(); len(calls) != 0 {
 				t.Fatalf("hosted checkout association called GitHub: %+v", calls)
 			}
@@ -586,8 +633,14 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 
 func TestOnboardingCustomerBindingValidation(t *testing.T) {
 	t.Parallel()
-	f := newHostedSecurityFixture(t)
-	ref, _, _ := seedHostedArtifact(t, f)
+	f := newPostgresArtifactFixture(t, func(cfg *Config) {
+		plans := pilotHostedPlans()
+		cfg.Hosted.Plans = &plans
+		cfg.Hosted.PublicURL = "http://127.0.0.1:7777"
+	})
+	organization := f.service.accessOrganization()
+	seedNativeFixturePolicy(t, f.service, string(organization)+"/"+string(f.project))
+	ref, _, _ := seedPostgresHostedArtifact(t, f)
 	user := f.user(t, "setup-owner", "owner", "setup@example.test", "write", "")
 	for _, tt := range []struct {
 		name, mode, origin string
@@ -643,6 +696,7 @@ func seedHostedOnboardingJourney(t *testing.T, f *browserHostedFixture) *browser
 	requireNativeStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, response, &issue)
+	reportRunnerCapacity(t, f.service, base, credential, binding.MachineID, redemption.DisplayName, redemption.BackendIsolation, redemption.Capacity)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", credential, tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: binding.MachineID, SessionID: "first-run", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease
@@ -746,7 +800,7 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	if approved != nil || !slices.Equal(ids, want) {
 		t.Fatalf("observed policies = %v, want %v (approved %+v)", ids, want, approved)
 	}
-	project, err := readNativeProject(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+	project, err := f.service.readProjectRecord(t.Context(), analyticsTestScope(t, f))
 	if err != nil || !reflect.DeepEqual(project.States, f.project.States) {
 		t.Fatalf("unapproved runner report changed workflow: %#v, %v", project, err)
 	}
@@ -932,7 +986,7 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 				checks.ConfigurationMessage = "intake: retired configuration key; server.port: retired configuration key"
 				checks.ConfigurationFix = "Run detent config migrate detent.yaml"
 			}
-			body := map[string]any{"capacity": 1, "version": "test"}
+			body := map[string]any{"display_name": "Runner", "capacity": 1, "version": "test"}
 			if tt.cause != "" {
 				checks.CheckoutMessage = "Cannot clone repository: " + tt.cause
 				checks.CheckoutFix = "Check the reported repository failure"
@@ -1158,26 +1212,19 @@ func TestRunnerFirstOnboardingSteps(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "runner-first")
 			if !test.config {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
-					t.Fatal(err)
-				}
+				clearNativeFixturePolicy(t, f)
 			}
 			if test.repository {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository=? WHERE id=?", "example-org/example-project", f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				updateOnboardingFixtureProject(t, f.service, f.project.OrganizationID, f.project.ID, func(project *projectstore.Record) {
+					project.Settings.CheckoutRepository = "example-org/example-project"
+				})
 			}
 			if test.runner {
 				r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 				r.enroll(t)
 				if test.checks {
-					raw, err := json.Marshal(map[tracker.ProjectID]runnerauth.LocalChecks{f.project.ID: {Checkout: "passed", Doctor: "passed", Provider: "passed"}})
-					if err != nil {
-						t.Fatal(err)
-					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET local_checks_json=? WHERE id=?", string(raw), r.binding.RunnerID); err != nil {
-						t.Fatal(err)
-					}
+					checks := runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed"}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "local_checks": checks, "checkout_repository": "example-org/example-project"}), http.StatusOK)
 				}
 			}
 			if test.files {
@@ -1217,37 +1264,42 @@ func TestRunnerCheckoutBindingRefusals(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
-			f := newNativeFixture(t, service, "", "binding-refusal")
-			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET profile=?,checkout_repository=? WHERE id=?", tt.profile, tt.checkout, f.project.ID); err != nil {
-				t.Fatal(err)
+			f := newNativeFixture(t, nil, "", "binding-refusal")
+			service := f.service
+			revision := tt.revision
+			if tt.profile != "native" {
+				project := tracker.ProjectID(newNativeID("prj"))
+				createOnboardingFixtureProject(t, service, f.project.OrganizationID, f.project.ID, project, "Compatible binding refusal", tt.profile)
+				f.project.ID, f.project.Profile = project, tt.profile
+				f.base = "/api/v2/organizations/" + string(f.project.OrganizationID) + "/projects/" + string(project)
 			}
-			if tt.name == "immutable GitHub repository" {
-				if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO repositories(id,github_node_id,github_owner,github_name,created_at,updated_at) VALUES(1,'repo_bound','example-org','other',?,?)", formatHubTime(time.Now()), formatHubTime(time.Now())); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=1 WHERE id=?", f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+			if tt.checkout != "" || tt.name == "immutable GitHub repository" {
+				project := updateOnboardingFixtureProject(t, service, f.project.OrganizationID, f.project.ID, func(project *projectstore.Record) {
+					project.Settings.CheckoutRepository = tt.checkout
+					if tt.name == "immutable GitHub repository" {
+						project.Settings.Repository, project.Settings.RepositoryEnabled = "example-org/other", true
+					}
+				})
+				revision = tracker.Revision(project.Settings.Revision)
 			}
 			if tt.name == "active lease" {
 				issue := f.create(t, "active work")
-				now := time.Now().UTC()
-				at := formatHubTime(now)
-				if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES('binding-machine','example',1,'test',?,?,?)", at, at, at); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'binding-lease',id,'binding-machine','binding-session',?,?,?,?,? FROM issues WHERE native_id=?", formatHubTime(now.Add(time.Hour)), at, at, at, at, issue.WorkItemID); err != nil {
-					t.Fatal(err)
+				worker, claim := hostedPlanWorkRequest(t, f, issue, "binding-session")
+				response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/claims", worker, claim)
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.ID == "" || lease.WorkItemID != issue.WorkItemID {
+					t.Fatalf("binding fixture did not claim its work item: %+v", lease)
 				}
 			}
-			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/onboarding/repository", testHubAdminToken, bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: "refusal"}, ExpectedRevision: tt.revision, Repository: tt.repository, Source: "runner_checkout"})
+			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/onboarding/repository", testHubAdminToken, bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: "refusal"}, ExpectedRevision: revision, Repository: tt.repository, Source: "runner_checkout"})
 			var refusal nativeError
 			decodeHubResponse(t, response, &refusal)
 			if response.Code < 400 || refusal.Code != tt.code || refusal.Message == "" {
 				t.Fatalf("refusal = %d %s", response.Code, response.Body.String())
 			}
-			call := projectCall(t, "bind_native_repository", string(f.project.ID), "tool-refusal", operatortool.RepositoryInput{ExpectedRevision: tt.revision, Repository: tt.repository, Source: "runner_checkout"})
+			call := projectCall(t, "bind_native_repository", string(f.project.ID), "tool-refusal", operatortool.RepositoryInput{ExpectedRevision: revision, Repository: tt.repository, Source: "runner_checkout"})
 			response = performHubWorkCall(t, service, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/mcp", testHubAdminToken, call.Name, map[string]any{
 				"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 				"params": map[string]any{"name": call.Name, "arguments": call.Arguments, "_meta": json.RawMessage(fleetProtocolMeta)},
@@ -1268,4 +1320,35 @@ func TestRunnerCheckoutBindingRefusals(t *testing.T) {
 			}
 		})
 	}
+}
+
+func createOnboardingFixtureProject(t *testing.T, service *Service, organization tracker.OrganizationID, template, id tracker.ProjectID, name, profile string) {
+	t.Helper()
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		source, err := w.ProjectRecord(t.Context(), template)
+		if err != nil {
+			return err
+		}
+		_, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: name, Profile: profile, RequireDependencies: source.Core.RequireDependencies}, States: source.States})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func updateOnboardingFixtureProject(t *testing.T, service *Service, organization tracker.OrganizationID, id tracker.ProjectID, mutate func(*projectstore.Record)) projectstore.Record {
+	t.Helper()
+	var stored projectstore.Record
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), id)
+		if err != nil {
+			return err
+		}
+		mutate(&project)
+		stored, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return stored
 }

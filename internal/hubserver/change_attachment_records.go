@@ -14,7 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scope nativeScope, fields []cloudContentField, artifacts []tracker.ChangeArtifact, locked bool) ([]string, error) {
+func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scope nativeScope, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string, locked bool) ([]string, error) {
 	project, err := r.ProjectRecord(ctx, scope.project)
 	if err != nil {
 		return nil, err
@@ -75,7 +75,7 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 	err = changerequest.ValidateVisualArtifacts(artifacts, string(scope.organization), string(scope.project), resolve)
 	var refusal *attachment.VisualReferenceError
 	if errors.As(err, &refusal) {
-		return nil, nativePublicInvalid(fmt.Sprintf("artifacts[%d]: %s", refusal.Block-1, attachment.VisualReferenceMessage))
+		return nil, nativePublicInvalid(fmt.Sprintf("%s[%d]: %s", artifactName, refusal.Block-1, attachment.VisualReferenceMessage))
 	}
 	if err != nil {
 		return nil, err
@@ -88,8 +88,8 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 	return ids, nil
 }
 
-func bindChangeRecordContent(ctx context.Context, w tenantstore.Writer, scope nativeScope, item string, fields []cloudContentField, artifacts []tracker.ChangeArtifact) error {
-	ids, err := validateChangeRecordContent(ctx, w, scope, fields, artifacts, true)
+func bindChangeRecordContent(ctx context.Context, w tenantstore.Writer, scope nativeScope, item string, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string) error {
+	ids, err := validateChangeRecordContent(ctx, w, scope, fields, artifacts, artifactName, true)
 	if err != nil {
 		return err
 	}

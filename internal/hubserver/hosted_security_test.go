@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +25,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -224,7 +226,7 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 	for _, organization := range []string{"org_first", "org_second", "org_third"} {
 		t.Run(organization, func(t *testing.T) {
 			t.Parallel()
-			service := openTestService(t, Config{
+			service := openHostedPostgresService(t, Config{
 				DatabasePath: hostedTestDatabasePath(t),
 				Hosted: &HostedConfig{
 					OrganizationID:       organization,
@@ -233,27 +235,52 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 					Provider:             newHostedSecurityProvider(),
 				},
 			})
-			if service.database.schemaVersion != supportedSchemaVersion(t) {
-				t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
+			version, err := postgres.LatestSchemaVersion()
+			if err != nil {
+				t.Fatal(err)
+			}
+			admin := hostedPostgresAdmin(t, service)
+			var applied int64
+			if err := admin.QueryRowContext(t.Context(), "SELECT max(version_id) FROM goose_db_version WHERE is_applied").Scan(&applied); err != nil {
+				t.Fatal(err)
+			}
+			if service.database.schemaVersion != version || applied != version {
+				t.Fatalf("schema version = %d, want %d", applied, version)
 			}
 			var boundOrganization string
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT organization_id FROM hosted_tenant").Scan(&boundOrganization); err != nil {
+			if err := service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(r tenantstore.Reader) error {
+				tenant, err := r.AccessTenant(t.Context())
+				boundOrganization = string(tenant.OrganizationID)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if boundOrganization != organization {
 				t.Fatalf("tenant binding = %q, want %q", boundOrganization, organization)
 			}
 			var sessions int
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_sessions").Scan(&sessions); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_sessions WHERE organization_id=$1", organization).Scan(&sessions); err != nil {
 				t.Fatal(err)
 			}
 			if sessions != 0 {
 				t.Fatalf("new fixture contains %d sessions", sessions)
 			}
-			if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at) VALUES ('same-token','fixture@example.test','{}',?,?)", testTimestamp, testTimestamp); err != nil {
+			now := service.config.now().UTC().Truncate(time.Microsecond)
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
+				return w.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: tracker.OrganizationID(organization), Hash: apikey.HashToken("same-token"), Email: "fixture@example.test", Subject: "fixture_" + organization, ProviderOrganizationID: "provider_" + organization, SessionID: "session_" + organization, CreatedAt: now, ExpiresAt: now.Add(time.Hour), IdentityCreatedAt: now, IdentityExpiresAt: now.Add(time.Hour)})
+			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := service.database.db.ExecContext(t.Context(), "CREATE TABLE fixture_probe (id INTEGER PRIMARY KEY)"); err != nil {
+			if err := service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.AccessSession(t.Context(), apikey.HashToken("same-token"))
+				if err == nil && (row.OrganizationID != tracker.OrganizationID(organization) || row.SessionID != "session_"+organization) {
+					return errors.New("session crossed tenant binding")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), "CREATE TABLE fixture_probe (id bigint PRIMARY KEY)"); err != nil {
 				t.Fatalf("fixture schema was shared: %v", err)
 			}
 			if err := service.database.health(t.Context()); err != nil {
@@ -265,7 +292,7 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 		for range 2 {
 			f := newHostedSecurityFixture(t)
 			var sessions int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_sessions").Scan(&sessions); err != nil {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_sessions WHERE organization_id=$1", f.service.accessOrganization()).Scan(&sessions); err != nil {
 				t.Fatal(err)
 			}
 			if sessions != 0 {
@@ -310,23 +337,12 @@ func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSe
 	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
 }
 
-func seedHostedSecurityProject(ctx context.Context, db *sql.DB, organization string) error {
+func seedHostedSecurityProject(ctx context.Context, repository tenantstore.Repository, organization tracker.OrganizationID) error {
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
-	raw, err := json.Marshal(states)
-	if err != nil {
+	return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_security", Name: "private-project-sentinel", Profile: "native", CreatedAt: time.Now().UTC()}, States: states})
 		return err
-	}
-	project := tracker.ProjectID("prj_security")
-	now := formatHubTime(time.Now())
-	if _, err := db.ExecContext(ctx, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) VALUES (?,?,'private-project-sentinel','native',?,?,0)", project, organization, string(raw), now); err != nil {
-		return err
-	}
-	for _, state := range states {
-		if _, err := db.ExecContext(ctx, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", project, state.Name, state.Name, state.Terminal, state.Dispatchable, now, now); err != nil {
-			return err
-		}
-	}
-	return nil
+	})
 }
 
 func (f hostedSecurityFixture) user(t *testing.T, name, role, email, grant, supportActor string) hostedSecurityUser {
@@ -358,6 +374,25 @@ func (f hostedSecurityFixture) user(t *testing.T, name, role, email, grant, supp
 		f.grant(t, user, grant == "write", false)
 	}
 	return user
+}
+
+func (f hostedSecurityFixture) withoutProjectAccess(t *testing.T, user hostedSecurityUser) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(t.Context(), user.identity.Subject)
+		if err != nil {
+			return err
+		}
+		if err := w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, f.project); err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err := w.DeleteAccessTokenGrant(t.Context(), member.PrincipalID, f.project); err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f hostedSecurityFixture) grant(t *testing.T, user hostedSecurityUser, write, runner bool) {
@@ -448,6 +483,9 @@ func TestHostedSecurityRoleProjectMatrix(t *testing.T) {
 				t.Parallel()
 				f := newHostedSecurityFixture(t)
 				user := f.user(t, role, role, role+"@example.test", grant, "")
+				if grant == "" {
+					f.withoutProjectAccess(t, user)
+				}
 				readStatus := http.StatusNotFound
 				if grant != "" {
 					readStatus = http.StatusOK
@@ -485,6 +523,13 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 	f.seedIssue(t, 1)
 	staff := f.user(t, "staff", "owner", "staff@example.test", "write", "")
 	customer := f.user(t, "customer", "owner", "customer@example.test", "write", "")
+	bootstrapToken := newNativeID("token")
+	seeded := f.service.config.now().UTC()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: bootstrapTokenID, Name: "Bootstrap administrator", Hash: apikey.HashToken(bootstrapToken), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", Kind: "service", CreatedAt: seeded, UpdatedAt: seeded})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name   string
 		path   string
@@ -493,8 +538,10 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 		want   int
 	}{
 		{name: "staff report", path: "/api/cloud/metadata", user: staff, want: http.StatusOK},
-		{name: "reporting bearer", path: "/api/cloud/metadata", bearer: testHubAdminToken, want: http.StatusOK},
+		{name: "reporting bearer", path: "/api/cloud/metadata", bearer: bootstrapToken, want: http.StatusOK},
+		{name: "ordinary admin bearer", path: "/api/cloud/metadata", bearer: testHubAdminToken, want: http.StatusForbidden},
 		{name: "customer report", path: "/api/cloud/metadata", user: customer, want: http.StatusForbidden},
+		{name: "owner billing report", path: "/api/cloud/billing", user: customer, want: http.StatusOK},
 		{name: "staff native content", path: f.base + "/work-items", user: staff, want: http.StatusForbidden},
 		{name: "staff organization members", path: "/api/v2/organizations/org_security/members", user: staff, want: http.StatusForbidden},
 		{name: "staff fleet", path: "/api/v2/organizations/org_security/fleet", user: staff, want: http.StatusForbidden},
@@ -514,6 +561,46 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request)
 			requireNativeStatus(t, response, test.want)
+			if test.want == http.StatusOK && (test.path == "/api/cloud/metadata" || test.path == "/api/cloud/billing") {
+				var report hostedMetadataResponse
+				decodeHubResponse(t, response, &report)
+				if report.OrganizationID != "org_security" || report.ProviderOrganizationID != "org_provider" || !report.Healthy || report.PlanID == "" || report.Entitlement.OrganizationID != "org_security" {
+					t.Fatalf("tenant metadata = %+v", report)
+				}
+				if report.Members == nil || *report.Members != 2 || report.Projects == nil || *report.Projects != 1 || report.Runners == nil || *report.Runners != 0 || report.LastActivity == nil || report.LastActivity.IsZero() {
+					t.Fatalf("tenant metadata populations = %+v", report)
+				}
+				if report.CostDrivers.ActiveIssues == nil || *report.CostDrivers.ActiveIssues != 1 || report.CostDrivers.ArchivedIssues == nil || *report.CostDrivers.ArchivedIssues != 0 {
+					t.Fatalf("tenant issue populations = %+v", report.CostDrivers)
+				}
+				if report.DatabaseBytes != nil || report.CostDrivers.DatabaseBytes != nil || report.CostDrivers.WALBytes != nil || !slices.Contains(report.UnavailableUsage, "database_bytes") || !slices.Contains(report.UnavailableUsage, "wal_bytes") {
+					t.Fatalf("tenant physical storage must be unavailable: %+v", report)
+				}
+				if (report.Events == nil) != slices.Contains(report.UnavailableUsage, "events") {
+					t.Fatalf("event population availability = %+v", report)
+				}
+				var fields map[string]json.RawMessage
+				decodeHubResponse(t, response, &fields)
+				for name := range fields {
+					if !slices.Contains([]string{"organization_id", "provider_organization_id", "members", "projects", "runners", "events", "last_activity", "database_bytes", "healthy", "unavailable_usage", "entitlement", "plan_id", "storage_quota_bytes", "event_quota", "cost_drivers"}, name) {
+						t.Fatalf("unexpected metadata field %q", name)
+					}
+				}
+				var drivers map[string]json.RawMessage
+				if err := json.Unmarshal(fields["cost_drivers"], &drivers); err != nil {
+					t.Fatal(err)
+				}
+				for name := range drivers {
+					if !slices.Contains([]string{"active_issues", "archived_issues", "database_bytes", "wal_bytes", "requests", "request_bytes", "response_bytes", "artifact_retained_bytes", "artifact_reserved_bytes", "relay_bytes", "window_ends_at", "operator_ai", "operator_ai_cost_usd"}, name) {
+						t.Fatalf("unexpected metadata cost field %q", name)
+					}
+				}
+				for _, field := range []json.RawMessage{fields["database_bytes"], drivers["database_bytes"], drivers["wal_bytes"]} {
+					if string(field) != "null" {
+						t.Fatalf("unknown physical storage = %s, want null", field)
+					}
+				}
+			}
 			for _, sentinel := range []string{"private-project-sentinel", "private-issue-sentinel", "private-body-sentinel", testHubAdminToken} {
 				if strings.Contains(response.Body.String(), sentinel) {
 					t.Fatalf("response exposed %q", sentinel)
@@ -548,13 +635,18 @@ func TestHostedSecurityRunnerPermissionsAreSeparate(t *testing.T) {
 			user := f.user
 			f.grant(t, user, false, test.runner)
 			if test.missing {
-				operatorSQL(t, f.hostedSecurityFixture, `INSERT INTO projects(id,organization_id,name,profile,created_at) VALUES ('prj_grantless','org_security','digitaldrywood/detent','github_compatible','now')`)
-				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE project_id='prj_grantless'")
-				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM token_grants WHERE project_id='prj_grantless'")
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.service.accessOrganization(), ID: "prj_grantless", Name: "owner/repository", Profile: "github_compatible", CreatedAt: f.service.config.now()}, States: nativeFixtureStates()}); err != nil {
+						return err
+					}
+					return w.(accessstore.ProjectAccessCleaner).DeleteAccessProjectGrants(t.Context(), "prj_grantless")
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			response := f.request(t, user, http.MethodGet, "/api/v2/organizations/org_security/runners", nil)
 			requireNativeStatus(t, response, test.want)
-			if test.role == "member" && test.missing && !strings.Contains(response.Body.String(), "digitaldrywood/detent") {
+			if test.role == "member" && test.missing && !strings.Contains(response.Body.String(), "owner/repository") {
 				t.Fatalf("denial does not name missing project: %s", response.Body.String())
 			}
 			credential, err := currentHubOperator(ctx)
@@ -577,7 +669,7 @@ func TestHostedSecurityRunnerPermissionsAreSeparate(t *testing.T) {
 				if test.want == http.StatusOK && denial != nil || test.want != http.StatusOK && !errors.Is(denial, operatortool.ErrAccessDenied) {
 					t.Fatalf("operator runner access=%v", denial)
 				}
-				if test.role == "member" && test.missing && !strings.Contains(denial.Error(), "digitaldrywood/detent") {
+				if test.role == "member" && test.missing && !strings.Contains(denial.Error(), "owner/repository") {
 					t.Fatalf("operator denial does not name missing project: %v", denial)
 				}
 			}
@@ -625,7 +717,9 @@ func TestHostedSecuritySupportSessionConstraints(t *testing.T) {
 			}
 		}, want: http.StatusForbidden},
 		{name: "revoked local session", role: "member", grant: "write", change: func(t *testing.T, f hostedSecurityFixture, u hostedSecurityUser) {
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_sessions SET revoked_at = ? WHERE token_hash = ?", formatHubTime(time.Now()), apikey.HashToken(u.token)); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+				return w.RevokeAccessSession(t.Context(), apikey.HashToken(u.token), f.service.config.now().UTC())
+			}); err != nil {
 				t.Fatal(err)
 			}
 		}, want: http.StatusUnauthorized},
@@ -641,6 +735,9 @@ func TestHostedSecuritySupportSessionConstraints(t *testing.T) {
 			t.Parallel()
 			f := newHostedSecurityFixture(t)
 			user := f.user(t, "customer", test.role, "customer@example.test", test.grant, "support@example.test")
+			if test.grant == "" {
+				f.withoutProjectAccess(t, user)
+			}
 			if test.change != nil {
 				test.change(t, f, user)
 			}
@@ -659,14 +756,23 @@ func TestHostedSecuritySupportSessionConstraints(t *testing.T) {
 				requireNativeStatus(t, f.request(t, user, http.MethodGet, "/api/cloud/metadata", nil), http.StatusForbidden)
 				if wantWrite != http.StatusOK {
 					var count int
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=?", user.identity.Hosted.SessionID).Scan(&count); err != nil || count != 1 {
+					if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id=$1 AND session_id=$2", f.service.accessOrganization(), user.identity.Hosted.SessionID).Scan(&count); err != nil || count != 1 {
 						t.Fatalf("support read audit rows=%d, want 1: %v", count, err)
 					}
 				}
-				var actor, effective, organization, reason, raw string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,organization_id,reason,event || route || project_id FROM hosted_audit WHERE session_id = ? ORDER BY id DESC LIMIT 1", user.identity.Hosted.SessionID).Scan(&actor, &effective, &organization, &reason, &raw); err != nil {
+				var auditID int64
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT id FROM hosted_audit WHERE organization_id=$1 AND session_id=$2 ORDER BY id DESC LIMIT 1", f.service.accessOrganization(), user.identity.Hosted.SessionID).Scan(&auditID); err != nil {
 					t.Fatal(err)
 				}
+				var audit accessstore.Audit
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					audit, err = r.AccessAudit(t.Context(), auditID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				actor, effective, organization, reason, raw := audit.ActualActor, audit.EffectiveUser, string(audit.OrganizationID), audit.Reason, audit.Event+audit.Route+string(audit.ProjectID)
 				if actor != "support@example.test" || effective != user.identity.Subject || organization != "org_security" || reason != "customer-request" || strings.Contains(raw, "private-body-sentinel") || strings.Contains(raw, user.token) {
 					t.Fatalf("audit actor=%q effective=%q organization=%q reason=%q", actor, effective, organization, reason)
 				}
@@ -687,7 +793,45 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	requireNativeStatus(t, created, http.StatusOK)
 	// Simulate a pre-upgrade receipt: its session suffix must not let a
 	// reconnect create a duplicate or evade changed-payload conflicts.
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_commands SET operation=operation || ' ' || ? WHERE command_key=?", writer.identity.Hosted.SessionID, command.IdempotencyKey); err != nil {
+	var original eventstore.Receipt
+	operation := http.MethodPost + " " + f.base + "/work-items"
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+		member, err := r.AccessMember(t.Context(), writer.identity.Subject)
+		if err != nil {
+			return err
+		}
+		original, err = r.Receipt(t.Context(), member.PrincipalID, operation, command.IdempotencyKey)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := hostedPostgresAdmin(t, f.service).BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), "SET LOCAL session_replication_role=replica"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"native_commands", "native_command_states"} {
+		result, err := tx.ExecContext(t.Context(), "UPDATE "+table+" SET operation=operation || ' ' || $1 WHERE organization_id=$2 AND actor_id=$3 AND operation=$4 AND command_key=$5", writer.identity.Hosted.SessionID, original.OrganizationID, original.ActorID, operation, command.IdempotencyKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count, err := result.RowsAffected(); err != nil || count != 1 {
+			t.Fatalf("legacy receipt %s rows=%d error=%v", table, count, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+		receipt, err := r.ReplayReceipt(t.Context(), original.ActorID, operation, command.IdempotencyKey)
+		if err == nil && (receipt.Operation != operation+" "+writer.identity.Hosted.SessionID || receipt.RequestHash != original.RequestHash || receipt.PayloadSHA256 != original.PayloadSHA256) {
+			return errors.New("legacy receipt fixture lost immutable identity")
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	response := f.request(t, writer, http.MethodGet, f.base+"/work-items?limit=1", nil)
@@ -731,7 +875,9 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	}
 
 	requireNativeStatus(t, f.request(t, secondSession, http.MethodGet, f.base+"/work-items?limit=1&cursor="+url.QueryEscape(page.NextCursor), nil), http.StatusUnprocessableEntity)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ?", writer.identity.Subject); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteAccessProjectGrant(t.Context(), writer.identity.Subject, f.project)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -793,7 +939,7 @@ func TestHostedSecurityAdministrationRejectsBearerCookieMix(t *testing.T) {
 				f.service.Handler().ServeHTTP(response, request)
 				requireNativeStatus(t, response, http.StatusNotFound)
 				var count int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects").Scan(&count); err != nil || count != 1 {
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM projects WHERE organization_id=$1", f.service.accessOrganization()).Scan(&count); err != nil || count != 1 {
 					t.Fatalf("mixed authentication changed projects: count=%d, error=%v", count, err)
 				}
 			})
@@ -849,7 +995,7 @@ func TestHostedSecuritySSEAudit(t *testing.T) {
 				t.Fatalf("initial event = %q", kind)
 			}
 			var count, attributed int
-			err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*),coalesce(sum(actual_actor=? AND effective_user=? AND reason=?),0) FROM hosted_audit WHERE session_id = ? AND route = ?", actor, user.identity.Subject, user.identity.Hosted.SupportReason, user.identity.Hosted.SessionID, "GET /projects/:project/events").Scan(&count, &attributed)
+			err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*),count(*) FILTER(WHERE actual_actor=$1 AND effective_user=$2 AND reason=$3) FROM hosted_audit WHERE session_id=$4 AND route=$5 AND organization_id=$6", actor, user.identity.Subject, user.identity.Hosted.SupportReason, user.identity.Hosted.SessionID, "GET /projects/:project/events", f.service.accessOrganization()).Scan(&count, &attributed)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -933,7 +1079,9 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "project grant":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ?", user.identity.Subject); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+					return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, f.project)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1104,32 +1252,20 @@ func TestHostedSecuritySupportLoginAndExit(t *testing.T) {
 		t.Fatalf("provider support session was not revoked: %v", err)
 	}
 	var starts, ends int
-	err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sum(event = 'session_started'),sum(event = 'session_ended') FROM hosted_audit WHERE session_id = ? AND actual_actor = ? AND effective_user = ?", customer.identity.Hosted.SessionID, "support@example.test", customer.identity.Subject).Scan(&starts, &ends)
+	err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FILTER(WHERE event='session_started'),count(*) FILTER(WHERE event='session_ended') FROM hosted_audit WHERE session_id=$1 AND actual_actor=$2 AND effective_user=$3 AND organization_id=$4", customer.identity.Hosted.SessionID, "support@example.test", customer.identity.Subject, f.service.accessOrganization()).Scan(&starts, &ends)
 	if err != nil || starts != 1 || ends != 1 {
 		t.Fatalf("support lifecycle audit starts=%d ends=%d error=%v", starts, ends, err)
 	}
 }
 
 func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	var logs bytes.Buffer
 	provider := newHostedSecurityProvider()
-	service, err := Open(t.Context(), Config{
+	service := openHostedPostgresService(t, Config{
 		DatabasePath: hostedTestDatabasePath(t),
 		Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
 		Hosted:       &HostedConfig{OrganizationID: "org_logs", WorkOSOrganizationID: "org_provider", PublicURL: "https://logs.example.test", Provider: provider},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := service.Close(); err != nil {
-			t.Error(err)
-		}
 	})
 	const sentinel = "private-content-bearer-sentinel"
 	service.echo.GET("/security/error", func(c echo.Context) error {
@@ -1173,16 +1309,32 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 				f.user(t, "other-"+role, role, role+"-other@example.test", "write", "")
 			}
 			inactive := f.user(t, "inactive-admin", "admin", "inactive@example.test", "write", "")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active = 0 WHERE user_id = ?", inactive.identity.Subject); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+				member, err := w.AccessMember(t.Context(), inactive.identity.Subject)
+				if err != nil {
+					return err
+				}
+				member.Active, member.UpdatedAt = false, f.service.config.now().UTC()
+				return w.UpdateAccessMember(t.Context(), member)
+			}); err != nil {
 				t.Fatal(err)
 			}
 			// The request authenticated while the user was an owner; the
 			// provider's membership is what the transaction must trust.
-			var principal string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id = ?", user.identity.Subject).Scan(&principal); err != nil {
+			var principal, principalHash, membership string
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+				member, err := r.AccessMember(t.Context(), user.identity.Subject)
+				if err != nil {
+					return err
+				}
+				principal, membership = member.PrincipalID, member.MembershipID
+				stored, err := r.AccessCredential(t.Context(), member.PrincipalID)
+				principalHash = stored.Hash
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
-			credential := apiCredential{ID: principal, Scope: apiScopeOperator, NativeOnly: true, Hosted: user.identity.Hosted, SessionHash: apikey.HashToken(user.token), HostedRole: "owner", ManageRunners: true}
+			credential := apiCredential{ID: principal, Hash: principalHash, HostedPrincipal: principal, HostedMembership: membership, Scope: apiScopeOperator, NativeOnly: true, Hosted: user.identity.Hosted, SessionHash: apikey.HashToken(user.token), HostedRole: "owner", ManageRunners: true}
 			project, err := f.service.createHostedProjectRecord(t.Context(), credential, "Project for "+test.role, nil)
 			if (err == nil) != test.created {
 				t.Fatalf("createHostedProjectRecord() = %q, %v; want created %v", project, err, test.created)
@@ -1191,12 +1343,37 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 				return
 			}
 			var manageRunner bool
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT manage_runner FROM hosted_project_grants WHERE project_id = ? AND user_id = ?", project, user.identity.Subject).Scan(&manageRunner); err != nil || !manageRunner {
+			err = f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+				grant, err := r.AccessProjectGrant(t.Context(), user.identity.Subject, tracker.ProjectID(project))
+				manageRunner = grant.ManageRunner
+				return err
+			})
+			if err != nil || !manageRunner {
 				t.Fatalf("creator runner management = %v, %v", manageRunner, err)
 			}
 			for _, role := range []string{"owner", "admin", "member", "viewer"} {
 				var grants int
-				if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_project_grants g JOIN hosted_members m ON m.user_id=g.user_id JOIN token_grants t ON t.token_id=m.principal_id AND t.project_id=g.project_id WHERE g.project_id=? AND g.user_id=? AND g.can_write=1 AND g.manage_runner=1`, project, "user_other-"+role).Scan(&grants); err != nil {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+					member, err := r.AccessMember(t.Context(), "user_other-"+role)
+					if err != nil {
+						return err
+					}
+					grant, err := r.AccessProjectGrant(t.Context(), member.UserID, tracker.ProjectID(project))
+					if errors.Is(err, corestore.ErrNotFound) {
+						return nil
+					}
+					if err != nil {
+						return err
+					}
+					_, err = r.AccessTokenGrant(t.Context(), member.PrincipalID, tracker.ProjectID(project))
+					if errors.Is(err, corestore.ErrNotFound) {
+						return nil
+					}
+					if err == nil && grant.CanWrite && grant.ManageRunner {
+						grants = 1
+					}
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 				want := 0
@@ -1208,10 +1385,20 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 				}
 			}
 			var inactiveGrants, audits int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_project_grants WHERE project_id=? AND user_id=?", project, inactive.identity.Subject).Scan(&inactiveGrants); err != nil || inactiveGrants != 0 {
+			err = f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.AccessProjectGrant(t.Context(), inactive.identity.Subject, tracker.ProjectID(project))
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
+				if err == nil {
+					inactiveGrants = 1
+				}
+				return err
+			})
+			if err != nil || inactiveGrants != 0 {
 				t.Fatalf("inactive grants = %d, %v", inactiveGrants, err)
 			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE project_id=? AND actual_actor=? AND event='project_created'", project, user.identity.Subject).Scan(&audits); err != nil || audits != 1 {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id=$1 AND project_id=$2 AND actual_actor=$3 AND event='project_created'", f.service.accessOrganization(), project, user.identity.Subject).Scan(&audits); err != nil || audits != 1 {
 				t.Fatalf("creation audits = %d, %v", audits, err)
 			}
 		})
@@ -1237,7 +1424,7 @@ func TestHostedRepeatedReadsAreNotAudited(t *testing.T) {
 				requireNativeStatus(t, f.request(t, user, http.MethodGet, f.base, nil), http.StatusOK)
 			}
 			var count, attributed int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*),coalesce(sum(actual_actor=? AND effective_user=? AND reason=?),0) FROM hosted_audit WHERE session_id = ? AND event = 'action' AND route LIKE 'GET %'", test.support, user.identity.Subject, user.identity.Hosted.SupportReason, user.identity.Hosted.SessionID).Scan(&count, &attributed); err != nil {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*),count(*) FILTER(WHERE actual_actor=$1 AND effective_user=$2 AND reason=$3) FROM hosted_audit WHERE session_id=$4 AND event='action' AND route LIKE 'GET %' AND organization_id=$5", test.support, user.identity.Subject, user.identity.Hosted.SupportReason, user.identity.Hosted.SessionID, f.service.accessOrganization()).Scan(&count, &attributed); err != nil {
 				t.Fatal(err)
 			}
 			want := 0

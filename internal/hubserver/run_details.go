@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -115,27 +116,6 @@ func (s *Service) runDetailMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 
 func decodeRunDetail(ctx context.Context, q nativeQueryer, raw string, result *tracker.NativeRunData) error {
 	ctx = payloadQueryContext(ctx, q)
-	if prepared := claimPrepared(ctx); prepared != nil && !prepared.hydrating {
-		if value, ok := prepared.runs[raw]; ok {
-			*result = value
-			return nil
-		}
-		if claimWriting(ctx) {
-			return errClaimHintStale
-		}
-		return &claimHydration{run: func(ctx context.Context, q nativeQueryer) error {
-			var value tracker.NativeRunData
-			if err := decodeRunDetail(ctx, q, raw, &value); err != nil {
-				return err
-			}
-			if prepared.runs == nil {
-				prepared.runs = make(map[string]tracker.NativeRunData)
-			}
-			prepared.runs[raw] = value
-			return nil
-		}}
-	}
-
 	var stored storedRun
 	if err := decodeStorageJSON(ctx, []byte(raw), &stored); err != nil {
 		return err
@@ -171,7 +151,7 @@ func decodeRunDetail(ctx context.Context, q nativeQueryer, raw string, result *t
 		runtime.Landing = &landing
 		run.Runtime = &runtime
 	}
-	if ctx.Value(storageBatchKey{}) != nil {
+	if storageconversion.Active(ctx) {
 		encoded, err := json.Marshal(run)
 		if err != nil {
 			return err
@@ -186,11 +166,6 @@ func decodeRunDetail(ctx context.Context, q nativeQueryer, raw string, result *t
 
 func decodeRunHistory(ctx context.Context, q nativeQueryer, raw string, result *tracker.CollaborationData) error {
 	ctx = payloadQueryContext(ctx, q)
-	resolved, err := resolveCollaborationPayload(ctx, q, raw)
-	if err != nil {
-		return err
-	}
-	raw = resolved
 	if err := decodeStorageJSON(ctx, []byte(raw), result); err != nil {
 		return err
 	}
@@ -266,38 +241,6 @@ func compactRun(data tracker.NativeRunData) tracker.NativeRunData {
 		result.Runtime = &runtime
 	}
 	return result
-}
-
-func recordRunDetailReference(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, data tracker.NativeRunData, now string) error {
-	if owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext); ok && owner.reference != nil {
-		if _, err := recordPayloadAttachment(ctx, tx, scope, item, *owner.reference, now); err != nil {
-			return err
-		}
-	}
-	var runKey, checkpointKey string
-	if err := tx.QueryRowContext(ctx, "SELECT payload_object_key,checkpoint_object_key FROM native_attempts WHERE id=?", data.AttemptID).Scan(&runKey, &checkpointKey); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		return err
-	}
-	for _, entry := range []struct{ key, update string }{{runKey, "UPDATE native_attempts SET detail_attachment_id=NULLIF(?,'') WHERE id=?"}, {checkpointKey, "UPDATE native_attempts SET checkpoint_attachment_id=NULLIF(?,'') WHERE id=?"}} {
-		if entry.key == "" {
-			continue
-		}
-		ref, err := readPayloadReference(ctx, tx, string(scope.organization), entry.key)
-		if err != nil {
-			return err
-		}
-		id, err := recordPayloadAttachment(ctx, tx, scope, item, ref, now)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, entry.update, id, data.AttemptID); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func recordPayloadAttachment(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, ref attachment.ArchiveReference, now string) (string, error) {

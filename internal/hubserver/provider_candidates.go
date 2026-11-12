@@ -72,7 +72,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 		if err != nil {
 			return err
 		}
-		if project.Core.Profile != "native" || project.Core.DeletedAt != nil {
+		if !nativeClaimProjectEnabled(project) {
 			return ErrNoClaimableWork
 		}
 		projectPolicy, err = r.ProjectPolicy(ctx, scope.project)
@@ -125,6 +125,9 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 				plans = append(plans, plan)
 			}
 			if err := readNativeClaimChangeFacts(ctx, r, scope, plans); err != nil {
+				return err
+			}
+			if err := readNativeClaimReleaseDeliveryFacts(ctx, r, scope, plans); err != nil {
 				return err
 			}
 		} else {

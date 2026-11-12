@@ -362,6 +362,8 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 		switch {
 		case errors.Is(err, tenantauth.ErrUnavailable):
 			return s.nativeAPIError(c, err)
+		case errors.Is(err, mutation.ErrUncertain) && errors.As(err, &application) && application.status == http.StatusServiceUnavailable:
+			return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 		case errors.As(err, &application):
 			return s.nativeAPIError(c, err)
 		case errors.Is(err, mutation.ErrConflict):
@@ -616,7 +618,7 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 	}
 	command := createNativeProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: request.IdempotencyKey}, Name: name, States: states}
 	c.Set("native_scope", nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true})
-	return s.nativeMutationStatus(c, http.StatusCreated, command.Mutation, command, s.createNativeProjectOperation(command))
+	return s.nativeMutationStatus(c, http.StatusCreated, command.Mutation, command, nil)
 }
 
 // hostedJSONError answers a hosted API failure with the native error shape.

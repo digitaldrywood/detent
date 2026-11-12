@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -24,14 +26,25 @@ import (
 func TestHeartbeatTransactionTiming(t *testing.T) {
 	for _, durable := range []bool{true, false} {
 		t.Run(fmt.Sprintf("durable=%t", durable), func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "heartbeat-timing")
+			repository, _ := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
+				config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, claimPreflightTrace{})
+				config.ConnConfig.RuntimeParams["synchronous_commit"] = "on"
+				if !durable {
+					config.ConnConfig.RuntimeParams["synchronous_commit"] = "off"
+				}
+			})
+			f := newDefaultNativeFixture(t, Config{TenantRepository: repository})
+			if err := f.service.database.postgres.Close(); err != nil {
+				t.Fatal(err)
+			}
+			f.service.database.postgres = repository
+			f.service.requestMetrics.repository = repository
+			f.service.config.TenantRepository = repository
+			f.service.config.AccessRepository = repository
+			f.service.config.BillingRepository = repository
+			f.service.database.billingRepository = repository
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			r.enroll(t)
-			if !durable {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "PRAGMA synchronous=OFF"); err != nil {
-					t.Fatal(err)
-				}
-			}
 			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 			f.service.database.hostedOrganization = f.project.OrganizationID
 			metrics, err := newPostgresTestMetrics(t, f.project.OrganizationID)
@@ -57,14 +70,6 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Logf("configuration_bytes=%d records=%d admissions=%d", len(raw), len(view.Diagnostics.Records), len(view.Diagnostics.Admissions))
-			var writer *writerTiming
-			f.service.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-				return func(c echo.Context) error {
-					err := next(c)
-					writer = writerTimingFrom(c.Request().Context())
-					return err
-				}
-			})
 			f.service.echo.Use(f.service.hostedBoundary)
 			build := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 			update := runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Running: build, ObservedAt: now}
@@ -79,13 +84,13 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 			var commit time.Duration
 			for i := range 31 {
 				registrations := int64(0)
-				timing := &requestTiming{writerTrace: func(query string, _ []driver.NamedValue) {
-					if strings.HasPrefix(query, "INSERT INTO change_content_objects") {
-						registrations++
-					}
-				}}
+				timing := &requestTiming{}
+				probe := &claimPreflightProbe{attempted: make(chan struct{})}
 				last, previousDB := time.Now(), int64(0)
 				timing.trace = func(query string, _ []driver.NamedValue) {
+					if strings.Contains(strings.ToLower(query), "insert into archive_objects") {
+						registrations++
+					}
 					current := time.Now()
 					db := timing.db.Load()
 					key := strings.Join(strings.Fields(query), " ")
@@ -99,23 +104,29 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				}
 				request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": build.Version, "os": build.OS, "architecture": build.Architecture, "protocol_major": 2, "change_cursor": "", "update": update, "capacity_configuration": capacity, "admission": admission, "local_checks": checks, "skills": reportedSkills, "provider_reports": []providercapacity.Report{capacityReport(now)}, "host_metrics": []hostmetrics.Summary{testHostSummary(now)}, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
 				response := httptest.NewRecorder()
-				f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+				f.service.Handler().ServeHTTP(response, request.WithContext(context.WithValue(withRequestTiming(request.Context(), timing), claimPreflightProbeKey{}, probe)))
 				requireNativeStatus(t, response, http.StatusOK)
-				if writer == nil {
-					t.Fatal("missing writer timing")
+				var callback time.Duration
+				for _, span := range timing.namedSpans() {
+					if span.name == "pg_callback" {
+						callback += span.duration
+					}
 				}
-				if writer.txs.Load() != 1+registrations {
-					t.Fatalf("heartbeat writer_txs=%d, want %d", writer.txs.Load(), 1+registrations)
+				if callback == 0 || probe.queries.Load() == 0 {
+					t.Fatal("missing PostgreSQL transaction timing or trace")
+				}
+				if probe.writers.Load() != 1+registrations {
+					t.Fatalf("heartbeat writer_txs=%d, want %d", probe.writers.Load(), 1+registrations)
 				}
 				if i > 0 {
-					for _, span := range timing.spans {
-						if span.name == "tx_commit" {
+					for _, span := range timing.namedSpans() {
+						if span.name == "pg_commit" {
 							commit += span.duration
 						}
 					}
-					holds = append(holds, writer.hold.Load())
+					holds = append(holds, int64(callback))
 					dbs = append(dbs, timing.db.Load())
-					txs += writer.txs.Load()
+					txs += probe.writers.Load()
 				}
 			}
 			t.Logf("commit_mean_ms=%.3f", float64(commit)/30e6)
@@ -125,7 +136,7 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				holdTotal += holds[i]
 				dbTotal += dbs[i]
 			}
-			t.Logf("heartbeats=%d hold_mean_ms=%.3f hold_p50_ms=%.3f hold_p90_ms=%.3f db_mean_ms=%.3f writer_txs=%.1f", len(holds), float64(holdTotal)/30e6, float64(holds[15])/1e6, float64(holds[27])/1e6, float64(dbTotal)/30e6, float64(txs)/30)
+			t.Logf("heartbeats=%d pg_callback_mean_ms=%.3f pg_callback_p50_ms=%.3f pg_callback_p90_ms=%.3f db_mean_ms=%.3f writer_txs=%.1f", len(holds), float64(holdTotal)/30e6, float64(holds[15])/1e6, float64(holds[27])/1e6, float64(dbTotal)/30e6, float64(txs)/30)
 			type gap struct {
 				query    string
 				duration time.Duration
@@ -152,20 +163,31 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 
 func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
 	objects := &changeObjectFixture{}
-	f := newDefaultNativeFixture(t, Config{Content: objects.call})
+	repository, _ := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
+		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, claimPreflightTrace{})
+	})
+	f := newDefaultNativeFixture(t, Config{Content: objects.call, TenantRepository: repository})
+	if err := f.service.database.postgres.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.service.database.postgres = repository
+	f.service.config.TenantRepository = repository
+	f.service.requestMetrics.repository = repository
+	f.service.config.AccessRepository = repository
+	f.service.config.BillingRepository = repository
+	f.service.database.billingRepository = repository
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
 	path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": 2, "version": "test"}), http.StatusOK)
+	positive := &claimPreflightProbe{attempted: make(chan struct{})}
+	request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"display_name": "Example runner", "capacity": 2, "version": "test"})
+	response := httptest.NewRecorder()
+	f.service.Handler().ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), claimPreflightProbeKey{}, positive)))
+	requireNativeStatus(t, response, http.StatusOK)
+	if positive.writers.Load() == 0 || positive.mutations.Load() == 0 {
+		t.Fatal("heartbeat probe did not observe PostgreSQL writes")
+	}
 	f.service.tokenUseWork.Wait()
-	var writer *writerTiming
-	f.service.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			err := next(c)
-			writer = writerTimingFrom(c.Request().Context())
-			return err
-		}
-	})
 	now := f.service.config.now()
 	valid := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now}
 	valid.Diagnostics = &runnerauth.ProjectDiagnostics{ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners"}
@@ -202,9 +224,10 @@ func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
 			objects.mu.Lock()
 			writesBefore := objects.writes
 			objects.mu.Unlock()
-			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "project_configuration": valid, test.field: test.value})
+			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"display_name": "Example runner", "capacity": 2, "version": "test", "project_configuration": valid, test.field: test.value})
 			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request)
+			probe := &claimPreflightProbe{attempted: make(chan struct{})}
+			f.service.Handler().ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), claimPreflightProbeKey{}, probe)))
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 			objects.mu.Lock()
 			uploads := objects.writes - writesBefore
@@ -212,8 +235,8 @@ func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
 			if uploads != 0 {
 				t.Errorf("invalid heartbeat uploaded %d objects", uploads)
 			}
-			if writer == nil || writer.txs.Load() != 0 {
-				t.Fatalf("invalid preparation acquired writer: %+v", writer)
+			if probe.queries.Load() == 0 || probe.writers.Load() != 0 || probe.mutations.Load() != 0 {
+				t.Fatalf("invalid preparation PostgreSQL queries=%d writers=%d mutations=%d, want queries and zero writes", probe.queries.Load(), probe.writers.Load(), probe.mutations.Load())
 			}
 		})
 	}

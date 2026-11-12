@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -41,8 +42,14 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 	if err != nil {
 		return ctx, nativeScope{}, workflowSafeError(err)
 	}
-	if issue.Profile != "native" {
+	if issue.Profile == "github_compatible" {
+		if strings.TrimSpace(request.WorkflowLabel) == "" {
+			return ctx, nativeScope{}, &operatortool.RequestError{Code: "invalid_request", Message: "Compatibility workflow transitions require an explicit workflow label"}
+		}
+	} else if issue.Profile != "native" {
 		return ctx, nativeScope{}, operatortool.ErrServiceUnavailable
+	} else if request.WorkflowLabel != "" {
+		return ctx, nativeScope{}, &operatortool.RequestError{Code: "invalid_request", Message: "Native workflow transitions do not accept a workflow label"}
 	}
 	return ctx, scope, nil
 }
@@ -126,7 +133,7 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	outcome := "failed"
 	defer func() { e.service.hubChangeAudit(ctx, action.Mutation, outcome) }()
 	mutationContext := mutation.WithContext(ctx, action.Mutation)
-	transition := tracker.Transition{Mutation: tracker.MutationForContext(mutationContext, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested", ReasonDetail: request.ReasonDetail}
+	transition := tracker.Transition{Mutation: tracker.MutationForContext(mutationContext, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested", ReasonDetail: request.ReasonDetail, WorkflowLabel: request.WorkflowLabel}
 	stage = "workflow_replay"
 	replay, found, err := e.service.workflowCommandReplay(mutationContext, scope, request.Identifier, transition)
 	if err != nil {
@@ -182,7 +189,7 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 		return workflowExecutionFailure(err)
 	}
 	ctx = mutation.WithContext(ctx, m)
-	raw, err := e.service.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested", ReasonDetail: request.ReasonDetail})
+	raw, err := e.service.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested", ReasonDetail: request.ReasonDetail, WorkflowLabel: request.WorkflowLabel})
 	if err != nil {
 		return workflowExecutionFailure(err)
 	}

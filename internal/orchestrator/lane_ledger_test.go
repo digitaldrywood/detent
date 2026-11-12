@@ -17,10 +17,6 @@ import (
 )
 
 func TestLaneWritePersistsBeforeTrackerAndRetainsUncertainIdentity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name         string
@@ -83,10 +79,6 @@ func (c ledgerCheckingConnector) UpdateIssueState(ctx context.Context, id, targe
 }
 
 func TestLaneLedgerClassifiesTransitionsWithoutStoppingWorkers(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name            string
@@ -194,7 +186,9 @@ func TestLaneMoveEntryPointsPreserveWorkerCompletionLane(t *testing.T) {
 			if entry == "targeted refresh" {
 				moved := cloneIssue(issue)
 				moved.State = "Rework"
-				orch.applyTargetedReconcile(t.Context(), &state, connector.ReconcileTarget{}, connector.ReconcileResult{Found: true, Issue: moved}, at)
+				if err := orch.applyTargetedReconcile(t.Context(), &state, connector.ReconcileTarget{}, connector.ReconcileResult{Found: true, Issue: moved}, at); err != nil {
+					t.Fatal(err)
+				}
 			} else {
 				result := orch.applyOperatorMove(t.Context(), &state, OperatorMoveRequest{IssueID: issue.ID, FromState: issue.State, ToState: "Rework", WriteTracker: true}, at)
 				if result.err != nil {
@@ -232,10 +226,6 @@ func (s notifyingLaneStore) LaneWriteLock() sync.Locker {
 }
 
 func TestLaneWritesSerializeAcrossOrchestratorEntryPoints(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	at := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	issue := laneRevocationIssue("serial", "example/repo#4", "Todo")
@@ -371,10 +361,6 @@ func TestHumanMoveToMergingDoesNotChangeWorkerMode(t *testing.T) {
 }
 
 func TestLaneAcknowledgementDoesNotHideLaterHumanReentry(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, peer := range []bool{false, true} {
 		t.Run(strconv.FormatBool(peer), func(t *testing.T) {

@@ -41,9 +41,14 @@ const nativeBase = "/api/v2/organizations/:organization/projects/:project"
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 type githubIntakeRevision struct {
-	batchID  string
-	importID string
-	revision int64
+	requireAdminKey bool
+	issuer          *operatorChatIdentity
+	authority       *nativeScope
+	reporter        *nativeScope
+	fallbackRunner  string
+	batchID         string
+	importID        string
+	revision        int64
 }
 
 type nativeScope struct {
@@ -415,23 +420,18 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/work-items/:item/release-pick", s.associateReleasePick, write)
 	e.GET(nativeBase+"/work-items/:item/release-pick", s.getReleaseDeliveryStatus, read)
 	e.POST(nativeBase+"/work-items/:item/release-pick/publication", s.publishReleasePick, write)
-	if s.database.postgres == nil {
-		// Workspace sessions. The reads follow the
-		// issue's read rule; the writes need write on the project, and a
-		// terminal in requires needs the grant's runners flag on top.
-		e.POST(nativeBase+"/workspaces", s.createWorkspace, write)
-		e.GET(nativeBase+"/workspaces", s.listWorkspaces, read)
-		e.GET(nativeBase+"/workspaces/:workspace", s.getWorkspace, read)
-		e.DELETE(nativeBase+"/workspaces/:workspace", s.deleteWorkspace, write)
-		e.GET(nativeBase+"/work-items/:item/workspace", s.workspaceForWorkItem, worker)
-		e.POST(nativeBase+"/workspaces/:workspace/relay-tickets", s.mintWorkspaceRelayTicket, read)
-		e.GET(nativeBase+"/workspaces/:workspace/relay", s.openWorkspaceRelay, read)
-		e.GET(nativeBase+"/workspaces/:workspace/worker/relay", s.openWorkspaceWorkerRelay, worker)
-		e.POST(nativeBase+"/workspaces/:workspace/worker/bind", s.bindWorkspaceWorker, worker)
-		e.POST(nativeBase+"/workspaces/:workspace/worker/heartbeat", s.heartbeatWorkspaceWorker, worker)
-		e.POST(nativeBase+"/workspaces/:workspace/worker/unbind", s.unbindWorkspaceWorker, worker)
-		e.POST(nativeBase+"/workspaces/:workspace/worker/action-runs", s.reportWorkspaceActionRun, worker)
-	}
+	e.GET(nativeBase+"/workspaces", s.listWorkspaces, read)
+	e.GET(nativeBase+"/workspaces/:workspace", s.getWorkspace, read)
+	e.GET(nativeBase+"/work-items/:item/workspace", s.workspaceForWorkItem, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/bind", s.bindWorkspaceWorker, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/heartbeat", s.heartbeatWorkspaceWorker, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/unbind", s.unbindWorkspaceWorker, worker)
+	e.POST(nativeBase+"/workspaces", s.createWorkspace, write)
+	e.DELETE(nativeBase+"/workspaces/:workspace", s.deleteWorkspace, write)
+	e.POST(nativeBase+"/workspaces/:workspace/relay-tickets", s.mintWorkspaceRelayTicket, read)
+	e.GET(nativeBase+"/workspaces/:workspace/relay", s.openWorkspaceRelay, read)
+	e.GET(nativeBase+"/workspaces/:workspace/worker/relay", s.openWorkspaceWorkerRelay, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/action-runs", s.reportWorkspaceActionRun, worker)
 	e.GET(nativeBase+"/actions", s.listProjectActions, read)
 	e.POST(nativeBase+"/actions", s.createProjectAction, write)
 	e.PATCH(nativeBase+"/actions/:action", s.patchProjectAction, write)
@@ -445,10 +445,8 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	// handler: a recording's audience is the person who ran it plus owners and
 	// admins, and a user-isolation recording's is owners alone, which is
 	// narrower than any scope the router can express.
-	if s.database.postgres == nil {
-		e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings", s.listWorkspaceTerminalRecordings, read)
-		e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings/:recording", s.getWorkspaceTerminalRecording, read)
-	}
+	e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings", s.listWorkspaceTerminalRecordings, read)
+	e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings/:recording", s.getWorkspaceTerminalRecording, read)
 }
 
 func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
@@ -709,9 +707,16 @@ type nativeCommandOptions struct {
 	ArtifactRead                             bool
 }
 
-// executeNativeMutation owns the shared transaction, current native authority,
-// hosted allowances, audit history and durable business replay for all callers.
 func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
+	if request, ok := input.(projectSpriteAllocationRequest); ok {
+		return s.setProjectSpriteAllocationRecord(ctx, scope, options.OperationID, request)
+	}
+	if request, ok := input.(CutoverRequest); ok {
+		return s.cutoverProjectRecordCommand(ctx, scope, options, request)
+	}
+	if request, ok := input.(projectNativeSummaryRequest); ok {
+		return s.projectNativeSummaryRecordCommand(ctx, scope, options, request)
+	}
 	if request, ok := input.(tracker.GitHubBatchCommand); ok {
 		return s.commandGitHubBatchRecord(ctx, scope, options.OperationID, request)
 	}
@@ -727,215 +732,9 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	if s.config.TenantRepository != nil && (scope.project != "" || isProjectCreation(input)) && isProjectRecordCommand(input) {
 		return s.executeProjectRecordMutation(ctx, scope, options, command, input)
 	}
-	ctx = isolateContentContext(s.runDetailContext(s.linkedSourceContext(ctx)))
-	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-		content.mu.Lock()
-		content.completion = options.Completion
-		content.mu.Unlock()
-	}
-	contentMutation(ctx, true)
-	defer contentMutation(ctx, false)
-	actor := scope.actor()
-	if metadata, ok := mutation.FromContext(ctx); ok {
-		metadata.ActorKind, metadata.PrincipalID, metadata.ViaKey = actor.Kind, actor.PrincipalID, actor.ViaKey
-		ctx = mutation.WithContext(ctx, metadata)
-	} else if actor.ViaKey != "" {
-		ctx = mutation.WithContext(ctx, mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.organization), ProjectID: string(scope.project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: newNativeID("api")})
-	}
-	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
-	}
-	requestHash, err := nativeCommandHash(input)
-	if err != nil {
-		return nil, err
-	}
-	operationID := options.OperationID
-	event, runEvent := input.(tracker.NativeRunEvent)
-	var pending *pendingContentMutation
-	if runEvent {
-		pending = &pendingContentMutation{authorize: func(ctx context.Context, tx *sql.Tx, now time.Time) error {
-			if err := requireLeaseRunner(ctx, tx, event.Data.LeaseID, scope); err != nil {
-				return err
-			}
-			lease, found, err := readLeaseByID(ctx, tx, event.Data.LeaseID)
-			if err != nil {
-				return err
-			}
-			if !found {
-				return tracker.ErrStaleFencingToken
-			}
-			return requireCurrentLease(lease, event.Data.FencingToken, now)
-		}}
-		ctx = context.WithValue(ctx, pendingContentKey{}, pending)
-	}
-	replay := false
-	if runEvent || !options.Completion && !options.ArtifactRead && s.database.plans() != nil {
-		_, replay, err = s.nativeCommandReplay(ctx, scope, operationID, command.IdempotencyKey, input)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if !replay && !options.Completion && !options.ArtifactRead && s.database.plans() != nil {
-		now, err := s.database.currentTime()
-		if err != nil {
-			return nil, err
-		}
-		if err := s.database.requireHostedFeature(ctx, s.database.reader, options.Feature, now); err != nil {
-			return nil, err
-		}
-	}
-	preparedCtx, preparationErr := prepareContentMutation(ctx, s.database.reader, func() (context.Context, error) { return s.prepareHostedImportMutation(ctx, scope, operationID, input) })
-	if preparationErr == nil {
-		ctx = preparedCtx
-	}
-	result, err = prepareContentMutation(ctx, s.database.reader, func() (json.RawMessage, error) {
-		return s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
-	})
-	if err == nil && pending != nil {
-		if err := s.publishPendingContent(ctx, pending.objects); err != nil {
-			s.config.Logger.Warn("publish run content", "error", err)
-		}
-	}
-	return result, err
+	return nil, nativePublicInvalid("Unsupported project command")
 }
 
-func (s *Service) commitNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error), requestHash string, preparationErr error) (result json.RawMessage, resultErr error) {
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	if pending, ok := ctx.Value(pendingContentKey{}).(*pendingContentMutation); ok {
-		pending.tx, pending.objects = tx, nil
-		defer func() { pending.tx = nil }()
-	}
-	if options.ArtifactRead {
-		if err := s.recheckHostedArtifactReader(ctx, tx, scope); err != nil {
-			return nil, err
-		}
-	} else if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-		return nil, err
-	}
-	if options.RunnerAdministration {
-		if err := s.requireRunnerAdministration(ctx, tx, scope, s.config.now()); err != nil {
-			return nil, err
-		}
-	}
-	if s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == "" && options.CheckPrincipal {
-		if _, err := s.requireHostedChangeCheckPrincipal(ctx, scope); err != nil {
-			return nil, err
-		}
-	}
-	// Older hosted receipts included the originating session in operation.
-	// Read those records as the same business operation across reconnects.
-	response, found, err := nativeCommandReceipt(ctx, tx, scope, options.OperationID, command.IdempotencyKey, requestHash)
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		if err := s.database.commit(ctx, tx); err != nil {
-			return nil, err
-		}
-		return json.RawMessage(response), nil
-	}
-	if preparationErr != nil {
-		return nil, preparationErr
-	}
-	now, err := s.database.currentTime()
-	if err != nil {
-		return nil, err
-	}
-	authorityTime := now
-	now = payloadTimestamp(ctx, now)
-	if err := requireRunnerAuthority(ctx, tx, scope, authorityTime); err != nil {
-		return nil, err
-	}
-	if scope.credential.Scope == apiScopeWorker && options.RequireLease {
-		if err := requireNativeMutationLease(ctx, tx, scope, options.Item, command, authorityTime); err != nil {
-			return nil, err
-		}
-	}
-	if err := recheckChangeMutation(ctx, tx, scope, options); err != nil {
-		return nil, err
-	}
-	metrics := hostedNativeMutationMetrics(input, options.Completion)
-	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
-	if err != nil {
-		return nil, err
-	}
-	completion := options.Completion
-	event, runEvent := input.(tracker.NativeRunEvent)
-	consolidateRunEvent := runEvent && !completion && s.database.plans() != nil
-	var runEventState hostedRunEventState
-	if consolidateRunEvent {
-		runEventState, err = readHostedRunEventState(ctx, tx, event)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if !completion && !options.ArtifactRead {
-		if err := s.database.requireHostedFeature(ctx, tx, options.Feature, now); err != nil {
-			return nil, err
-		}
-	}
-	if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok {
-		plan.messageCursor, plan.questionCursor, plan.insertedMessages = 0, 0, 0
-		plan.receiptLogs = make([][]any, 0, 1)
-	}
-	now = conversationWriteTime(ctx, now)
-	if err := validateConversationPublication(ctx, tx); err != nil {
-		return nil, err
-	}
-	value, err := operation(ctx, tx, scope, now)
-	if err != nil {
-		return nil, err
-	}
-	response, err = marshalNative(value)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, options.OperationID, command.IdempotencyKey, requestHash, response, formatHubTime(now)); err != nil {
-		return nil, err
-	}
-	if consolidateRunEvent {
-		after, err := s.database.hostedRunEventConsumption(ctx, tx, now, before, runEventState, event)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.database.checkHostedConsumptionGrowth(ctx, tx, before, after, now, completion); err != nil {
-			return nil, err
-		}
-	} else if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
-		return nil, err
-	}
-	if metadata, ok := mutation.FromContext(ctx); ok && (metadata.Source == "mcp" || metadata.Source == "api") {
-		route := metadata.Action
-		if metadata.Source == "mcp" {
-			route = "mcp " + route
-		}
-		if err := s.hostedAuditWith(ctx, tx, scope.credential.Hosted, "action", route, string(scope.project), http.StatusOK); err != nil {
-			return nil, err
-		}
-	}
-	if err := s.database.commit(ctx, tx); err != nil {
-		return nil, err
-	}
-	if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok {
-		for _, attributes := range plan.receiptLogs {
-			plan.service.logger.Info("conversation.receipt", attributes...)
-		}
-	}
-	select {
-	case s.boardRefresh <- struct{}{}:
-	default:
-	}
-	s.notifyNativeDispatch(ctx, scope, input)
-	return json.RawMessage(response), nil
-}
 func (s *Service) requireCompatibilityResource(c echo.Context) error {
 	path := c.Path()
 	if strings.HasPrefix(path, "/api/v1/work-items/:id") || strings.HasPrefix(path, "/api/v1/leases/:id") || strings.HasPrefix(path, "/api/v1/machines/:id") {

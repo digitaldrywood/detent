@@ -143,13 +143,6 @@ func TestHostedOperatorCurrentAuthority(t *testing.T) {
 	}
 }
 
-func operatorSQL(t *testing.T, f hostedSecurityFixture, query string, args ...any) {
-	t.Helper()
-	if _, err := f.service.database.db.ExecContext(t.Context(), query, args...); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func operatorPostgresSQL(t *testing.T, f operatorSecurityFixture, query string, args ...any) {
 	t.Helper()
 	if _, err := f.admin.ExecContext(t.Context(), query, args...); err != nil {

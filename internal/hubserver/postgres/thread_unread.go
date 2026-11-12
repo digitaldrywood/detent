@@ -19,7 +19,7 @@ func (s *session) RequestThreadUnread(ctx context.Context, request threadstore.U
 		return result, mapError(ctx, err)
 	}
 	added := inserted.RowsAffected()
-	updated, err := s.db.Exec(ctx, `UPDATE team_thread_unread_summaries SET credential_id=$4,user_id=$5,member_principal=$6,key_kind=$7,require_credential_grant=$8,reporter_principal=$9,scope_hash=$10,requested_revision=requested_revision+1,scan_revision=0,after_thread='',through_thread='',partial_count=0,unread_count=NULL WHERE organization_id=$1 AND id=$2 AND principal_id=$3 AND scope_hash<>$10`, s.organization, request.ID, request.Principal, request.CredentialID, request.UserID, request.MemberPrincipal, request.KeyKind, request.RequireCredentialGrant, request.Reporter, request.ScopeHash)
+	updated, err := s.db.Exec(ctx, `UPDATE team_thread_unread_summaries SET credential_id=$4,user_id=$5,member_principal=$6,key_kind=$7,require_credential_grant=$8,reporter_principal=$9,scope_hash=$10,requested_revision=requested_revision+1,scan_revision=0,after_thread='',through_thread='',partial_count=0,unread_count=NULL,turn=(SELECT coalesce(max(turn),0)+1 FROM team_thread_unread_summaries WHERE organization_id=$1) WHERE organization_id=$1 AND id=$2 AND principal_id=$3 AND scope_hash<>$10`, s.organization, request.ID, request.Principal, request.CredentialID, request.UserID, request.MemberPrincipal, request.KeyKind, request.RequireCredentialGrant, request.Reporter, request.ScopeHash)
 	if err != nil {
 		return result, mapError(ctx, err)
 	}

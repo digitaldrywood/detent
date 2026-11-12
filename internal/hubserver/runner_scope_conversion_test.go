@@ -5,14 +5,12 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRunnerScopeConversion(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	for _, convert := range []bool{false, true} {
 		name := "project scope unchanged"
 		if convert {
@@ -45,7 +43,11 @@ func TestRunnerScopeConversion(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var after runnerauth.Runner
 			decodeHubResponse(t, response, &after)
-			stored, err := readRunnerWithClock(f.service.contentContext(t.Context()), f.service.database.reader, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now)
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil {
+				t.Fatalf("scope reader status=%d error=%v", status, err)
+			}
+			stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, r.binding.RunnerID)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -2,16 +2,21 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
+	"net/url"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -176,48 +181,6 @@ func (s *Service) createProjectActionRun(c echo.Context) error {
 	return c.JSONBlob(http.StatusAccepted, value)
 }
 
-// queueActionRun validates the request and writes the queued row.
-func (w *workspaceService) queueActionRun(ctx context.Context, tx *sql.Tx, scope nativeScope, actionID string, request projectActionRunRequest, now time.Time) (actionRunRecord, error) {
-	action, err := readProjectAction(ctx, tx, scope, actionID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return actionRunRecord{}, nativeNotFound()
-	}
-	if err != nil {
-		return actionRunRecord{}, err
-	}
-	if request.ExpectedActionRevision != 0 && int64(request.ExpectedActionRevision) != action.Revision {
-		return actionRunRecord{}, nativeConflict(tracker.Revision(action.Revision))
-	}
-	workspace, err := w.readWorkspaceForActor(ctx, tx, scope, strings.TrimSpace(request.WorkspaceID))
-	if err != nil {
-		return actionRunRecord{}, err
-	}
-	if !workspacesession.Bound(workspace.State) {
-		return actionRunRecord{}, nativeStaleExecution("The workspace is not bound to a runner")
-	}
-	if workspace.ReadOnly {
-		return actionRunRecord{}, actionRunReadOnly()
-	}
-	if workspace.Capabilities == nil || !workspace.Capabilities.Has(workspacesession.CapabilityExec) {
-		return actionRunRecord{}, actionRunCapabilityMissing()
-	}
-	run := actionRunRecord{
-		ID: payloadNativeID(ctx, "actionrun"), ActionID: action.ID, OrganizationID: scope.organization,
-		ProjectID: scope.project, WorkspaceID: workspace.ID,
-		// The command is snapshotted onto the row. An action edited afterwards
-		// must not rewrite the history of what already ran, which is what
-		// reading the command through action_id would do.
-		Command: action.Command, Status: workspacesession.RunQueued,
-		CreatedBy: scope.actor().PrincipalID, Revision: 1, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := insertProjectActionRun(ctx, tx, run); err != nil {
-		return actionRunRecord{}, err
-	}
-	w.logger.Info("action_run.queued", "run_id", run.ID, "action_id", run.ActionID,
-		"workspace_id", run.WorkspaceID, "created_by", run.CreatedBy)
-	return run, nil
-}
-
 // listProjectActionRuns implements GET {nativeBase}/actions/:action/runs,
 // newest first.
 //
@@ -295,43 +258,49 @@ func (s *Service) readActionRunForRequest(c echo.Context) (actionRunRecord, erro
 // what makes it exact instead of a heuristic: a terminal workspace holds no
 // runner and no worktree, so there is no live run it could be racing.
 func (w *workspaceService) sweepActionRuns(ctx context.Context) {
-	var failed []actionRunRecord
-	err := w.server.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		orphaned, err := readOrphanedActionRuns(ctx, tx, actionRunSweepBatch)
-		if err != nil {
-			return err
+	organization := tracker.OrganizationID(w.server.appOrganizationID())
+	w.relay.mu.Lock()
+	afterProject, afterID := w.relay.actionSweepProject, w.relay.actionSweepID
+	w.relay.mu.Unlock()
+	var page []postgres.ActionRunMaintenanceRow
+	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+		owner, ok := reader.(postgres.RelayActionReader)
+		if !ok {
+			return workItemStorageUnavailable()
 		}
-		for _, entry := range orphaned {
-			run := entry.run
-			run.Status = workspacesession.RunFailed
-			// The workspace's own reason, not a blanket one: the relay's
-			// teardown reads the same column, and the two paths race for a
-			// workspace that ends while a run is still on it. Agreeing means
-			// the answer an operator reads does not depend on which got there
-			// first.
-			run.Reason = actionRunReasonFor(entry.workspaceReason)
-			run.FinishedAt = &now
-			if run.StartedAt == nil {
-				// A run the workspace ended before anything started it never
-				// ran, and a finished_at with no started_at would read as a
-				// run of negative length.
-				run.StartedAt = &now
-			}
-			moved, err := applyActionRunStatus(ctx, tx, run, now)
-			if err != nil {
-				return err
-			}
-			failed = append(failed, moved)
-		}
-		return nil
+		var err error
+		page, err = owner.ActiveActionRunPage(ctx, afterProject, afterID, actionRunSweepBatch)
+		return err
 	})
 	if err != nil {
 		w.logger.Warn("action_run.sweep_failed", "error", err)
 		return
 	}
-	for _, run := range failed {
-		w.logger.Info("action_run.orphaned", "run_id", run.ID, "action_id", run.ActionID,
-			"workspace_id", run.WorkspaceID, "reason", run.Reason)
+	if len(page) == 0 {
+		w.relay.mu.Lock()
+		w.relay.actionSweepProject, w.relay.actionSweepID = "", ""
+		w.relay.mu.Unlock()
+		return
+	}
+	for _, entry := range page {
+		run := entry.ProjectActionRun
+		if workspacesession.Terminal(entry.WorkspaceState) {
+			err := w.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
+				owner, ok := writer.(postgres.RelayActionWriter)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				_, err := owner.FailOrphanedActionRun(ctx, postgres.OrphanedActionRunInput{OrganizationID: organization, ProjectID: run.ProjectID, ID: run.ID, ExpectedRevision: run.Revision, Now: w.now()})
+				return err
+			})
+			if err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
+				w.logger.Warn("action_run.sweep_failed", "error", err)
+				return
+			}
+		}
+		w.relay.mu.Lock()
+		w.relay.actionSweepProject, w.relay.actionSweepID = run.ProjectID, run.ID
+		w.relay.mu.Unlock()
 	}
 }
 
@@ -391,235 +360,216 @@ func forwardRunStatus(from, to string) bool {
 // outcome.
 var errActionRunClaimed = errors.New("the action run is already claimed")
 
-// claimActionRun hands one queued run to exactly one executor.
-//
-// A queued run has two of them. A person who opens the exec channel for it is
-// the one the contract prefers, because only their stream carries the output as
-// it is produced. The hub itself is the other: a run requested through the API
-// with nobody watching would otherwise sit queued for ever, which is what the
-// eighth dogfood run found, so the hub hands it to the runner already holding
-// the workspace. Both can ask at the same moment.
-//
-// The claim is the whole answer to that race, and it is one write. The row
-// moves out of queued and records who took it in the same transaction and under
-// the same revision check every other transition uses, so the second claimant
-// finds a row that is no longer queued and is refused. It is never two
-// processes in one worktree, whichever order they arrived in.
-func claimActionRun(ctx context.Context, tx *sql.Tx, run actionRunRecord, claimant string, now time.Time) (actionRunRecord, error) {
-	if run.Status != workspacesession.RunQueued || run.ClaimedBy != "" {
-		return actionRunRecord{}, errActionRunClaimed
-	}
-	run.Status = workspacesession.RunRunning
-	run.ClaimedBy = claimant
-	run.StartedAt = &now
-	claimed, err := applyActionRunStatus(ctx, tx, run, now)
-	if err != nil {
-		// A revision conflict here is the other claimant committing first,
-		// which is the race this function exists for rather than a failure the
-		// caller should report as one.
-		if isNativeConflict(err) {
-			return actionRunRecord{}, errActionRunClaimed
-		}
-		return actionRunRecord{}, err
-	}
-	return claimed, nil
-}
-
-// applyActionRunStatus writes one run transition in the caller's transaction:
-// the row and its bumped revision. It is the single exit the relay, the worker
-// report and the workspace teardown share.
-func applyActionRunStatus(ctx context.Context, tx *sql.Tx, run actionRunRecord, now time.Time) (actionRunRecord, error) {
-	expected := run.Revision
-	run.Revision++
-	run.UpdatedAt = now
-	run.OutputArtifact = actionRunOutputPath(run)
-	if err := updateProjectActionRunRow(ctx, tx, run, expected); err != nil {
-		return run, err
-	}
-	return run, nil
-}
-
-func (s *Service) applyCreateProjectAction(ctx context.Context, tx *sql.Tx, scope nativeScope, request projectActionRequest, now time.Time) (any, error) {
-	record := actionRecord{
-		ID: payloadNativeID(ctx, "action"), OrganizationID: scope.organization, ProjectID: scope.project,
-		OpenPreview: request.OpenPreview, RunOnWorktreeCreation: request.RunOnWorktreeCreation,
-		CreatedBy: scope.actor().PrincipalID, Revision: 1, CreatedAt: now, UpdatedAt: now,
-	}
-	var err error
-	if record.Name, err = workspacesession.NormalizeActionName(request.Name); err != nil {
-		return nil, nativePublicInvalid(err.Error())
-	}
-	if record.Command, err = workspacesession.NormalizeActionCommand(request.Command); err != nil {
-		return nil, nativePublicInvalid(err.Error())
-	}
-	if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(request.Keybinding); err != nil {
-		return nil, nativePublicInvalid(err.Error())
-	}
-	if record.Icon, err = workspacesession.NormalizeActionIcon(request.Icon); err != nil {
-		return nil, nativeInvalid(err.Error())
-	}
-	if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(request.PreviewURL); err != nil {
-		return nil, nativePublicInvalid(err.Error())
-	}
-	count, err := countProjectActions(ctx, tx, scope)
-	if err != nil {
-		return nil, err
-	}
-	if count >= workspacesession.MaxActionsPerProject {
-		return nil, nativePublicInvalid("A project may hold at most " +
-			strconv.Itoa(workspacesession.MaxActionsPerProject) + " actions")
-	}
-	if _, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
-		return nil, err
-	} else if found {
-		return nil, actionKeybindingTaken()
-	}
-	if err := insertProjectAction(ctx, tx, record); err != nil {
-		return nil, err
-	}
-	return record.resource(), nil
-}
-
-func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope nativeScope, actionID string, request projectActionPatch, now time.Time) (any, error) {
-	record, err := readProjectAction(ctx, tx, scope, actionID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nativeNotFound()
-	}
-	if err != nil {
-		return nil, err
-	}
-	if request.ExpectedRevision <= 0 {
-		return nil, nativePublicInvalid("Expected revision must be positive")
-	}
-	if record.Revision != int64(request.ExpectedRevision) {
-		return nil, nativeConflict(tracker.Revision(record.Revision))
-	}
-	if request.Name != nil {
-		if record.Name, err = workspacesession.NormalizeActionName(*request.Name); err != nil {
-			return nil, nativePublicInvalid(err.Error())
-		}
-	}
-	if request.Command != nil {
-		if record.Command, err = workspacesession.NormalizeActionCommand(*request.Command); err != nil {
-			return nil, nativePublicInvalid(err.Error())
-		}
-	}
-	if request.Keybinding != nil {
-		if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(*request.Keybinding); err != nil {
-			return nil, nativePublicInvalid(err.Error())
-		}
-	}
-	if request.Icon != nil {
-		if record.Icon, err = workspacesession.NormalizeActionIcon(*request.Icon); err != nil {
-			return nil, nativeInvalid(err.Error())
-		}
-	}
-	if request.PreviewURL != nil {
-		if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(*request.PreviewURL); err != nil {
-			return nil, nativePublicInvalid(err.Error())
-		}
-	}
-	if request.OpenPreview != nil {
-		record.OpenPreview = *request.OpenPreview
-	}
-	if request.RunOnWorktreeCreation != nil {
-		record.RunOnWorktreeCreation = *request.RunOnWorktreeCreation
-	}
-	if _, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
-		return nil, err
-	} else if found {
-		return nil, actionKeybindingTaken()
-	}
-	expected := record.Revision
-	record.Revision++
-	record.UpdatedAt = now
-	if err := updateProjectActionRow(ctx, tx, record, expected); err != nil {
-		return nil, err
-	}
-	return record.resource(), nil
-}
-
-func (s *Service) applyCreateProjectActionRun(ctx context.Context, tx *sql.Tx, scope nativeScope, actionID string, request projectActionRunRequest, now time.Time) (any, error) {
-	service, err := s.requireWorkspaces()
-	if err != nil {
-		return nil, err
-	}
-
-	run, err := service.queueActionRun(ctx, tx, scope, actionID, request, now)
-	if err != nil {
-		return nil, err
-	}
-	return projectActionRunReceipt{RunID: run.ID}, nil
-}
-
 func (s *Service) readActions(ctx context.Context, scope nativeScope) (json.RawMessage, error) {
-	if s.config.TenantRepository != nil {
-		return s.readActionRecords(ctx, scope)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	records, err := readProjectActions(ctx, s.database.reader, scope.organization, scope.project)
-	if err != nil {
-		return nil, err
-	}
-	response := projectActionList{Items: make([]workspacesession.Action, 0, len(records))}
-	for _, record := range records {
-		response.Items = append(response.Items, record.resource())
-	}
-	return json.Marshal(response)
+	return s.readActionRecords(ctx, scope)
 }
 
 func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionID string, limit int) (json.RawMessage, error) {
-	if s.config.TenantRepository != nil {
-		return nil, projectActionsUnavailable("Project action execution requires a native workspace executor")
-	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	var rows []postgres.ActionRun
+	var sequence int64
+	repository, ok := s.config.AccessRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, workItemStorageUnavailable()
+	}
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+			return err
+		}
+		owner, ok := reader.(postgres.RelayActionReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		if _, err := owner.ProjectAction(ctx, scope.project, actionID); err != nil {
+			return err
+		}
+		var err error
+		head, err := reader.BoardSequence(ctx, scope.project)
+		sequence = head.Sequence
+		if err != nil {
+			return err
+		}
+		rows, err = owner.RecentActionRuns(ctx, scope.project, actionID, nil, limit)
+		return err
+	})
 	if err != nil {
-		return nil, err
+		return nil, projectRecordError(err)
 	}
-	defer tx.Rollback()
-	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
-	if err != nil {
-		return nil, err
-	}
-	action, err := readProjectAction(ctx, tx, scope, actionID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nativeNotFound()
-	}
-	if err != nil {
-		return nil, err
-	}
-	records, err := readProjectActionRuns(ctx, tx, scope, action.ID, limit)
-	if err != nil {
-		return nil, err
-	}
-	response := projectActionRunList{ChangeSequence: watermark, Items: make([]workspacesession.Run, 0, len(records))}
-	for _, record := range records {
+	response := projectActionRunList{ChangeSequence: sequence, Items: make([]workspacesession.Run, 0, len(rows))}
+	for _, row := range rows {
+		record, err := s.actionRunRecord(ctx, row, false)
+		if err != nil {
+			return nil, err
+		}
 		response.Items = append(response.Items, record.resource())
 	}
 	return json.Marshal(response)
 }
 
 func (s *Service) readActionRun(ctx context.Context, scope nativeScope, actionID, runID string) (actionRunRecord, error) {
-	if s.config.TenantRepository != nil {
-		return actionRunRecord{}, projectActionsUnavailable("Project action execution requires a native workspace executor")
-	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if _, err := readProjectAction(ctx, s.database.reader, scope, actionID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return actionRunRecord{}, nativeNotFound()
+	var row postgres.ActionRun
+	err := s.accessRead(ctx, scope.organization, func(reader tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+			return err
 		}
-		return actionRunRecord{}, err
+		owner, ok := reader.(postgres.RelayActionReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		if _, err := owner.ProjectAction(ctx, scope.project, actionID); err != nil {
+			return err
+		}
+		var err error
+		row, err = owner.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: runID})
+		return err
+	})
+	if err != nil {
+		return actionRunRecord{}, projectRecordError(err)
 	}
-	run, err := readProjectActionRun(ctx, s.database.reader, scope, actionID, runID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if row.ActionID != actionID {
 		return actionRunRecord{}, nativeNotFound()
 	}
+	return s.actionRunRecord(ctx, row, true)
+}
+
+func (s *Service) actionRunRecord(ctx context.Context, row postgres.ActionRun, output bool) (actionRunRecord, error) {
+	command := attachment.ArchiveReference{Key: row.CommandObjectKey, SHA256: row.CommandSha256, CompressedSize: row.CommandBytes, UncompressedSize: row.CommandContentBytes, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
+	if command.Validate(string(row.OrganizationID)) != nil || command.UncompressedSize > workspacesession.MaxExecCommandBytes || s.runDetailStore() == nil {
+		return actionRunRecord{}, artifact.ErrIntegrity
+	}
+	raw, err := s.runDetailStore().ReadDetail(ctx, string(row.OrganizationID), command)
 	if err != nil {
 		return actionRunRecord{}, err
 	}
-	return run, nil
+	record := actionRunRecord{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, ActionID: row.ActionID, WorkspaceID: row.WorkspaceID, Command: string(raw), Status: row.Status, Reason: row.Reason, StartedAt: row.StartedAt, FinishedAt: row.FinishedAt, OutputBytes: row.OutputContentBytes, Truncated: row.Truncated, ClaimedBy: row.ClaimedBy, Revision: row.Revision, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	if row.ExitCode.Valid {
+		record.ExitCode = new(int(row.ExitCode.Int32))
+	}
+	if row.OutputObjectKey != nil {
+		ref := attachment.ArchiveReference{Key: *row.OutputObjectKey, SHA256: row.OutputSha256, CompressedSize: row.OutputBytes, UncompressedSize: row.OutputContentBytes, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
+		if ref.Validate(string(row.OrganizationID)) != nil || ref.UncompressedSize > workspacesession.MaxExecOutputBytes {
+			return actionRunRecord{}, artifact.ErrIntegrity
+		}
+		if output {
+			ref, err = s.relayArchiveReference(ctx, row.OrganizationID, ref)
+			if err != nil {
+				return actionRunRecord{}, err
+			}
+			raw, err := readChangeContent(s.contentContext(ctx), string(row.OrganizationID), ref)
+			if err != nil {
+				return actionRunRecord{}, err
+			}
+			record.Output = string(raw)
+		}
+	} else if row.OutputContentBytes != 0 || row.OutputBytes != 0 || row.OutputSha256 != "" {
+		return actionRunRecord{}, artifact.ErrIntegrity
+	}
+	record.OutputArtifact = actionRunOutputPath(record)
+	return record, nil
+}
+
+func (s *Service) queueActionRunRecord(ctx context.Context, scope nativeScope, actionID string, request projectActionRunRequest) (json.RawMessage, error) {
+	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return nil, err
+	}
+	operation := nativeOperation(scope, "POST", "/actions/"+url.PathEscape(actionID)+"/runs")
+	hash, err := nativeCommandHash(request)
+	if err != nil {
+		return nil, err
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	if receipt, found, err := s.workItemRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); found || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		return content.Receipt(ctx, receipt)
+	}
+	service, err := s.requireWorkspaces()
+	if err != nil {
+		return nil, err
+	}
+	id := newNativeID("actionrun")
+	raw, err := json.Marshal(projectActionRunReceipt{RunID: id})
+	if err != nil {
+		return nil, err
+	}
+	now := s.config.now().UTC()
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
+	if err != nil {
+		return nil, err
+	}
+	var replay *eventstore.Receipt
+	err = s.accessWrite(ctx, scope.organization, func(writer tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, writer, scope, true); err != nil {
+			return err
+		}
+		if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		stored, err := writer.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+		if err == nil {
+			if stored.RequestHash != hash {
+				return nativeConflict(0)
+			}
+			replay = &stored
+			return nil
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err := s.database.requireHostedFeatureRecord(ctx, writer, "collaboration", s.config.now()); err != nil {
+			return err
+		}
+		owner, ok := writer.(postgres.RelayActionWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		action, err := owner.ProjectAction(ctx, scope.project, actionID)
+		if err != nil {
+			return err
+		}
+		if request.ExpectedActionRevision != 0 && int64(request.ExpectedActionRevision) != action.Action.Revision {
+			return nativeConflict(tracker.Revision(action.Action.Revision))
+		}
+		workspace, err := service.readRelayWorkspaceForActor(ctx, writer, scope, strings.TrimSpace(request.WorkspaceID))
+		if err != nil {
+			return err
+		}
+		if !workspacesession.Bound(workspace.State) {
+			return nativeStaleExecution("The workspace is not bound to a runner")
+		}
+		if workspace.ReadOnly {
+			return actionRunReadOnly()
+		}
+		if workspace.Capabilities == nil || !workspace.Capabilities.Has(workspacesession.CapabilityExec) {
+			return actionRunCapabilityMissing()
+		}
+		run, err := owner.CreateActionRun(ctx, postgres.CreateActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: id, ActionID: actionID, WorkspaceID: workspace.ID, CreatedBy: scope.actor().PrincipalID, CreatedAt: now})
+		if err != nil {
+			return err
+		}
+		if run.CommandObjectKey != action.Command.Key || run.CommandSha256 != action.Command.SHA256 {
+			return artifact.ErrIntegrity
+		}
+		if err := s.retainRelayArchive(ctx, writer, scope.organization, scope.project, id, "project-action-run-command", action.Command, now); err != nil {
+			return err
+		}
+		_, err = writer.PutReceipt(ctx, receipt)
+		return err
+	})
+	if err != nil {
+		return nil, projectRecordError(err)
+	}
+	if replay != nil {
+		return content.Receipt(ctx, *replay)
+	}
+	return raw, nil
 }

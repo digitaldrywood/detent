@@ -17,7 +17,7 @@ func TestGitHubImportJobsKeepProjectAndTenantScope(t *testing.T) {
 	repository, _ := repositoryFor(t, template.Database(t), smallPool())
 	for _, org := range []tracker.OrganizationID{"first", "second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: string(org), Local: true, CreatedAt: time.Now()})
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: string(org), CreatedAt: time.Now()})
 		}); err != nil {
 			t.Fatal(err)
 		}

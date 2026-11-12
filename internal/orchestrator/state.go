@@ -33,7 +33,6 @@ import (
 type State struct {
 	LocalIntake              telemetry.LocalIntake
 	localAdmitted            map[string]struct{}
-	localAdmissionRecovered  bool
 	nativeAdmission          *tracker.NativeAdmissionContext
 	RuntimeObservation       telemetry.SnapshotSection
 	PollInterval             time.Duration
@@ -448,7 +447,6 @@ func (s State) clone() State {
 	cloned := State{
 		LocalIntake:              telemetry.LocalIntake{Enabled: s.LocalIntake.Enabled, Remaining: append([]string(nil), s.LocalIntake.Remaining...), Blocked: append([]string(nil), s.LocalIntake.Blocked...)},
 		localAdmitted:            maps.Clone(s.localAdmitted),
-		localAdmissionRecovered:  s.localAdmissionRecovered,
 		RuntimeObservation:       s.RuntimeObservation,
 		PollInterval:             s.PollInterval,
 		RefreshFailureThreshold:  s.RefreshFailureThreshold,

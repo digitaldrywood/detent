@@ -207,7 +207,7 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 	}
 	labelPriority := "0::bigint"
 	if len(query.LabelPriority) > 0 {
-		labelPriority = "COALESCE((SELECT min(array_position(" + bind(query.LabelPriority) + "::text[],l.label)) FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY(" + bind(query.LabelPriority) + "::text[])),2147483647)::bigint"
+		labelPriority = "COALESCE((SELECT min(array_position(" + bind(normalizedClaimValues(query.LabelPriority)) + "::text[],lower(btrim(l.label)))) FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND lower(btrim(l.label))=ANY(" + bind(normalizedClaimValues(query.LabelPriority)) + "::text[])),2147483647)::bigint"
 	}
 	priority := "CASE WHEN q.priority_override BETWEEN 0 AND 3 THEN q.priority_override+1 ELSE 5 END::bigint"
 	rank := "COALESCE(q.rank,'')"
@@ -234,10 +234,11 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
  JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name
  JOIN issue_claim_facts f ON f.organization_id=i.organization_id AND f.project_id=i.project_id AND f.work_item_id=i.native_id
  LEFT JOIN LATERAL (SELECT e.scope,e.rank,e.priority_override FROM queue_entries e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND ($3='' OR e.scope=$4) ORDER BY CASE WHEN e.scope=$4 THEN 0 ELSE 1 END,e.scope LIMIT 1) q ON true
- WHERE i.organization_id=$1 AND i.project_id=$2 AND p.profile='native' AND p.deleted_at IS NULL AND i.archived=false AND ws.dispatchable=true AND ws.terminal=false AND lower(trim(ws.name))<>'cancelled'
+ WHERE i.organization_id=$1 AND i.project_id=$2 AND (p.profile='native' OR (p.profile='github_compatible' AND ps.repository_enabled AND lower(f.repository)=lower(ps.repository))) AND p.deleted_at IS NULL AND i.archived=false AND ws.dispatchable=true AND ws.terminal=false AND lower(trim(ws.name))<>'cancelled'
  AND (NOT p.require_dependencies OR NOT EXISTS(SELECT 1 FROM issue_dependencies d JOIN issues blocker ON blocker.organization_id=d.organization_id AND blocker.project_id=d.blocker_project_id AND blocker.id=d.blocker_issue_id LEFT JOIN project_workflow_states blocker_state ON blocker_state.organization_id=blocker.organization_id AND blocker_state.project_id=blocker.project_id AND blocker_state.name=blocker.workflow_state_name WHERE d.organization_id=i.organization_id AND d.dependent_project_id=i.project_id AND d.dependent_issue_id=i.id AND (blocker_state.name IS NULL OR blocker_state.terminal=false)))
  AND (q.scope IS NOT NULL OR $3='')
- AND (` + workspaceLane + ` OR NOT EXISTS(SELECT 1 FROM workspace_items wi WHERE wi.organization_id=i.organization_id AND wi.project_id=i.project_id AND wi.work_item_id=i.native_id))`
+ AND ((` + workspaceLane + ` AND EXISTS(SELECT 1 FROM workspace_items wi WHERE wi.organization_id=i.organization_id AND wi.project_id=i.project_id AND wi.work_item_id=i.native_id AND wi.closed_at IS NULL))
+ OR (NOT ` + workspaceLane + ` AND NOT EXISTS(SELECT 1 FROM workspace_items wi WHERE wi.organization_id=i.organization_id AND wi.project_id=i.project_id AND wi.work_item_id=i.native_id)))`
 	if !query.AvailableAt.IsZero() && !query.IncludeLeasedAnchor {
 		statement += ` AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id AND l.released_at IS NULL AND l.expires_at>$5)`
 	}
@@ -264,14 +265,14 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		statement += ` AND f.assignees && ` + bind(normalizedClaimValues(query.Assignees)) + `::text[]`
 	}
 	var labelSQL strings.Builder
-	for _, label := range query.IncludeLabels {
-		labelSQL.WriteString(` AND EXISTS(SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=`)
+	for _, label := range normalizedClaimValues(query.IncludeLabels) {
+		labelSQL.WriteString(` AND EXISTS(SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND lower(btrim(l.label))=`)
 		labelSQL.WriteString(bind(label))
 		labelSQL.WriteString(`)`)
 	}
 	statement += labelSQL.String()
 	if len(query.ExcludeLabels) > 0 {
-		statement += ` AND NOT EXISTS(SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY(` + bind(query.ExcludeLabels) + `::text[]))`
+		statement += ` AND NOT EXISTS(SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND lower(btrim(l.label))=ANY(` + bind(normalizedClaimValues(query.ExcludeLabels)) + `::text[]))`
 	}
 	if query.WorkItemID != "" {
 		statement += ` AND i.native_id=` + bind(query.WorkItemID)
@@ -366,4 +367,106 @@ func normalizedClaimValues(values []string) []string {
 		}
 	}
 	return result
+}
+
+func (s *session) QueueListPage(ctx context.Context, query claimstore.QueueListQuery) ([]claimstore.QueueListRow, error) {
+	if query.ProjectID == "" || strings.TrimSpace(query.Scope) == "" || query.Limit < 1 || query.Limit > corestore.MaxPageSize+1 || query.After.Priority < 0 || query.After.Priority > 4 {
+		return nil, claimstore.ErrInvalidCandidateQuery
+	}
+	if query.After.RankMissing < 0 || query.After.RankMissing > 1 || query.After.Number < 0 || query.After.WorkItemID != "" && !query.IdentifierOrder && query.After.Created.IsZero() {
+		return nil, claimstore.ErrInvalidCandidateQuery
+	}
+	for _, values := range [][]string{query.States, query.Labels, query.Assignees, query.Repositories} {
+		if len(values) > 32 || len(strings.Join(values, "\x00")) > 4096 {
+			return nil, claimstore.ErrInvalidCandidateQuery
+		}
+	}
+	if len(query.Priorities) > 32 {
+		return nil, claimstore.ErrInvalidCandidateQuery
+	}
+	for _, priority := range query.Priorities {
+		if priority < -1 || priority > 3 {
+			return nil, claimstore.ErrInvalidCandidateQuery
+		}
+	}
+	args := []any{s.organization, query.ProjectID, query.Scope}
+	bind := func(value any) string { args = append(args, value); return "$" + strconv.Itoa(len(args)) }
+	priority := "q.list_priority"
+	missing := "q.list_rank_missing"
+	order := priority + "," + missing + ",q.list_rank,q.created_at,q.work_item_id"
+	where := "q.organization_id=$1 AND q.project_id=$2 AND q.scope=$3"
+	if query.After.WorkItemID != "" {
+		where += " AND (" + order + ")>(" + bind(query.After.Priority) + "::integer," + bind(query.After.RankMissing) + "::integer," + bind(query.After.Rank) + "::text," + bind(query.After.Created) + "::timestamptz," + bind(query.After.WorkItemID) + "::text)"
+	}
+	source := "SELECT q.* FROM queue_entries q WHERE " + where + " ORDER BY " + order + " LIMIT " + bind(query.Limit)
+	from := "raw q LEFT JOIN LATERAL (SELECT selected.* FROM issues selected WHERE selected.organization_id=q.organization_id AND selected.project_id=q.project_id AND selected.native_id=q.work_item_id LIMIT 1) i ON true"
+	positionID, positionNumber := "q.work_item_id", "coalesce(i.number,0)"
+	if query.IdentifierOrder {
+		args = args[:3]
+		where = "i.organization_id=$1 AND i.project_id=$2"
+		if query.After.WorkItemID != "" {
+			where += " AND i.number>" + bind(query.After.Number) + "::bigint"
+		}
+		source = "SELECT i.* FROM issues i WHERE " + where + " ORDER BY i.number LIMIT " + bind(query.Limit)
+		from = "raw i LEFT JOIN LATERAL (SELECT selected.* FROM queue_entries selected WHERE selected.organization_id=i.organization_id AND selected.project_id=i.project_id AND selected.work_item_id=i.native_id AND selected.scope=$3 LIMIT 1) q ON true"
+		order, positionID, positionNumber = "i.number", "i.native_id", "i.number"
+	}
+	matches := []string{"i.id IS NOT NULL", "NOT i.archived"}
+	if query.Unqueued {
+		matches = append(matches, "q.scope IS NULL")
+	} else if !query.IdentifierOrder {
+		matches = append(matches, "q.scope IS NOT NULL")
+	}
+	if query.Principal != "" {
+		matches = append(matches, "i.actor_principal_id="+bind(query.Principal))
+	}
+	for _, filter := range []struct {
+		values     []string
+		expression string
+	}{
+		{query.States, "i.workflow_state_name"}, {normalizedClaimValues(query.Repositories), "f.repository"},
+	} {
+		if len(filter.values) > 0 {
+			matches = append(matches, filter.expression+"=ANY("+bind(filter.values)+"::text[])")
+		}
+	}
+	if len(query.Priorities) > 0 {
+		matches = append(matches, "coalesce(q.priority_override,-1)=ANY("+bind(query.Priorities)+"::bigint[])")
+	}
+	if len(query.Assignees) > 0 {
+		matches = append(matches, "f.assignees && "+bind(normalizedClaimValues(query.Assignees))+"::text[]")
+	}
+	if len(query.Labels) > 0 {
+		matches = append(matches, "EXISTS(SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY("+bind(query.Labels)+"::text[]))")
+	}
+	statement := "WITH raw AS MATERIALIZED (" + source + ") SELECT coalesce(i.id,0),coalesce(i.revision,0)," + positionID + "," + positionNumber + ",coalesce(q.scope,''),coalesce(q.state,''),coalesce(q.rank,''),q.priority_override,coalesce(q.created_at,i.native_created_at,i.created_at,'epoch'::timestamptz),coalesce(q.updated_at,i.native_updated_at,i.updated_at,'epoch'::timestamptz),coalesce((" + strings.Join(matches, " AND ") + "),false) FROM " + from + " LEFT JOIN LATERAL (SELECT selected.* FROM issue_claim_facts selected WHERE selected.organization_id=i.organization_id AND selected.project_id=i.project_id AND selected.work_item_id=i.native_id LIMIT 1) f ON true ORDER BY " + order
+	rows, err := s.db.Query(ctx, statement, args...)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	out := []claimstore.QueueListRow{}
+	for rows.Next() {
+		var row claimstore.QueueListRow
+		var priority pgtype.Int8
+		row.Entry.OrganizationID, row.Entry.ProjectID = s.organization, query.ProjectID
+		if err := rows.Scan(&row.ID, &row.Revision, &row.Entry.WorkItemID, &row.Position.Number, &row.Entry.Scope, &row.Entry.State, &row.Entry.Rank, &priority, &row.Entry.CreatedAt, &row.Entry.UpdatedAt, &row.Matches); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		row.Position.Priority = 4
+		if priority.Valid {
+			row.Entry.Priority = &priority.Int64
+			row.Position.Priority = priority.Int64
+		}
+		row.Position.Rank = strings.TrimSpace(row.Entry.Rank)
+		if row.Position.Rank == "" {
+			row.Position.RankMissing = 1
+		}
+		row.Position.Created, row.Position.WorkItemID = row.Entry.CreatedAt, row.Entry.WorkItemID
+		if query.Unqueued {
+			row.Position.Stage = 1
+		}
+		out = append(out, row)
+	}
+	return out, mapError(ctx, rows.Err())
 }

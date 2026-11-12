@@ -895,6 +895,9 @@ func (c Config) Validate(opts ...Option) error {
 
 	for index, project := range c.Projects {
 		prefix := fmt.Sprintf("projects[%d]", index)
+		if c.Client.Configured() && c.Client.IdentityFile == "" && strings.TrimSpace(c.Client.NativeProjects[project.ID]) == "" {
+			problems = append(problems, prefix+".id: Hub runner project must be mapped in client.native_projects; generic Hub tracker mode was removed")
+		}
 		if strings.TrimSpace(project.ID) == "" {
 			problems = append(problems, prefix+".id: must not be blank")
 		}

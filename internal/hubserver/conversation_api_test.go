@@ -1746,8 +1746,8 @@ func TestConversationPostgresScopeUsesTenantRecords(t *testing.T) {
 	var linkedResult conversationLinkResponse
 	decodeHubResponse(t, linked, &linkedResult)
 
-	if f.service.database.db != nil || f.service.database.reader != nil || f.service.database.authReader != nil || f.service.database.claimReader != nil {
-		t.Fatal("conversation fixture retained legacy SQL handles")
+	if f.service.database.postgres == nil || f.service.config.TenantRepository == nil {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 
 	projectList := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations", f.token, nil)

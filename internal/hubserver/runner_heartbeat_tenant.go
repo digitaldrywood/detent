@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -115,8 +116,15 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
+	configuration, err := s.prepareConfigurationHeartbeat(ctx, credential, projectID, request.ProjectConfiguration)
+	if err != nil {
+		if !errors.Is(err, errConfigurationPayloadUnavailable) {
+			return s.nativeAPIError(c, err)
+		}
+		s.config.Logger.Warn("project configuration payload unavailable", "runner_id", credential.Runner.RunnerID, "error", err)
+		configuration = nil
+	}
 	var snapshot runnerauth.RoutingSnapshot
-	var heartbeatChanges *runnerauth.HeartbeatChanges
 	var acknowledgments []hostmetrics.Acknowledgment
 	dispatchChanged := false
 	write := func(ctx context.Context, w tenantstore.Writer) error {
@@ -238,8 +246,8 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		}
 		if request.ProjectConfiguration != nil {
 			view := *request.ProjectConfiguration
-			if view.RunnerID != "" && view.RunnerID != identity.RunnerID || view.RunnerRevision != 0 && view.RunnerRevision != identity.Revision {
-				return nativePublicInvalid("Project diagnostics do not match the current runner identity")
+			if err := validateConfigurationRunner(&view, identity); err != nil {
+				return err
 			}
 			allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, tracker.ProjectID(view.ProjectID), receivedAt)
 			if err != nil {
@@ -276,26 +284,6 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 				return err
 			}
 		}
-		if request.ChangeCursor != nil {
-			allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, projectID, receivedAt)
-			if err != nil {
-				return err
-			}
-			if allowed {
-				policyID := ""
-				policy, err := w.ProjectPolicy(ctx, projectID)
-				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-					return err
-				}
-				if err == nil {
-					policyID = policy.PolicyID
-				}
-				heartbeatChanges, err = readHeartbeatChangesTenant(ctx, w, nativeScope{organization: identity.OrganizationID, project: projectID, credential: credential}, changeCursor, changeKey, changeReset, changeDigest, policyID, receivedAt)
-				if err != nil {
-					return err
-				}
-			}
-		}
 		problems, err := w.RunnerProblems(ctx, identity.RunnerID)
 		if err != nil {
 			return err
@@ -320,70 +308,25 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		if previous.CapacityConfig != nil && identity.CapacityConfig != nil {
 			dispatchChanged = dispatchChanged || previous.CapacityConfig.LocalLimit != identity.CapacityConfig.LocalLimit || previous.CapacityConfig.ClientLimit != identity.CapacityConfig.ClientLimit || previous.CapacityConfig.RuntimeLimit != identity.CapacityConfig.RuntimeLimit
 		}
-		projects, err := w.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
-		if err != nil {
+
+		snapshot = runnerauth.RoutingSnapshot{RunnerID: identity.RunnerID, HostMetricsAcknowledged: acknowledgments}
+		if err := s.applyConfigurationHeartbeat(ctx, w, identity, projectID, configuration, &snapshot); err != nil {
 			return err
 		}
-		repositoryList, repositoryListErr := w.RunnerRepositoryList(ctx, identity.RunnerID)
-		if repositoryListErr != nil && !errors.Is(repositoryListErr, corestore.ErrNotFound) {
-			return repositoryListErr
-		}
-		if identity.Scope == "organization" {
-			projects = []tracker.ProjectID{}
-		}
-		routing := runnerauth.Routing{
-			Scope: identity.Scope, DisplayName: identity.DisplayName, MachineUse: identity.MachineUse, Tags: slices.Clone(identity.Tags),
-			State: identity.State, CapacityLimit: int(identity.CapacityLimit), ProjectCapacityLimits: identity.ProjectCapacityLimits,
-			ProjectRanks: identity.ProjectRanks, ProjectIDs: projects, IsolationTier: identity.IsolationTier, HostServices: slices.Clone(identity.HostServices),
-			Availability: runnerauth.Availability{Timezone: identity.Availability.Timezone, Windows: slices.Clone(identity.Availability.Windows), WindowSlots: identity.Availability.WindowSlots, HardDeadline: identity.Availability.HardDeadline},
-		}
-		updateState, err := w.RunnerUpdateState(ctx, identity.RunnerID)
-		if err != nil {
-			return err
-		}
-		updateRunner := runnerauth.Runner{Routing: runnerauth.Routing{UpdateRequest: updateState.Desired}, Update: updateState.Observation}
-		urgentUpdate, err := w.RunnerUrgentUpdate(ctx)
-		if err != nil {
-			return err
-		}
-		applyUrgentRunnerRouting(&updateRunner, urgentRunnerUpdate{Revision: urgentUpdate.Revision, Request: urgentUpdate.Request}, request.Version)
-		routing.UpdateRequest = updateRunner.UpdateRequest
-		routing = routing.Normalized()
-		if err := routing.Validate(); err != nil {
-			return nativeRunEventStorageUnavailable()
-		}
-		snapshot = runnerauth.RoutingSnapshot{RunnerID: identity.RunnerID, Revision: identity.Revision, Routing: routing}
-		assigned, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, projectID, receivedAt)
-		if err != nil {
-			return err
-		}
-		if assigned {
-			claimReader, ok := w.(runnerstore.ClaimStateReader)
-			if !ok {
-				return nativeRunEventStorageUnavailable()
-			}
-			claims, err := claimReader.RunnerClaimState(ctx, identity.RunnerID, projectID, "", 100, receivedAt)
-			if err != nil {
-				return err
-			}
-			claims.State.ReleasedExecutions = claims.Candidates
-			snapshot.ClaimState = &claims.State
-		}
-		snapshot.HostMetricsAcknowledged = acknowledgments
-		snapshot.Changes = heartbeatChanges
 		if updateReleasePublished {
 			snapshot.TargetRunnerVersion = strings.TrimPrefix(updateTarget, "v")
-		}
-		if repositoryListErr == nil && repositoryList.Pending {
-			snapshot.RepositoryListRequest = repositoryList.RequestID
 		}
 		hasActiveLease, err := w.RunnerHasActiveLease(ctx, identity.RunnerID, receivedAt)
 		if err != nil {
 			return err
 		}
+		if plans := s.database.plans(); plans != nil && !hasActiveLease && !previous.LastHeartbeatAt.After(receivedAt.Add(-time.Duration(plans.ConnectedSeconds)*time.Second)) {
+			if err := s.checkRunnerAdmission(ctx, w, receivedAt, 1, "connected_runners"); err != nil {
+				return err
+			}
+		}
 		return s.applyRunnerTenantUsage(ctx, w, receivedAt, newNativeID("runner_heartbeat"), hasActiveLease, true)
 	}
-	var err error
 	if command, ok := s.config.TenantRepository.(interface {
 		WriteRunnerHeartbeat(context.Context, tracker.OrganizationID, string, string, func(context.Context, tenantstore.Writer) error) error
 	}); ok {
@@ -400,6 +343,90 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if dispatchChanged {
 		s.notifications.notify(dispatchNotificationKey(credential.Runner.OrganizationID))
 	}
+	assigned := false
+	cleanupKey := releasedExecutionCursorKey{organization: credential.Runner.OrganizationID, project: projectID, runner: credential.Runner.RunnerID}
+	cleanupAfter, err := s.runnerCleanupCursor(cleanupKey)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	var cleanupNext string
+	var cleanupCandidates []tenantAttemptSnapshot
+	err = s.readRunnerResponseSnapshot(ctx, credential.Runner.OrganizationID, credential.ID, credential.Runner.RunnerID, projectID, func(ctx context.Context, r tenantstore.Reader, now time.Time) error {
+		identity, err := r.RunnerIdentityByCredential(ctx, credential.ID)
+		if err != nil {
+			return err
+		}
+		current, err := r.AccessCredential(ctx, credential.ID)
+		if err != nil {
+			return err
+		}
+		if current.OrganizationID != credential.Runner.OrganizationID || current.Scope != string(apiScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, credential.Runner.OrganizationID, credential.Runner.RunnerID, credential.ID, credential.Runner.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
+			return runnerUnauthorized()
+		}
+		if err := readRunnerResponseRouting(ctx, r, identity, &snapshot); err != nil {
+			return err
+		}
+		assigned, err = r.RunnerProjectAuthorized(ctx, identity.RunnerID, projectID, now)
+		if err != nil {
+			return err
+		}
+		if !assigned {
+			snapshot.ClaimState = nil
+			snapshot.Changes = nil
+			snapshot.GitHubIntake = nil
+			snapshot.ProjectConfiguration = nil
+			snapshot.ProjectConfigurationRequest = nil
+			snapshot.TargetRunnerVersion = ""
+			return nil
+		}
+		reader, ok := r.(runnerstore.ClaimStateReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		claims, err := reader.RunnerClaimState(ctx, identity.RunnerID, projectID, cleanupAfter, releasedExecutionsPageSize, now)
+		if err != nil {
+			return err
+		}
+		cleanupCandidates, err = s.readRunnerCleanupCandidates(ctx, r, nativeScope{organization: identity.OrganizationID, project: projectID, credential: credential}, claims.Unclassified)
+		if err != nil {
+			return err
+		}
+		cleanupNext = claims.Next
+		claims.State.ReleasedExecutions = claims.Candidates
+		snapshot.ClaimState = &claims.State
+		if request.ChangeCursor != nil {
+			policyID := ""
+			policy, err := r.ProjectPolicy(ctx, projectID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err == nil {
+				policyID = policy.PolicyID
+			}
+			snapshot.Changes, err = readHeartbeatChangesTenant(ctx, r, nativeScope{organization: identity.OrganizationID, project: projectID, credential: credential}, changeCursor, changeKey, changeReset, changeDigest, policyID, now)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if !assigned {
+		c.Response().Header().Set("Cache-Control", "no-store")
+		return c.JSON(http.StatusOK, snapshot)
+	}
+	if err := s.resolveRunnerCleanupCandidates(ctx, nativeScope{organization: credential.Runner.OrganizationID, project: projectID, credential: credential}, credential.Runner.RunnerID, cleanupCandidates, snapshot.ClaimState); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	s.advanceRunnerCleanupCursor(cleanupKey, cleanupNext)
+	task, err := s.readGitHubBatchTaskRecord(ctx, nativeScope{organization: credential.Runner.OrganizationID, project: projectID, credential: credential})
+	if err != nil {
+		s.config.Logger.Warn("GitHub intake task unavailable", "organization_id", credential.Runner.OrganizationID, "project_id", projectID, "runner_id", credential.Runner.RunnerID, "error", err)
+	} else {
+		snapshot.GitHubIntake = task
+	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusOK, snapshot)
 }
@@ -409,11 +436,69 @@ func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest) er
 		return nil
 	}
 	view := request.ProjectConfiguration
-	if view.Validate() != nil || view.Authority != "local_global_configuration" {
+	if view.Validate() != nil || (view.Authority != "local_global_configuration" && view.Authority != "hub_configuration") {
 		return nativeRunEventStorageUnavailable()
 	}
 	if diagnostics := view.Diagnostics; diagnostics != nil && diagnostics.Source != "runner_runtime_and_durable_attempt_owners" {
 		return nativeRunEventStorageUnavailable()
+	}
+	return nil
+}
+
+func (s *Service) readRunnerResponseSnapshot(ctx context.Context, organization tracker.OrganizationID, credential, runner string, project tracker.ProjectID, read func(context.Context, tenantstore.Reader, time.Time) error) error {
+	if owner, ok := s.config.TenantRepository.(interface {
+		ReadRunnerHeartbeatSnapshot(context.Context, tracker.OrganizationID, string, string, tracker.ProjectID, func() time.Time, func(context.Context, tenantstore.Reader, time.Time) error) error
+	}); ok {
+		return owner.ReadRunnerHeartbeatSnapshot(ctx, organization, credential, runner, project, s.config.now, read)
+	}
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nativeRunEventStorageUnavailable()
+	}
+	return repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error { return read(ctx, r, s.config.now().UTC()) })
+}
+
+func readRunnerResponseRouting(ctx context.Context, r tenantstore.Reader, identity runnerstore.Identity, snapshot *runnerauth.RoutingSnapshot) error {
+	projects, err := r.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
+	if err != nil {
+		return err
+	}
+	if identity.Scope == "organization" {
+		projects = []tracker.ProjectID{}
+	}
+	record, err := r.Machine(ctx, string(identity.MachineID))
+	if err != nil {
+		return err
+	}
+	routing := runnerauth.Routing{
+		Scope: identity.Scope, CapacityRequest: identity.CapacityRequest, ProjectRankOverrides: identity.ProjectRanks, DisplayName: identity.DisplayName, MachineUse: identity.MachineUse, Tags: slices.Clone(identity.Tags),
+		State: identity.State, CapacityLimit: int(identity.CapacityLimit), ProjectCapacityLimits: identity.ProjectCapacityLimits,
+		ProjectRanks: identity.ProjectRanks, ProjectIDs: projects, IsolationTier: identity.IsolationTier, HostServices: slices.Clone(identity.HostServices),
+		Availability: runnerauth.Availability{Timezone: identity.Availability.Timezone, Windows: slices.Clone(identity.Availability.Windows), WindowSlots: identity.Availability.WindowSlots, HardDeadline: identity.Availability.HardDeadline},
+	}
+	updateState, err := r.RunnerUpdateState(ctx, identity.RunnerID)
+	if err != nil {
+		return err
+	}
+	updateRunner := runnerauth.Runner{Routing: runnerauth.Routing{UpdateRequest: updateState.Desired}, Update: updateState.Observation}
+	urgentUpdate, err := r.RunnerUrgentUpdate(ctx)
+	if err != nil {
+		return err
+	}
+	applyUrgentRunnerRouting(&updateRunner, urgentRunnerUpdate{Revision: urgentUpdate.Revision, Request: urgentUpdate.Request}, record.Version)
+	routing.UpdateRequest = updateRunner.UpdateRequest
+	routing = routing.Normalized()
+	if err := routing.Validate(); err != nil {
+		return nativeRunEventStorageUnavailable()
+	}
+	snapshot.RunnerID, snapshot.Revision, snapshot.Routing = identity.RunnerID, identity.Revision, routing
+	snapshot.RepositoryListRequest = ""
+	listing, err := r.RunnerRepositoryList(ctx, identity.RunnerID)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return err
+	}
+	if err == nil && listing.Pending {
+		snapshot.RepositoryListRequest = listing.RequestID
 	}
 	return nil
 }

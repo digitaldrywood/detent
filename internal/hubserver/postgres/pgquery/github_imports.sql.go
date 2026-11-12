@@ -130,6 +130,54 @@ func (q *Queries) ReadGitHubImportForIssue(ctx context.Context, arg ReadGitHubIm
 	return i, err
 }
 
+const readGitHubImportForWorkItem = `-- name: ReadGitHubImportForWorkItem :many
+SELECT organization_id, project_id, id, issue_number, work_item_id, stage, cursor, revision, pages, status, gaps, last_error, retry_after, source_updated_at, observed_at, intake_pending, edit_sequence FROM github_imports WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND work_item_id<>'' ORDER BY id LIMIT 2
+`
+
+type ReadGitHubImportForWorkItemParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+}
+
+func (q *Queries) ReadGitHubImportForWorkItem(ctx context.Context, arg ReadGitHubImportForWorkItemParams) ([]GithubImport, error) {
+	rows, err := q.db.Query(ctx, readGitHubImportForWorkItem, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubImport{}
+	for rows.Next() {
+		var i GithubImport
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.IssueNumber,
+			&i.WorkItemID,
+			&i.Stage,
+			&i.Cursor,
+			&i.Revision,
+			&i.Pages,
+			&i.Status,
+			&i.Gaps,
+			&i.LastError,
+			&i.RetryAfter,
+			&i.SourceUpdatedAt,
+			&i.ObservedAt,
+			&i.IntakePending,
+			&i.EditSequence,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateGitHubImport = `-- name: UpdateGitHubImport :one
 UPDATE github_imports SET work_item_id=$5,stage=$6,cursor=$7,pages=$8,status=$9,gaps=$10,last_error=$11,retry_after=$12,source_updated_at=$13,observed_at=$14,intake_pending=$15,edit_sequence=$16,revision=revision+1
 WHERE organization_id=$1 AND project_id=$2 AND id=$3 AND revision=$4 RETURNING organization_id, project_id, id, issue_number, work_item_id, stage, cursor, revision, pages, status, gaps, last_error, retry_after, source_updated_at, observed_at, intake_pending, edit_sequence

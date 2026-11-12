@@ -7,4 +7,10 @@ SELECT * FROM github_import_records WHERE organization_id=$1 AND project_id=$2 A
 -- name: CreateGitHubImportRecord :exec
 INSERT INTO github_import_records (organization_id,project_id,import_id,source_key,kind,current_dependency,dependency_id,provenance_external_id,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-ON CONFLICT (organization_id,project_id,import_id,source_key) DO NOTHING;
+ON CONFLICT (organization_id,project_id,import_id,source_key) DO UPDATE
+SET current_dependency=EXCLUDED.current_dependency
+WHERE github_import_records.kind='dependency' AND EXCLUDED.kind='dependency';
+
+-- name: ResetCurrentGitHubImportDependencies :exec
+UPDATE github_import_records SET current_dependency=false
+WHERE organization_id=$1 AND project_id=$2 AND import_id=$3 AND kind='dependency' AND current_dependency;

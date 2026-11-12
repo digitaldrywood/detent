@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 
 import { FIXTURE_SCHEMAS } from "./fixtures.ts";
+import { OrganizationReports } from "./reports.ts";
 import { WorkItemPage } from "./work.ts";
 
 const directory = fileURLToPath(new URL("./fixtures", import.meta.url));
@@ -52,6 +53,24 @@ describe("contract fixtures", () => {
     expect(schema, `no schema is bound to ${name}`).toBeDefined();
     const raw: unknown = JSON.parse(readFileSync(join(directory, name), "utf8"));
     expect(() => Schema.decodeUnknownSync(schema!)(raw)).not.toThrow();
+    if (name === "organizationReports.json") {
+      const partial = JSON.parse(JSON.stringify(raw));
+      partial.unavailable = ["rework_timeline_unavailable"];
+      partial.current.worked = null;
+      partial.current.reworked = null;
+      partial.current.rework_percent = null;
+      partial.projects[0].current.worked = null;
+      partial.projects[0].current.reworked = null;
+      partial.projects[0].current.rework_percent = null;
+      const decoded = Schema.decodeUnknownSync(OrganizationReports)(partial);
+      expect(decoded.current.worked).toBeNull();
+      expect(decoded.current.reworked).toBeNull();
+      expect(decoded.projects[0].current.worked).toBeNull();
+      expect(decoded.projects[0].current.reworked).toBeNull();
+      expect(decoded.projects[1].current.worked).toBe(40);
+      expect(decoded.projects[1].current.reworked).toBe(3);
+      expect(decoded.previous.worked).toBe(0);
+    }
   });
 
   it("rejects the legacy health detector actor kind", () => {

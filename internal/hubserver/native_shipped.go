@@ -26,14 +26,6 @@ type nativeClosedPopulation struct {
 	CancelledAt []time.Time
 }
 
-func (p nativeClosedPopulation) shippedIDs() []string {
-	ids := make([]string, 0, len(p.Shipped))
-	for _, issue := range p.Shipped {
-		ids = append(ids, issue.ID)
-	}
-	return ids
-}
-
 func nativeBoardTime(at time.Time) string {
 	return at.UTC().Format(nativeBoardTimeLayout)
 }
@@ -137,61 +129,4 @@ func applyNativeShippedWindows(summary *tracker.NativeWorkSummary, windows []tra
 			summary.Completed, summary.Cancelled = window.Shipped, window.Cancelled
 		}
 	}
-}
-
-// readNativeShippedSpend returns the lifetime spend of the shipped issues up
-// to `to`, in total and per issue; an issue with no usage spent nothing.
-func readNativeShippedSpend(ctx context.Context, q nativeQueryer, scope nativeScope, ids []string, to time.Time) (float64, map[string]float64, error) {
-	var cost float64
-	perIssue := make(map[string]float64, len(ids))
-	for _, id := range ids {
-		perIssue[id] = 0
-	}
-	err := forShippedBatches(ids, func(batch sqlParameterRows) error {
-		rows, err := querySQL(ctx, q, `SELECT a.work_item_id,coalesce(sum(u.cost_estimate),0) FROM sql_rows(?) w
-CROSS JOIN native_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=w.value
-CROSS JOIN attempt_usage u ON u.attempt_id=a.id AND u.organization_id=? AND u.project_id=? AND +u.period<? GROUP BY a.work_item_id`,
-			batch, scope.organization, scope.project, scope.organization, scope.project, to.UTC().Format(usagePeriodLayout))
-		if err != nil {
-			return fmt.Errorf("read shipped spend: %w", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id string
-			var part float64
-			if err := rows.Scan(&id, &part); err != nil {
-				return fmt.Errorf("read shipped spend: %w", err)
-			}
-			perIssue[id] += part
-			cost += part
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("read shipped spend: %w", err)
-		}
-		return nil
-	})
-	return cost, perIssue, err
-}
-
-func readProjectSpend(ctx context.Context, q nativeQueryer, scope nativeScope, from, to time.Time) (float64, int, error) {
-	var cost float64
-	var rows int
-	statement := `SELECT coalesce(sum(cost_estimate),0),count(*) FROM attempt_usage WHERE organization_id=? AND period>=? AND period<? AND project_id=?`
-	args := []any{scope.organization, from.UTC().Format(usagePeriodLayout), to.UTC().Format(usagePeriodLayout), scope.project}
-	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
-	if err != nil {
-		return 0, 0, err
-	}
-	if scoped != "" {
-		q, err = prepareReportsQuery(ctx, q, scope, "report_attempts")
-		if err != nil {
-			return 0, 0, err
-		}
-		statement += ` AND attempt_id IN (SELECT a.id FROM report_attempts a WHERE a.organization_id=? AND a.project_id=?` + scoped + `)`
-		args = append(append(args, scope.organization, scope.project), scopedArgs...)
-	}
-	if err := q.QueryRowContext(ctx, statement, args...).Scan(&cost, &rows); err != nil {
-		return 0, 0, fmt.Errorf("read project spend: %w", err)
-	}
-	return cost, rows, nil
 }

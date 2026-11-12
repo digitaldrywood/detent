@@ -24,6 +24,8 @@ type DailySummaryPreference struct {
 }
 
 type Repository interface {
+	LocalReleasePreference(context.Context, tracker.OrganizationID, string, string, time.Time) (ReleasePreference, error)
+	SetLocalReleasePreference(context.Context, tracker.OrganizationID, string, string, time.Time, ReleasePreference) error
 	ReleasePreference(context.Context, tracker.OrganizationID, string, string, string) (ReleasePreference, error)
 	SetReleasePreference(context.Context, tracker.OrganizationID, string, string, string, ReleasePreference) error
 	DailySummaryPreference(context.Context, tracker.OrganizationID, string, string, string) (DailySummaryPreference, error)

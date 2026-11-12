@@ -16,6 +16,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -31,7 +35,6 @@ func TestReporterReadIsolation(t *testing.T) {
 		issues[user] = issue
 	}
 	own, other := issues["reporter"], issues["tester"]
-	operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE native_id IN (?,?)", own.WorkItemID, other.WorkItemID)
 	contexts := make(chan context.Context, 1)
 	v.service.echo.POST("/reporter-read-context", func(c echo.Context) error {
 		contexts <- operatortool.BindConnection(c.Request().Context(), "reporter-read", "test")
@@ -297,17 +300,18 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {
 			f, ctx := newHostedKeyMCPFixture(t, deployment, "reporter")
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), f.project)
+				if err != nil {
+					return err
+				}
+				project.States = nativeTriageStates(nativeFixtureStates())
+				project.Settings.DuplicateChallenge = false
+				_, err = w.UpdateProjectRecord(t.Context(), project)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := applyNativeProjectStates(t.Context(), tx, nativeScope{organization: "org_security", project: f.project}, nativeFixtureStates(), f.service.config.now()); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
 			catalog, err := operatorCatalog(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -324,7 +328,13 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 			attachmentResponse := reporterEntryRequest(t, f, deployment, key.Token, "REST-key", http.MethodPost, f.base+"/attachment-metadata", upload, nil)
 			if deployment == "shared" {
 				requireNativeStatus(t, attachmentResponse, http.StatusCreated)
-				operatorSQL(t, f.hostedSecurityFixture, "UPDATE attachments SET uploader=? WHERE id=?", key.ID, record.ID)
+				result, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE attachments SET uploader=$1 WHERE organization_id=$2 AND project_id=$3 AND id=$4", key.ID, "org_security", f.project, record.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if count, err := result.RowsAffected(); err != nil || count != 1 {
+					t.Fatalf("legacy uploader fixture rows=%d error=%v", count, err)
+				}
 				requireNativeStatus(t, reporterEntryRequest(t, f, deployment, "", "web-session", http.MethodGet, f.base+"/attachment-metadata/"+record.ID, nil, nil), http.StatusOK)
 			} else {
 				requireNativeStatus(t, attachmentResponse, http.StatusNotFound)
@@ -395,27 +405,62 @@ func TestReporterAggregateReads(t *testing.T) {
 	own := v.file(t, "reporter", "own", nil, "")
 	other := v.file(t, "tester", "other", nil, "")
 	now := v.service.config.now().UTC()
-	operatorSQL(t, v.hostedSecurityFixture, "INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id) VALUES ('reporter-fixture','reporter-fixture',1,'test',?,?,?,'org_security')", formatHubTime(now), formatHubTime(now), formatHubTime(now))
+	if err := v.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_security", ID: "reporter-fixture", Hostname: "reporter-fixture", Capacity: 1, Version: "test"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	content := eventstore.NewContent(v.service.runDetailStore())
 	for index, item := range []tracker.NativeIssue{own, other} {
 		label := "own-label"
 		if index == 1 {
 			label = "private-label"
 		}
-		labels, err := json.Marshal([]string{label})
-		if err != nil {
-			t.Fatal(err)
-		}
-		operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET page_filters_ready=NULL,labels_json=? WHERE native_id=?", string(labels), item.WorkItemID)
+		var lease leasestore.Lease
 		key := fmt.Sprintf("reporter-attempt-%d", index)
-		lease, err := v.service.database.db.ExecContext(t.Context(), "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?,id,'reporter-fixture',?,?,?,?,?,?,? FROM issues WHERE native_id=?", key, key, formatHubTime(now), formatHubTime(now.Add(-time.Minute)), formatHubTime(now), formatHubTime(now), formatHubTime(now.Add(-time.Minute)), formatHubTime(now), item.WorkItemID)
+		if err := v.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.SetWorkItemLabels(t.Context(), v.project, item.WorkItemID, []string{label}); err != nil {
+				return err
+			}
+			row, err := w.WorkItem(t.Context(), v.project, item.WorkItemID)
+			if err != nil {
+				return err
+			}
+			lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: "reporter-fixture", SessionID: key, LeaseID: key, TTL: time.Hour})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		run := tracker.NativeRunData{AttemptID: key, RunID: key, Sequence: 1, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: tracker.MachineID(lease.MachineID), Outcome: "succeeded"}
+		raw, err := json.Marshal(run)
 		if err != nil {
 			t.Fatal(err)
 		}
-		fence, err := lease.LastInsertId()
+		payload, err := content.PreparePayload(t.Context(), "org_security", raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		operatorSQL(t, v.hostedSecurityFixture, "INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) VALUES (?,?,?,?,?,?,?,1,'succeeded','{}',?,?)", key, "org_security", v.project, item.WorkItemID, key, fence, key, formatHubTime(now.Add(-time.Minute)), formatHubTime(now))
+		raw, err = json.Marshal(tracker.CollaborationEvent{ID: key + "-finished", OrganizationID: "org_security", ProjectID: v.project, AggregateID: item.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "system", PrincipalID: "reporter-fixture"}, RecordedAt: now, Data: tracker.CollaborationData{Run: &run}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, err := content.PrepareEvent(t.Context(), "org_security", raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
+		if err := v.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: key, RunID: key, Fence: fence, Sequence: 1, Status: "succeeded", StartedAt: now.Add(-time.Minute), PayloadObjectKey: payload.Key, PayloadReference: payload}); err != nil {
+				return err
+			}
+			if _, err := w.AppendEvent(t.Context(), event); err != nil {
+				return err
+			}
+			_, err := w.Release(t.Context(), fence, "completed")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	contexts := make(chan context.Context, 1)
 	v.service.echo.POST("/reporter-aggregate-context", func(c echo.Context) error {

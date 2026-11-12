@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"database/sql"
@@ -10,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -147,20 +145,32 @@ func startupConfig(connection pgtransport.Connection) Config {
 		Pool:       postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1},
 	}, Hosted: &HostedConfig{
 		OrganizationID:       "org_startup",
-		WorkOSOrganizationID: "provider_startup",
+		WorkOSOrganizationID: "provider_org_startup",
 		PublicURL:            "https://hub.example.test",
 		Provider:             newHostedSecurityProvider(),
 	}, RunDetails: &memoryRunDetails{}}
 }
 
-func seedStartupOrganization(t *testing.T, repository tenantstore.Repository, organization tracker.OrganizationID) {
+func seedStartupOrganization(t *testing.T, repository tenantstore.Repository, organization tracker.OrganizationID, bindings ...*HostedConfig) {
 	t.Helper()
 	now := time.Now().UTC()
+	tenant := accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization), AllocationGeneration: 1}
+	if len(bindings) > 1 {
+		t.Fatal("startup fixture received multiple tenant bindings")
+	}
+	if len(bindings) == 1 {
+		binding := bindings[0]
+		if binding == nil || binding.OrganizationID != string(organization) {
+			t.Fatal("startup fixture tenant binding does not match its organization")
+		}
+		deployment, generation := binding.deployment()
+		tenant = accessstore.Tenant{OrganizationID: organization, ProviderID: binding.WorkOSOrganizationID, BootstrapSubject: binding.BootstrapSubject, Deployment: deployment, PublicURL: binding.PublicURL, AllocationGeneration: generation}
+	}
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: "example-" + strings.TrimPrefix(string(organization), "org_"), CreatedAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization), AllocationGeneration: 1}); err != nil {
+		if err := w.CreateAccessTenant(t.Context(), tenant); err != nil {
 			return err
 		}
 		if organization != "org_startup" {
@@ -181,6 +191,20 @@ func seedStartupOrganization(t *testing.T, repository tenantstore.Repository, or
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func seedHostedStartup(t *testing.T, cfg Config) {
+	t.Helper()
+	store, err := openDatabase(t.Context(), cfg.normalized())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	seedStartupOrganization(t, store.postgres, tracker.OrganizationID(cfg.Hosted.OrganizationID), cfg.Hosted)
 }
 
 func assertStartupDisconnected(t *testing.T, admin *sql.DB, connection pgtransport.Connection) {
@@ -205,10 +229,8 @@ func TestDatabaseBackendRejectsAmbiguousConfiguration(t *testing.T) {
 		{"unknown backend", Config{DatabaseBackend: "unknown"}},
 		{"missing postgres", Config{DatabaseBackend: DatabasePostgres}},
 		{"implicit postgres", Config{Postgres: &postgres.Config{}}},
-		{"sqlite with postgres", Config{DatabaseBackend: DatabaseSQLite, Postgres: &postgres.Config{}}},
+		{"sqlite with postgres", Config{DatabaseBackend: "sqlite", Postgres: &postgres.Config{}}},
 		{"two authorities", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}, DatabasePath: "example.db"}},
-		{"missing hosted tenant", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}}},
-		{"sqlite maintenance", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}, CredentialMaintenance: true}},
 		{"sqlite binding migration", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}, hostedBindingMigration: true}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -289,11 +311,10 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if store.db != nil || store.reader != nil || store.authReader != nil || store.claimReader != nil || store.lock != nil || store.path != "" {
-		t.Fatal("PostgreSQL startup created SQLite resources")
-	}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedStartupOrganization(t, store.postgres, organization)
+		binding := *cfg.Hosted
+		binding.OrganizationID, binding.WorkOSOrganizationID = string(organization), "provider_"+string(organization)
+		seedStartupOrganization(t, store.postgres, organization, &binding)
 		err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			_, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: "example", Name: "Example", Slug: "example", Profile: "native", WorkflowSource: "example"})
 			return err
@@ -302,7 +323,7 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	seedStartupOrganization(t, store.postgres, "org_startup")
+	seedStartupOrganization(t, store.postgres, "org_startup", cfg.Hosted)
 	for range 2 {
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
@@ -318,8 +339,8 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if service.database.db != nil || service.database.reader != nil || service.config.TenantRepository != service.database.postgres || service.config.AccessRepository != service.database.postgres || service.config.BillingRepository != service.database.postgres {
-		t.Fatal("PostgreSQL service did not bind all selected storage owners or created SQLite resources")
+	if service.database.postgres == nil || service.config.TenantRepository == nil || service.config.TenantRepository != service.database.postgres || service.config.AccessRepository != service.database.postgres || service.config.BillingRepository != service.database.postgres {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 	if response, status := service.readInstanceHealth(t.Context()); status != 200 || !response.SchemaFactsComplete || response.SchemaVersion == 0 || response.SchemaFingerprint == "" {
 		t.Fatalf("PostgreSQL health = %+v, %d", response, status)
@@ -333,8 +354,8 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 	}
 	legacy := httptest.NewRecorder()
 	service.echo.ServeHTTP(legacy, httptest.NewRequest(http.MethodGet, "/api/v1/work-items", nil))
-	if legacy.Code != http.StatusServiceUnavailable {
-		t.Fatalf("legacy SQLite route status = %d, want explicit unavailable response", legacy.Code)
+	if legacy.Code != http.StatusNotFound {
+		t.Fatalf("legacy SQLite route status = %d, want not found", legacy.Code)
 	}
 	var leases, attempts int
 	if err := admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM leases), (SELECT count(*) FROM native_attempts)`).Scan(&leases, &attempts); err != nil || leases != 0 || attempts != 0 {
@@ -350,11 +371,9 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 			}
 			childConfig := cfg
 			hosted := *cfg.Hosted
-			hosted.OrganizationID = string(organization)
+			hosted.OrganizationID, hosted.WorkOSOrganizationID = string(organization), "provider_"+string(organization)
 			hosted.Plans = &plans
 			childConfig.Hosted = &hosted
-			var logs bytes.Buffer
-			childConfig.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 			var child *Service
 			var openErr error
 			func() {
@@ -373,9 +392,6 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			if !strings.Contains(logs.String(), "hosted plan seed differs from immutable stored version; keeping stored version") {
-				t.Fatal("startup did not exercise the differing-plan warning")
-			}
 			if err := child.database.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 				actual, err := r.BillingPlan(t.Context(), stored.PlanReference)
 				if err == nil && (actual.Name != stored.Name || actual.Allowances["collaboration_bytes"] != stored.Allowances["collaboration_bytes"]) {
@@ -400,12 +416,13 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 	cfg := startupConfig(connection)
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Hosted.Provider = provider
+	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	store, err := openDatabase(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedStartupOrganization(t, store.postgres, "org_startup")
+	seedStartupOrganization(t, store.postgres, "org_startup", cfg.Hosted)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -477,8 +494,8 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 		t.Fatalf("PostgreSQL owner member = %+v, error = %v", member, err)
 	}
 	t.Run("browser board routes", func(t *testing.T) {
-		if service.database.db != nil || service.database.reader != nil {
-			t.Fatal("PostgreSQL browser routes retained legacy database handles")
+		if service.database.postgres == nil || service.config.TenantRepository == nil {
+			t.Fatal("required PostgreSQL fixture owners are not configured")
 		}
 		now := service.config.now().UTC()
 		envelope, err := cfg.SecretKeys.Seal([]byte(strings.Repeat("k", 32)), accessstore.SecretAAD("org_startup", "", accessstore.NativeCursorKeyKind))
@@ -849,7 +866,6 @@ func TestDatabaseStartupCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	for _, cfg := range []Config{
-		{DatabasePath: filepath.Join(t.TempDir(), "unopened", "hub.db")},
 		startupConfig(pgtransport.Connection{}),
 	} {
 		store, err := openDatabase(ctx, cfg.normalized())

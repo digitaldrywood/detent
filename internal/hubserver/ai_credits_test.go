@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -105,7 +106,7 @@ func (p *hostedCreditProvider) CreditCharge(ctx context.Context, r billing.Credi
 	return payment, err
 }
 
-func configureTestCredits(t *testing.T, f *browserHostedFixture, base *hostedBillingProvider) *hostedCreditProvider {
+func configureTestCredits(t *testing.T, f *browserHostedFixture, base *hostedBillingProvider, accounts ...billingstore.CreditAccount) *hostedCreditProvider {
 	t.Helper()
 	p := &hostedCreditProvider{hostedBillingProvider: base, chargeStatus: "succeeded"}
 	f.service.config.Hosted.Billing.Provider = p
@@ -113,10 +114,50 @@ func configureTestCredits(t *testing.T, f *browserHostedFixture, base *hostedBil
 	if err := f.service.config.Hosted.validate(); err != nil {
 		t.Fatal(err)
 	}
+	d := f.service.database
+	if d.billingAuditStore == nil {
+		d.billingAuditStore = &memoryRunDetails{}
+	}
+	for _, account := range accounts {
+		if account.OrganizationID == "" {
+			account.OrganizationID = d.hostedOrganization
+		}
+		if account.Mode == "" {
+			account.Mode = billing.ModeTest
+		}
+		if err := d.billingRepository.WriteTenant(t.Context(), account.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateBillingCreditAccount(t.Context(), account)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := f.service.database.configureHostedBilling(t.Context(), f.service.config.Hosted); err != nil {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func postAICreditFixture(t *testing.T, d *database, row billingstore.CreditTransaction) {
+	t.Helper()
+	if row.OrganizationID == "" {
+		row.OrganizationID = d.hostedOrganization
+	}
+	if row.Mode == "" {
+		row.Mode = billing.ModeTest
+	}
+	if row.Reason != "" {
+		ref, err := d.archiveBillingReason(t.Context(), row.Reason)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row.ReasonReference, row.Reason = ref, ""
+	}
+	if err := d.billingRepository.WriteTenant(t.Context(), row.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.PostBillingCredit(t.Context(), row)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestAICreditPaymentConfirmation(t *testing.T) {
@@ -319,15 +360,12 @@ func TestPlatformAICreditAdjustments(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f, base := newHostedBillingFixture(t)
-			configureTestCredits(t, f, base)
+			configureTestCredits(t, f, base, billingstore.CreditAccount{BalanceMicros: test.initial})
 			d := f.service.database
 			now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 			d.now = func() time.Time { return now }
-			if _, err := d.db.ExecContext(t.Context(), "UPDATE ai_credit_accounts SET balance_micros=?", test.initial); err != nil {
-				t.Fatal(err)
-			}
 			if test.rollback {
-				if _, err := d.db.ExecContext(t.Context(), "CREATE TRIGGER reject_credit_update BEFORE UPDATE ON ai_credit_accounts BEGIN SELECT RAISE(ABORT,'balance write failed'); END"); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `CREATE FUNCTION reject_credit_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'balance write failed'; END $$; CREATE TRIGGER reject_credit_update BEFORE UPDATE OF balance_micros ON ai_credit_accounts FOR EACH ROW EXECUTE FUNCTION reject_credit_update()`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -390,7 +428,10 @@ func TestPlatformAICreditServiceAuthority(t *testing.T) {
 			d := f.service.database
 			d.aiCreditMode = billing.ModeTest
 			f.service.config.Hosted.Billing = &HostedBillingConfig{}
-			if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode) VALUES(?,'test')", d.hostedOrganization); err != nil {
+			d.billingAuditStore = &memoryRunDetails{}
+			if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+				return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest})
+			}); err != nil {
 				t.Fatal(err)
 			}
 			owner := f.member(t, "owner", "owner", "")
@@ -435,15 +476,23 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 			d := f.service.database
 			d.aiCreditMode = billing.ModeTest
 			d.now = func() time.Time { return time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC) }
+			d.billingAuditStore = &memoryRunDetails{}
 			if !test.missing {
-				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',?),(?,'live',999000000)", d.hostedOrganization, test.balance, d.hostedOrganization); err != nil {
+				initial, live := test.balance, int64(999000000)
+				if test.history {
+					initial -= 10000000 + 5000000 + 25000000 - 1000000 - 750000 - 9000000 - 9000000 + 51*2000000 + 50*51/2
+					live += 9000000
+				}
+				if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					if err := w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, BalanceMicros: initial, AutoEnabled: test.history}); err != nil {
+						return err
+					}
+					return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: billing.ModeLive, BalanceMicros: live})
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.history {
-				if _, err := d.db.ExecContext(t.Context(), "UPDATE ai_credit_accounts SET auto_enabled=1 WHERE organization_id=? AND mode='test'", d.hostedOrganization); err != nil {
-					t.Fatal(err)
-				}
 				for index, item := range []struct {
 					organization, mode, kind, date string
 					amount                         int64
@@ -461,22 +510,18 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,actor,reason,recorded_at) VALUES(?,?,?,?,?,?,?,?)", item.organization, item.mode, fmt.Sprintf("credit-read-%d", index), item.amount, item.kind, "staff@example.test", "Pilot credits", at.UnixMicro()); err != nil {
-						t.Fatal(err)
-					}
+					postAICreditFixture(t, d, billingstore.CreditTransaction{OrganizationID: tracker.OrganizationID(item.organization), Mode: item.mode, Source: fmt.Sprintf("credit-read-%d", index), AmountMicros: item.amount, Kind: item.kind, Actor: "staff@example.test", Reason: "Pilot credits", RecordedAt: at})
 				}
 				for index := range 51 {
-					if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,actor,reason,recorded_at) VALUES(?,'test',?,?,'complimentary','staff@example.test','Earlier grant',?)", d.hostedOrganization, fmt.Sprintf("earlier-grant-%d", index), 2000000+index, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC).UnixMicro()); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			if test.failure {
-				if _, err := d.db.ExecContext(t.Context(), "DROP TABLE ai_credit_accounts"); err != nil {
-					t.Fatal(err)
+					postAICreditFixture(t, d, billingstore.CreditTransaction{Source: fmt.Sprintf("earlier-grant-%d", index), AmountMicros: int64(2000000 + index), Kind: "complimentary", Actor: "staff@example.test", Reason: "Earlier grant", RecordedAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)})
 				}
 			}
 			owner := f.member(t, "owner", "owner", "")
+			if test.failure {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "REVOKE SELECT ON ai_credit_accounts FROM "+postgres.RuntimeRoleName); err != nil {
+					t.Fatal(err)
+				}
+			}
 			response := f.serve(t, hostedSharedRequest{user: &owner, kind: test.kind, bearer: test.bearer, method: http.MethodPost, target: "/internal/v1/platform/ai-credits/balance", body: `{}`})
 			requireNativeStatus(t, response, test.want)
 			if test.want == http.StatusOK {
@@ -495,7 +540,12 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 						t.Fatalf("credits=%+v", result)
 					}
 					var liveBalance int64
-					if err := d.db.QueryRowContext(t.Context(), "SELECT balance_micros FROM ai_credit_accounts WHERE organization_id=? AND mode='live'", d.hostedOrganization).Scan(&liveBalance); err != nil || liveBalance != 999000000 {
+					err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+						account, err := r.BillingCreditAccount(t.Context(), billing.ModeLive)
+						liveBalance = account.BalanceMicros
+						return err
+					})
+					if err != nil || liveBalance != 999000000 {
 						t.Fatalf("live balance=%d err=%v", liveBalance, err)
 					}
 				} else if result.Spent != 0 || result.Auto || len(result.History) != 0 {
@@ -626,7 +676,7 @@ func TestAICreditAutoFund(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, base := newHostedBillingFixture(t)
-			p := configureTestCredits(t, f, base)
+			p := configureTestCredits(t, f, base, billingstore.CreditAccount{BalanceMicros: test.balance, AutoEnabled: true, ThresholdCents: 100, PriceID: "price_credit", PaymentMethod: "pm_credit"})
 			p.chargeStatus, p.chargeError = test.status, test.chargeError
 			if test.included {
 				d := f.service.database
@@ -636,10 +686,6 @@ func TestAICreditAutoFund(t *testing.T) {
 				}
 				now := f.service.config.now()
 				setIncludedCreditSubscription(t, d, d.hostedOrganization, now.Add(-time.Hour), now.Add(time.Hour), now.Add(time.Hour), PlanReference{ID: "team", Version: 2})
-			}
-			_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE ai_credit_accounts SET balance_micros=?,auto_enabled=1,threshold_cents=100,price_id='price_credit',payment_method='pm_credit'", test.balance)
-			if err != nil {
-				t.Fatal(err)
 			}
 			for range 2 {
 				err := f.service.billing.autoFund(t.Context())
@@ -659,16 +705,10 @@ func TestAICreditAutoFund(t *testing.T) {
 			}
 			if !test.wantEnabled {
 				requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodPut, "/billing/credits/auto-fund", `{"enabled":true,"threshold_cents":100,"price":"price_credit"}`), http.StatusNoContent)
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				err := f.service.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					return f.service.database.applyCreditPaymentRecord(t.Context(), w, billing.CreditPayment{Key: p.chargeKeys[0], ID: "pi_auto", PriceID: "price_credit", USDCents: 500, Status: "requires_payment_method"})
+				})
 				if err != nil {
-					t.Fatal(err)
-				}
-				err = f.service.database.applyCreditPayment(t.Context(), tx, billing.CreditPayment{Key: p.chargeKeys[0], ID: "pi_auto", PriceID: "price_credit", USDCents: 500, Status: "requires_payment_method"})
-				if err != nil {
-					tx.Rollback()
-					t.Fatal(err)
-				}
-				if err := tx.Commit(); err != nil {
 					t.Fatal(err)
 				}
 				updated, err := f.service.readAICredits(t.Context())
@@ -677,7 +717,9 @@ func TestAICreditAutoFund(t *testing.T) {
 				}
 			}
 			if test.status == "processing" {
-				_, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_purchases(purchase_key,organization_id,mode,price_id,usd_cents,automatic,created_at) VALUES('duplicate_auto','org_browser_preview','test','price_credit',500,1,0)")
+				err := f.service.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					return w.CreateBillingCreditPurchase(t.Context(), billingstore.CreditPurchase{OrganizationID: f.service.database.hostedOrganization, Key: "duplicate_auto", Mode: billing.ModeTest, PriceID: "price_credit", USDCents: 500, Automatic: true, State: "pending", CreatedAt: f.service.config.now().UTC()})
+				})
 				if err == nil {
 					t.Fatal("second in-flight charge accepted")
 				}
@@ -702,7 +744,14 @@ func TestAICreditOwnerSettings(t *testing.T) {
 	} {
 		requireNativeStatus(t, f.billingAPI(t, test.role, http.MethodPut, "/billing/credits/auto-fund", test.body), test.want)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE ai_credit_accounts SET payment_method=''"); err != nil {
+	if err := f.service.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+		account, err := w.BillingCreditAccount(t.Context(), billing.ModeTest)
+		if err != nil {
+			return err
+		}
+		account.PaymentMethod = ""
+		return w.SetBillingCreditFunding(t.Context(), account)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	f.service.config.Hosted.Billing.Provider.(*hostedCreditProvider).savedMethod = "pm_subscription"
@@ -804,29 +853,20 @@ func TestAICreditGroupedHistory(t *testing.T) {
 	for _, limit := range []int{1, 10, 100} {
 		t.Run(fmt.Sprintf("limit_%d", limit), func(t *testing.T) {
 			f, base := newHostedBillingFixture(t)
-			configureTestCredits(t, f, base)
+			configureTestCredits(t, f, base, billingstore.CreditAccount{BalanceMicros: 35*2*(123-100) - 3*(5000000+5000001)}, billingstore.CreditAccount{Mode: billing.ModeLive, BalanceMicros: -999})
 			d := f.service.database
 			start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 			for day := range 35 {
 				for turn := range 2 {
-					if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,included_amount_micros,kind,recorded_at) VALUES(?,'test',?,-123,100,'usage',?)`, d.hostedOrganization, fmt.Sprintf("usage:day-%d-turn-%d", day, turn), start.AddDate(0, 0, day).Add(time.Duration(turn)*time.Hour).UnixMicro()); err != nil {
-						t.Fatal(err)
-					}
+					postAICreditFixture(t, d, billingstore.CreditTransaction{Source: fmt.Sprintf("usage:day-%d-turn-%d", day, turn), AmountMicros: -123, IncludedAmountMicros: 100, Kind: "usage", RecordedAt: start.AddDate(0, 0, day).Add(time.Duration(turn) * time.Hour)})
 				}
 			}
 			for _, kind := range []string{"purchase", "auto_fund", "complimentary"} {
 				for n := range 2 {
-					if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test',?,?,?,?)`, d.hostedOrganization, fmt.Sprintf("%s-%d", kind, n), 5000000+n, kind, start.AddDate(0, 0, 34).Add(2*time.Hour).UnixMicro()); err != nil {
-						t.Fatal(err)
-					}
+					postAICreditFixture(t, d, billingstore.CreditTransaction{Source: fmt.Sprintf("%s-%d", kind, n), AmountMicros: int64(5000000 + n), Kind: kind, RecordedAt: start.AddDate(0, 0, 34).Add(2 * time.Hour)})
 				}
 			}
-			if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'live',0)`, d.hostedOrganization); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'live','other-mode',999,'complimentary',?)`, d.hostedOrganization, start.UnixMicro()); err != nil {
-				t.Fatal(err)
-			}
+			postAICreditFixture(t, d, billingstore.CreditTransaction{Mode: billing.ModeLive, Source: "other-mode", AmountMicros: 999, Kind: "complimentary", RecordedAt: start})
 			page := creditPageRequest{Limit: limit, From: start.Format(time.RFC3339), To: start.AddDate(0, 2, 0).Format(time.RFC3339)}
 			seen := map[string]bool{}
 			counts := map[string]int{}
@@ -858,9 +898,7 @@ func TestAICreditGroupedHistory(t *testing.T) {
 					break
 				}
 				if index == 0 {
-					if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test','usage:later',-999,'usage',?)`, d.hostedOrganization, start.AddDate(0, 0, 1).UnixMicro()); err != nil {
-						t.Fatal(err)
-					}
+					postAICreditFixture(t, d, billingstore.CreditTransaction{Source: "usage:later", AmountMicros: -999, IncludedAmountMicros: 999, Kind: "usage", RecordedAt: start.AddDate(0, 0, 1)})
 				}
 				page.Cursor = view.NextCursor
 				if index > 41 {
@@ -895,17 +933,26 @@ func TestAICreditGroupedHistory(t *testing.T) {
 func TestAICreditCSVExport(t *testing.T) {
 	t.Parallel()
 	f, base := newHostedBillingFixture(t)
-	configureTestCredits(t, f, base)
+	configureTestCredits(t, f, base, billingstore.CreditAccount{BalanceMicros: 4*1234567 - 234567})
 	d := f.service.database
 	at := time.Date(2026, 10, 10, 12, 0, 0, 123456, time.UTC)
-	if _, err := d.db.ExecContext(t.Context(), `INSERT INTO conversation_usage(organization_id,project_id,conversation_id,turn_id,provider,model,occurred_at,input,cached_input,output,reasoning_output,outcome,cost_usd) VALUES(?,?,?,'turn-0','openai','example-model',?,100,20,50,10,'completed',999)`, d.hostedOrganization, "project_a", "conversation_a", at.UnixMicro()); err != nil {
+	f.conversation = "credit-export-conversation"
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `INSERT INTO conversations(id,organization_id,project_id,owner_principal_id,origin,visibility,status,execution_status,execution_lease_id,execution_settled,created_at,updated_at) VALUES($1,$2,$3,'test_hub_admin','user','private','active','idle','',TRUE,$4,$4)`, f.conversation, d.hostedOrganization, f.project, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+		price := billingstore.ConversationPrice{OrganizationID: d.hostedOrganization, ID: at.UnixMicro(), Provider: "openai", Model: "example-model", EffectiveAt: at.Add(-time.Hour)}
+		if err := w.CreateConversationPrice(t.Context(), price); err != nil {
+			return err
+		}
+		_, err := w.RecordConversationUsage(t.Context(), billingstore.ConversationUsage{OrganizationID: d.hostedOrganization, ProjectID: tracker.ProjectID(f.project), ConversationID: f.conversation, TurnID: "turn-0", Provider: "openai", Model: "example-model", OccurredAt: at, Input: 100, CachedInput: 20, Output: 50, ReasoningOutput: 10, Outcome: "completed", PriceID: &price.ID, CostUSD: new(999.0), CacheSavingsUSD: new(0.0)})
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for index, kind := range []string{"usage", "purchase", "auto_fund", "complimentary"} {
 		source := fmt.Sprintf("%s:turn-%d", kind, index)
-		if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,included_amount_micros,kind,recorded_at) VALUES(?,'test',?,-1234567,?,?,?)`, d.hostedOrganization, source, map[string]int64{"usage": 234567}[kind], kind, at.UnixMicro()); err != nil {
-			t.Fatal(err)
-		}
+		postAICreditFixture(t, d, billingstore.CreditTransaction{Source: source, AmountMicros: -1234567, IncludedAmountMicros: map[string]int64{"usage": 234567}[kind], Kind: kind, RecordedAt: at})
 	}
 	for _, test := range []struct {
 		role string
@@ -945,7 +992,7 @@ func TestAICreditCSVExport(t *testing.T) {
 		})
 	}
 	var audits int
-	if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_audit WHERE event='billing_exported'`).Scan(&audits); err != nil {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_audit WHERE organization_id=$1 AND event='billing_exported'`, d.hostedOrganization).Scan(&audits); err != nil {
 		t.Fatal(err)
 	}
 	if audits != 1 {
@@ -1108,6 +1155,7 @@ func TestIncludedAICreditAllowance(t *testing.T) {
 	configureTestCredits(t, f, base)
 	d := f.service.database
 	plans := capacityHostedPlans()
+	plans.Plans = append(plans.Plans, f.service.config.Hosted.Plans.Plans...)
 	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
 	}
@@ -1137,20 +1185,25 @@ func TestIncludedAICreditAllowance(t *testing.T) {
 			setIncludedCreditSubscription(t, d, d.hostedOrganization, now, now.AddDate(0, 1, 0), access, test.ref)
 			if !test.paid {
 				grant := HostedGrant{ID: "included-credit-grant", Plan: test.ref, Scope: []string{"concurrent_work"}, StartsAt: now}
-				raw, err := json.Marshal(grant)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO hosted_complimentary_grants(id,record_json) VALUES(?,?)", grant.ID, string(raw)); err != nil {
+				if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					return w.CreateBillingGrant(t.Context(), billingstore.Grant{OrganizationID: d.hostedOrganization, ID: grant.ID, Plan: billingstore.PlanReference{ID: grant.Plan.ID, Version: grant.Plan.Version}, Scope: grant.Scope, StartsAt: grant.StartsAt})
+				}); err != nil {
 					t.Fatal(err)
 				}
 				defer func() {
-					if _, err := d.db.ExecContext(t.Context(), "DELETE FROM hosted_complimentary_grants WHERE id=?", grant.ID); err != nil {
+					if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+						return w.RevokeBillingGrant(t.Context(), grant.ID, now)
+					}); err != nil {
 						t.Error(err)
 					}
 				}()
 			}
-			entitlement, err := d.hostedEntitlement(t.Context(), d.reader, now)
+			var entitlement HostedEntitlement
+			err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+				var err error
+				entitlement, err = d.hostedEntitlementRecord(t.Context(), r, now)
+				return err
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1162,7 +1215,7 @@ func TestIncludedAICreditAllowance(t *testing.T) {
 			} else if got == nil || *got != test.want {
 				t.Fatalf("allowance=%v want=%d", got, test.want)
 			}
-			included, err := d.includedAICredits(t.Context(), d.reader, d.hostedOrganization, now)
+			included, err := d.includedAICreditsRecord(t.Context(), d.hostedOrganization, now)
 			if err != nil || included.AllowanceMicros != test.want {
 				t.Fatalf("included=%+v err=%v", included, err)
 			}

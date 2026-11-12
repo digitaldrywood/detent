@@ -165,7 +165,17 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Cont
 			for i, record := range authority.UsageCosts {
 				observation := record.Observation
 				usage := event.Data.Usage[i]
-				if record.OrganizationID != authority.OrganizationID || record.ProjectID != authority.ProjectID || observation.AttemptID != attempt.ID || observation.WorkItemID != facts.WorkItemID || observation.RunnerID != facts.RunnerID || observation.MachineID != facts.MachineID || observation.Placement != facts.Placement || !observation.From.Equal(usage.From) || !observation.To.Equal(usage.To) {
+				expectedPlacement := facts.Placement
+				if authority.UsageCorrection {
+					for _, prior := range authority.UsageReport.Historical {
+						old := prior.Observation
+						if prior.OrganizationID == authority.OrganizationID && prior.ProjectID == authority.ProjectID && old.Provider == observation.Provider && old.ProviderAccount == observation.ProviderAccount && old.SourceID == observation.SourceID && old.From.Equal(observation.From) && old.To.Equal(observation.To) && old.AttemptID == attempt.ID && old.WorkItemID == facts.WorkItemID && old.RunnerID == facts.RunnerID && old.MachineID == facts.MachineID {
+							expectedPlacement = old.Placement
+							break
+						}
+					}
+				}
+				if record.OrganizationID != authority.OrganizationID || record.ProjectID != authority.ProjectID || observation.AttemptID != attempt.ID || observation.WorkItemID != facts.WorkItemID || observation.RunnerID != facts.RunnerID || observation.MachineID != facts.MachineID || observation.Placement != expectedPlacement || !observation.From.Equal(usage.From) || !observation.To.Equal(usage.To) {
 					return leasestore.ErrAttemptConflict
 				}
 			}
@@ -186,6 +196,15 @@ func (p tenantNativeRunEventParticipant) ApplyNativeRunEvent(ctx context.Context
 			if err := writer.PutPRPublication(ctx, tenantPRPublicationRecord(authority, *publication)); err != nil {
 				return err
 			}
+		}
+	}
+	if len(authority.UsageReport.Totals) > 0 {
+		reports, ok := writer.(reportstore.UsageWriter)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		if err := reports.RecordAttemptUsage(ctx, authority.UsageReport); err != nil {
+			return err
 		}
 	}
 	if len(authority.UsageCosts) > 0 {

@@ -7,8 +7,11 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func (s *session) WorkItemBlockers(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.WorkItemBlockerCursor, limit int) ([]corestore.WorkItemBlocker, error) {
@@ -92,11 +95,58 @@ func (s *session) LockRelationshipGraph(ctx context.Context) error {
 	return mapError(ctx, err)
 }
 
+func (s *session) CheckDependency(ctx context.Context, relationship corestore.Relationship) error {
+	if err := s.checkOrganization(relationship.OrganizationID); err != nil {
+		return err
+	}
+	if relationship.Type != "dependency" || relationship.ProjectID == "" || relationship.RelatedProjectID == "" || relationship.WorkItemID == "" || relationship.RelatedWorkItemID == "" {
+		return corestore.ErrInvalidRelationship
+	}
+	if relationship.ProjectID == relationship.RelatedProjectID && relationship.WorkItemID == relationship.RelatedWorkItemID {
+		return corestore.ErrDependencyCycle
+	}
+	if err := s.LockRelationshipGraph(ctx); err != nil {
+		return err
+	}
+	dependent, err := s.WorkItem(ctx, relationship.ProjectID, relationship.WorkItemID)
+	if err != nil {
+		return err
+	}
+	blocker, err := s.WorkItem(ctx, relationship.RelatedProjectID, relationship.RelatedWorkItemID)
+	if err != nil {
+		return err
+	}
+	return s.checkDependencyCycle(ctx, dependent.ID, blocker.ID)
+}
+
+func (s *session) checkDependencyCycle(ctx context.Context, dependent, blocker int64) error {
+	var cycle bool
+	err := s.db.QueryRow(ctx, `WITH RECURSIVE reachable(id) AS (
+SELECT dependent_issue_id FROM issue_dependencies WHERE organization_id=$1 AND blocker_issue_id=$2
+UNION
+SELECT d.dependent_issue_id FROM issue_dependencies d JOIN reachable r ON d.blocker_issue_id=r.id WHERE d.organization_id=$1
+)
+SELECT EXISTS(SELECT 1 FROM reachable WHERE id=$3)`, s.organization, dependent, blocker).Scan(&cycle)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if cycle {
+		return corestore.ErrDependencyCycle
+	}
+	return nil
+}
+
 func (s *session) SetRelationship(ctx context.Context, relationship corestore.Relationship, operation string, at time.Time) error {
 	if err := s.checkOrganization(relationship.OrganizationID); err != nil {
 		return err
 	}
 	if relationship.Type != "dependency" && relationship.Type != "related" || operation != "add" && operation != "remove" || relationship.WorkItemID == relationship.RelatedWorkItemID && relationship.ProjectID == relationship.RelatedProjectID {
+		return corestore.ErrInvalidRelationship
+	}
+	if relationship.Provenance != "" && (relationship.Type != "dependency" || relationship.CompatibilityEdge || relationship.Provenance != "native" && relationship.Provenance != "progress_check") {
+		return corestore.ErrInvalidRelationship
+	}
+	if relationship.CompatibilityEdge && (relationship.Type != "dependency" || relationship.ProjectID != relationship.RelatedProjectID) {
 		return corestore.ErrInvalidRelationship
 	}
 	if err := s.LockRelationshipGraph(ctx); err != nil {
@@ -136,18 +186,22 @@ func (s *session) SetRelationship(ctx context.Context, relationship corestore.Re
 	if relationship.Type == "dependency" {
 		dependent, blocker := workItem, related
 		if operation == "add" {
-			var cycle bool
-			err := s.db.QueryRow(ctx, `WITH RECURSIVE reachable(id) AS (
-SELECT dependent_issue_id FROM issue_dependencies WHERE organization_id=$1 AND blocker_issue_id=$2
-UNION
-SELECT d.dependent_issue_id FROM issue_dependencies d JOIN reachable r ON d.blocker_issue_id=r.id WHERE d.organization_id=$1
-)
-SELECT EXISTS(SELECT 1 FROM reachable WHERE id=$3)`, s.organization, dependent.ID, blocker.ID).Scan(&cycle)
-			if err != nil {
-				return mapError(ctx, err)
+			if err := s.checkDependencyCycle(ctx, dependent.ID, blocker.ID); err != nil {
+				return err
 			}
-			if cycle {
-				return corestore.ErrDependencyCycle
+			if relationship.CompatibilityEdge {
+				return mapError(ctx, s.queries.UpsertHubDependency(ctx, pgquery.UpsertHubDependencyParams{
+					OrganizationID:     s.organization,
+					DependentProjectID: string(dependent.ProjectID),
+					DependentIssueID:   dependent.ID,
+					BlockerProjectID:   string(blocker.ProjectID),
+					BlockerIssueID:     blocker.ID,
+					CreatedAt:          recordTime(at),
+				}))
+			}
+			provenance := relationship.Provenance
+			if provenance == "" {
+				provenance = "native"
 			}
 			return mapError(ctx, s.queries.InsertDependency(ctx, pgquery.InsertDependencyParams{
 				OrganizationID:     s.organization,
@@ -155,7 +209,7 @@ SELECT EXISTS(SELECT 1 FROM reachable WHERE id=$3)`, s.organization, dependent.I
 				DependentIssueID:   dependent.ID,
 				BlockerProjectID:   string(blocker.ProjectID),
 				BlockerIssueID:     blocker.ID,
-				Provenance:         "native",
+				Provenance:         provenance,
 				CreatedAt:          recordTime(at),
 				UpdatedAt:          recordTime(at),
 			}))
@@ -337,7 +391,7 @@ WITH requested AS MATERIALIZED (
  CROSS JOIN LATERAL (
   SELECT d.ctid AS location FROM issue_dependencies d WHERE d.organization_id=$1
   AND d.blocker_project_id=r.project_id AND d.blocker_issue_id=blocker.id
-  AND d.dependent_project_id=$2 AND d.dependent_issue_id=$3 OFFSET 0
+  AND d.dependent_project_id=$2 AND d.dependent_issue_id=$3 AND d.provenance='progress_check' OFFSET 0
  ) edge
  WHERE blocker.project_id=r.project_id AND blocker.native_id=r.native_id
  AND left(blocker.native_source_key,length($4::text))=$4::text
@@ -354,4 +408,58 @@ func (s *session) LabelCatalog(ctx context.Context, project tracker.ProjectID, r
 		labels[i] = corestore.LabelCount{Name: row.Label, Count: row.UsageCount}
 	}
 	return labels, nil
+}
+
+func (s *session) expireProgressDependencies(ctx context.Context, record eventstore.Event, issueID int64) error {
+	if record.Type != "issue.edited" && record.Type != "comment.created" && record.Type != "comment.edited" && record.Type != "run.checkpointed" && !strings.HasPrefix(record.Type, "change.") {
+		return nil
+	}
+	if record.Type == "comment.created" && record.ActorKind == "machine" && record.ActorEnvelopeKnown && record.ActorAgent == "progress-check" {
+		return nil
+	}
+	limit := corestore.MaxRelationshipPreparationPages * corestore.MaxPageSize
+	rows, err := s.db.Query(ctx, `SELECT ctid FROM issue_dependencies WHERE organization_id=$1 AND dependent_project_id=$2 AND dependent_issue_id=$3 AND provenance='progress_check' ORDER BY blocker_project_id,blocker_issue_id LIMIT $4`, s.organization, record.ProjectID, issueID, limit+1)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	locations, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (pgtype.TID, error) {
+		var location pgtype.TID
+		err := row.Scan(&location)
+		return location, err
+	})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if len(locations) > limit {
+		return corestore.ErrInvalidPage
+	}
+	for _, location := range locations {
+		if _, err := s.db.Exec(ctx, `DELETE FROM issue_dependencies WHERE ctid=$4 AND organization_id=$1 AND dependent_project_id=$2 AND dependent_issue_id=$3 AND provenance='progress_check'`, s.organization, record.ProjectID, issueID, location); err != nil {
+			return mapError(ctx, err)
+		}
+	}
+	return nil
+}
+
+func (s *session) ProgressDependencies(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.WorkItemBlockerCursor, limit int) ([]corestore.ProgressDependency, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	anchor, err := s.WorkItem(ctx, project, item)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, `SELECT selected.blocker_project_id,selected.blocker_issue_id,blocker.native_id,selected.created_at
+FROM (SELECT blocker_project_id,blocker_issue_id,created_at FROM issue_dependencies WHERE organization_id=$1 AND dependent_project_id=$2 AND dependent_issue_id=$3 AND provenance='progress_check' AND (blocker_project_id,blocker_issue_id)>($4::text,$5::bigint) ORDER BY blocker_project_id,blocker_issue_id LIMIT $6) selected
+CROSS JOIN LATERAL (SELECT native_id FROM issues WHERE organization_id=$1 AND project_id=selected.blocker_project_id AND id=selected.blocker_issue_id OFFSET 0) blocker
+ORDER BY selected.blocker_project_id,selected.blocker_issue_id`, s.organization, project, anchor.ID, cursor.ProjectID, cursor.IssueID, limit+1)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	result, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (corestore.ProgressDependency, error) {
+		var result corestore.ProgressDependency
+		err := row.Scan(&result.ProjectID, &result.IssueID, &result.WorkItemID, &result.CreatedAt)
+		return result, err
+	})
+	return result, mapError(ctx, err)
 }

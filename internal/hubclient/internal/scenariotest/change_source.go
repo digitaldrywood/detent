@@ -1,6 +1,7 @@
 package scenariotest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -27,25 +29,37 @@ import (
 
 func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	newNativeChangeHubWithStates := func(t *testing.T, review string, states []tracker.NativeState) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, false, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}, factories)
+	newNativeChangeHubWithStates := func(t *testing.T, review string, states []tracker.NativeState, details *archivedRunDetails) *nativeChangeHub {
+		return newNativeChangeHubConfigured(t, review, states, false, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, RunDetails: details}, factories)
 	}
 	t.Setenv("TMPDIR", t.TempDir())
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
-		name             string
-		updatePolicy     bool
-		republish        bool
-		transferDirty    bool
-		transfer         bool
-		transferCode     bool
-		workerOwnership  bool
-		planning         bool
-		absorbedConflict bool
-		restartIntent    string
-		landing          bool
+		name               string
+		sourceFailure      string
+		sourceAvailability string
+		sourceState        string
+		sourceUnknown      bool
+		checkpointOnly     bool
+		updatePolicy       bool
+		republish          bool
+		transferDirty      bool
+		transfer           bool
+		transferCode       bool
+		workerOwnership    bool
+		planning           bool
+		absorbedConflict   bool
+		restartIntent      string
+		landing            bool
 	}{
 		{name: "same policy"},
+		{name: "intact retained bytes reach provider", sourceFailure: "intact"},
+		{name: "corrupt retained bytes", sourceFailure: "corrupt"},
+		{name: "missing retained bytes", sourceFailure: "missing"},
+		{name: "unknown missing local source", sourceFailure: "local", sourceAvailability: "missing", sourceState: "dirty", sourceUnknown: true, checkpointOnly: true},
+		{name: "missing local source", sourceFailure: "local", sourceAvailability: "missing", sourceState: "dirty", checkpointOnly: true},
+		{name: "inaccessible local source", sourceFailure: "local", sourceAvailability: "inaccessible", sourceState: "dirty", checkpointOnly: true},
+		{name: "corrupt retained and missing local source", sourceFailure: "corrupt", sourceAvailability: "missing"},
 		{name: "restart unfinished Rework", restartIntent: "unfinished"},
 		{name: "restart stale completion Rework", restartIntent: "stale", updatePolicy: true},
 		{name: "restart resolved conflict Rework", restartIntent: "resolved", absorbedConflict: true, updatePolicy: true},
@@ -78,7 +92,8 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				states[3].Transitions = append(states[3].Transitions, "Merging")
 				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework", "Done"}})
 			}
-			h := newNativeChangeHubWithStates(t, "In Review", states)
+			details := &archivedRunDetails{}
+			h := newNativeChangeHubWithStates(t, "In Review", states, details)
 			previousPolicy := h.descriptor.ID
 			h.descriptor.Gates.Validator = true
 			h.descriptor = h.descriptor.WithID()
@@ -109,6 +124,284 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				return strings.TrimSpace(string(data))
 			}
 			initialBase := head(sourceA)
+			if test.sourceFailure != "" {
+				first := h.claim(t, issue.ID)
+				owner := h.scheduler.RunExecution(issue.ID)
+				sourceMachine := owner.Recovery().Lease.MachineID
+				backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "source-workspaces"), SourceRoot: sourceA, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				workspaceIssue := workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier, BranchName: first.BranchName}
+				info, err := backend.Create(t.Context(), workspaceIssue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(info.Path, "CHANGE.md"), []byte("retained source\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				nativeChangeGit(t, info.Path, "add", "CHANGE.md")
+				nativeChangeGit(t, info.Path, "commit", "-m", "retain source")
+				sourceHead := head(info.Path)
+				capture, err := workspace.CaptureChangeSource(t.Context(), info.Path, initialBase, sourceHead)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.sourceState == "dirty" {
+					if err := os.WriteFile(filepath.Join(info.Path, "PENDING.md"), []byte("retained dirty source\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				local, err := backend.RecoveryState(t.Context(), info, workspaceIssue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.sourceState == "dirty" && len(local.TrackedPaths)+len(local.UntrackedPaths) == 0 {
+					t.Fatal("dirty source checkpoint has no pending bytes")
+				}
+				if local.HeadSHA != sourceHead || local.WorkspaceFingerprint == "" {
+					t.Fatalf("source checkpoint fixture=%+v", local)
+				}
+				if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "provider_default"}); err != nil {
+					t.Fatal(err)
+				}
+				checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: sourceHead, WorkspaceDigest: local.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}
+				if test.sourceAvailability != "" {
+					checkpoint.Availability = test.sourceAvailability
+				}
+				if test.sourceState != "" {
+					checkpoint.WorktreeState = test.sourceState
+				}
+				if !test.checkpointOnly {
+					owner.(runner.DiffExecution).SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
+						return tracker.AttemptDiffRequest{BaseSHA: initialBase, HeadSHA: sourceHead, Files: []tracker.AttemptDiffFile{{Path: "CHANGE.md", Status: tracker.DiffStatusAdded, Additions: 1, Patch: "@@ -0,0 +1 @@\n+retained source"}}}, true
+					})
+					owner.(runner.ChangeSourceExecution).SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+						return workspace.CaptureChangeSource(ctx, info.Path, base, head)
+					})
+				}
+				if err := owner.Checkpoint(t.Context(), checkpoint); err != nil {
+					t.Fatal(err)
+				}
+				attempt := owner.(*ownedExecution).CompletionData()
+				var change tracker.ChangeRequest
+				var version tracker.ChangeVersion
+				if !test.checkpointOnly {
+					change, err = h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained source"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					publication := nativeMutationKey()
+					publication.LeaseID, publication.FencingToken = owner.Recovery().Lease.ID, owner.Recovery().Lease.FencingToken
+					version, err = h.native.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: publication, SourceBundle: capture.Bundle, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: initialBase, HeadSHA: sourceHead, MergeBaseSHA: initialBase, Repository: nativeChangeRepository, PolicyID: h.descriptor.ID, AttemptID: attempt.AttemptID, RunID: attempt.RunID, Source: &capture.Source, Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + sourceHead, SHA256: policy.Digest([]byte(sourceHead)), Availability: "unverified"}}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				if err := owner.Finish(t.Context(), "interrupted"); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "interrupted"); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.native.Release(t.Context(), owner.Recovery().Lease, "released"); err != nil {
+					t.Fatal(err)
+				}
+				if test.sourceUnknown {
+					if err := h.markHistoricalCheckpointSourceUnknown(t.Context(), attempt.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				preserved, err := h.admin.Recovery(t.Context(), item)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if preserved.SourceAttemptID != attempt.AttemptID || len(preserved.Attempts) != 1 || preserved.Attempts[0].Checkpoint == nil || preserved.Attempts[0].Checkpoint.GitRef() || preserved.Attempts[0].Checkpoint.HeadSHA != sourceHead {
+					t.Fatalf("loss fixture did not retain exact unpushed source: %+v", preserved)
+				}
+				var sourceKey string
+				var originalSource []byte
+				if !test.checkpointOnly {
+					var key string
+					h.seed(func(writer tenantstore.Writer) error {
+						stored, err := writer.Version(t.Context(), change.ID, version.ID)
+						key = stored.SourceObjectKey
+						return err
+					})
+					details.mu.Lock()
+					original, present := details.archives[key]
+					original = bytes.Clone(original)
+					if test.sourceFailure == "missing" {
+						delete(details.archives, key)
+					} else if test.sourceFailure == "corrupt" {
+						details.archives[key] = []byte{0}
+					}
+					details.mu.Unlock()
+					if !present || len(original) == 0 || key == "" {
+						t.Fatal("selected source bundle was not stored")
+					}
+					sourceKey, originalSource = key, bytes.Clone(original)
+					t.Cleanup(func() { details.mu.Lock(); details.archives[key] = original; details.mu.Unlock() })
+				}
+
+				expectedSite := "recover native Change source"
+				if test.checkpointOnly {
+					expectedSite = "checkpoint_unavailable"
+				}
+				var sameRefusalAttempt string
+				if test.sourceAvailability == "" {
+					h.claim(t, issue.ID)
+					sameMachine := h.scheduler.RunExecution(issue.ID)
+					sameRecovery := sameMachine.Recovery()
+					if sameRecovery.Lease.MachineID != sourceMachine || sameRecovery.SourceAttemptID != attempt.AttemptID || sameRecovery.Lease.ID == owner.Recovery().Lease.ID || sameRecovery.Lease.FencingToken <= owner.Recovery().Lease.FencingToken {
+						t.Fatalf("source recapture lost renewed fenced authority: %+v", sameRecovery)
+					}
+					recaptureCalls := 0
+					sourceExecution := sameMachine.(runner.ChangeSourceExecution)
+					sourceExecution.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+						recaptureCalls++
+						if base != initialBase || head != sourceHead {
+							return tracker.ChangeSourceCapture{}, errors.New("recapture requested another immutable source")
+						}
+						return workspace.CaptureChangeSource(ctx, info.Path, base, head)
+					})
+					recaptured, err := sourceExecution.RecoverChangeSource(t.Context())
+					wantRecaptures := 1
+					if test.sourceFailure == "intact" {
+						wantRecaptures = 0
+					}
+					if err != nil || recaptureCalls != wantRecaptures || recaptured.Version.ID != version.ID || recaptured.Version.BaseSHA != initialBase || recaptured.Version.HeadSHA != sourceHead || recaptured.Version.Source == nil || recaptured.Version.Source.DiffSHA256 != capture.Source.DiffSHA256 || recaptured.Version.Source.Validate(initialBase, sourceHead, recaptured.Bundle) != nil {
+						t.Fatalf("source runner did not restore exact immutable source: version=%+v recaptures=%d want=%d error=%v", recaptured.Version, recaptureCalls, wantRecaptures, err)
+					}
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "source recapture verified"); err != nil {
+						t.Fatal(err)
+					}
+					if err := h.native.Release(t.Context(), sameRecovery.Lease, "released"); !api.ClaimLost(err) {
+						t.Fatalf("source recapture release left its lease active: %v", err)
+					}
+					afterRecapture, err := h.admin.Recovery(t.Context(), item)
+					if err != nil || !reflect.DeepEqual(afterRecapture.Attempts, preserved.Attempts) || !reflect.DeepEqual(afterRecapture.Change, preserved.Change) || !reflect.DeepEqual(afterRecapture.ChangeDetail, preserved.ChangeDetail) {
+						t.Fatalf("source recapture changed immutable Hub evidence: before=%+v after=%+v error=%v", preserved, afterRecapture, err)
+					}
+					details.mu.Lock()
+					remaining, presentAfter := details.archives[sourceKey]
+					matches := bytes.Equal(remaining, originalSource)
+					damaged := bytes.Equal(remaining, []byte{0})
+					details.mu.Unlock()
+					if test.sourceFailure == "missing" && presentAfter || test.sourceFailure == "corrupt" && (!presentAfter || !damaged) || test.sourceFailure == "intact" && (!presentAfter || !matches) {
+						t.Fatal("same-runner recovery replaced the source object fault")
+					}
+				} else {
+					sameCandidate := h.claim(t, issue.ID)
+					sameMachine := h.scheduler.RunExecution(issue.ID)
+					if sameMachine.Recovery().Lease.MachineID != sourceMachine || sameMachine.Recovery().SourceAttemptID != attempt.AttemptID {
+						t.Fatal("same-runner refusal lost source identity")
+					}
+					sameProvider := &committingAgent{staged: true, validator: "pass", complete: true}
+					sameRunner, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: sameProvider})
+					if err != nil {
+						t.Fatal(err)
+					}
+					sameRequest := runner.RunRequest{Execution: sameMachine, ProjectID: "local", Issue: sameCandidate, Mode: runner.RunModeImplement}
+					sameResult, reclaimed, sameErr := runNativeCompletionBackend(t, h, &nativeCompletionRunner{Runner: sameRunner, completed: make(chan nativeCompletionRun, 1), expectSourceRefusal: true, expectedRecoverySite: expectedSite}, sameRequest, "In Progress")
+					if !errors.Is(sameErr, runner.ErrNativeRecoveryRequired) || !strings.Contains(sameErr.Error(), expectedSite) || sameResult.TurnStarted || sameProvider.calls != 0 || sameProvider.writableCalls != 0 {
+						t.Fatalf("unavailable source started on source runner: result=%+v calls=%d writable=%d error=%v", sameResult, sameProvider.calls, sameProvider.writableCalls, sameErr)
+					}
+					if err := h.scheduler.ReleaseClaim(t.Context(), reclaimed.ID, "released"); err != nil {
+						t.Fatal(err)
+					}
+					refused, err := h.admin.Recovery(t.Context(), item)
+					if err != nil || len(refused.Attempts) != 2 || refused.Attempts[1].AttemptID == attempt.AttemptID || refused.Attempts[1].MachineID != sourceMachine {
+						t.Fatalf("same-runner refusal attempt not recorded: attempts=%d error=%v", len(refused.Attempts), err)
+					}
+					sameRefusalAttempt = refused.Attempts[1].AttemptID
+					data, err := os.ReadFile(filepath.Join(info.Path, "CHANGE.md"))
+					if err != nil || string(data) != "retained source\n" {
+						t.Fatalf("source refusal lost original committed bytes: content=%q error=%v", data, err)
+					}
+					if test.sourceState == "dirty" {
+						data, err := os.ReadFile(filepath.Join(info.Path, "PENDING.md"))
+						if err != nil || string(data) != "retained dirty source\n" {
+							t.Fatalf("source refusal lost pending bytes: content=%q error=%v", data, err)
+						}
+					}
+				}
+
+				h.native = h.otherWorker(t)
+				h.connector.worker, err = NewNativeConnector(h.native)
+				if err != nil {
+					t.Fatal(err)
+				}
+				identity, err := h.native.Transport().RunnerIdentity(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				machine := fixtureSchedulerMachine(h.scheduler)
+				machine.ID = identity.MachineID
+				h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+				if err != nil {
+					t.Fatal(err)
+				}
+				candidate := h.claim(t, issue.ID)
+				execution := h.scheduler.RunExecution(issue.ID)
+				if execution.Recovery().Lease.MachineID == sourceMachine || execution.Recovery().SourceAttemptID != attempt.AttemptID {
+					t.Fatalf("destination claim lost source/machine identity: %+v", execution.Recovery())
+				}
+				sourceB := filepath.Join(t.TempDir(), "destination")
+				nativeChangeGit(t, sourceA, "clone", "--no-local", remote, sourceB)
+				nativeChangeGit(t, sourceB, "remote", "set-url", "origin", nativeChangeRepository)
+				nativeChangeGit(t, sourceB, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+				if _, err := exec.CommandContext(t.Context(), "git", "-C", sourceB, "cat-file", "-e", sourceHead+"^{commit}").Output(); err == nil {
+					t.Fatal("destination already has unpushed source")
+				}
+				destination, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "destination-workspaces"), SourceRoot: sourceB, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				provider := &committingAgent{staged: true, validator: "pass", complete: true}
+				provider.duringTurn = func() {
+					data, err := os.ReadFile(filepath.Join(provider.workspace, "CHANGE.md"))
+					if err != nil || string(data) != "retained source\n" {
+						t.Errorf("intact source did not reach provider: content=%q error=%v", data, err)
+					}
+					output, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "rev-parse", "HEAD").Output()
+					if got := strings.TrimSpace(string(output)); err != nil || got != sourceHead {
+						t.Errorf("provider source head=%s want=%s error=%v", got, sourceHead, err)
+					}
+				}
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: destination, AgentBackend: provider})
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement}
+				intact := test.sourceFailure == "intact"
+				target := "In Progress"
+				if intact {
+					target = "Done"
+				}
+				result, _, runErr := runNativeCompletionBackend(t, h, &nativeCompletionRunner{Runner: agent, completed: make(chan nativeCompletionRun, 1), landed: make(chan nativeCompletionRun, 1), expectSourceRefusal: !intact, expectedRecoverySite: expectedSite, gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, request, target)
+				if intact {
+					if runErr != nil || !result.TurnStarted || provider.calls == 0 || provider.writableCalls == 0 {
+						t.Fatalf("intact bundle refused before provider: result=%+v calls=%d writable=%d error=%v", result, provider.calls, provider.writableCalls, runErr)
+					}
+					return
+				}
+				if !errors.Is(runErr, runner.ErrNativeRecoveryRequired) || !strings.Contains(runErr.Error(), expectedSite) || result.TurnStarted || provider.calls != 0 || provider.writableCalls != 0 {
+					t.Fatalf("unavailable source started provider: result=%+v calls=%d writable=%d error=%v", result, provider.calls, provider.writableCalls, runErr)
+				}
+				after, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(after.Attempts) != 2 || after.Attempts[1].AttemptID == sameRefusalAttempt || after.Attempts[1].MachineID == sourceMachine || after.Attempts[0].AttemptID != attempt.AttemptID || !reflect.DeepEqual(after.Attempts[0], preserved.Attempts[0]) || !reflect.DeepEqual(after.Change, preserved.Change) || !reflect.DeepEqual(after.ChangeDetail, preserved.ChangeDetail) {
+					t.Fatalf("source refusal changed retained evidence: before=%+v after=%+v error=%v", preserved, after, err)
+				}
+				if sameRefusalAttempt != "" {
+					evidence, err := h.admin.RuntimeEvidence(t.Context(), item, sameRefusalAttempt)
+					if err != nil || evidence.Attempt == nil || evidence.Attempt.AttemptID != sameRefusalAttempt || evidence.Attempt.MachineID != sourceMachine || evidence.Attempt.TerminalFailure == nil || !strings.Contains(evidence.Attempt.TerminalFailure.Error, expectedSite) {
+						t.Fatalf("same-runner refusal attempt was not retained: evidence=%+v error=%v", evidence.Attempt, err)
+					}
+				}
+				return
+			}
 			expectPendingLanding := false
 			run := func(source string, provider *committingAgent, candidate connector.Issue, execution runner.Execution, targets ...string) runner.RunResult {
 				root := filepath.Join(t.TempDir(), "workspaces")

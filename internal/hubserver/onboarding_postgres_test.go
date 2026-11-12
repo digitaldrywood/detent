@@ -2,7 +2,9 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -15,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -28,6 +31,7 @@ import (
 func TestPostgresOnboardingPreservesImportedProgressAndRetries(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	cfg.Postgres.Pool = postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1}
 	cfg.runMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
@@ -42,7 +46,7 @@ func TestPostgresOnboardingPreservesImportedProgressAndRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedStartupOrganization(t, store.postgres, "org_startup")
+	seedStartupOrganization(t, store.postgres, "org_startup", cfg.Hosted)
 	if err := store.postgres.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: "credential_owner", Name: "Example owner", Hash: apikey.HashToken(ownerToken), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: "user_owner", MembershipID: "membership_user_owner", KeyScope: "admin", ProjectAccess: "all", Kind: "personal"}); err != nil {
 			return err
@@ -102,11 +106,24 @@ func TestPostgresOnboardingPreservesImportedProgressAndRetries(t *testing.T) {
 		{ProjectID: "project_first", Progress: onboarding.Progress{Revision: 3, Repository: "existing", Doctor: true, Artifacts: "local", UpdatedAt: "2026-11-01T12:00:00.123456789Z"}},
 		{ProjectID: "project_second", Progress: onboarding.Progress{Revision: 7, Repository: "generate", Provider: true, Artifacts: "customer", UpdatedAt: "2026-11-01T12:00:00Z"}},
 	}
-	for range 2 {
-		if err := store.postgres.ImportOnboardingProgress(t.Context(), "org_startup", records); err != nil {
+	objects := &memoryRunDetails{}
+	original := map[tracker.ProjectID]string{}
+	historical := newCoreNeutralFixture(t, "org_startup", "project_onboarding")
+	for _, record := range records {
+		raw, err := json.Marshal(map[string]any{"repository": record.Progress.Repository, "doctor": record.Progress.Doctor, "provider": record.Progress.Provider, "artifacts": record.Progress.Artifacts, "policy_approved": true, "revision": int64(record.Progress.Revision), "updated_at": record.Progress.UpdatedAt})
+		if err != nil {
 			t.Fatal(err)
 		}
+		original[record.ProjectID] = string(raw)
+		historical.add("project_onboarding", map[string]any{"organization_id": "org_startup", "project_id": record.ProjectID, "revision": int64(record.Progress.Revision), "progress_json": string(raw), "updated_at": record.Progress.UpdatedAt})
 	}
+	source := postgres.CoreProjectImportSource{BundlePath: historical.write(), OrganizationID: "org_startup", Objects: objects}
+	for range 2 {
+		if count, err := store.postgres.ImportCoreOnboardingProgress(t.Context(), source); err != nil || count != 2 {
+			t.Fatalf("historical onboarding rows=%d error=%v", count, err)
+		}
+	}
+
 	changed := append([]postgres.OnboardingProgressImport{}, records...)
 	changed[0].Progress.Provider = true
 	if err := store.postgres.ImportOnboardingProgress(t.Context(), "org_startup", changed); !errors.Is(err, corestore.ErrRevisionConflict) {
@@ -124,8 +141,8 @@ func TestPostgresOnboardingPreservesImportedProgressAndRetries(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if service.database.db != nil || service.database.reader != nil {
-		t.Fatal("PostgreSQL onboarding retained legacy SQL handles")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 	read := func(project tracker.ProjectID) onboarding.Progress {
 		t.Helper()
@@ -148,6 +165,39 @@ func TestPostgresOnboardingPreservesImportedProgressAndRetries(t *testing.T) {
 			t.Fatalf("imported project %s progress=%+v want=%+v", record.ProjectID, actual, record.Progress)
 		}
 	}
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(reader tenantstore.Reader) error {
+		for _, record := range records {
+			receipt, err := reader.Receipt(t.Context(), "production-import", "core-onboarding", string(record.ProjectID))
+			if err != nil {
+				return err
+			}
+			raw, err := eventstore.NewContent(objects).Receipt(t.Context(), receipt)
+			if err != nil {
+				return err
+			}
+			var preserved struct {
+				ProgressJSON string
+				Revision     int64
+				UpdatedAt    string
+			}
+			if err := json.Unmarshal(raw, &preserved); err != nil {
+				return err
+			}
+			if preserved.ProgressJSON != original[record.ProjectID] || preserved.Revision != int64(record.Progress.Revision) || preserved.UpdatedAt != record.Progress.UpdatedAt {
+				return fmt.Errorf("historical onboarding source changed: %+v", preserved)
+			}
+			var legacy struct {
+				PolicyApproved bool `json:"policy_approved"`
+			}
+			if err := json.Unmarshal([]byte(preserved.ProgressJSON), &legacy); err != nil || !legacy.PolicyApproved {
+				return fmt.Errorf("historical approval source lost: %v", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	path := "/api/v2/organizations/org_startup/projects/project_first/onboarding"
 	request := saveOnboardingRequest{Mutation: tracker.Mutation{IdempotencyKey: "retry-checkout"}, Progress: records[0].Progress}
 	request.Progress.Doctor, request.Progress.Provider = false, true

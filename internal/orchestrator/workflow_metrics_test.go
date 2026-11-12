@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -14,67 +13,240 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/provenance"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+type unavailableLaneMetricsConnector struct {
+	*workflowMetricsConnector
+	unavailableID string
+	laneError     error
+	entry         connector.IssueStateTransition
+	updates       []struct{ id, state string }
+}
+
+func (c *unavailableLaneMetricsConnector) CurrentLaneEntry(_ context.Context, issue connector.Issue) (connector.IssueStateTransition, bool, error) {
+	if issue.ID == c.unavailableID {
+		return c.entry, !c.entry.EnteredAt.IsZero(), c.laneError
+	}
+	return connector.IssueStateTransition{}, false, nil
+}
+
+func (c *unavailableLaneMetricsConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	return cloneIssue(issue), nil
+}
+
+func (c *unavailableLaneMetricsConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	var issues []connector.Issue
+	for _, id := range ids {
+		for _, issue := range c.stateIssues {
+			if issue.ID == id {
+				issues = append(issues, cloneIssue(issue))
+			}
+		}
+	}
+	return issues, nil
+}
+
+func (c *unavailableLaneMetricsConnector) UpdateIssueState(ctx context.Context, id, state string) error {
+	c.updates = append(c.updates, struct{ id, state string }{id, state})
+	return c.workflowMetricsConnector.UpdateIssueState(ctx, id, state)
+}
+
 func TestTickPreservesOrchestratorTransitionSnapshot(t *testing.T) {
 	t.Parallel()
+	for _, scenario := range []struct {
+		name                           string
+		canonicalFailure, rejectedHead bool
+	}{
+		{name: "tracker snapshot"},
+		{name: "unreadable peer does not stop reconciliation", canonicalFailure: true},
+		{name: "unreadable human Rework excludes unchanged head", canonicalFailure: true, rejectedHead: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			canonicalFailure := scenario.canonicalFailure
+			now := time.Date(2026, 7, 10, 1, 0, 0, 0, time.UTC)
+			issue := connector.Issue{
+				ID:           "issue-closed",
+				Identifier:   "digitaldrywood/detent#1131",
+				State:        "Human Review",
+				Closed:       true,
+				ClosedReason: "completed",
+			}
+			cfg := normalizeConfig(Config{
+				PollInterval:        time.Minute,
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates:      []string{"Blocked", "Done"},
+				TerminalStates:      []string{"Done", "Cancelled"},
+			})
+			tracker := &workflowMetricsConnector{stateIssues: []connector.Issue{cloneIssue(issue)}}
+			orch := &Orchestrator{
+				cfg:       cfg,
+				connector: tracker,
+				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			state := newState(cfg)
+			state.BoardIssues = []connector.Issue{cloneIssue(issue)}
+			state.Pipeline = []connector.Issue{cloneIssue(issue)}
 
-	now := time.Date(2026, 7, 10, 1, 0, 0, 0, time.UTC)
-	issue := connector.Issue{
-		ID:           "issue-closed",
-		Identifier:   "digitaldrywood/detent#1131",
-		State:        "Human Review",
-		Closed:       true,
-		ClosedReason: "completed",
-	}
-	cfg := normalizeConfig(Config{
-		PollInterval:        time.Minute,
-		MaxConcurrentAgents: 1,
-		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
-		ObservedStates:      []string{"Blocked", "Done"},
-		TerminalStates:      []string{"Done", "Cancelled"},
-	})
-	tracker := &workflowMetricsConnector{stateIssues: []connector.Issue{cloneIssue(issue)}}
-	orch := &Orchestrator{
-		cfg:       cfg,
-		connector: tracker,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-	state := newState(cfg)
-	state.BoardIssues = []connector.Issue{cloneIssue(issue)}
-	state.Pipeline = []connector.Issue{cloneIssue(issue)}
+			var held connector.Issue
+			var priorEntry time.Time
+			var priorOrigin provenance.Attribution
+			var priorKey string
+			var canonicalSource *unavailableLaneMetricsConnector
+			if canonicalFailure {
+				recorded := now.Add(-2 * time.Hour)
+				held = connector.Issue{ID: "issue-history-unavailable", Identifier: "owner/repository#2", Title: "Held work", State: "Todo", AssignedToWorker: true, Comments: []connector.IssueComment{{Body: implementProgressWorkpadComment("", "manual takeover hold"), CreatedAt: &recorded}}}
+				if scenario.rejectedHead {
+					held.State, held.Comments = "Rework", nil
+					held.PullRequest = &connector.PullRequest{Number: 42, URL: "https://github.com/owner/repository/pull/42", State: "OPEN", HeadSHA: "rejected", MergeableState: "CLEAN", CIStatus: "success"}
+					cfg.AutoPromote = normalizeAutoPromoteConfig(AutoPromoteConfig{Enabled: true, PassState: "Human Review", GateWaitState: "review", Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}})
+					cfg.WorkerHosts = []string{"worker-a"}
+					orch.cfg = cfg
+					orch.workflowMetrics = &autoPromoteWorkflowMetricsRecorder{}
+					orch.supervisor = newTestSupervisor(t, newWorkerHostRunner(), cfg)
+					orch.runResults = make(chan runpkg.Completion, 2)
+					t.Cleanup(func() {
+						for _, running := range state.Running {
+							running.cancel()
+						}
+						for _, running := range state.Running {
+							<-orch.runResults
+							<-running.done
+						}
+					})
+					prior := cloneIssue(held)
+					prior.State = "Human Review"
+					state.Pipeline = append(state.Pipeline, prior)
+					state.epicTransitionWatch = []connector.Issue{prior}
+					state.pendingEpicParentLookups = map[string]connector.Issue{held.ID: prior}
+					state.Retry[held.ID] = Retry{Issue: held, Attempt: 4, DueAt: now.Add(-time.Minute)}
+				}
+				tracker.candidates = []connector.Issue{held, cloneIssue(issue)}
+				state.BoardIssues = append([]connector.Issue{held}, state.BoardIssues...)
+				if scenario.rejectedHead {
+					state.BoardIssues[0].State = "Human Review"
+					tracker.stateIssues = append([]connector.Issue{held}, tracker.stateIssues...)
+				}
+				priorKey = workflowLaneEntryKey(state.BoardIssues[0])
+				orch.refreshCurrentLaneEntries(t.Context(), &state, now.Add(-time.Hour))
+				priorEntry = state.laneEntries[priorKey]
+				priorOrigin = state.laneProvenance[priorKey]
+				state.BoardIssues[0] = held
+				canonicalSource = &unavailableLaneMetricsConnector{workflowMetricsConnector: tracker, unavailableID: held.ID, laneError: errors.New("current lane entry history is incomplete")}
+				orch.connector = canonicalSource
+			}
+			orch.tick(context.Background(), &state, now)
 
-	orch.tick(context.Background(), &state, now)
+			snapshot := state.Snapshot(now.Add(time.Second))
+			wantIssues := 1
+			if canonicalFailure {
+				wantIssues = 2
+			}
+			if len(snapshot.BoardIssues) != wantIssues {
+				t.Fatalf("snapshot BoardIssues len = %d, want %d", len(snapshot.BoardIssues), wantIssues)
+			}
+			findIssue := func(issues []telemetry.Issue, id string) telemetry.Issue {
+				t.Helper()
+				for _, current := range issues {
+					if current.ID == id {
+						return current
+					}
+				}
+				t.Fatalf("issue %s missing from snapshot", id)
+				return telemetry.Issue{}
+			}
+			if got := findIssue(snapshot.BoardIssues, issue.ID).State; got != "Done" {
+				t.Fatalf("snapshot BoardIssues state = %q, want Done", got)
+			}
+			wantPipeline := 1
+			if scenario.rejectedHead {
+				wantPipeline = 2
+			}
+			if len(snapshot.Pipeline) != wantPipeline {
+				t.Fatalf("snapshot Pipeline len = %d, want %d", len(snapshot.Pipeline), wantPipeline)
+			}
+			if got := findIssue(snapshot.Pipeline, issue.ID).State; got != "Done" {
+				t.Fatalf("snapshot Pipeline state = %q, want Done", got)
+			}
 
-	snapshot := state.Snapshot(now.Add(time.Second))
-	if len(snapshot.BoardIssues) != 1 {
-		t.Fatalf("snapshot BoardIssues len = %d, want 1", len(snapshot.BoardIssues))
-	}
-	if got := snapshot.BoardIssues[0].State; got != "Done" {
-		t.Fatalf("snapshot BoardIssues state = %q, want Done", got)
-	}
-	if len(snapshot.Pipeline) != 1 {
-		t.Fatalf("snapshot Pipeline len = %d, want 1", len(snapshot.Pipeline))
-	}
-	if got := snapshot.Pipeline[0].State; got != "Done" {
-		t.Fatalf("snapshot Pipeline state = %q, want Done", got)
-	}
+			external := cloneIssue(issue)
+			external.Closed = false
+			external.ClosedReason = ""
+			tracker.stateIssues = []connector.Issue{external}
+			if scenario.rejectedHead {
+				tracker.stateIssues = append([]connector.Issue{held}, tracker.stateIssues...)
+			}
+			if canonicalFailure {
+				tracker.candidates = []connector.Issue{held, cloneIssue(external)}
+			}
+			orch.tick(context.Background(), &state, now.Add(time.Minute))
 
-	external := cloneIssue(issue)
-	external.Closed = false
-	external.ClosedReason = ""
-	tracker.stateIssues = []connector.Issue{external}
-	orch.tick(context.Background(), &state, now.Add(time.Minute))
-
-	snapshot = state.Snapshot(now.Add(time.Minute + time.Second))
-	if len(snapshot.BoardIssues) != 1 || snapshot.BoardIssues[0].State != "Human Review" {
-		t.Fatalf("snapshot BoardIssues = %#v, want external Human Review state", snapshot.BoardIssues)
-	}
-	if len(snapshot.Pipeline) != 1 || snapshot.Pipeline[0].State != "Human Review" {
-		t.Fatalf("snapshot Pipeline = %#v, want external Human Review state", snapshot.Pipeline)
+			snapshot = state.Snapshot(now.Add(time.Minute + time.Second))
+			if len(snapshot.BoardIssues) != wantIssues || findIssue(snapshot.BoardIssues, issue.ID).State != "Human Review" {
+				t.Fatalf("snapshot BoardIssues = %#v, want external Human Review state", snapshot.BoardIssues)
+			}
+			if len(snapshot.Pipeline) != wantPipeline || findIssue(snapshot.Pipeline, issue.ID).State != "Human Review" {
+				t.Fatalf("snapshot Pipeline = %#v, want external Human Review state", snapshot.Pipeline)
+			}
+			if canonicalFailure {
+				unknown := findIssue(snapshot.BoardIssues, held.ID)
+				if !state.laneEntries[priorKey].Equal(priorEntry) || state.laneProvenance[priorKey] != priorOrigin {
+					t.Fatalf("failed history changed prior lane evidence: entries=%+v provenance=%+v", state.laneEntries, state.laneProvenance)
+				}
+				if scenario.rejectedHead {
+					if unknown.CurrentLaneEnteredAt != nil {
+						t.Fatalf("failed human Rework gained a fabricated lane time: %+v", unknown)
+					}
+				} else if unknown.CurrentLaneEnteredAt == nil || !unknown.CurrentLaneEnteredAt.Equal(priorEntry) {
+					t.Fatalf("failed history changed the prior lane time: %+v", unknown)
+				}
+				if _, running := state.Running[held.ID]; running {
+					t.Fatal("unreadable history released the human hold")
+				}
+				if scenario.rejectedHead {
+					for _, update := range canonicalSource.updates {
+						if update.id == held.ID {
+							t.Fatalf("failed human Rework was mutated: %+v", update)
+						}
+					}
+					if unknown.State != "Rework" {
+						t.Fatalf("unobserved human Rework was promoted: %+v", unknown)
+					}
+					if retry, exists := state.Retry[held.ID]; !exists || retry.Attempt != 4 || !retry.DueAt.Equal(now.Add(-time.Minute)) {
+						t.Fatalf("failed observation changed retry ownership: %+v, %t", retry, exists)
+					}
+					if prior := findIssue(snapshot.Pipeline, held.ID); prior.State != "Human Review" {
+						t.Fatalf("failed observation lost prior pipeline context: %+v", prior)
+					}
+					if len(state.epicTransitionWatch) != 1 || state.epicTransitionWatch[0].ID != held.ID || state.epicTransitionWatch[0].State != "Human Review" || state.pendingEpicParentLookups[held.ID].State != "Human Review" {
+						t.Fatalf("failed observation lost retained watch context: watch=%+v parents=%+v", state.epicTransitionWatch, state.pendingEpicParentLookups)
+					}
+					canonicalSource.laneError = nil
+					canonicalSource.entry = connector.IssueStateTransition{EnteredAt: now.Add(-time.Minute), Actor: connector.IssueActor{Kind: "human", Login: "example-user"}}
+					orch.tick(t.Context(), &state, now.Add(2*time.Minute))
+					if entry := state.laneEntries[workflowLaneEntryKey(held)]; !entry.Equal(canonicalSource.entry.EnteredAt) {
+						t.Fatalf("recovered history did not refresh the lane entry: %s", entry)
+					}
+					for _, update := range canonicalSource.updates {
+						if update.id == held.ID && update.state != "Rework" {
+							t.Fatalf("recovered human rejection promoted the same head: %+v", update)
+						}
+					}
+				} else {
+					decisionState := newState(cfg)
+					decision := orch.liveDispatchPlanner(t.Context(), nil).dispatchableIssueDecision(held, &decisionState, false, now, "")
+					if decision.dispatchable || decision.reason != dispatchSkipBlockedByDependency {
+						t.Fatalf("unreadable history changed human authorization: %+v", decision)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -314,19 +486,11 @@ func statePointer(state State) *State {
 }
 
 func TestRefreshCurrentLaneEntriesPersistsPollObservationAcrossRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	ctx := t.Context()
-	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	enteredAt := time.Date(2026, 7, 10, 14, 36, 55, 0, time.UTC)
 	updatedAt := enteredAt.Add(2 * time.Hour)
 
-	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
+	backend := newRuntimeFixture()
 	state := newState(normalizeConfig(Config{}))
 	state.BoardIssues = []connector.Issue{{
 		ID:         "issue-1162",
@@ -343,15 +507,8 @@ func TestRefreshCurrentLaneEntriesPersistsPollObservationAcrossRestart(t *testin
 	if len(timeline.Events) != 0 {
 		t.Fatalf("initial observation wrote phase events: %#v", timeline.Events)
 	}
-	if err := backend.Close(); err != nil {
-		t.Fatalf("backend.Close() error = %v", err)
-	}
 
-	restarted, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
-	if err != nil {
-		t.Fatalf("store.Open(restart) error = %v", err)
-	}
-	t.Cleanup(func() { _ = restarted.Close() })
+	restarted := backend
 	restartedState := newState(normalizeConfig(Config{}))
 	restartedState.BoardIssues = []connector.Issue{{
 		ID:         "issue-1162",
@@ -369,22 +526,14 @@ func TestRefreshCurrentLaneEntriesPersistsPollObservationAcrossRestart(t *testin
 }
 
 func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	ctx := t.Context()
-	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	enteredAt := time.Date(2026, 7, 10, 14, 36, 55, 0, time.UTC)
 	firstPollAt := enteredAt.Add(2 * time.Hour)
 	secondPollAt := firstPollAt.Add(2 * time.Minute)
 	updatedAt := firstPollAt
 	tracker := &workflowMetricsConnector{stateEnteredAt: enteredAt, stateEnteredAtFound: true}
 
-	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
+	backend := newRuntimeFixture()
 	state := newState(normalizeConfig(Config{}))
 	state.BoardIssues = []connector.Issue{{
 		ID:         "issue-1162",
@@ -416,15 +565,8 @@ func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *
 	if tracker.stateEnteredAtCalls != 1 {
 		t.Fatalf("IssueStateEnteredAt() calls = %d, want 1 after durable healing", tracker.stateEnteredAtCalls)
 	}
-	if err := backend.Close(); err != nil {
-		t.Fatalf("backend.Close() error = %v", err)
-	}
 
-	restarted, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
-	if err != nil {
-		t.Fatalf("store.Open(restart) error = %v", err)
-	}
-	t.Cleanup(func() { _ = restarted.Close() })
+	restarted := backend
 	restartedState := newState(normalizeConfig(Config{}))
 	restartedState.BoardIssues = cloneIssues(state.BoardIssues)
 	restartedOrch := &Orchestrator{cfg: normalizeConfig(Config{}), connector: tracker, workflowMetrics: restarted}
@@ -440,66 +582,73 @@ func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *
 
 func TestRefreshCurrentLaneEntriesUsesHydratedTrackerReentry(t *testing.T) {
 	t.Parallel()
+	for _, source := range []string{"hydrated timestamp", "canonical entry"} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			firstEntry := time.Date(2026, 8, 17, 4, 53, 35, 0, time.UTC)
+			latestEntry := time.Date(2026, 8, 18, 22, 30, 8, 0, time.UTC)
+			backend := &autoPromoteWorkflowMetricsRecorder{}
+			if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+				ProjectID:  "corp",
+				IssueID:    "I_74",
+				Identifier: "gopherguides/corp#74",
+				PhaseType:  store.WorkflowPhaseTypeLane,
+				PhaseName:  "Human Review",
+				Status:     "entered",
+				StartedAt:  firstEntry,
+			}); err != nil {
+				t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+			}
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "corp"}})
+			state := newState(cfg)
+			state.laneEntries["id:I_74\x00human review"] = firstEntry
+			state.BoardIssues = []connector.Issue{{
+				ID:                "I_74",
+				Identifier:        "gopherguides/corp#74",
+				State:             "Human Review",
+				StageUpdatedAt:    &latestEntry,
+				StageUpdatedActor: connector.IssueActor{Login: "example-user", Kind: "User"},
+			}}
+			orch := &Orchestrator{cfg: cfg, workflowMetrics: backend}
+			if source == "canonical entry" {
+				state.BoardIssues[0].StageUpdatedAt = nil
+				orch.connector = &laneEntryConnector{implementProgressConnector: &implementProgressConnector{refreshed: state.BoardIssues[0], hydrated: state.BoardIssues[0]}, entry: connector.IssueStateTransition{EnteredAt: latestEntry, Actor: state.BoardIssues[0].StageUpdatedActor}, found: true}
+			}
 
-	ctx := t.Context()
-	firstEntry := time.Date(2026, 8, 17, 4, 53, 35, 0, time.UTC)
-	latestEntry := time.Date(2026, 8, 18, 22, 30, 8, 0, time.UTC)
-	backend := &autoPromoteWorkflowMetricsRecorder{}
-	if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
-		ProjectID:  "corp",
-		IssueID:    "I_74",
-		Identifier: "gopherguides/corp#74",
-		PhaseType:  store.WorkflowPhaseTypeLane,
-		PhaseName:  "Human Review",
-		Status:     "entered",
-		StartedAt:  firstEntry,
-	}); err != nil {
-		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
-	}
-	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "corp"}})
-	state := newState(cfg)
-	state.laneEntries["id:I_74\x00human review"] = firstEntry
-	state.BoardIssues = []connector.Issue{{
-		ID:                "I_74",
-		Identifier:        "gopherguides/corp#74",
-		State:             "Human Review",
-		StageUpdatedAt:    &latestEntry,
-		StageUpdatedActor: connector.IssueActor{Login: "example-user", Kind: "User"},
-	}}
-	orch := &Orchestrator{cfg: cfg, workflowMetrics: backend}
-
-	orch.refreshCurrentLaneEntries(ctx, &state, latestEntry.Add(time.Hour))
-	snapshot := state.Snapshot(latestEntry.Add(time.Hour))
-	if got := snapshot.BoardIssues[0].CurrentLaneEnteredAt; got == nil || !got.Equal(latestEntry) {
-		t.Fatalf("CurrentLaneEnteredAt = %v, want %v", got, latestEntry)
-	}
-	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: "corp", IssueID: "I_74"})
-	if err != nil {
-		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
-	}
-	latest, ok := latestCurrentLaneEntryForAt(timeline.Events, "Human Review", latestEntry)
-	if !ok {
-		t.Fatalf("latest lane entry missing from timeline: %#v", timeline.Events)
-	}
-	metadata, ok := provenance.Parse(latest.MetadataJSON)
-	if !ok || metadata.Provenance.Origin != provenance.OriginHuman {
-		t.Fatalf("latest lane provenance = %#v, want hydrated tracker actor", metadata.Provenance)
+			orch.refreshCurrentLaneEntries(ctx, &state, latestEntry.Add(time.Hour))
+			snapshot := state.Snapshot(latestEntry.Add(time.Hour))
+			if got := snapshot.BoardIssues[0].CurrentLaneEnteredAt; got == nil || !got.Equal(latestEntry) {
+				t.Fatalf("CurrentLaneEnteredAt = %v, want %v", got, latestEntry)
+			}
+			timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: "corp", IssueID: "I_74"})
+			if err != nil {
+				t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+			}
+			latest, ok := latestCurrentLaneEntryForAt(timeline.Events, "Human Review", latestEntry)
+			if !ok {
+				t.Fatalf("latest lane entry missing from timeline: %#v", timeline.Events)
+			}
+			metadata, ok := provenance.Parse(latest.MetadataJSON)
+			if !ok || metadata.Provenance.Origin != provenance.OriginHuman {
+				t.Fatalf("latest lane provenance = %#v, want hydrated tracker actor", metadata.Provenance)
+			}
+			restarted := &Orchestrator{cfg: cfg, connector: orch.connector}
+			restartedState := newState(cfg)
+			restartedState.BoardIssues = append([]connector.Issue(nil), state.BoardIssues...)
+			restarted.refreshCurrentLaneEntries(ctx, &restartedState, latestEntry.Add(2*time.Hour))
+			if got := restartedState.Snapshot(latestEntry.Add(2 * time.Hour)).BoardIssues[0].CurrentLaneEnteredAt; got == nil || !got.Equal(latestEntry) {
+				t.Fatalf("restarted CurrentLaneEnteredAt = %v, want %v", got, latestEntry)
+			}
+		})
 	}
 }
 
 func TestRefreshCurrentLaneEntriesSurvivesStoreRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	ctx := t.Context()
-	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	enteredAt := time.Date(2026, 7, 9, 17, 0, 0, 0, time.UTC)
 
-	seed, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
-	if err != nil {
-		t.Fatalf("store.Open(seed) error = %v", err)
-	}
+	seed := newRuntimeFixture()
 	if _, err := seed.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
 		ProjectID: "detent",
 		IssueID:   "issue-1130",
@@ -510,15 +659,9 @@ func TestRefreshCurrentLaneEntriesSurvivesStoreRestart(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
 	}
-	if err := seed.Close(); err != nil {
-		t.Fatalf("seed.Close() error = %v", err)
-	}
 
 	for index, updatedAt := range []time.Time{enteredAt.Add(30 * time.Minute), enteredAt.Add(time.Hour)} {
-		backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
-		if err != nil {
-			t.Fatalf("store.Open(restart %d) error = %v", index+1, err)
-		}
+		backend := seed
 
 		cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}})
 		state := newState(cfg)
@@ -532,9 +675,6 @@ func TestRefreshCurrentLaneEntriesSurvivesStoreRestart(t *testing.T) {
 		snapshot := state.Snapshot(updatedAt.Add(time.Minute))
 		if snapshot.BoardIssues[0].CurrentLaneEnteredAt == nil || !snapshot.BoardIssues[0].CurrentLaneEnteredAt.Equal(enteredAt) {
 			t.Errorf("restart %d CurrentLaneEnteredAt = %v, want %v", index+1, snapshot.BoardIssues[0].CurrentLaneEnteredAt, enteredAt)
-		}
-		if err := backend.Close(); err != nil {
-			t.Fatalf("backend.Close(restart %d) error = %v", index+1, err)
 		}
 	}
 }
@@ -890,36 +1030,46 @@ func TestRefreshCurrentLaneEntriesPreservesCacheOnFailure(t *testing.T) {
 	t.Parallel()
 	for _, lane := range []string{"Todo", "Backlog"} {
 		t.Run(lane, func(t *testing.T) {
-			t.Parallel()
-			at := time.Date(2026, 9, 14, 18, 26, 14, 0, time.UTC)
-			issue := connector.Issue{ID: "issue-2470", State: "Todo"}
-			cfg := laneMutationTestConfig()
-			recorder := &workflowMetricsRecorderSpy{}
-			orch := &Orchestrator{cfg: cfg, workflowMetrics: recorder}
-			state := newState(cfg)
-			state.BoardIssues = []connector.Issue{issue}
-			orch.refreshCurrentLaneEntries(t.Context(), &state, at)
-			key := workflowLaneEntryKey(issue)
-			origin := state.laneProvenance[key]
-			state.Pipeline = []connector.Issue{issue}
-			issue.State = lane
-			state.BoardIssues = []connector.Issue{issue}
-			ledger := &failingRefreshLaneLedger{}
-			orch.laneLedger = ledger
-			orch.laneObservations = nil
-			orch.refreshCurrentLaneEntries(t.Context(), &state, at.Add(time.Minute))
-			if len(state.laneEntries) != 1 || !state.laneEntries[key].Equal(at) {
-				t.Fatalf("entries after failure = %v, want prior entry %v", state.laneEntries, at)
-			}
-			if len(state.laneProvenance) != 1 || state.laneProvenance[key] != origin {
-				t.Fatalf("provenance after failure = %v, want %v", state.laneProvenance, origin)
-			}
-			if ledger.calls != 1 {
-				t.Fatalf("ledger calls = %d, want one authoritative observation", ledger.calls)
-			}
-			orch.refreshCurrentLaneEntries(t.Context(), &state, at.Add(2*time.Minute))
-			if len(state.laneEntries) != 1 || state.laneEntries[workflowLaneEntryKey(issue)].IsZero() {
-				t.Fatalf("entries after recovery = %v, want current board lane", state.laneEntries)
+			for _, source := range []string{"ledger", "canonical history"} {
+				t.Run(source, func(t *testing.T) {
+					t.Parallel()
+					at := time.Date(2026, 9, 14, 18, 26, 14, 0, time.UTC)
+					issue := connector.Issue{ID: "issue-2470", State: "Todo"}
+					cfg := laneMutationTestConfig()
+					recorder := &workflowMetricsRecorderSpy{}
+					orch := &Orchestrator{cfg: cfg, workflowMetrics: recorder}
+					state := newState(cfg)
+					state.BoardIssues = []connector.Issue{issue}
+					orch.refreshCurrentLaneEntries(t.Context(), &state, at)
+					key := workflowLaneEntryKey(issue)
+					origin := state.laneProvenance[key]
+					state.Pipeline = []connector.Issue{issue}
+					issue.State = lane
+					state.BoardIssues = []connector.Issue{issue}
+					ledger := &failingRefreshLaneLedger{}
+					reader := &laneEntryConnector{implementProgressConnector: &implementProgressConnector{refreshed: issue, hydrated: issue}, entry: connector.IssueStateTransition{EnteredAt: at.Add(time.Minute)}, found: true, err: errors.New("canonical history unavailable")}
+					if source == "ledger" {
+						orch.laneLedger = ledger
+					} else {
+						orch.connector = reader
+					}
+					orch.laneObservations = nil
+					orch.refreshCurrentLaneEntries(t.Context(), &state, at.Add(time.Minute))
+					if len(state.laneEntries) != 1 || !state.laneEntries[key].Equal(at) {
+						t.Fatalf("entries after failure = %v, want prior entry %v", state.laneEntries, at)
+					}
+					if len(state.laneProvenance) != 1 || state.laneProvenance[key] != origin {
+						t.Fatalf("provenance after failure = %v, want %v", state.laneProvenance, origin)
+					}
+					if source == "ledger" && ledger.calls != 1 {
+						t.Fatalf("ledger calls = %d, want one authoritative observation", ledger.calls)
+					}
+					reader.err = nil
+					orch.refreshCurrentLaneEntries(t.Context(), &state, at.Add(2*time.Minute))
+					if len(state.laneEntries) != 1 || state.laneEntries[workflowLaneEntryKey(issue)].IsZero() {
+						t.Fatalf("entries after recovery = %v, want current board lane", state.laneEntries)
+					}
+				})
 			}
 		})
 	}

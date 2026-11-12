@@ -59,7 +59,7 @@ func (s *session) healthFindings(ctx context.Context, project tracker.ProjectID,
 		return page, corestore.ErrInvalidPage
 	}
 	header, err := s.db.Query(ctx, `SELECT COALESCE(c.sequence,0),t.last_tick_at,b.signal,b.lane,EXISTS(SELECT 1 FROM health_finding_projects cold WHERE cold.organization_id=p.organization_id AND cold.project_id=p.id AND cold.page_sequence=0)
- FROM projects p LEFT JOIN project_event_cursors c ON c.organization_id=p.organization_id AND c.project_id=p.id
+ FROM projects p LEFT JOIN native_board_sequences c ON c.organization_id=p.organization_id AND c.project_id=p.id
  LEFT JOIN health_detector_ticks t ON t.organization_id=p.organization_id
  LEFT JOIN health_baseline_unavailable b ON b.organization_id=p.organization_id AND b.project_id=p.id
  WHERE p.organization_id=$1 AND p.id=$2 AND p.deleted_at IS NULL ORDER BY b.signal,b.lane LIMIT 10001`, s.organization, project)
@@ -163,4 +163,71 @@ func (s *session) healthFindings(ctx context.Context, project tracker.ProjectID,
 		}
 	}
 	return page, mapError(ctx, rows.Err())
+}
+
+func (s *session) HealthSourceItems(ctx context.Context, project tracker.ProjectID, state string, after int64, limit int) ([]healthstore.ItemSource, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.HealthSourceItems(ctx, pgquery.HealthSourceItemsParams{OrganizationID: s.organization, ProjectID: project, StateName: new(state), AfterID: after, Limit: int32(limit)})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	out := make([]healthstore.ItemSource, len(rows))
+	for index, row := range rows {
+		out[index] = healthstore.ItemSource{WorkItemReference: corestore.WorkItemReference{ProjectID: tracker.ProjectID(row.ProjectID), WorkItemID: tracker.NativeWorkItemID(row.NativeID)}, ID: row.ID}
+	}
+	return out, nil
+}
+func (s *session) HealthSourceQuestions(ctx context.Context, afterConversation, afterQuestion string, limit int) ([]healthstore.QuestionSource, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.HealthSourceQuestions(ctx, pgquery.HealthSourceQuestionsParams{OrganizationID: s.organization, AfterConversationID: afterConversation, AfterQuestionID: afterQuestion, Limit: int32(limit)})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	out := make([]healthstore.QuestionSource, len(rows))
+	for index, row := range rows {
+		value := healthstore.QuestionSource{ProjectID: tracker.ProjectID(row.ProjectID), ConversationID: row.ConversationID, ID: row.ID, AttemptID: row.AttemptID, Status: row.Status, ConversationStatus: row.ConversationStatus, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt, ConversationDeleted: row.ConversationDeletedAt != nil, ConversationArchived: row.ConversationArchived}
+		if row.WorkItemID != nil {
+			value.WorkItemID = tracker.NativeWorkItemID(*row.WorkItemID)
+		}
+		out[index] = value
+	}
+	return out, nil
+}
+
+func (s *session) HealthSourceConversationQuestions(ctx context.Context, conversation, afterQuestion string, limit int) ([]healthstore.QuestionSource, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.HealthSourceConversationQuestions(ctx, pgquery.HealthSourceConversationQuestionsParams{OrganizationID: s.organization, ConversationID: conversation, AfterQuestionID: afterQuestion, Limit: int32(limit)})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	out := make([]healthstore.QuestionSource, len(rows))
+	for index, row := range rows {
+		value := healthstore.QuestionSource{ProjectID: tracker.ProjectID(row.ProjectID), ConversationID: row.ConversationID, ID: row.ID, AttemptID: row.AttemptID, Status: row.Status, ConversationStatus: row.ConversationStatus, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt, ConversationDeleted: row.ConversationDeletedAt != nil, ConversationArchived: row.ConversationArchived}
+		if row.WorkItemID != nil {
+			value.WorkItemID = tracker.NativeWorkItemID(*row.WorkItemID)
+		}
+		out[index] = value
+	}
+	return out, nil
+}
+
+func (s *session) HealthSourceBaselines(ctx context.Context, project tracker.ProjectID) ([]healthstore.Baseline, error) {
+	rows, err := s.queries.HealthBaselines(ctx, pgquery.HealthBaselinesParams{OrganizationID: s.organization, ProjectID: project})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	if len(rows) > 10000 {
+		return nil, corestore.ErrInvalidPage
+	}
+	out := make([]healthstore.Baseline, len(rows))
+	for index, row := range rows {
+		out[index] = healthstore.Baseline{ProjectID: row.ProjectID, Signal: row.Signal, Lane: row.Lane}
+	}
+	return out, nil
 }

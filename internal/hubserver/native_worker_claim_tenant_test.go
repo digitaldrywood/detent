@@ -1178,6 +1178,107 @@ func TestTenantClaimUsesConcurrencyNotSubscriptionQuotaState(t *testing.T) {
 }
 
 func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
+	t.Run("compatible claim keeps current source and runner authority", func(t *testing.T) {
+		f, runner, ids, descriptor := newRetainedWorkListFixture(t)
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(ids[2]), testHubAdminToken, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		request := providerClaim(runner, issue, "compatible-source")
+		preview := tracker.NativeCapacityPreview{NativeClaim: request, Limit: 10}
+		preview.SessionID = ""
+		response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", runner.redemption.Credential, preview)
+		requireNativeStatus(t, response, http.StatusOK)
+		var candidates tracker.NativeCapacityPage
+		decodeHubResponse(t, response, &candidates)
+		if !slices.ContainsFunc(candidates.Items, func(item tracker.NativeIssue) bool { return item.WorkItemID == ids[2] }) {
+			t.Fatalf("compatible preview omitted selected item: %+v", candidates)
+		}
+		credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(runner.redemption.Credential), "", "")
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("authenticate compatible runner: status=%d error=%v", status, err)
+		}
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+		plan, err := f.service.readNativeClaimPlan(t.Context(), scope, request, f.service.config.now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		setIntegration := func(enabled bool, repository string) {
+			t.Helper()
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				record, err := w.ProjectRecord(t.Context(), f.project.ID)
+				if err != nil {
+					return err
+				}
+				record.Settings.RepositoryEnabled, record.Settings.Repository = enabled, repository
+				_, err = w.UpdateProjectRecord(t.Context(), record)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		setIntegration(false, "example-org/example-project")
+		if _, err := f.service.claimNativeIssueTenantWithPlan(t.Context(), scope, request, 90*time.Second, f.service.config.now(), plan, nil); !errors.Is(err, ErrNoClaimableWork) {
+			t.Fatalf("stale compatible settings allowed claim: %v", err)
+		}
+		for _, test := range []struct {
+			enabled    bool
+			repository string
+		}{{false, "example-org/example-project"}, {true, "example-org/another-project"}} {
+			setIntegration(test.enabled, test.repository)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request)
+			requireNativeStatus(t, response, http.StatusConflict)
+			var refused nativeError
+			decodeHubResponse(t, response, &refused)
+			if refused.Code != "no_claimable_work" {
+				t.Fatalf("incompatible current repository allowed claim: %+v", refused)
+			}
+		}
+		setIntegration(true, "example-org/example-project")
+		other := newNativeFixture(t, f.service, f.project.OrganizationID, "Unrelated runner scope")
+		outsider := prepareRunner(t, other, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+		outsider.enroll(t)
+		foreign := request
+		foreign.MachineID = outsider.binding.MachineID
+		foreign.SessionID = "unauthorized-compatible"
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", outsider.redemption.Credential, foreign), http.StatusNotFound)
+		changed := descriptor
+		changed.Gates.HumanReview = !changed.Gates.HumanReview
+		changed = changed.WithID()
+		approveHubTestPolicy(t, f.service, f.base+"/policy", changed)
+		response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request)
+		requireNativeStatus(t, response, http.StatusConflict)
+		var refused nativeError
+		decodeHubResponse(t, response, &refused)
+		if refused.Code != "policy_mismatch" {
+			t.Fatalf("stale compatible policy refusal=%+v", refused)
+		}
+		approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+		response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		var lease tracker.NativeLease
+		decodeHubResponse(t, response, &lease)
+		if lease.WorkItemID != ids[2] || lease.MachineID != runner.binding.MachineID || lease.PolicyID != descriptor.ID || lease.FencingToken <= 0 {
+			t.Fatalf("compatible lease=%+v", lease)
+		}
+		replay := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request)
+		requireNativeStatus(t, replay, http.StatusOK)
+		var held tracker.NativeLease
+		decodeHubResponse(t, replay, &held)
+		if held.ID != lease.ID || held.FencingToken != lease.FencingToken {
+			t.Fatalf("compatible claim replay changed owner: %+v", held)
+		}
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			binding, err := r.LeasePolicy(t.Context(), lease.ID)
+			if err == nil && (binding.PolicyID != descriptor.ID || binding.ProjectID != f.project.ID) {
+				return fmt.Errorf("compatible lease policy=%+v", binding)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+	})
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	var logs bytes.Buffer

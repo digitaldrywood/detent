@@ -109,6 +109,35 @@ type WorkItemFacts struct {
 	DispatchWaitSince *time.Time
 }
 
+type QueueListCursor struct {
+	Stage       int
+	Priority    int64
+	RankMissing int
+	Rank        string
+	Created     time.Time
+	Number      int64
+	WorkItemID  tracker.NativeWorkItemID
+}
+
+type QueueListQuery struct {
+	Unqueued                                bool
+	ProjectID                               tracker.ProjectID
+	Scope                                   string
+	IdentifierOrder                         bool
+	After                                   QueueListCursor
+	Principal                               string
+	States, Labels, Assignees, Repositories []string
+	Priorities                              []int64
+	Limit                                   int
+}
+
+type QueueListRow struct {
+	ID, Revision int64
+	Entry        QueueEntry
+	Position     QueueListCursor
+	Matches      bool
+}
+
 type QueueEntry struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -140,6 +169,7 @@ type CapacityUsage struct {
 }
 
 type Reader interface {
+	QueueListPage(context.Context, QueueListQuery) ([]QueueListRow, error)
 	CandidatePage(context.Context, CandidateQuery) (CandidatePage, error)
 	SelectionCursor(context.Context, string, tracker.ProjectID) (SelectionCursor, error)
 	WorkItemFacts(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (WorkItemFacts, error)

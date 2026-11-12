@@ -11,7 +11,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -631,7 +630,7 @@ func TestStorageConversionBudgets(t *testing.T) {
 				}
 				storage := postgres.NewConversionStorage(r, scope.Organization, objects, convertPayload)
 				for turn := range 3 {
-					if err := hubserver.ConvertStorageBatch(t.Context(), storage); err != nil {
+					if err := storageconversion.ConvertStorageBatch(t.Context(), storage); err != nil {
 						t.Fatal(err)
 					}
 					progress, err := r.ConversionProgress(t.Context(), scope)
@@ -754,7 +753,7 @@ func TestStorageConversionOwnerTick(t *testing.T) {
 		for tick := range 5 {
 			beforeRows, beforeBytes := usage(org)
 			storage := postgres.NewConversionStorage(r, org, objects, transform)
-			err := hubserver.ConvertStorageBatch(t.Context(), storage)
+			err := storageconversion.ConvertStorageBatch(t.Context(), storage)
 			afterRows, afterBytes := usage(org)
 			if afterRows-beforeRows > 100 || afterBytes-beforeBytes > 1<<20 {
 				t.Fatalf("owner exceeded tick budget: rows=%d bytes=%d", afterRows-beforeRows, afterBytes-beforeBytes)
@@ -812,7 +811,7 @@ func TestStorageConversionOwnerTick(t *testing.T) {
 			scope := conversionScope(org, family, false)
 			seedConversion(t, r, objects, scope, "000_after_idle_"+scope.AggregateID, 500, 1)
 		}
-		if err := hubserver.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(r, org, objects, convertPayload)); err != nil {
+		if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(r, org, objects, convertPayload)); err != nil {
 			t.Fatal(err)
 		}
 		for _, family := range conversionFamilies() {
@@ -855,7 +854,7 @@ func newConversionBatch(repository storageconversion.Repository, objects attachm
 
 func (b *conversionBatch) Batch(ctx context.Context, scope storageconversion.Scope, cursor storageconversion.Cursor, limit int) (conversionResult, error) {
 	b.scope, b.cursor, b.limit, b.result = scope, cursor, limit, conversionResult{}
-	err := hubserver.ConvertStorageBatch(ctx, b)
+	err := storageconversion.ConvertStorageBatch(ctx, b)
 	return b.result, err
 }
 

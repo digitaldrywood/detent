@@ -2,9 +2,10 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -12,6 +13,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -93,36 +101,6 @@ func validateCoordinatorIssueSplit(split chat.IssueSplit) error {
 		}
 	}
 	return nil
-}
-
-func validateCoordinatorSplitDrafts(ctx context.Context, tx *sql.Tx, scope nativeScope, split chat.IssueSplit) (tracker.NativeIssue, error) {
-	if err := validateCoordinatorIssueSplit(split); err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	parent, _, err := readNativeIssue(ctx, tx, scope, split.ParentID)
-	if err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	if err := requireNativeEdit(parent, tracker.Revision(split.Revision)); err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	for _, child := range split.Children {
-		project, err := validateNativeIssueDraft(ctx, tx, scope, tracker.CreateIssue{Title: child.Title, Body: child.Description, Priority: child.Priority})
-		if err != nil {
-			return tracker.NativeIssue{}, err
-		}
-		found := false
-		for _, state := range project.States {
-			if state.Name == child.State {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return tracker.NativeIssue{}, nativePublicInvalid("Workflow state does not exist")
-		}
-	}
-	return parent, nil
 }
 
 func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -214,45 +192,7 @@ func (s *Service) executeCoordinatorIssueSplit(ctx context.Context, action chat.
 	}
 	scope.project = tracker.ProjectID(action.ProjectID)
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+split.ParentID+"/split"), Item: split.ParentID, RequireLease: true, Feature: "collaboration"}
-	raw, err := s.executeNativeMutation(ctx, scope, options, tracker.MutationForContext(ctx, action.RequestID), split, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		parent, err := validateCoordinatorSplitDrafts(ctx, tx, scope, split)
-		if err != nil {
-			return nil, err
-		}
-		children := make([]tracker.NativeIssue, 0, len(split.Children))
-		for _, child := range split.Children {
-			issue, err := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: child.Title, Body: child.Description, Priority: child.Priority, State: child.State}, now)
-			if err != nil {
-				return nil, err
-			}
-			children = append(children, issue)
-		}
-		nodes := append([]tracker.NativeIssue{parent}, children...)
-		for _, edge := range split.Edges {
-			dependent, blocker := nodes[edge.Dependent], nodes[edge.Blocker]
-			issue, err := changeNativeDependencyTx(ctx, tx, scope, string(dependent.WorkItemID), tracker.DependencyMutation{ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}, now)
-			if err != nil {
-				return nil, err
-			}
-			nodes[edge.Dependent] = issue
-		}
-		var body strings.Builder
-		body.WriteString("Approved issue split:\n")
-		for _, child := range nodes[1:] {
-			fmt.Fprintf(&body, "\n- #%d (%s): %s", child.Number, child.WorkItemID, child.Title)
-		}
-		if len(split.Edges) > 0 {
-			body.WriteString("\n\nDependencies:\n")
-			for _, edge := range split.Edges {
-				fmt.Fprintf(&body, "\n- #%d is blocked by #%d", nodes[edge.Dependent].Number, nodes[edge.Blocker].Number)
-			}
-		}
-		comment, err := insertNativeComment(ctx, tx, scope, parent, body.String(), nil, now)
-		if err != nil {
-			return nil, err
-		}
-		return coordinatorSplitResult{Children: nodes[1:], Comment: comment}, nil
-	})
+	raw, err := s.executeCoordinatorSplitRecords(ctx, scope, options, tracker.MutationForContext(ctx, action.RequestID), split)
 	if err != nil {
 		return chat.ActionExecution{}, coordinatorActionError(err)
 	}
@@ -272,4 +212,360 @@ func (s *Service) executeCoordinatorIssueSplit(ctx context.Context, action chat.
 		names = append(names, fmt.Sprintf("#%d (%s)", child.Number, child.WorkItemID))
 	}
 	return chat.ActionExecution{Message: "Created " + strings.Join(names, ", ") + " with their dependencies and parent comment.", ResourceID: split.ParentID, Identifier: action.Identifier, Revision: split.Revision, Data: raw}, nil
+}
+
+type coordinatorSplitRecord struct {
+	plan         workItemRecordPlan
+	fields       workItemRecordFields
+	version      eventstore.CollaborationVersion
+	event        eventstore.Event
+	search       searchstore.Document
+	attachments  []string
+	policy       policystore.Revision
+	policyFound  bool
+	commentBytes int64
+}
+
+func (s *Service) prepareCoordinatorSplitRecord(ctx context.Context, scope nativeScope, plan workItemRecordPlan) (coordinatorSplitRecord, error) {
+	record := coordinatorSplitRecord{plan: plan}
+	var err error
+	if plan.requiresIssueContract() {
+		record.policy, record.policyFound, err = s.validateWorkItemRecordFilingTenant(ctx, scope, plan)
+		if err != nil {
+			return record, err
+		}
+	}
+	if plan.create {
+		attachments, err := s.prepareWorkItemAttachmentReferences(ctx, scope, plan)
+		if err != nil {
+			return record, err
+		}
+		record.attachments = attachments.current
+	}
+	record.fields, err = s.prepareWorkItemFields(ctx, scope.organization, plan)
+	if err != nil {
+		return record, err
+	}
+	raw, err := json.Marshal(plan.value())
+	if err != nil {
+		return record, err
+	}
+	id, revision, at := string(plan.issue.WorkItemID), int64(plan.issue.Revision), plan.issue.UpdatedAt
+	item := plan.issue.WorkItemID
+	text := searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels}
+	kind := "issue"
+	data := tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}
+	if plan.relationship != nil {
+		data.RelatedWorkItemID, data.Operation = plan.related.NativeID, plan.relationshipOperate
+	}
+	if plan.comment.ID != "" {
+		id, revision, item, at = plan.comment.ID, int64(plan.comment.Revision), plan.comment.WorkItemID, plan.comment.UpdatedAt
+		kind, text = "comment", searchstore.Text{Body: plan.comment.Body}
+		data.Revision, data.CommentID = plan.comment.Revision, plan.comment.ID
+	}
+	if plan.comment.ID != "" && len(record.attachments) > 0 {
+		dataRaw, err := json.Marshal(data)
+		if err != nil {
+			return record, err
+		}
+		actorRaw, err := json.Marshal(scope.actor())
+		if err != nil {
+			return record, err
+		}
+		record.commentBytes = int64(len(plan.comment.Body) + len(raw) + len(dataRaw) + len(actorRaw))
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	record.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, RecordID: id, Revision: revision}, raw)
+	if err != nil {
+		return record, err
+	}
+	record.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
+	if err != nil {
+		return record, err
+	}
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, ID: newNativeID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: data})
+	if err != nil {
+		return record, err
+	}
+	record.event, err = content.PrepareEvent(ctx, scope.organization, eventRaw)
+	return record, err
+}
+
+func (s *Service) readCoordinatorSplitReceipt(ctx context.Context, scope nativeScope, receipt eventstore.Receipt, parent string) (json.RawMessage, error) {
+	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
+	if err != nil {
+		return nil, err
+	}
+	var result coordinatorSplitResult
+	if json.Unmarshal(raw, &result) != nil || len(result.Children) < 1 || len(result.Children) > coordinatorSplitMaxChildren || result.Comment.OrganizationID != scope.organization || result.Comment.ProjectID != scope.project || result.Comment.WorkItemID != tracker.NativeWorkItemID(parent) {
+		return nil, receiptstore.ErrExpired
+	}
+	for _, child := range result.Children {
+		if child.OrganizationID != scope.organization || child.ProjectID != scope.project || child.WorkItemID == "" {
+			return nil, receiptstore.ErrExpired
+		}
+	}
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return nil, err
+	}
+	if _, _, err := s.readWorkItemRecord(ctx, scope, parent); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, split chat.IssueSplit) (json.RawMessage, error) {
+	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+		return nil, workItemStorageUnavailable()
+	}
+	if err := validateCoordinatorIssueSplit(split); err != nil {
+		return nil, err
+	}
+	if split.Revision <= 0 || strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
+		return nil, nativePublicInvalid("A current revision and idempotency key are required")
+	}
+	if scope.credential.Scope == apiScopeWorker {
+		return nil, operatortool.ErrAccessDenied
+	}
+	scope.action, scope.actionItem = string(chat.ActionIssueSplit), split.ParentID
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return nil, err
+	}
+	hash, err := nativeCommandHash(split)
+	if err != nil {
+		return nil, err
+	}
+	receipt, found, err := s.workItemRecordReceipt(ctx, scope, options.OperationID, command.IdempotencyKey, hash)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		return s.readCoordinatorSplitReceipt(ctx, scope, receipt, split.ParentID)
+	}
+	parent, err := s.loadWorkItemPlan(ctx, scope, split.ParentID, "", tracker.CreateComment{})
+	if err != nil {
+		return nil, err
+	}
+	if err := requireNativeEdit(parent.issue, tracker.Revision(split.Revision)); err != nil {
+		return nil, err
+	}
+	var nextNumber int64
+	var organizationSlug string
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		nextNumber, err = r.NextWorkItemNumber(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		organization, err := r.AccessOrganization(ctx)
+		organizationSlug = organization.Slug
+		return err
+	}); err != nil {
+		return nil, projectRecordError(err)
+	}
+	nodes := []tracker.NativeIssue{parent.issue}
+	rows := []corestore.WorkItem{parent.current}
+	records := make([]coordinatorSplitRecord, 0, len(split.Children)+len(split.Edges)+1)
+	for index, child := range split.Children {
+		request := tracker.CreateIssue{Title: child.Title, Body: child.Description, Priority: child.Priority, State: child.State}
+		if err := validateWorkItemRecordCreateInput(ctx, scope, parent.project, request); err != nil {
+			return nil, err
+		}
+		plan := workItemRecordPlan{project: parent.project, issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{Number: int(nextNumber) + index}}}
+		plan, err = s.planWorkItemRecord(ctx, scope, plan, request)
+		if err != nil {
+			return nil, err
+		}
+		plan.issue.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(organizationSlug, parent.project.Core.Slug, plan.issue.Number)}).WebURL
+		record, err := s.prepareCoordinatorSplitRecord(ctx, scope, plan)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+		nodes = append(nodes, plan.issue)
+		rows = append(rows, corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: plan.issue.WorkItemID, Revision: int64(plan.issue.Revision), EventSequence: 1, WorkflowStateName: &plan.issue.State})
+	}
+	for _, edge := range split.Edges {
+		dependent, blocker := nodes[edge.Dependent], nodes[edge.Blocker]
+		plan := workItemRecordPlan{project: parent.project, current: rows[edge.Dependent], related: rows[edge.Blocker], issue: dependent,
+			previousContent: dependent.Title + "\n" + dependent.Body, relationshipType: "dependency", relationshipOperate: "add",
+			relationship: &corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: dependent.WorkItemID, RelatedProjectID: scope.project, RelatedWorkItemID: blocker.WorkItemID, Type: "dependency"}}
+		plan, err = s.planWorkItemRecord(ctx, scope, plan, tracker.DependencyMutation{ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"})
+		if err != nil {
+			return nil, err
+		}
+		record, err := s.prepareCoordinatorSplitRecord(ctx, scope, plan)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+		nodes[edge.Dependent] = plan.issue
+		rows[edge.Dependent].Revision = int64(plan.issue.Revision)
+		rows[edge.Dependent].EventSequence++
+	}
+	var body strings.Builder
+	body.WriteString("Approved issue split:\n")
+	for _, child := range nodes[1:] {
+		fmt.Fprintf(&body, "\n- #%d (%s): %s", child.Number, child.WorkItemID, child.Title)
+	}
+	if len(split.Edges) > 0 {
+		body.WriteString("\n\nDependencies:\n")
+		for _, edge := range split.Edges {
+			fmt.Fprintf(&body, "\n- #%d is blocked by #%d", nodes[edge.Dependent].Number, nodes[edge.Blocker].Number)
+		}
+	}
+	commentPlan := workItemRecordPlan{project: parent.project, current: rows[0], issue: nodes[0]}
+	commentPlan, err = s.planWorkItemRecord(ctx, scope, commentPlan, tracker.CreateComment{Body: body.String()})
+	if err != nil {
+		return nil, err
+	}
+	commentRecord, err := s.prepareCoordinatorSplitRecord(ctx, scope, commentPlan)
+	if err != nil {
+		return nil, err
+	}
+	records = append(records, commentRecord)
+	raw, err := json.Marshal(coordinatorSplitResult{Children: nodes[1:], Comment: commentPlan.comment})
+	if err != nil {
+		return nil, err
+	}
+	now := s.config.now().UTC().Truncate(time.Microsecond)
+	receipt, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: options.OperationID, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
+	if err != nil {
+		return nil, err
+	}
+	authority, err := s.beginProjectRecordAuthority(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	var previous *eventstore.Receipt
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if len(split.Edges) > 0 {
+			if err := w.LockRelationshipGraph(ctx); err != nil {
+				return err
+			}
+		}
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
+			return err
+		}
+		project, err := w.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.Core.DeletedAt != nil || project.Core.Profile != "native" {
+			return corestore.ErrNotFound
+		}
+		if !sameWorkItemProjectPlan(parent.project, project) {
+			return nativeConflict(tracker.Revision(parent.current.Revision))
+		}
+		stored, err := w.Receipt(ctx, scope.credential.ID, options.OperationID, command.IdempotencyKey)
+		if err == nil {
+			if stored.ResponseExpired || stored.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= stored.ResponseReplayUntilNs {
+				return receiptstore.ErrExpired
+			}
+			if stored.RequestHash != hash {
+				return nativeConflict(0)
+			}
+			previous = &stored
+			return s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK)
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		current, err := w.LockWorkItem(ctx, scope.project, parent.current.NativeID)
+		if err != nil {
+			return err
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+			return corestore.ErrNotFound
+		}
+		if current.Revision != parent.current.Revision || current.EventSequence != parent.current.EventSequence || current.Archived {
+			return nativeConflict(tracker.Revision(current.Revision))
+		}
+		if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, now); err != nil {
+			return err
+		}
+		policy, policyErr := w.ProjectPolicy(ctx, scope.project)
+		if policyErr != nil && !errors.Is(policyErr, corestore.ErrNotFound) {
+			return policyErr
+		}
+		for _, record := range records {
+			plan := record.plan
+			if plan.requiresIssueContract() && (record.policyFound != (policyErr == nil) || record.policyFound && !sameNativeClaimProjectPolicy(record.policy, policy)) {
+				return policyMismatch("The approved policy changed after the split proposal")
+			}
+			if !plan.create || plan.comment.ID != "" {
+				current, err := w.LockWorkItem(ctx, scope.project, plan.current.NativeID)
+				if err != nil {
+					return err
+				}
+				if current.Revision != plan.current.Revision || current.EventSequence != plan.current.EventSequence {
+					return nativeConflict(tracker.Revision(current.Revision))
+				}
+				plan.current = current
+			}
+			if plan.relationship != nil {
+				if err := w.SetRelationship(ctx, *plan.relationship, plan.relationshipOperate, plan.issue.UpdatedAt); err != nil {
+					return err
+				}
+			}
+			if record.commentBytes > 0 {
+				limit, err := s.attachmentQuotaLimit(ctx, w)
+				if err != nil {
+					return err
+				}
+				usage, err := w.AdjustCollaborationBytes(ctx, record.commentBytes, limit)
+				if errors.Is(err, corestore.ErrNotFound) {
+					return attachmentAccountingUnavailable()
+				}
+				if err != nil {
+					return err
+				}
+				if !usage.Allowed {
+					return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+				}
+			}
+			if err := writeWorkItemRecord(ctx, w, plan, record.fields); err != nil {
+				return err
+			}
+			searchRevision := plan.current.Revision
+			if plan.comment.ID != "" {
+				searchRevision = plan.commentRow.Revision
+			}
+			if err := w.PutSearch(ctx, record.search, searchRevision); err != nil {
+				return err
+			}
+			if _, err := w.CreateCollaborationVersion(ctx, record.version); err != nil {
+				return err
+			}
+			if _, err := w.AppendEvent(ctx, record.event); err != nil {
+				return err
+			}
+			item := plan.issue.WorkItemID
+			if plan.comment.ID != "" {
+				item = plan.comment.WorkItemID
+			}
+			for _, id := range record.attachments {
+				if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.project, AttachmentID: id, WorkItemID: item, CommentID: plan.comment.ID}); err != nil {
+					return err
+				}
+			}
+		}
+		if err := s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK); err != nil {
+			return err
+		}
+		_, err = w.PutReceipt(ctx, receipt)
+		return err
+	})
+	err = errors.Join(err, releaseWorkItemAuthority(authority))
+	if err != nil {
+		return nil, projectRecordError(err)
+	}
+	if previous != nil {
+		return s.readCoordinatorSplitReceipt(ctx, scope, *previous, split.ParentID)
+	}
+	s.signalNativeDispatch(scope)
+	return raw, nil
 }

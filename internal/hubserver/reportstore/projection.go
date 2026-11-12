@@ -20,6 +20,7 @@ type EventProjection struct {
 	ProcessRunnerID         string
 	ProcessMachineID        string
 	DurationSeconds         float64
+	PhaseTimingStatus       string
 	RunSequence             int64
 	RunStatus               string
 	Role                    string
@@ -45,6 +46,7 @@ func ProjectEvent(event tracker.CollaborationEvent) *EventProjection {
 		out.ReworkClass, out.ReworkKind = class.Name, class.Kind
 	}
 	if run := event.Data.Run; run != nil {
+		out.PhaseTimingStatus = "partial"
 		out.RunSequence, out.RunStatus = run.Sequence, "running"
 		if event.Type == "run.finished" {
 			out.ProcessEvidenceStatus = "unavailable"
@@ -61,7 +63,13 @@ func ProjectEvent(event tracker.CollaborationEvent) *EventProjection {
 			out.RunStatus = run.Outcome
 		}
 		if runtime := run.Runtime; runtime != nil {
+			if len(runtime.Phases) > 0 && runtime.PhasesDropped == 0 {
+				out.PhaseTimingStatus = "complete"
+			}
 			for _, phase := range runtime.Phases {
+				if phase.StartedAt.IsZero() || phase.FinishedAt.IsZero() || phase.FinishedAt.Before(phase.StartedAt) {
+					out.PhaseTimingStatus = "partial"
+				}
 				if !phase.FinishedAt.IsZero() {
 					out.DurationSeconds += max(0, phase.FinishedAt.Sub(phase.StartedAt).Seconds())
 				}

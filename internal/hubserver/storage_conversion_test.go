@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -11,7 +10,6 @@ import (
 )
 
 func TestStorageConversionHistoricalJSONScope(t *testing.T) {
-	service := &Service{}
 	scope := nativeScope{organization: "org_example", project: "prj_example"}
 	raw := []byte(`{"output":"` + strings.Repeat("old snapshot", 2048) + `","runtime":{"landing":{"waiting":true}},"usage":{"output":42}}`)
 	ctx := context.WithValue(t.Context(), changeContentKey{}, &changeContent{
@@ -20,7 +18,15 @@ func TestStorageConversionHistoricalJSONScope(t *testing.T) {
 			return ref.Validate(organization)
 		},
 	})
-	converted, _, err := service.prepareStorageConversion(ctx, scope, storageConversionFamilies[1], 1, raw)
+	payload, err := json.Marshal(storageJSONPayload{Organization: string(scope.organization), Project: string(scope.project), Family: "attempts", Row: 1, Data: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := prepareChangeContent(ctx, string(scope.organization), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted, err := compactStorageJSON(raw, storageJSONReference{Organization: string(scope.organization), Project: string(scope.project), Family: "attempts", Row: 1, Reference: archive})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,13 +80,4 @@ func TestStorageConversionHistoricalJSONScope(t *testing.T) {
 	if _, err := resolveStorageJSON(ctx, tampered); err == nil {
 		t.Fatal("accepted content from another project")
 	}
-}
-
-func storageSchemaVersion(t *testing.T, db *sql.DB) int {
-	t.Helper()
-	var version int
-	if err := db.QueryRowContext(t.Context(), "PRAGMA schema_version").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	return version
 }

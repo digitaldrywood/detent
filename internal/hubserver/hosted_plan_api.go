@@ -155,11 +155,11 @@ func (d *database) readHostedGrantAudits(ctx context.Context, after int64, limit
 	var hasMore bool
 	err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
 		var err error
-		audits, err = reader.BillingPlanAudits(ctx, after, limit)
+		audits, err = reader.BillingPlanGrantAudits(ctx, after, limit)
 		if err != nil || len(audits) < limit {
 			return err
 		}
-		following, err := reader.BillingPlanAudits(ctx, audits[len(audits)-1].ID, 1)
+		following, err := reader.BillingPlanGrantAudits(ctx, audits[len(audits)-1].ID, 1)
 		hasMore = len(following) > 0
 		return err
 	})
@@ -285,6 +285,9 @@ func (d *database) applyHostedPlanCommandRecord(ctx context.Context, actor strin
 				price = &value
 			}
 			if err := writer.CreateBillingPlan(ctx, billingstore.Plan{OrganizationID: d.hostedOrganization, PlanReference: billingstore.PlanReference{ID: plan.ID, Version: plan.Version}, Name: plan.Name, MonthlyUSDCents: price, Allowances: plan.Allowances, Features: plan.Features}); err != nil {
+				if errors.Is(err, corestore.ErrUniqueViolation) {
+					return nativeConflict(tracker.Revision(assignment.Revision))
+				}
 				return err
 			}
 			assignment.Revision++

@@ -27,6 +27,7 @@ func (s *Service) sharedAccessSession(ctx context.Context, c echo.Context, claim
 	}
 	var row accessstore.Session
 	missingSession := false
+	revokedMember := false
 	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		tenant, err := r.AccessTenant(ctx)
 		if err != nil {
@@ -53,8 +54,19 @@ func (s *Service) sharedAccessSession(ctx context.Context, c echo.Context, claim
 				return err
 			}
 			row, err = w.AccessSession(ctx, claims.Binding)
+			if !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			member, memberErr := w.AccessMember(ctx, identity.Subject)
+			if memberErr != nil && !errors.Is(memberErr, corestore.ErrNotFound) && !errors.Is(memberErr, accessstore.ErrDenied) {
+				return memberErr
+			}
+			revokedMember = memberErr == nil && !member.Active
 			return err
 		})
+	}
+	if err != nil && revokedMember {
+		return auth.Session{}, "", errors.Join(auth.ErrInvalidSession, auth.ErrHostedIdentity)
 	}
 	if err != nil {
 		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {

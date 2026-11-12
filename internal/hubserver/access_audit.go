@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -16,8 +17,59 @@ import (
 )
 
 func (s *Service) recordAccessAudit(ctx context.Context, identity *auth.HostedIdentity, event, route, project string, status int) error {
+	row, err := s.prepareAccessAudit(ctx, identity, event, route, project, status)
+	if err != nil || row == nil {
+		return err
+	}
+	return s.accessWrite(ctx, row.OrganizationID, func(w tenantstore.Writer) error { _, err := w.RecordAccessAudit(ctx, *row); return err })
+}
+
+func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope nativeScope, options nativeCommandOptions) (*accessstore.Audit, error) {
+	identity := scope.credential.Hosted
 	if identity == nil {
-		return nil
+		return nil, nil
+	}
+	actor := scope.actor()
+	metadata, ok := mutation.FromContext(ctx)
+	switch {
+	case ok:
+		metadata.ActorKind, metadata.PrincipalID, metadata.ViaKey = actor.Kind, actor.PrincipalID, actor.ViaKey
+	case actor.ViaKey != "":
+		metadata = mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.organization), ProjectID: string(scope.project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: newNativeID("api")}
+	default:
+		return nil, nil
+	}
+	route := metadata.Action
+	switch metadata.Source {
+	case "mcp":
+		route = "mcp " + route
+	case "api":
+	default:
+		return nil, nil
+	}
+	return s.prepareAccessAudit(mutation.WithContext(ctx, metadata), identity, "action", route, string(scope.project), http.StatusOK)
+}
+
+func (s *Service) prepareAccessAudit(ctx context.Context, identity *auth.HostedIdentity, event, route, project string, status int) (*accessstore.Audit, error) {
+	if identity == nil {
+		return nil, nil
+	}
+	if _, ok := mutation.FromContext(ctx); !ok && status < http.StatusBadRequest {
+		switch event {
+		case "billing_viewed", "billing_exported":
+			if identity.SupportActor == "" {
+				return nil, nil
+			}
+		case "action", "administration":
+			method, _, _ := strings.Cut(route, " ")
+			switch method {
+			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			default:
+				if identity.SupportActor == "" {
+					return nil, nil
+				}
+			}
+		}
 	}
 	actor := identity.Subject
 	if identity.SupportActor != "" {
@@ -37,29 +89,29 @@ func (s *Service) recordAccessAudit(ctx context.Context, identity *auth.HostedId
 			Outcome string `json:"outcome"`
 		}{m, event})
 		if err != nil {
-			return err
+			return nil, err
 		}
 		store := s.runDetailStore()
 		if store == nil {
-			return artifact.ErrStorage
+			return nil, artifact.ErrStorage
 		}
 		ref, err := store.StoreDetail(ctx, string(row.OrganizationID), raw)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if ref.Validate(string(row.OrganizationID)) != nil || ref.BindingID != "" || ref.CustomerOwned || ref.SchemaVersion != 1 || ref.UncompressedSize != int64(len(raw)) {
-			return artifact.ErrIntegrity
+			return nil, artifact.ErrIntegrity
 		}
 		verified, err := store.ReadDetail(ctx, string(row.OrganizationID), ref)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !bytes.Equal(verified, raw) {
-			return artifact.ErrIntegrity
+			return nil, artifact.ErrIntegrity
 		}
 		row.Mutation = &ref
 	}
-	return s.accessWrite(ctx, row.OrganizationID, func(w tenantstore.Writer) error { _, err := w.RecordAccessAudit(ctx, row); return err })
+	return &row, nil
 }
 
 func (s *Service) logoutAccessSession(ctx context.Context, hash string, identity *auth.HostedIdentity) (operatortool.SignOutResult, error) {

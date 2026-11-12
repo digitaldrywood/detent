@@ -148,6 +148,11 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 			messages[message.ID], providers[strings.TrimSpace(event.ProviderItemID)] = message, message.ID
 			plan.rememberMessage(message)
 		case "item", "question_opened":
+			if event.Type == "question_opened" {
+				if err := plan.prepareQuestion(ctx, conversationQuestionRecord{Question: conversation.Question{Prompts: event.Prompts}}); err != nil {
+					return nil, err
+				}
+			}
 			message := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageKind(event.Kind), Text: conversationTruncate(event.Summary, conversationMaxSummaryBytes), Delivery: conversation.DeliveryCompleted, ProviderItemID: strings.TrimSpace(event.ProviderItemID), AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, TurnID: execution.Owner.TurnID, Actor: conversationActorFor(scope), CreatedAt: plan.now.Truncate(time.Microsecond), UpdatedAt: plan.now}
 			if event.Type == "item" {
 				var err error

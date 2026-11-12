@@ -38,24 +38,19 @@ func (s *Service) runningRelease() (releasenotes.Build, bool) {
 }
 
 func (s *Service) releaseSeenTime(ctx context.Context, credential apiCredential) (time.Time, error) {
-	if repository, ok := s.config.AccessRepository.(accountstore.Repository); ok && credential.Hosted != nil {
-		preference, err := repository.ReleasePreference(ctx, s.accessOrganization(), credential.Hosted.Subject, credential.HostedMembership, credential.ID)
-		if errors.Is(err, sql.ErrNoRows) {
-			build, ok := s.runningRelease()
-			if !ok {
-				return time.Time{}, nil
-			}
-			return build.BuildTime, nil
-		}
-		if err != nil {
-			return time.Time{}, err
-		}
-		return preference.BuildTime, nil
+	repository, ok := s.config.AccessRepository.(accountstore.Repository)
+	if !ok {
+		return time.Time{}, errors.New("account repository unavailable")
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	var value string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT build_time FROM hosted_release_preferences WHERE organization_id=? AND user_id=?`, s.appOrganizationID(), appSubject(credential)).Scan(&value)
+	var preference accountstore.ReleasePreference
+	var err error
+	if credential.Hosted != nil {
+		preference, err = repository.ReleasePreference(ctx, s.accessOrganization(), credential.Hosted.Subject, credential.HostedMembership, credential.ID)
+	} else {
+		preference, err = repository.LocalReleasePreference(ctx, s.accessOrganization(), credential.ID, credential.Hash, s.config.now())
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		build, ok := s.runningRelease()
 		if !ok {
@@ -66,11 +61,7 @@ func (s *Service) releaseSeenTime(ctx context.Context, credential apiCredential)
 	if err != nil {
 		return time.Time{}, err
 	}
-	seen, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return time.Time{}, errors.New("invalid release preference time")
-	}
-	return seen, nil
+	return preference.BuildTime, nil
 }
 
 func (s *Service) releasesUnread(seen time.Time) bool {
@@ -140,10 +131,15 @@ func (s *Service) releaseNotesAPI(c echo.Context) error {
 		if !ok {
 			return s.nativeAPIError(c, nativePublicInvalid("The running release is unavailable"))
 		}
-		if repository, ok := s.config.AccessRepository.(accountstore.Repository); ok && credential.Hosted != nil {
-			err = repository.SetReleasePreference(ctx, s.accessOrganization(), credential.Hosted.Subject, credential.HostedMembership, credential.ID, accountstore.ReleasePreference{Version: build.Version, BuildTime: build.BuildTime.UTC()})
+		repository, ok := s.config.AccessRepository.(accountstore.Repository)
+		if !ok {
+			return s.nativeAPIError(c, errors.New("account repository unavailable"))
+		}
+		preference := accountstore.ReleasePreference{Version: build.Version, BuildTime: build.BuildTime.UTC()}
+		if credential.Hosted != nil {
+			err = repository.SetReleasePreference(ctx, s.accessOrganization(), credential.Hosted.Subject, credential.HostedMembership, credential.ID, preference)
 		} else {
-			_, err = s.database.db.ExecContext(ctx, `INSERT INTO hosted_release_preferences (organization_id,user_id,version,build_time) VALUES (?,?,?,?) ON CONFLICT (organization_id,user_id) DO UPDATE SET version=excluded.version,build_time=excluded.build_time WHERE excluded.build_time>=hosted_release_preferences.build_time`, s.appOrganizationID(), appSubject(credential), build.Version, build.BuildTime.UTC().Format("2006-01-02T15:04:05.000000000Z"))
+			err = repository.SetLocalReleasePreference(ctx, s.accessOrganization(), credential.ID, credential.Hash, s.config.now(), preference)
 		}
 		if err != nil {
 			return s.nativeAPIError(c, err)

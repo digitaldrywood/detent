@@ -2,11 +2,9 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -65,54 +63,5 @@ func (s *Service) verifyNativeIssueCommand(ctx context.Context, scope nativeScop
 		return nil, nativePublicInvalid("Expected revision must be positive")
 	}
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/verification"), Item: item, Feature: "collaboration"}
-	if s.config.TenantRepository != nil {
-		return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
-	}
-	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		issue, _, err := readNativeIssue(ctx, tx, scope, item)
-		if err != nil {
-			return nil, err
-		}
-		if issue.Profile != "native" {
-			return nil, nativePublicInvalid("Compatibility project content is externally owned")
-		}
-		if !nativeVerificationAnswerer(scope, issue) {
-			return nil, operatortool.ErrAccessDenied
-		}
-		if request.ExpectedRevision > 0 && request.ExpectedRevision != issue.Revision {
-			return nil, nativeConflict(issue.Revision)
-		}
-		if !nativeDoneState(issue.State) || issue.Verification == nil || issue.Verification.State != tracker.VerificationPending {
-			return nil, nativeVerificationInvalid("Issue is not awaiting verification")
-		}
-		if request.Result == tracker.VerifyResultVerified {
-			if strings.TrimSpace(request.Comment) != "" {
-				if _, err := insertNativeComment(ctx, tx, scope, issue, request.Comment, nil, now); err != nil {
-					return nil, err
-				}
-			}
-			actor := scope.actor()
-			verifiedAt := payloadTimestamp(ctx, now)
-			issue.Verification = &tracker.NativeVerification{State: tracker.VerificationVerified, VerifiedBy: &actor, VerifiedAt: &verifiedAt}
-			return persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: []string{"verification"}, Verification: tracker.VerificationVerified}, now)
-		}
-		project, err := readNativeProject(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateNativeWorkflowTransition(project.States, issue.State, nativeVerificationReopenState, scope.credential.Scope); err != nil {
-			return nil, err
-		}
-		if _, err := insertNativeComment(ctx, tx, scope, issue, request.Comment, nil, now); err != nil {
-			return nil, err
-		}
-		from := issue.State
-		issue.State = nativeVerificationReopenState
-		issue.Archived = false
-		return persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State, Reason: "user_requested", ReasonDetail: "Filer verification: not fixed"}, now)
-	})
-	if err == nil && request.Result == tracker.VerifyResultNotFixed {
-		s.wakeSpriteRunnersAfter(scope, result)
-	}
-	return result, err
+	return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
 }

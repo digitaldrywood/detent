@@ -1,154 +1,329 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestHealthDetectorActorMigration(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
-		name, kind, principal, state string
+		name, kind, principal, state, wantKind, editorKind, editorPrincipal, wantEditorKind string
 	}{
-		{"active health finding", "system", "health_detector", "Todo"},
-		{"terminal health finding", "system", "health_detector", "Done"},
-		{"human unchanged", "human", "health_detector", "Todo"},
-		{"runner unchanged", "runner", "health_detector", "Todo"},
-		{"integration unchanged", "integration", "health_detector", "Todo"},
-		{"other principal unchanged", "system", "another-system", "Todo"},
+		{"active health finding", "system", "health_detector", "Todo", "integration", "system", "health_detector", "integration"},
+		{"terminal health finding", "system", "health_detector", "Done", "integration", "system", "health_detector", "integration"},
+		{"human unchanged", "human", "health_detector", "Todo", "human", "human", "health_detector", "human"},
+		{"runner unchanged", "runner", "health_detector", "Todo", "runner", "runner", "health_detector", "runner"},
+		{"integration unchanged", "integration", "health_detector", "Todo", "integration", "integration", "health_detector", "integration"},
+		{"other principal unchanged", "system", "another-system", "Todo", "system", "system", "another-system", "system"},
+		{"human editor unchanged", "system", "health_detector", "Todo", "integration", "human", "example-editor", "human"},
+		{"health editor only", "human", "example-author", "Todo", "human", "system", "health_detector", "integration"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f := newDefaultNativeFixture(t, Config{})
-			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-				t.Fatal(err)
+			objects := &memoryRunDetails{}
+			first := newDefaultNativeFixture(t, Config{RunDetails: objects})
+			service := first.service
+			repository := service.database.postgres
+			adminValue, found := projectRecordDatabases.Load(repository)
+			if !found {
+				t.Fatal("PostgreSQL fixture admin unavailable")
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID,
-				sourceActor: &tracker.Actor{Kind: test.kind, PrincipalID: test.principal}}
-			now := f.service.config.now()
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: test.name, Body: "Retained evidence" + issueContractTestSections, State: test.state}, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			comment, err := insertNativeComment(t.Context(), tx, scope, issue, "Retained occurrence", nil, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			comment.EditedBy = scope.sourceActor
-			comment.Revision++
-			editor, err := marshalNative(comment.EditedBy)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.ExecContext(t.Context(), "UPDATE native_comments SET edited_by_json=?, revision=? WHERE id=?", editor, comment.Revision, comment.ID); err != nil {
-				t.Fatal(err)
-			}
-			if err := recordNativeChange(t.Context(), tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, now); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			before := readWorkItem(t, f, issue.WorkItemID, "")
-			comment, err = readNativeComment(t.Context(), f.service.database.db, scope, string(issue.WorkItemID), comment.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/history"
-			var history tracker.Page[tracker.CollaborationEvent]
-			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil), &history)
-			readVersions := func() []map[string]any {
+			admin := adminValue.(*sql.DB)
+			actor := tracker.Actor{Kind: test.kind, PrincipalID: test.principal, DisplayName: "Example actor", Agent: "example-agent", ViaKey: "example-source-key"}
+			editor := tracker.Actor{Kind: test.editorKind, PrincipalID: test.editorPrincipal, DisplayName: "Example editor", Agent: "example-editor-agent", ViaKey: "example-editor-key"}
+			wantActor, wantEditor := actor, editor
+			wantActor.Kind, wantEditor.Kind = test.wantKind, test.wantEditorKind
+			marshal := func(value any) []byte {
 				t.Helper()
-				rows, err := f.service.database.db.QueryContext(t.Context(), "SELECT record_json FROM collaboration_versions WHERE work_item_id=? ORDER BY record_id,revision", issue.WorkItemID)
+				raw, err := json.Marshal(value)
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer rows.Close()
-				var records []map[string]any
-				for rows.Next() {
-					var raw string
-					if err := rows.Scan(&raw); err != nil {
-						t.Fatal(err)
-					}
-					var record map[string]any
-					if err := json.Unmarshal([]byte(raw), &record); err != nil {
-						t.Fatal(err)
-					}
-					records = append(records, record)
+				return raw
+			}
+			for _, organization := range []tracker.OrganizationID{first.project.OrganizationID, first.project.OrganizationID + "_second"} {
+				f := first
+				if organization != first.project.OrganizationID {
+					f = newNativeFixture(t, service, organization, "Example second project")
 				}
-				if err := rows.Err(); err != nil {
+				fixture := coreWorkItemNeutralFixture(t, organization, f.project.ID, false)
+				fixture.records["native_comments"], fixture.records["collaboration_versions"], fixture.records["collaboration_events"] = nil, nil, nil
+				fixture.set("workflow_states", map[string]string{"id": "1"}, map[string]any{"detent_state": test.state})
+				fixture.set("queue_entries", nil, map[string]any{"state": test.state})
+				expectedVersions := make(map[string]map[string]any)
+				expectedHistory := make(map[tracker.NativeWorkItemID][]tracker.CollaborationEvent)
+				expectedEventPayloads := make(map[string]map[string]any)
+				for index, suffix := range []string{"", "_second"} {
+					item := tracker.NativeWorkItemID("wi_core_import" + suffix)
+					created, updated := parseTestTime(t, "2026-10-01T00:00:00Z"), parseTestTime(t, "2026-10-02T00:00:00Z")
+					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: f.project.ID, WorkItemID: item, Number: 1 + index*2, Revision: 1, Profile: "native"}, Title: "Retained evidence", Body: coreImportBody(), State: test.state, Labels: []string{"needs-review"}, Assignees: []string{"example-assignee"}, Actor: actor, CreatedAt: created, UpdatedAt: updated, LastActivityAt: updated}
+					fixture.set("issues", map[string]string{"native_id": string(item)}, map[string]any{"title": issue.Title, "revision": 1, "event_sequence": 3, "actor_json": string(marshal(actor))})
+					comment := tracker.NativeComment{ID: "comment_core_import" + suffix, OrganizationID: organization, ProjectID: f.project.ID, WorkItemID: item, Revision: 1, Sequence: 1, Body: "Retained occurrence", Actor: actor, CreatedAt: created, UpdatedAt: created}
+					edited := comment
+					edited.Revision, edited.EditedBy, edited.UpdatedAt = 2, &editor, updated
+					fixture.add("native_comments", map[string]any{"id": edited.ID, "revision": 2, "sequence": 1, "body": edited.Body, "actor_json": string(marshal(actor)), "edited_by_json": string(marshal(editor)), "provenance_json": nil, "source_key": nil, "deleted": 0, "created_at": created.Format(time.RFC3339Nano), "updated_at": updated.Format(time.RFC3339Nano), "organization_id": organization, "project_id": f.project.ID, "work_item_id": item})
+					var previous []byte
+					for _, version := range []struct {
+						id       string
+						revision int
+						value    any
+					}{{string(item), 1, issue}, {comment.ID, 1, comment}, {comment.ID, 2, edited}} {
+						var fields map[string]any
+						if err := json.Unmarshal(marshal(version.value), &fields); err != nil {
+							t.Fatal(err)
+						}
+						fields["retained_extension"] = map[string]any{"value": "source evidence", "actor": map[string]any{"kind": "system", "principal_id": "health_detector"}}
+						raw := marshal(fields)
+						encoded, encoding := raw, "snapshot"
+						if version.revision == 2 {
+							var err error
+							encoded, encoding, err = encodeNativeVersion(previous, "snapshot", raw, 2)
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+						fixture.add("collaboration_versions", map[string]any{"organization_id": organization, "project_id": f.project.ID, "work_item_id": item, "record_id": version.id, "revision": version.revision, "encoding": encoding, "record_json": string(encoded)})
+						if version.id == comment.ID {
+							previous = raw
+						}
+						fields["actor"] = wantActor
+						if version.revision == 2 {
+							fields["edited_by"] = wantEditor
+						}
+						var expected map[string]any
+						if err := json.Unmarshal(marshal(fields), &expected); err != nil {
+							t.Fatal(err)
+						}
+						expectedVersions[fmt.Sprintf("%s/%d", version.id, version.revision)] = expected
+					}
+					for i, eventType := range []string{"issue.created", "comment.created", "comment.edited"} {
+						revision, eventActor, wantEventActor := tracker.Revision(1), actor, wantActor
+						data := tracker.CollaborationData{Revision: revision}
+						if i > 0 {
+							data.CommentID = comment.ID
+						}
+						if i == 2 {
+							data.Revision, eventActor, wantEventActor = 2, editor, wantEditor
+						}
+						id := fmt.Sprintf("event_health_%d%s", i+1, suffix)
+						at := created
+						if i == 2 {
+							at = updated
+						}
+						var sourceActor map[string]any
+						if err := json.Unmarshal(marshal(eventActor), &sourceActor); err != nil {
+							t.Fatal(err)
+						}
+						sourceActor["retained_event_extension"] = map[string]any{"value": "historical event evidence", "actor": map[string]any{"kind": "system", "principal_id": "health_detector"}}
+						fixture.add("collaboration_events", map[string]any{"id": id, "sequence": i + 1, "type": eventType, "schema_version": 1, "actor_json": string(marshal(sourceActor)), "data_json": string(marshal(data)), "event_revision": int(data.Revision), "recorded_at": at.Format(time.RFC3339Nano), "organization_id": organization, "project_id": f.project.ID, "work_item_id": item})
+						expectedEvent := tracker.CollaborationEvent{ID: id, OrganizationID: organization, ProjectID: f.project.ID, AggregateType: "work_item", AggregateID: item, AggregateSequence: int64(i + 1), Type: eventType, SchemaVersion: 1, RecordedAt: at, Actor: wantEventActor, Data: data}
+						expectedHistory[item] = append(expectedHistory[item], expectedEvent)
+						var expectedPayload map[string]any
+						if err := json.Unmarshal(marshal(expectedEvent), &expectedPayload); err != nil {
+							t.Fatal(err)
+						}
+						var expectedActor map[string]any
+						if err := json.Unmarshal(marshal(wantEventActor), &expectedActor); err != nil {
+							t.Fatal(err)
+						}
+						expectedActor["retained_event_extension"] = map[string]any{"value": "historical event evidence", "actor": map[string]any{"kind": "system", "principal_id": "health_detector"}}
+						expectedPayload["actor"] = expectedActor
+						expectedEventPayloads[id] = expectedPayload
+					}
+				}
+				source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: organization, ProjectID: f.project.ID, Objects: objects}
+				sourceBytes := func() map[string][]byte {
+					t.Helper()
+					entries, err := os.ReadDir(source.BundlePath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					values := make(map[string][]byte, len(entries))
+					for _, entry := range entries {
+						if entry.IsDir() {
+							t.Fatal("unexpected source subdirectory")
+						}
+						raw, err := os.ReadFile(filepath.Join(source.BundlePath, entry.Name()))
+						if err != nil {
+							t.Fatal(err)
+						}
+						values[entry.Name()] = raw
+					}
+					return values
+				}
+				before := sourceBytes()
+				parent := t
+				for _, step := range []string{"repair", "restart"} {
+					t.Run(string(organization)+"/"+step, func(t *testing.T) {
+						if step == "restart" {
+							previous := service
+							if err := previous.Close(); err != nil {
+								t.Fatal(err)
+							}
+							service = reopenNativeAttemptService(parent, previous)
+							repository = service.database.postgres
+							first.service, f.service = service, service
+						}
+						count, err := ImportCoreWorkItems(t.Context(), repository, source)
+						if err != nil || count != 2 {
+							t.Fatalf("import count=%d error=%v", count, err)
+						}
+						if after := sourceBytes(); !reflect.DeepEqual(before, after) {
+							t.Fatal("source bundle changed")
+						}
+						if err := repository.ReadRecords(t.Context(), organization, corestore.Serving, func(r eventstore.Reader) error {
+							for _, suffix := range []string{"", "_second"} {
+								item := tracker.NativeWorkItemID("wi_core_import" + suffix)
+								events, err := r.Events(t.Context(), f.project.ID, item, 0, 10)
+								if err != nil {
+									return err
+								}
+								var history []tracker.CollaborationEvent
+								for _, event := range events {
+									value, err := eventstore.NewContent(objects).Event(t.Context(), event)
+									if err != nil {
+										return err
+									}
+									raw, err := objects.ReadDetail(t.Context(), string(organization), eventstore.Reference(event.PayloadObjectKey, event.PayloadSHA256, event.PayloadBytes, event.PayloadContentBytes))
+									if err != nil {
+										return err
+									}
+									var payload map[string]any
+									if err := json.Unmarshal(raw, &payload); err != nil {
+										return err
+									}
+									if want := expectedEventPayloads[event.ID]; !reflect.DeepEqual(payload, want) {
+										t.Fatalf("event payload changed beyond top-level actor kind: got=%+v want=%+v", payload, want)
+									}
+									history = append(history, value)
+								}
+								if !reflect.DeepEqual(expectedHistory[item], history) {
+									t.Fatalf("history changed beyond actor kind: got=%+v want=%+v", history, expectedHistory[item])
+								}
+								versions := []struct {
+									record   string
+									revision int64
+								}{{string(item), 1}, {"comment_core_import" + suffix, 1}, {"comment_core_import" + suffix, 2}}
+								for _, key := range versions {
+									row, err := r.CollaborationVersion(t.Context(), key.record, key.revision)
+									if err != nil {
+										return err
+									}
+									raw, err := eventstore.NewContent(objects).CollaborationVersion(t.Context(), row)
+									if err != nil {
+										return err
+									}
+									var got map[string]any
+									if err := json.Unmarshal(raw, &got); err != nil {
+										return err
+									}
+									if want := expectedVersions[fmt.Sprintf("%s/%d", key.record, key.revision)]; !reflect.DeepEqual(got, want) {
+										t.Fatalf("saved revision changed beyond actor kind: got=%+v want=%+v", got, want)
+									}
+								}
+
+							}
+							return nil
+						}); err != nil {
+							t.Fatal(err)
+						}
+						for _, suffix := range []string{"", "_second"} {
+							item := tracker.NativeWorkItemID("wi_core_import" + suffix)
+							var comments tracker.Page[tracker.NativeComment]
+							response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items/"+string(item)+"/comments", f.token, nil)
+							requireNativeStatus(t, response, http.StatusOK)
+							decodeHubResponse(t, response, &comments)
+							if len(comments.Items) != 1 || comments.Items[0].Actor != wantActor || comments.Items[0].EditedBy == nil || *comments.Items[0].EditedBy != wantEditor || comments.Items[0].Revision != 2 || comments.Items[0].Body != "Retained occurrence" {
+								t.Fatalf("comment actor/editor intent lost: %+v", comments)
+							}
+						}
+						var refreshed []tracker.NativeWorkItemID
+						for cursor := tracker.NativeWorkItemID(""); ; {
+							next, processed, err := service.maintainBoardRecord(t.Context(), organization, cursor, refreshed...)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if !processed {
+								break
+							}
+							cursor, refreshed = next, append(refreshed, next)
+						}
+						var page tracker.NativeIssuePage
+						response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items?archived=all", f.token, nil)
+						requireNativeStatus(t, response, http.StatusOK)
+						decodeHubResponse(t, response, &page)
+						for _, item := range []tracker.NativeWorkItemID{"wi_core_import", "wi_core_import_second"} {
+							if !slices.ContainsFunc(page.Items, func(value tracker.NativeIssue) bool {
+								return value.WorkItemID == item && value.Actor == wantActor && value.State == test.state
+							}) {
+								t.Fatal("repaired actor missing from Work list")
+							}
+						}
+					})
+				}
+				config := postgresStartupTemplate.NativeConfig(t, admin, service.config.Postgres.Connection.User, service.config.Postgres.Connection.Password)
+				connection, err := pgx.ConnectConfig(t.Context(), config.ConnConfig)
+				if err != nil {
 					t.Fatal(err)
 				}
-				return records
-			}
-			versions := readVersions()
-			if len(versions) != 3 || len(history.Items) != 3 {
-				t.Fatalf("versions/history = %d/%d, want 3/3", len(versions), len(history.Items))
-			}
-			wantActor := *scope.sourceActor
-			if test.kind == "system" && test.principal == "health_detector" {
-				wantActor.Kind = "integration"
-			}
-			before.Actor, comment.Actor, comment.EditedBy = wantActor, wantActor, &wantActor
-			for i := range history.Items {
-				history.Items[i].Actor = wantActor
-			}
-			for _, record := range versions {
-				for _, key := range []string{"actor", "edited_by"} {
-					if actor, ok := record[key].(map[string]any); ok {
-						actor["kind"] = wantActor.Kind
-					}
-				}
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE native_id=?", issue.WorkItemID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=20261006192328"); err != nil {
-				t.Fatal(err)
-			}
-			for _, step := range []string{"repair", "restart"} {
-				t.Run(step, func(t *testing.T) {
-					if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
-						t.Fatal(err)
-					}
-					after := readWorkItem(t, f, issue.WorkItemID, "")
-					if !reflect.DeepEqual(before, after) {
-						t.Fatalf("issue changed beyond actor kind: before=%+v after=%+v", before, after)
-					}
-					gotComment, err := readNativeComment(t.Context(), f.service.database.db, scope, string(issue.WorkItemID), comment.ID)
-					if err != nil || !reflect.DeepEqual(comment, gotComment) {
-						t.Fatalf("comment changed beyond actor kind: got=%+v want=%+v error=%v", gotComment, comment, err)
-					}
-					var gotHistory tracker.Page[tracker.CollaborationEvent]
-					decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil), &gotHistory)
-					if !reflect.DeepEqual(history, gotHistory) || !reflect.DeepEqual(versions, readVersions()) {
-						t.Fatal("migration changed history or saved revisions beyond actor kind")
+				t.Cleanup(func() {
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+					defer cancel()
+					if err := connection.Close(cleanup); err != nil {
+						t.Error(err)
 					}
 				})
-			}
-			for _, table := range []string{"collaboration_events", "collaboration_versions"} {
-				for _, statement := range []string{"UPDATE " + table + " SET work_item_id=work_item_id WHERE work_item_id=?", "DELETE FROM " + table + " WHERE work_item_id=?"} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), statement, issue.WorkItemID); err == nil {
-						t.Fatalf("history immutability lost: %s", statement)
+				for _, table := range []string{"collaboration_events", "collaboration_versions"} {
+					for _, statement := range []string{"UPDATE " + table + " SET work_item_id=work_item_id WHERE organization_id=$1 AND project_id=$2", "DELETE FROM " + table + " WHERE organization_id=$1 AND project_id=$2"} {
+						tx, err := connection.Begin(t.Context())
+						if err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() {
+							cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+							defer cancel()
+							if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+								t.Error(err)
+							}
+						})
+						if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, true)", string(organization)); err != nil {
+							t.Fatal(err)
+						}
+						_, writeErr := tx.Exec(t.Context(), statement, organization, f.project.ID)
+						var failure *pgconn.PgError
+						if !errors.As(writeErr, &failure) || failure.Code != "23514" {
+							t.Fatalf("history immutability lost: %s: %v", statement, writeErr)
+						}
+						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+						rollbackErr := tx.Rollback(cleanup)
+						cancel()
+						if rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+							t.Fatal(rollbackErr)
+						}
 					}
 				}
-			}
-			var page tracker.NativeIssuePage
-			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?archived=all", f.token, nil), &page)
-			if !slices.ContainsFunc(page.Items, func(item tracker.NativeIssue) bool {
-				return item.WorkItemID == issue.WorkItemID && item.Actor == wantActor
-			}) {
-				t.Fatal("repaired actor missing from Work list")
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+				closeErr := connection.Close(cleanup)
+				cancel()
+				if closeErr != nil {
+					t.Fatal(closeErr)
+				}
 			}
 		})
 	}

@@ -16,40 +16,43 @@ import (
 const advanceLeaseAttempt = `-- name: AdvanceLeaseAttempt :one
 UPDATE native_attempts SET sequence=$1,
 local_attempt_id=CASE WHEN local_attempt_id_recorded THEN COALESCE(local_attempt_id,NULLIF($2::bigint,0)) ELSE local_attempt_id END,
-runtime_heartbeat_at=$3,runtime_summary_sequence=$1,
-cleanup_acknowledged_at=CASE WHEN $4::boolean THEN $5 ELSE cleanup_acknowledged_at END,
-status=CASE WHEN $6::boolean THEN status ELSE $7 END,
-payload_object_key=$8,
-checkpoint_object_key=COALESCE($9,checkpoint_object_key),
-artifacts_object_key=COALESCE($10,artifacts_object_key),
-updated_at=CASE WHEN $6::boolean THEN updated_at ELSE $5 END
-WHERE organization_id=$11 AND id=$12 AND lease_id=$13
-AND fencing_token=$14::bigint AND run_id=$15
+runtime_heartbeat_at=$3,runtime_summary_sequence=$1,worker_cleanup_required=$4::boolean,
+cleanup_acknowledged_at=CASE WHEN $5::boolean THEN $6 ELSE cleanup_acknowledged_at END,
+status=CASE WHEN $7::boolean THEN status ELSE $8 END,
+payload_object_key=$9,
+checkpoint_object_key=COALESCE($10,checkpoint_object_key),
+checkpoint_preserves_source=CASE WHEN $10::text IS NOT NULL THEN $11::boolean ELSE checkpoint_preserves_source END,
+artifacts_object_key=COALESCE($12,artifacts_object_key),
+updated_at=CASE WHEN $7::boolean THEN updated_at ELSE $6 END
+WHERE organization_id=$13 AND id=$14 AND lease_id=$15
+AND fencing_token=$16::bigint AND run_id=$17
 AND ($2::bigint=0 OR local_attempt_id IS NULL OR local_attempt_id=$2)
-AND dispatch_generation=$16 AND sequence=$1-1
-AND (status='running' OR status='interrupted' AND $7='running' OR $6::boolean AND status=$7 OR $4::boolean AND status IN ('interrupted','cancelled') AND $7='cancelled')
-AND (NOT $17::boolean OR CASE WHEN $6::boolean THEN status ELSE $7 END NOT IN ('running','interrupted') OR runtime_heartbeat_at IS NULL OR $3>=runtime_heartbeat_at)
-RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded
+AND dispatch_generation=$18 AND sequence=$1-1
+AND (status='running' OR status='interrupted' AND $8='running' OR $7::boolean AND status=$8 OR $5::boolean AND status IN ('interrupted','cancelled') AND $8='cancelled')
+AND (NOT $19::boolean OR CASE WHEN $7::boolean THEN status ELSE $8 END NOT IN ('running','interrupted') OR runtime_heartbeat_at IS NULL OR $3>=runtime_heartbeat_at)
+RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required
 `
 
 type AdvanceLeaseAttemptParams struct {
-	NextSequence        int64
-	LocalAttemptID      int64
-	RuntimeHeartbeatAt  *time.Time
-	Termination         bool
-	Now                 *time.Time
-	UsageCorrection     bool
-	Status              string
-	PayloadObjectKey    string
-	CheckpointObjectKey *string
-	ArtifactsObjectKey  *string
-	OrganizationID      tracker.OrganizationID
-	ID                  string
-	LeaseID             string
-	FencingToken        int64
-	RunID               string
-	DispatchGeneration  int64
-	RuntimeOrdered      bool
+	NextSequence              int64
+	LocalAttemptID            int64
+	RuntimeHeartbeatAt        *time.Time
+	WorkerCleanupRequired     pgtype.Bool
+	Termination               bool
+	Now                       *time.Time
+	UsageCorrection           bool
+	Status                    string
+	PayloadObjectKey          string
+	CheckpointObjectKey       *string
+	CheckpointPreservesSource pgtype.Bool
+	ArtifactsObjectKey        *string
+	OrganizationID            tracker.OrganizationID
+	ID                        string
+	LeaseID                   string
+	FencingToken              int64
+	RunID                     string
+	DispatchGeneration        int64
+	RuntimeOrdered            bool
 }
 
 func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttemptParams) (NativeAttempt, error) {
@@ -57,12 +60,14 @@ func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttem
 		arg.NextSequence,
 		arg.LocalAttemptID,
 		arg.RuntimeHeartbeatAt,
+		arg.WorkerCleanupRequired,
 		arg.Termination,
 		arg.Now,
 		arg.UsageCorrection,
 		arg.Status,
 		arg.PayloadObjectKey,
 		arg.CheckpointObjectKey,
+		arg.CheckpointPreservesSource,
 		arg.ArtifactsObjectKey,
 		arg.OrganizationID,
 		arg.ID,
@@ -97,6 +102,11 @@ func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttem
 		&i.ClaimDisposition,
 		&i.LocalAttemptID,
 		&i.LocalAttemptIDRecorded,
+		&i.CheckpointPreservesSource,
+		&i.ProjectID,
+		&i.UsagePendingSequence,
+		&i.UsageProjectedSequence,
+		&i.WorkerCleanupRequired,
 	)
 	return i, err
 }
@@ -116,33 +126,15 @@ func (q *Queries) BindAttemptRun(ctx context.Context, arg BindAttemptRunParams) 
 	return err
 }
 
-const cancelLeaseAttempt = `-- name: CancelLeaseAttempt :exec
-UPDATE native_attempts SET status='cancelled',updated_at=$4
-WHERE organization_id=$1 AND lease_id=$2 AND fencing_token=$3 AND status='running'
-`
-
-type CancelLeaseAttemptParams struct {
-	OrganizationID tracker.OrganizationID
-	LeaseID        string
-	FencingToken   int64
-	UpdatedAt      time.Time
-}
-
-func (q *Queries) CancelLeaseAttempt(ctx context.Context, arg CancelLeaseAttemptParams) error {
-	_, err := q.db.Exec(ctx, cancelLeaseAttempt,
-		arg.OrganizationID,
-		arg.LeaseID,
-		arg.FencingToken,
-		arg.UpdatedAt,
-	)
-	return err
-}
-
 const expireLease = `-- name: ExpireLease :one
-UPDATE leases SET released_at=$1::timestamptz,release_reason='expired'
-WHERE organization_id=$2 AND lease_id=$3
-AND fencing_token=$4::bigint AND released_at IS NULL AND expires_at<=$1
-RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason
+UPDATE leases AS l SET released_at=$1::timestamptz,release_reason='expired'
+WHERE l.organization_id=$2 AND l.lease_id=$3
+AND l.fencing_token=$4::bigint AND l.released_at IS NULL AND l.expires_at<=$1
+AND NOT EXISTS (
+ SELECT 1 FROM native_attempts a WHERE a.organization_id=l.organization_id AND a.lease_id=l.lease_id
+ AND a.fencing_token=l.fencing_token AND a.status='running'
+)
+RETURNING l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id
 `
 
 type ExpireLeaseParams struct {
@@ -174,22 +166,25 @@ func (q *Queries) ExpireLease(ctx context.Context, arg ExpireLeaseParams) (Lease
 		&i.ExpiresAt,
 		&i.ReleasedAt,
 		&i.ReleaseReason,
+		&i.ProjectID,
+		&i.RunnerID,
 	)
 	return i, err
 }
 
 const getActiveIssueLease = `-- name: GetActiveIssueLease :one
-SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason FROM leases
-WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL AND expires_at>clock_timestamp()
+SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id FROM leases
+WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL AND expires_at>COALESCE($3::timestamptz,clock_timestamp())
 `
 
 type GetActiveIssueLeaseParams struct {
 	OrganizationID tracker.OrganizationID
 	IssueID        int64
+	LeaseClock     *time.Time
 }
 
 func (q *Queries) GetActiveIssueLease(ctx context.Context, arg GetActiveIssueLeaseParams) (Lease, error) {
-	row := q.db.QueryRow(ctx, getActiveIssueLease, arg.OrganizationID, arg.IssueID)
+	row := q.db.QueryRow(ctx, getActiveIssueLease, arg.OrganizationID, arg.IssueID, arg.LeaseClock)
 	var i Lease
 	err := row.Scan(
 		&i.OrganizationID,
@@ -205,6 +200,8 @@ func (q *Queries) GetActiveIssueLease(ctx context.Context, arg GetActiveIssueLea
 		&i.ExpiresAt,
 		&i.ReleasedAt,
 		&i.ReleaseReason,
+		&i.ProjectID,
+		&i.RunnerID,
 	)
 	return i, err
 }
@@ -227,7 +224,7 @@ func (q *Queries) GetAttemptReceipt(ctx context.Context, arg GetAttemptReceiptPa
 }
 
 const getLatestIssueAttempt = `-- name: GetLatestIssueAttempt :one
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1
 `
 
 type GetLatestIssueAttemptParams struct {
@@ -262,15 +259,20 @@ func (q *Queries) GetLatestIssueAttempt(ctx context.Context, arg GetLatestIssueA
 		&i.ClaimDisposition,
 		&i.LocalAttemptID,
 		&i.LocalAttemptIDRecorded,
+		&i.CheckpointPreservesSource,
+		&i.ProjectID,
+		&i.UsagePendingSequence,
+		&i.UsageProjectedSequence,
+		&i.WorkerCleanupRequired,
 	)
 	return i, err
 }
 
 const getLatestIssueAttemptsByIssues = `-- name: GetLatestIssueAttemptsByIssues :many
-SELECT latest.organization_id, latest.id, latest.issue_id, latest.lease_id, latest.fencing_token, latest.run_id, latest.sequence, latest.status, latest.work_item_revision, latest.dispatch_generation, latest.payload_object_key, latest.checkpoint_object_key, latest.artifacts_object_key, latest.started_at, latest.updated_at, latest.started_at_submicro_ns, latest.runner_tokens_recorded, latest.cleanup_acknowledged_at, latest.runtime_heartbeat_at, latest.runtime_summary_sequence, latest.claim_disposition, latest.local_attempt_id, latest.local_attempt_id_recorded
+SELECT latest.organization_id, latest.id, latest.issue_id, latest.lease_id, latest.fencing_token, latest.run_id, latest.sequence, latest.status, latest.work_item_revision, latest.dispatch_generation, latest.payload_object_key, latest.checkpoint_object_key, latest.artifacts_object_key, latest.started_at, latest.updated_at, latest.started_at_submicro_ns, latest.runner_tokens_recorded, latest.cleanup_acknowledged_at, latest.runtime_heartbeat_at, latest.runtime_summary_sequence, latest.claim_disposition, latest.local_attempt_id, latest.local_attempt_id_recorded, latest.checkpoint_preserves_source, latest.project_id, latest.usage_pending_sequence, latest.usage_projected_sequence, latest.worker_cleanup_required
 FROM unnest($1::bigint[]) AS requested(issue_id)
 CROSS JOIN LATERAL (
-  SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded FROM native_attempts
+  SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required FROM native_attempts
   WHERE organization_id=$2 AND issue_id=requested.issue_id
   ORDER BY fencing_token DESC
   LIMIT 1
@@ -315,6 +317,11 @@ func (q *Queries) GetLatestIssueAttemptsByIssues(ctx context.Context, arg GetLat
 			&i.ClaimDisposition,
 			&i.LocalAttemptID,
 			&i.LocalAttemptIDRecorded,
+			&i.CheckpointPreservesSource,
+			&i.ProjectID,
+			&i.UsagePendingSequence,
+			&i.UsageProjectedSequence,
+			&i.WorkerCleanupRequired,
 		); err != nil {
 			return nil, err
 		}
@@ -327,7 +334,7 @@ func (q *Queries) GetLatestIssueAttemptsByIssues(ctx context.Context, arg GetLat
 }
 
 const getLease = `-- name: GetLease :one
-SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason FROM leases WHERE organization_id=$1 AND lease_id=$2
+SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id FROM leases WHERE organization_id=$1 AND lease_id=$2
 `
 
 type GetLeaseParams struct {
@@ -352,12 +359,14 @@ func (q *Queries) GetLease(ctx context.Context, arg GetLeaseParams) (Lease, erro
 		&i.ExpiresAt,
 		&i.ReleasedAt,
 		&i.ReleaseReason,
+		&i.ProjectID,
+		&i.RunnerID,
 	)
 	return i, err
 }
 
 const getLeaseAttempt = `-- name: GetLeaseAttempt :one
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded FROM native_attempts WHERE organization_id=$1 AND id=$2
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required FROM native_attempts WHERE organization_id=$1 AND id=$2
 `
 
 type GetLeaseAttemptParams struct {
@@ -392,6 +401,78 @@ func (q *Queries) GetLeaseAttempt(ctx context.Context, arg GetLeaseAttemptParams
 		&i.ClaimDisposition,
 		&i.LocalAttemptID,
 		&i.LocalAttemptIDRecorded,
+		&i.CheckpointPreservesSource,
+		&i.ProjectID,
+		&i.UsagePendingSequence,
+		&i.UsageProjectedSequence,
+		&i.WorkerCleanupRequired,
+	)
+	return i, err
+}
+
+const getLeaseLossCandidate = `-- name: GetLeaseLossCandidate :one
+WITH unreleased AS MATERIALIZED (
+ SELECT fencing_token FROM leases
+ WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL
+)
+SELECT a.organization_id, a.id, a.issue_id, a.lease_id, a.fencing_token, a.run_id, a.sequence, a.status, a.work_item_revision, a.dispatch_generation, a.payload_object_key, a.checkpoint_object_key, a.artifacts_object_key, a.started_at, a.updated_at, a.started_at_submicro_ns, a.runner_tokens_recorded, a.cleanup_acknowledged_at, a.runtime_heartbeat_at, a.runtime_summary_sequence, a.claim_disposition, a.local_attempt_id, a.local_attempt_id_recorded, a.checkpoint_preserves_source, a.project_id, a.usage_pending_sequence, a.usage_projected_sequence, a.worker_cleanup_required FROM native_attempts a
+JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id AND l.fencing_token=a.fencing_token
+WHERE a.organization_id=$1 AND a.issue_id=$2
+AND a.fencing_token=COALESCE(
+ (SELECT fencing_token FROM unreleased),
+ CASE WHEN $3::boolean THEN (
+  SELECT latest.fencing_token FROM native_attempts latest
+  WHERE latest.organization_id=$1 AND latest.issue_id=$2
+  ORDER BY latest.fencing_token DESC LIMIT 1
+ ) END
+)
+AND a.status='running' AND (l.released_at IS NOT NULL OR l.expires_at<=COALESCE($4::timestamptz,clock_timestamp()))
+`
+
+type GetLeaseLossCandidateParams struct {
+	OrganizationID  tracker.OrganizationID
+	IssueID         int64
+	IncludeReleased bool
+	LeaseClock      *time.Time
+}
+
+func (q *Queries) GetLeaseLossCandidate(ctx context.Context, arg GetLeaseLossCandidateParams) (NativeAttempt, error) {
+	row := q.db.QueryRow(ctx, getLeaseLossCandidate,
+		arg.OrganizationID,
+		arg.IssueID,
+		arg.IncludeReleased,
+		arg.LeaseClock,
+	)
+	var i NativeAttempt
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ID,
+		&i.IssueID,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.RunID,
+		&i.Sequence,
+		&i.Status,
+		&i.WorkItemRevision,
+		&i.DispatchGeneration,
+		&i.PayloadObjectKey,
+		&i.CheckpointObjectKey,
+		&i.ArtifactsObjectKey,
+		&i.StartedAt,
+		&i.UpdatedAt,
+		&i.StartedAtSubmicroNs,
+		&i.RunnerTokensRecorded,
+		&i.CleanupAcknowledgedAt,
+		&i.RuntimeHeartbeatAt,
+		&i.RuntimeSummarySequence,
+		&i.ClaimDisposition,
+		&i.LocalAttemptID,
+		&i.LocalAttemptIDRecorded,
+		&i.CheckpointPreservesSource,
+		&i.ProjectID,
+		&i.UsagePendingSequence,
+		&i.UsageProjectedSequence,
+		&i.WorkerCleanupRequired,
 	)
 	return i, err
 }
@@ -433,8 +514,14 @@ func (q *Queries) InsertAttemptReceipt(ctx context.Context, arg InsertAttemptRec
 }
 
 const insertLease = `-- name: InsertLease :one
-INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9) RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason
+WITH lease_created AS (
+ INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,project_id,runner_id)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,NULLIF($11::text,'')) RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id
+), assigned AS (
+ INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at)
+ SELECT organization_id,lease_id,runner_id,acquired_at FROM lease_created WHERE runner_id IS NOT NULL
+)
+SELECT lease_created.organization_id, lease_created.lease_id, lease_created.fencing_token, lease_created.issue_id, lease_created.machine_id, lease_created.session_id, lease_created.work_item_revision, lease_created.landing_capacity, lease_created.acquired_at, lease_created.renewed_at, lease_created.expires_at, lease_created.released_at, lease_created.release_reason, lease_created.project_id AS lease_project_id, lease_created.runner_id FROM lease_created
 `
 
 type InsertLeaseParams struct {
@@ -447,9 +534,29 @@ type InsertLeaseParams struct {
 	LandingCapacity  int64
 	Now              time.Time
 	ExpiresAt        time.Time
+	ProjectID        *tracker.ProjectID
+	RunnerID         string
 }
 
-func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (Lease, error) {
+type InsertLeaseRow struct {
+	OrganizationID   tracker.OrganizationID
+	LeaseID          string
+	FencingToken     int64
+	IssueID          int64
+	MachineID        string
+	SessionID        string
+	WorkItemRevision int64
+	LandingCapacity  int64
+	AcquiredAt       time.Time
+	RenewedAt        time.Time
+	ExpiresAt        time.Time
+	ReleasedAt       *time.Time
+	ReleaseReason    string
+	LeaseProjectID   *tracker.ProjectID
+	RunnerID         *string
+}
+
+func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (InsertLeaseRow, error) {
 	row := q.db.QueryRow(ctx, insertLease,
 		arg.OrganizationID,
 		arg.LeaseID,
@@ -460,8 +567,10 @@ func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (Lease
 		arg.LandingCapacity,
 		arg.Now,
 		arg.ExpiresAt,
+		arg.ProjectID,
+		arg.RunnerID,
 	)
-	var i Lease
+	var i InsertLeaseRow
 	err := row.Scan(
 		&i.OrganizationID,
 		&i.LeaseID,
@@ -476,33 +585,37 @@ func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (Lease
 		&i.ExpiresAt,
 		&i.ReleasedAt,
 		&i.ReleaseReason,
+		&i.LeaseProjectID,
+		&i.RunnerID,
 	)
 	return i, err
 }
 
 const insertLeaseAttempt = `-- name: InsertLeaseAttempt :one
-INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,runtime_heartbeat_at,runtime_summary_sequence,local_attempt_id,local_attempt_id_recorded)
-VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,1,NULLIF($17::bigint,0),true) RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded
+INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,runtime_heartbeat_at,runtime_summary_sequence,worker_cleanup_required,local_attempt_id,local_attempt_id_recorded,checkpoint_preserves_source,project_id)
+VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,1,$17::boolean,NULLIF($18::bigint,0),true,$19::boolean,(SELECT i.project_id FROM work_item_identities i WHERE i.organization_id=$1 AND i.id=$3)) RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required
 `
 
 type InsertLeaseAttemptParams struct {
-	OrganizationID      tracker.OrganizationID
-	ID                  string
-	IssueID             int64
-	LeaseID             string
-	FencingToken        int64
-	RunID               string
-	Status              string
-	WorkItemRevision    int64
-	DispatchGeneration  int64
-	PayloadObjectKey    string
-	CheckpointObjectKey *string
-	ArtifactsObjectKey  *string
-	StartedAt           time.Time
-	StartedAtSubmicroNs int16
-	Now                 time.Time
-	RuntimeHeartbeatAt  *time.Time
-	LocalAttemptID      int64
+	OrganizationID            tracker.OrganizationID
+	ID                        string
+	IssueID                   int64
+	LeaseID                   string
+	FencingToken              int64
+	RunID                     string
+	Status                    string
+	WorkItemRevision          int64
+	DispatchGeneration        int64
+	PayloadObjectKey          string
+	CheckpointObjectKey       *string
+	ArtifactsObjectKey        *string
+	StartedAt                 time.Time
+	StartedAtSubmicroNs       int16
+	Now                       time.Time
+	RuntimeHeartbeatAt        *time.Time
+	WorkerCleanupRequired     pgtype.Bool
+	LocalAttemptID            int64
+	CheckpointPreservesSource pgtype.Bool
 }
 
 func (q *Queries) InsertLeaseAttempt(ctx context.Context, arg InsertLeaseAttemptParams) (NativeAttempt, error) {
@@ -523,7 +636,9 @@ func (q *Queries) InsertLeaseAttempt(ctx context.Context, arg InsertLeaseAttempt
 		arg.StartedAtSubmicroNs,
 		arg.Now,
 		arg.RuntimeHeartbeatAt,
+		arg.WorkerCleanupRequired,
 		arg.LocalAttemptID,
+		arg.CheckpointPreservesSource,
 	)
 	var i NativeAttempt
 	err := row.Scan(
@@ -550,12 +665,17 @@ func (q *Queries) InsertLeaseAttempt(ctx context.Context, arg InsertLeaseAttempt
 		&i.ClaimDisposition,
 		&i.LocalAttemptID,
 		&i.LocalAttemptIDRecorded,
+		&i.CheckpointPreservesSource,
+		&i.ProjectID,
+		&i.UsagePendingSequence,
+		&i.UsageProjectedSequence,
+		&i.WorkerCleanupRequired,
 	)
 	return i, err
 }
 
 const leaseMutationFacts = `-- name: LeaseMutationFacts :one
-SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason,i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id, i.doctor_identity_revision
+SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id,i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id, i.doctor_identity_revision, i.terminal_entered_at, i.archive_restored_at, i.archive_restore_known, i.source_revision, i.source_scheduled, i.source_observed_at
 FROM leases l
 JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id AND p.deleted_at IS NULL
@@ -590,6 +710,8 @@ func (q *Queries) LeaseMutationFacts(ctx context.Context, arg LeaseMutationFacts
 		&i.Lease.ExpiresAt,
 		&i.Lease.ReleasedAt,
 		&i.Lease.ReleaseReason,
+		&i.Lease.ProjectID,
+		&i.Lease.RunnerID,
 		&i.Issue.OrganizationID,
 		&i.Issue.ID,
 		&i.Issue.NativeID,
@@ -620,6 +742,12 @@ func (q *Queries) LeaseMutationFacts(ctx context.Context, arg LeaseMutationFacts
 		&i.Issue.RecoveryRunnerID,
 		&i.Issue.RecoveryVersionID,
 		&i.Issue.DoctorIdentityRevision,
+		&i.Issue.TerminalEnteredAt,
+		&i.Issue.ArchiveRestoredAt,
+		&i.Issue.ArchiveRestoreKnown,
+		&i.Issue.SourceRevision,
+		&i.Issue.SourceScheduled,
+		&i.Issue.SourceObservedAt,
 	)
 	return i, err
 }
@@ -842,7 +970,7 @@ func (q *Queries) LocalAttemptMatches(ctx context.Context, arg LocalAttemptMatch
 }
 
 const lockActiveLease = `-- name: LockActiveLease :one
-SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason FROM leases WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL FOR UPDATE
+SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id FROM leases WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL FOR UPDATE
 `
 
 type LockActiveLeaseParams struct {
@@ -867,6 +995,8 @@ func (q *Queries) LockActiveLease(ctx context.Context, arg LockActiveLeaseParams
 		&i.ExpiresAt,
 		&i.ReleasedAt,
 		&i.ReleaseReason,
+		&i.ProjectID,
+		&i.RunnerID,
 	)
 	return i, err
 }
@@ -904,7 +1034,7 @@ func (q *Queries) LockAttemptProject(ctx context.Context, arg LockAttemptProject
 }
 
 const lockClaimIssue = `-- name: LockClaimIssue :one
-SELECT i.revision,i.archived FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE i.organization_id=$1 AND i.id=$2 AND p.deleted_at IS NULL FOR SHARE OF p FOR NO KEY UPDATE OF i
+SELECT i.revision,i.archived,i.project_id FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE i.organization_id=$1 AND i.id=$2 AND p.deleted_at IS NULL FOR SHARE OF p FOR NO KEY UPDATE OF i
 `
 
 type LockClaimIssueParams struct {
@@ -913,19 +1043,20 @@ type LockClaimIssueParams struct {
 }
 
 type LockClaimIssueRow struct {
-	Revision int64
-	Archived bool
+	Revision  int64
+	Archived  bool
+	ProjectID tracker.ProjectID
 }
 
 func (q *Queries) LockClaimIssue(ctx context.Context, arg LockClaimIssueParams) (LockClaimIssueRow, error) {
 	row := q.db.QueryRow(ctx, lockClaimIssue, arg.OrganizationID, arg.ID)
 	var i LockClaimIssueRow
-	err := row.Scan(&i.Revision, &i.Archived)
+	err := row.Scan(&i.Revision, &i.Archived, &i.ProjectID)
 	return i, err
 }
 
 const lockLease = `-- name: LockLease :one
-SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE
+SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE
 `
 
 type LockLeaseParams struct {
@@ -950,6 +1081,52 @@ func (q *Queries) LockLease(ctx context.Context, arg LockLeaseParams) (Lease, er
 		&i.ExpiresAt,
 		&i.ReleasedAt,
 		&i.ReleaseReason,
+		&i.ProjectID,
+		&i.RunnerID,
+	)
+	return i, err
+}
+
+const lockLeaseExpiryScope = `-- name: LockLeaseExpiryScope :one
+WITH locked_project AS MATERIALIZED (
+ SELECT p.organization_id,p.id FROM leases l
+ JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+ JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
+ WHERE l.organization_id=$1 AND l.lease_id=$2 AND l.fencing_token=$3
+ FOR SHARE OF p
+)
+SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id FROM leases l
+JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+JOIN locked_project p ON p.organization_id=i.organization_id AND p.id=i.project_id
+WHERE l.organization_id=$1 AND l.lease_id=$2 AND l.fencing_token=$3
+FOR UPDATE OF i
+`
+
+type LockLeaseExpiryScopeParams struct {
+	OrganizationID tracker.OrganizationID
+	LeaseID        string
+	FencingToken   int64
+}
+
+func (q *Queries) LockLeaseExpiryScope(ctx context.Context, arg LockLeaseExpiryScopeParams) (Lease, error) {
+	row := q.db.QueryRow(ctx, lockLeaseExpiryScope, arg.OrganizationID, arg.LeaseID, arg.FencingToken)
+	var i Lease
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.IssueID,
+		&i.MachineID,
+		&i.SessionID,
+		&i.WorkItemRevision,
+		&i.LandingCapacity,
+		&i.AcquiredAt,
+		&i.RenewedAt,
+		&i.ExpiresAt,
+		&i.ReleasedAt,
+		&i.ReleaseReason,
+		&i.ProjectID,
+		&i.RunnerID,
 	)
 	return i, err
 }
@@ -1011,44 +1188,48 @@ func (q *Queries) LockRunnerHostRevision(ctx context.Context, arg LockRunnerHost
 }
 
 const mutateLeaseCommand = `-- name: MutateLeaseCommand :one
-WITH locked AS MATERIALIZED (
- SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason FROM leases l
+WITH lease_locked AS MATERIALIZED (
+ SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id FROM leases l
  WHERE l.organization_id=$1 AND l.lease_id=$2
  FOR UPDATE OF l
 ), at AS MATERIALIZED (
- SELECT COALESCE($3::timestamptz,clock_timestamp()) AS now FROM locked
-), changed AS (
+ SELECT COALESCE($3::timestamptz,clock_timestamp()) AS now FROM lease_locked
+), lease_changed AS (
  UPDATE leases l SET
  renewed_at=CASE WHEN $4::text='renew' THEN at.now ELSE l.renewed_at END,
  expires_at=CASE WHEN $4::text='renew' THEN at.now+$5::bigint*interval '1 microsecond' ELSE l.expires_at END,
  landing_capacity=CASE WHEN $4::text='renew' AND $6::bigint>0 THEN $6::bigint ELSE l.landing_capacity END,
  released_at=CASE WHEN $4::text='renew' THEN l.released_at ELSE at.now END,
  release_reason=CASE WHEN $4::text='renew' THEN l.release_reason WHEN $4::text='expire' THEN 'expired' ELSE $7::text END
- FROM locked,at
- WHERE l.organization_id=locked.organization_id AND l.lease_id=locked.lease_id
- AND locked.fencing_token=$8::bigint AND locked.released_at IS NULL
- AND CASE WHEN $4::text='expire' THEN locked.expires_at<=at.now ELSE locked.expires_at>at.now END
+ FROM lease_locked,at
+ WHERE l.organization_id=lease_locked.organization_id AND l.lease_id=lease_locked.lease_id
+ AND lease_locked.fencing_token=$8::bigint AND lease_locked.released_at IS NULL
+ AND CASE WHEN $4::text='expire' THEN lease_locked.expires_at<=at.now ELSE lease_locked.expires_at>at.now END
+ AND ($4::text<>'expire' OR NOT EXISTS (
+  SELECT 1 FROM native_attempts a WHERE a.organization_id=lease_locked.organization_id AND a.lease_id=lease_locked.lease_id
+  AND a.fencing_token=lease_locked.fencing_token AND a.status='running'
+ ))
  AND ($4::text<>'renew' OR NOT EXISTS (
   SELECT 1 FROM issues i
   JOIN project_workflow_states s ON s.organization_id=i.organization_id AND s.project_id=i.project_id AND s.name=i.workflow_state_name
-  WHERE i.organization_id=locked.organization_id AND i.id=locked.issue_id AND s.terminal
+  WHERE i.organization_id=lease_locked.organization_id AND i.id=lease_locked.issue_id AND s.terminal
  ) OR EXISTS (
   SELECT 1 FROM native_attempts a
   JOIN change_landing_receipts r ON r.organization_id=a.organization_id AND r.attempt_id=a.id
-  WHERE a.organization_id=locked.organization_id AND a.issue_id=locked.issue_id
-  AND a.lease_id=locked.lease_id AND a.fencing_token=locked.fencing_token AND a.status='running'
+  WHERE a.organization_id=lease_locked.organization_id AND a.issue_id=lease_locked.issue_id
+  AND a.lease_id=lease_locked.lease_id AND a.fencing_token=lease_locked.fencing_token AND a.status='running'
  ))
- RETURNING l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason
+ RETURNING l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id
 ), cancelled AS (
  UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,updated_at=c.released_at
- FROM changed c WHERE a.organization_id=c.organization_id AND a.lease_id=c.lease_id AND a.fencing_token=c.fencing_token
- AND a.status='running' AND $4::text<>'renew'
+ FROM lease_changed c WHERE a.organization_id=c.organization_id AND a.lease_id=c.lease_id AND a.fencing_token=c.fencing_token
+ AND a.status='running' AND $4::text='release'
 ), heartbeat AS (
  UPDATE machines m SET last_heartbeat_at=greatest(m.last_heartbeat_at,at.now),updated_at=greatest(m.updated_at,at.now)
- FROM changed c,at WHERE m.organization_id=c.organization_id AND m.id=c.machine_id AND $4::text<>'expire'
+ FROM lease_changed c,at WHERE m.organization_id=c.organization_id AND m.id=c.machine_id AND $4::text<>'expire'
 )
-SELECT changed.organization_id, changed.lease_id, changed.fencing_token, changed.issue_id, changed.machine_id, changed.session_id, changed.work_item_revision, changed.landing_capacity, changed.acquired_at, changed.renewed_at, changed.expires_at, changed.released_at, changed.release_reason,true AS applied FROM changed
-UNION ALL SELECT locked.organization_id, locked.lease_id, locked.fencing_token, locked.issue_id, locked.machine_id, locked.session_id, locked.work_item_revision, locked.landing_capacity, locked.acquired_at, locked.renewed_at, locked.expires_at, locked.released_at, locked.release_reason,false AS applied FROM locked WHERE NOT EXISTS (SELECT 1 FROM changed)
+SELECT lease_changed.organization_id,lease_changed.lease_id,lease_changed.fencing_token,lease_changed.issue_id,lease_changed.machine_id,lease_changed.session_id,lease_changed.work_item_revision,lease_changed.landing_capacity,lease_changed.acquired_at,lease_changed.renewed_at,lease_changed.expires_at,lease_changed.released_at,lease_changed.release_reason,lease_changed.project_id AS lease_project_id,lease_changed.runner_id,true AS applied FROM lease_changed
+UNION ALL SELECT lease_locked.organization_id,lease_locked.lease_id,lease_locked.fencing_token,lease_locked.issue_id,lease_locked.machine_id,lease_locked.session_id,lease_locked.work_item_revision,lease_locked.landing_capacity,lease_locked.acquired_at,lease_locked.renewed_at,lease_locked.expires_at,lease_locked.released_at,lease_locked.release_reason,lease_locked.project_id AS lease_project_id,lease_locked.runner_id,false AS applied FROM lease_locked WHERE NOT EXISTS (SELECT 1 FROM lease_changed)
 `
 
 type MutateLeaseCommandParams struct {
@@ -1076,6 +1257,8 @@ type MutateLeaseCommandRow struct {
 	ExpiresAt        time.Time
 	ReleasedAt       *time.Time
 	ReleaseReason    string
+	LeaseProjectID   *tracker.ProjectID
+	RunnerID         *string
 	Applied          bool
 }
 
@@ -1105,13 +1288,15 @@ func (q *Queries) MutateLeaseCommand(ctx context.Context, arg MutateLeaseCommand
 		&i.ExpiresAt,
 		&i.ReleasedAt,
 		&i.ReleaseReason,
+		&i.LeaseProjectID,
+		&i.RunnerID,
 		&i.Applied,
 	)
 	return i, err
 }
 
 const pageIssueAttempts = `-- name: PageIssueAttempts :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND ($3::bigint=0 OR fencing_token<$3::bigint)
 ORDER BY fencing_token DESC LIMIT $4
@@ -1162,6 +1347,11 @@ func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsPa
 			&i.ClaimDisposition,
 			&i.LocalAttemptID,
 			&i.LocalAttemptIDRecorded,
+			&i.CheckpointPreservesSource,
+			&i.ProjectID,
+			&i.UsagePendingSequence,
+			&i.UsageProjectedSequence,
+			&i.WorkerCleanupRequired,
 		); err != nil {
 			return nil, err
 		}
@@ -1174,16 +1364,18 @@ func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsPa
 }
 
 const pageIssueAttemptsOldest = `-- name: PageIssueAttemptsOldest :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND ($3::bigint=0 OR fencing_token>$3::bigint)
-ORDER BY fencing_token LIMIT $4
+AND ($4::bigint=0 OR fencing_token<=$4::bigint)
+ORDER BY fencing_token LIMIT $5
 `
 
 type PageIssueAttemptsOldestParams struct {
 	OrganizationID tracker.OrganizationID
 	IssueID        int64
 	AfterFence     int64
+	ThroughFence   int64
 	PageLimit      int32
 }
 
@@ -1192,6 +1384,7 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 		arg.OrganizationID,
 		arg.IssueID,
 		arg.AfterFence,
+		arg.ThroughFence,
 		arg.PageLimit,
 	)
 	if err != nil {
@@ -1225,6 +1418,11 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 			&i.ClaimDisposition,
 			&i.LocalAttemptID,
 			&i.LocalAttemptIDRecorded,
+			&i.CheckpointPreservesSource,
+			&i.ProjectID,
+			&i.UsagePendingSequence,
+			&i.UsageProjectedSequence,
+			&i.WorkerCleanupRequired,
 		); err != nil {
 			return nil, err
 		}
@@ -1237,7 +1435,7 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 }
 
 const pageIssueCheckpointAttempts = `-- name: PageIssueCheckpointAttempts :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND checkpoint_object_key IS NOT NULL
 AND ($3::bigint=0 OR fencing_token<$3::bigint)
@@ -1289,6 +1487,11 @@ func (q *Queries) PageIssueCheckpointAttempts(ctx context.Context, arg PageIssue
 			&i.ClaimDisposition,
 			&i.LocalAttemptID,
 			&i.LocalAttemptIDRecorded,
+			&i.CheckpointPreservesSource,
+			&i.ProjectID,
+			&i.UsagePendingSequence,
+			&i.UsageProjectedSequence,
+			&i.WorkerCleanupRequired,
 		); err != nil {
 			return nil, err
 		}
@@ -1363,22 +1566,25 @@ func (q *Queries) RegisterOwnedMachine(ctx context.Context, arg RegisterOwnedMac
 }
 
 const setAttemptRuntimeHeartbeat = `-- name: SetAttemptRuntimeHeartbeat :exec
-UPDATE native_attempts SET runtime_heartbeat_at=$1,runtime_summary_sequence=$2
-WHERE organization_id=$3 AND id=$4 AND sequence=$2
-AND runtime_summary_sequence IS DISTINCT FROM sequence
+UPDATE native_attempts SET runtime_heartbeat_at=$1,runtime_summary_sequence=$2,
+worker_cleanup_required=CASE WHEN $3::boolean IS NOT NULL THEN $3::boolean WHEN runtime_summary_sequence=sequence THEN worker_cleanup_required ELSE NULL END
+WHERE organization_id=$4 AND id=$5 AND sequence=$2
+AND (runtime_summary_sequence IS DISTINCT FROM sequence OR $3::boolean IS NOT NULL AND worker_cleanup_required IS DISTINCT FROM $3::boolean)
 `
 
 type SetAttemptRuntimeHeartbeatParams struct {
-	RuntimeHeartbeatAt *time.Time
-	Sequence           pgtype.Int8
-	OrganizationID     tracker.OrganizationID
-	ID                 string
+	RuntimeHeartbeatAt    *time.Time
+	Sequence              pgtype.Int8
+	WorkerCleanupRequired pgtype.Bool
+	OrganizationID        tracker.OrganizationID
+	ID                    string
 }
 
 func (q *Queries) SetAttemptRuntimeHeartbeat(ctx context.Context, arg SetAttemptRuntimeHeartbeatParams) error {
 	_, err := q.db.Exec(ctx, setAttemptRuntimeHeartbeat,
 		arg.RuntimeHeartbeatAt,
 		arg.Sequence,
+		arg.WorkerCleanupRequired,
 		arg.OrganizationID,
 		arg.ID,
 	)
@@ -1389,7 +1595,7 @@ const updateLeaseLandingCapacity = `-- name: UpdateLeaseLandingCapacity :one
 UPDATE leases SET landing_capacity=GREATEST(landing_capacity,$1::bigint)
 WHERE organization_id=$2 AND lease_id=$3
 AND fencing_token=$4::bigint AND released_at IS NULL
-RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason
+RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id
 `
 
 type UpdateLeaseLandingCapacityParams struct {
@@ -1421,6 +1627,8 @@ func (q *Queries) UpdateLeaseLandingCapacity(ctx context.Context, arg UpdateLeas
 		&i.ExpiresAt,
 		&i.ReleasedAt,
 		&i.ReleaseReason,
+		&i.ProjectID,
+		&i.RunnerID,
 	)
 	return i, err
 }

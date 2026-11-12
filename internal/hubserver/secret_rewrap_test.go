@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -71,34 +74,95 @@ func TestSecretRewrapStepIsBoundedAndTenantScoped(t *testing.T) {
 	}
 }
 
-func secretRewrapFixture(t *testing.T) (nativeFixture, []accessstore.Secret) {
+func secretRewrapFixture(t *testing.T) (nativeFixture, []accessstore.Secret, []*Service) {
 	t.Helper()
-	f := newDefaultNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1")})
-	f.service.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
-	<-f.service.secretRewrapDone
-	second := newNativeFixture(t, f.service, "org_first_second", "Second secret project")
+	admin := postgresStartupTemplate.Database(t)
+	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	cfg.SecretKeys = secretTestKeys(t, "1", "1")
+	organizations := []tracker.OrganizationID{"org_startup", "org_other"}
+	limit := (1+2*len(organizations))*cfg.Postgres.Pool.MaxConnections + 1
+	if _, err := admin.ExecContext(t.Context(), fmt.Sprintf("ALTER DATABASE %s CONNECTION LIMIT %d", pgx.Identifier{cfg.Postgres.Connection.Database}.Sanitize(), limit)); err != nil {
+		t.Fatal(err)
+	}
+	key := hostedSharedKey(49)
+	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	store, err := openDatabase(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	var first nativeFixture
+	var tenants []*Service
 	var original []accessstore.Secret
-	for _, fixture := range []nativeFixture{f, second} {
-		for _, project := range []tracker.ProjectID{"", fixture.project.ID} {
-			row := accessstore.Secret{OrganizationID: fixture.project.OrganizationID, ProjectID: project, Kind: flySpritesToken, UpdatedAt: f.service.config.now().UTC().Truncate(time.Microsecond)}
-			envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD(row.OrganizationID, project, row.Kind))
+	for _, org := range organizations {
+		binding := *cfg.Hosted
+		binding.OrganizationID, binding.WorkOSOrganizationID = string(org), "provider_"+string(org)
+		seedStartupOrganization(t, store.postgres, org, &binding)
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		cursor := bytes.Repeat([]byte{0x5a}, 32)
+		envelope, err := cfg.SecretKeys.Seal(cursor, accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "project", Name: "Example secret project", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+				return err
+			}
+			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: "hub_" + string(org), CursorKey: cursor}); err != nil {
+				return err
+			}
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: 1, RecordedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tenantCfg := cfg
+		hosted := *cfg.Hosted
+		hosted.OrganizationID, hosted.WorkOSOrganizationID = string(org), "provider_"+string(org)
+		tenantCfg.Hosted = &hosted
+		service, err := Open(t.Context(), tenantCfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repository := service.config.TenantRepository
+		projectRecordDatabases.Store(repository, admin)
+		t.Cleanup(func() {
+			if err := service.Close(); err != nil {
+				t.Error(err)
+			}
+			projectRecordDatabases.Delete(repository)
+		})
+		service.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
+		<-service.secretRewrapDone
+		if err := service.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
+		tenants = append(tenants, service)
+		if first.service == nil {
+			first = nativeFixture{service: service, project: tracker.NativeProject{OrganizationID: org, ID: "project", Name: "Example secret project", Profile: "native"}}
+		}
+		for _, project := range []tracker.ProjectID{"", "project"} {
+			row := accessstore.Secret{OrganizationID: org, ProjectID: project, Kind: flySpritesToken, UpdatedAt: now}
+			row.Envelope, err = service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD(org, project, row.Kind))
 			if err != nil {
 				t.Fatal(err)
 			}
-			row.Envelope = envelope
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), row.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-				return w.StoreAccessSecret(t.Context(), row, accessstore.SecretAudit{OrganizationID: row.OrganizationID, ProjectID: project, Kind: row.Kind, Actor: "fixture", Event: "set", KeyVersion: 1, RecordedAt: row.UpdatedAt})
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.StoreAccessSecret(t.Context(), row, accessstore.SecretAudit{OrganizationID: org, ProjectID: project, Kind: row.Kind, Actor: "fixture", Event: "set", KeyVersion: 1, RecordedAt: now})
 			}); err != nil {
 				t.Fatal(err)
 			}
 			original = append(original, row)
 		}
 	}
-	rows, err := readRewrapSecrets(t.Context(), f.service, nativeAttemptTestDatabase(t, f), original)
+	rows, err := readRewrapSecrets(t.Context(), first.service, admin, original)
 	if err != nil || len(rows) != 4 {
 		t.Fatalf("secret fixture rows=%d error=%v", len(rows), err)
 	}
-	return f, original
+	return first, original, tenants
 }
 
 var errSecretRewrapPopulation = errors.New("secret population differs")
@@ -177,55 +241,97 @@ func rewrapOriginalSecret(t *testing.T, s *Service, original accessstore.Secret)
 func TestSecretRewrapRestart(t *testing.T) {
 	for _, partial := range []bool{false, true} {
 		t.Run(fmt.Sprintf("partial=%t", partial), func(t *testing.T) {
-			f, original := secretRewrapFixture(t)
+			f, original, tenants := secretRewrapFixture(t)
+			admin := nativeAttemptTestDatabase(t, f)
 			f.service.config.SecretKeys = secretTestKeys(t, "2", "1", "2")
 			if partial {
 				if err := rewrapOriginalSecret(t, f.service, original[0]); err != nil {
 					t.Fatal(err)
 				}
 			}
-			cfg := f.service.config
-			if err := f.service.Close(); err != nil {
-				t.Fatal(err)
-			}
-			for i, active := range []string{"2", "2", "1"} {
-				cfg.SecretKeys = secretTestKeys(t, active, "1", "2")
-				s, err := Open(t.Context(), cfg)
-				if err != nil {
+			configs := make([]Config, len(tenants))
+			for i, tenant := range tenants {
+				configs[i] = tenant.config
+				if err := tenant.Close(); err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(func() { s.Close() })
+			}
+			for i, active := range []string{"2", "2", "1"} {
 				var writer *sql.Conn
 				if i == 1 {
-					writer, err = nativeAttemptTestDatabase(t, f).Conn(t.Context())
+					var err error
+					writer, err = admin.Conn(t.Context())
 					if err != nil {
 						t.Fatal(err)
 					}
-					t.Cleanup(func() { writer.Close() })
+					t.Cleanup(func() {
+						if err := writer.Close(); err != nil && !errors.Is(err, sql.ErrConnDone) {
+							t.Error(err)
+						}
+					})
 				}
-				listener, err := net.Listen("tcp", "127.0.0.1:0")
-				if err != nil {
-					t.Fatal(err)
+				var opened []*Service
+				var results []chan error
+				var joined []*bool
+				for _, cfg := range configs {
+					cfg.SecretKeys = secretTestKeys(t, active, "1", "2")
+					service, err := Open(t.Context(), cfg)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						if err := service.Close(); err != nil {
+							t.Error(err)
+						}
+					})
+					repository := service.config.TenantRepository
+					projectRecordDatabases.Store(repository, admin)
+					t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
+					listener, err := net.Listen("tcp", "127.0.0.1:0")
+					if err != nil {
+						t.Fatal(err)
+					}
+					result := make(chan error, 1)
+					complete := new(bool)
+					t.Cleanup(func() {
+						if err := service.Close(); err != nil {
+							t.Error(err)
+						}
+						if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+							t.Error(err)
+						}
+						if !*complete {
+							if err := <-result; err != nil {
+								t.Error(err)
+							}
+						}
+					})
+					go func() { result <- service.Serve(listener) }()
+					<-service.secretRewrapDone
+					opened = append(opened, service)
+					results = append(results, result)
+					joined = append(joined, complete)
 				}
-				served := make(chan error, 1)
-				go func() { served <- s.Serve(listener) }()
-				<-s.secretRewrapDone
 				version, audits := 2, 1
 				if i == 2 {
 					version, audits = 1, 2
 				}
-				f.service = s
+				f.service = opened[0]
 				assertSecretRewrap(t, f, original, version, audits)
 				if writer != nil {
 					if err := writer.Close(); err != nil {
 						t.Fatal(err)
 					}
 				}
-				if err := s.Close(); err != nil {
-					t.Fatal(err)
-				}
-				if err := <-served; err != nil {
-					t.Fatal(err)
+				for j, service := range opened {
+					if err := service.Close(); err != nil {
+						t.Fatal(err)
+					}
+					serveErr := <-results[j]
+					*joined[j] = true
+					if serveErr != nil {
+						t.Fatal(serveErr)
+					}
 				}
 			}
 		})
@@ -303,18 +409,27 @@ func TestSecretRewrapCAS(t *testing.T) {
 }
 
 func TestSecretRewrapServingAndShutdown(t *testing.T) {
-	f, _ := secretRewrapFixture(t)
-	cfg := f.service.config
-	cfg.SecretKeys = secretTestKeys(t, "2", "1", "2")
-	if err := f.service.Close(); err != nil {
-		t.Fatal(err)
+	f, _, tenants := secretRewrapFixture(t)
+	admin := nativeAttemptTestDatabase(t, f)
+	var opened []*Service
+	for _, tenant := range tenants {
+		cfg := tenant.config
+		cfg.SecretKeys = secretTestKeys(t, "2", "1", "2")
+		if err := tenant.Close(); err != nil {
+			t.Fatal(err)
+		}
+		service, err := Open(t.Context(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := service.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		opened = append(opened, service)
 	}
-	s, err := Open(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { s.Close() })
-	connection, err := nativeAttemptTestDatabase(t, f).BeginTx(t.Context(), nil)
+	connection, err := admin.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,35 +441,43 @@ func TestSecretRewrapServingAndShutdown(t *testing.T) {
 	if _, err := connection.ExecContext(t.Context(), "LOCK TABLE organization_secrets, project_secrets IN ACCESS EXCLUSIVE MODE"); err != nil {
 		t.Fatal(err)
 	}
-	response := httptest.NewRecorder()
-	s.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodGet, "/health", testHubAdminToken, nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("health while rewrap pending: %d %s", response.Code, response.Body.String())
+	for _, service := range opened {
+		response := httptest.NewRecorder()
+		service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodGet, "/health", testHubAdminToken, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("health while rewrap pending: %d %s", response.Code, response.Body.String())
+		}
+		select {
+		case <-service.secretRewrapDone:
+			t.Fatal("rewrap completed while writer unavailable")
+		default:
+		}
 	}
-	select {
-	case <-s.secretRewrapDone:
-		t.Fatal("rewrap completed while writer unavailable")
-	default:
-	}
-	if err := s.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-s.secretRewrapDone:
-	default:
-		t.Fatal("shutdown did not join rewrap")
+	for _, service := range opened {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-service.secretRewrapDone:
+		default:
+			t.Fatal("shutdown did not join rewrap")
+		}
 	}
 }
 
 func TestSecretRewrapContinuesAfterError(t *testing.T) {
-	f, original := secretRewrapFixture(t)
+	f, original, tenants := secretRewrapFixture(t)
 	var logs bytes.Buffer
-	f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
-	f.service.config.SecretKeys = secretTestKeys(t, "2", "1", "2")
-	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), `CREATE FUNCTION fail_rewrap() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event='rotate' THEN RAISE EXCEPTION 'audit unavailable'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_rewrap BEFORE INSERT ON organization_secret_audit FOR EACH ROW EXECUTE FUNCTION fail_rewrap()`); err != nil {
+	for _, tenant := range tenants {
+		tenant.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+		tenant.config.SecretKeys = secretTestKeys(t, "2", "1", "2")
+	}
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), `CREATE FUNCTION fail_rewrap() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event='rotate' AND NEW.kind='`+flySpritesToken+`' THEN RAISE EXCEPTION 'audit unavailable'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_rewrap BEFORE INSERT ON organization_secret_audit FOR EACH ROW EXECUTE FUNCTION fail_rewrap()`); err != nil {
 		t.Fatal(err)
 	}
-	f.service.rewrapSecrets(t.Context())
+	for _, tenant := range tenants {
+		tenant.rewrapSecrets(t.Context())
+	}
 	rows, err := readRewrapSecrets(t.Context(), f.service, nativeAttemptTestDatabase(t, f), original)
 	if err != nil {
 		t.Fatal(err)
@@ -366,6 +489,43 @@ func TestSecretRewrapContinuesAfterError(t *testing.T) {
 		}
 		if row.Envelope.Version != want || !bytes.Equal(row.Envelope.Ciphertext, original[i].Envelope.Ciphertext) {
 			t.Fatal("row error stopped pass or committed unaudited rewrap")
+		}
+		table, predicate, args := "organization_secret_audit", "organization_id=$1 AND kind=$2", []any{row.OrganizationID, row.Kind}
+		rotations := 0
+		if row.ProjectID != "" {
+			table, predicate, args = "project_secret_audit", "organization_id=$1 AND project_id=$2 AND kind=$3", []any{row.OrganizationID, row.ProjectID, row.Kind}
+			rotations = 1
+		}
+		var count int
+		if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE "+predicate+" AND event='rotate' AND actor='system:rewrap'", args...).Scan(&count); err != nil || count != rotations {
+			t.Fatalf("provider audit rollback/continuation: count=%d want=%d err=%v", count, rotations, err)
+		}
+	}
+	for _, tenant := range tenants {
+		org := tenant.accessOrganization()
+		if err := tenant.config.AccessRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			cursor, err := r.AccessSecret(t.Context(), "", accessstore.NativeCursorKeyKind)
+			if err != nil {
+				return err
+			}
+			if cursor.Envelope.Version != 2 {
+				return fmt.Errorf("cursor secret rotation stopped in %s: version=%d", org, cursor.Envelope.Version)
+			}
+			value, err := tenant.config.SecretKeys.Open(cursor.Envelope, accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
+			if err != nil {
+				return err
+			}
+			defer clear(value)
+			if !bytes.Equal(value, bytes.Repeat([]byte{0x5a}, 32)) {
+				return errors.New("cursor secret value changed")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var count, version int
+		if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*),COALESCE(max(key_version),0) FROM organization_secret_audit WHERE organization_id=$1 AND kind=$2 AND event='rotate' AND actor='system:rewrap'", org, accessstore.NativeCursorKeyKind).Scan(&count, &version); err != nil || count != 1 || version != 2 {
+			t.Fatalf("cursor rotation audit: count=%d version=%d err=%v", count, version, err)
 		}
 	}
 	if strings.Count(logs.String(), `"msg":"rewrap provider secret"`) != 2 || strings.Contains(logs.String(), spritesSecretSentinel) {
@@ -481,7 +641,7 @@ func TestSecretRewrapTargetsSnapshot(t *testing.T) {
 func TestSecretRewrapPopulation(t *testing.T) {
 	for _, kind := range []string{flySpritesToken, accessstore.NativeCursorKeyKind} {
 		t.Run(kind, func(t *testing.T) {
-			f, original := secretRewrapFixture(t)
+			f, original, _ := secretRewrapFixture(t)
 			org := tracker.OrganizationID("org_unexpected")
 			plaintext := []byte("unexpected")
 			if kind == accessstore.NativeCursorKeyKind {

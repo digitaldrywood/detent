@@ -18,8 +18,8 @@ func TestOutboxStepStopsAfterOneDeliveryOrRejection(t *testing.T) {
 		canceled  bool
 		github    int
 	}{
-		{name: "delivered", delivered: true},
-		{name: "rejected", failure: failure},
+		{name: "delivered", delivered: true, github: 1},
+		{name: "rejected", failure: failure, github: 1},
 		{name: "idle", github: 1},
 		{name: "canceled", canceled: true},
 	} {
@@ -29,22 +29,19 @@ func TestOutboxStepStopsAfterOneDeliveryOrRejection(t *testing.T) {
 			if test.canceled {
 				cancel()
 			}
-			slack, github := 0, 0
+			github := 0
 			delivered, err := processOutboxStep(ctx, func(context.Context) (bool, error) {
-				slack++
-				return test.delivered, test.failure
-			}, func(context.Context) (bool, error) {
 				github++
-				return true, nil
+				return test.delivered, test.failure
 			})
-			if github != test.github || test.canceled && slack != 0 || !test.canceled && slack != 1 {
-				t.Fatalf("delivery budget: slack=%d github=%d", slack, github)
+			if github != test.github {
+				t.Fatalf("delivery budget: github=%d", github)
 			}
 			if test.canceled {
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("cancellation lost: %v", err)
 				}
-			} else if !errors.Is(err, test.failure) || delivered != (test.delivered || test.github > 0) {
+			} else if !errors.Is(err, test.failure) || delivered != test.delivered {
 				t.Fatalf("delivery outcome: delivered=%t err=%v", delivered, err)
 			}
 		})

@@ -10,6 +10,10 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -32,9 +36,13 @@ func TestHostedChangeReviewRequiresAdminAndWriteGrant(t *testing.T) {
 			t.Parallel()
 			f := newHostedSecurityFixture(t)
 			user := f.user(t, "reviewer", test.role, "reviewer@example.test", test.grant, "")
+			if test.grant == "" {
+				f.withoutProjectAccess(t, user)
+			}
+			item := f.seedIssue(t, 1)
 			// An empty body is rejected by JSON decoding after authorization.
 			// Unauthorized reviewers never reach that handler.
-			response := f.request(t, user, http.MethodPost, f.base+"/work-items/wi_example/changes/change_example/versions/version_example/reviews", nil)
+			response := f.request(t, user, http.MethodPost, f.base+"/work-items/"+string(item)+"/changes/change_example/versions/version_example/reviews", nil)
 			requireNativeStatus(t, response, test.want)
 		})
 	}
@@ -67,15 +75,21 @@ func TestHostedChangePolicyAuthorization(t *testing.T) {
 			user := f.user(t, "approver", test.role, test.email, test.grant, "")
 			if test.grant != "" {
 				f.grant(t, user, test.grant == "write", test.runner)
+			} else {
+				f.withoutProjectAccess(t, user)
 			}
 			request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, ExpectedID: seeded.ID, Policy: tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: false}}
 			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/change-review-policy", request), test.want)
-			var stored tracker.ChangeReviewPolicy
-			var raw string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT policy_json FROM change_review_policies").Scan(&raw); err != nil {
+			var record eventstore.ReviewPolicy
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				record, err = r.ReviewPolicy(t.Context(), f.project)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+			stored, err := eventstore.NewContent(f.service.runDetailStore()).ReviewPolicy(t.Context(), record)
+			if err != nil {
 				t.Fatal(err)
 			}
 			want := seeded.ID
@@ -106,7 +120,9 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 			principal := "ci-" + project
 			seedHubAPIToken(t, f.service, principal, "credential-"+project, apiScopeOperator)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,'org_browser_preview',?)", principal, project); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+				return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.service.accessOrganization(), TokenID: principal, ProjectID: tracker.ProjectID(project)})
+			}); err != nil {
 				t.Fatal(err)
 			}
 			rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
@@ -243,13 +259,16 @@ func TestHostedChangePolicyCIPrincipals(t *testing.T) {
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			requireNativeStatus(t, f.request(t, owner, http.MethodPut, f.base+"/onboarding/policy", policy.Change{Policy: hubTestPolicy()}), http.StatusOK)
 			seedHubAPIToken(t, f.service, "ci", "ci-token", test.role)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES ('ci','org_security',?)", f.project); err != nil {
-				t.Fatal(err)
-			}
-			if test.revoked {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = 'ci'", testTimestamp); err != nil {
-					t.Fatal(err)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.service.accessOrganization(), TokenID: "ci", ProjectID: f.project}); err != nil {
+					return err
 				}
+				if test.revoked {
+					return w.RevokeAccessCredential(t.Context(), "ci", f.service.config.now())
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 			command := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Policy: tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: "ci", WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}}
 			requireNativeStatus(t, f.request(t, owner, http.MethodPut, f.base+"/change-review-policy", command), http.StatusUnprocessableEntity)
@@ -371,12 +390,16 @@ func TestHostedChangePolicyRevocation(t *testing.T) {
 				}
 				// The repository approval seeded the default; only the
 				// replayed approval had already replaced it.
-				var storedRaw string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT policy_json FROM change_review_policies").Scan(&storedRaw); err != nil {
+				var record eventstore.ReviewPolicy
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					record, err = r.ReviewPolicy(t.Context(), f.project)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
-				var stored tracker.ChangeReviewPolicy
-				if err := json.Unmarshal([]byte(storedRaw), &stored); err != nil {
+				stored, err := eventstore.NewContent(f.service.runDetailStore()).ReviewPolicy(t.Context(), record)
+				if err != nil {
 					t.Fatal(err)
 				}
 				if want := map[bool]string{false: defaultChangeReviewPolicy(hubTestPolicy()).ID, true: changerequest.PolicyID(command.Policy)}[replay]; stored.ID != want {

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -136,4 +137,18 @@ func (s *session) RecordBillingMonthlyLease(ctx context.Context, row billingstor
 		return corestore.ErrRevisionConflict
 	}
 	return nil
+}
+
+func (s *session) BillingMonthlyAdmittedCandidate(ctx context.Context, project tracker.ProjectID, now time.Time) (bool, error) {
+	if project == "" {
+		allowed, err := s.queries.BillingMonthlyOrganizationAdmittedCandidate(ctx, pgquery.BillingMonthlyOrganizationAdmittedCandidateParams{OrganizationID: s.organization, AvailableAt: now})
+		return allowed, mapError(ctx, err)
+	}
+	allowed, err := s.queries.BillingMonthlyAdmittedCandidate(ctx, pgquery.BillingMonthlyAdmittedCandidateParams{OrganizationID: s.organization, ProjectID: project, AvailableAt: now})
+	return allowed, mapError(ctx, err)
+}
+
+func (s *session) BillingMonthlyRetainsMachine(ctx context.Context, project tracker.ProjectID, machine tracker.MachineID) (bool, error) {
+	retained, err := s.queries.BillingMonthlyRetainsMachine(ctx, pgquery.BillingMonthlyRetainsMachineParams{OrganizationID: s.organization, ProjectID: project, MachineID: string(machine)})
+	return retained, mapError(ctx, err)
 }

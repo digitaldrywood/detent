@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -14,6 +15,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -116,11 +124,22 @@ func TestHostedMemberManagement(t *testing.T) {
 				if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_owner", test.role); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET role=? WHERE user_id=?", test.role, "user_browser_owner"); err != nil {
+				if err := f.service.accessWrite(t.Context(), f.service.accessOrganization(), func(w tenantstore.Writer) error {
+					member, err := w.AccessMember(t.Context(), "user_browser_owner")
+					if err != nil {
+						return err
+					}
+					member.Role = test.role
+					return w.UpdateAccessMember(t.Context(), member)
+				}); err != nil {
 					t.Fatal(err)
 				}
 				var before string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT name FROM organizations WHERE id=?", "org_browser_preview").Scan(&before); err != nil {
+				if err := f.service.accessRead(t.Context(), f.service.accessOrganization(), func(r tenantstore.Reader) error {
+					organization, err := r.AccessOrganization(t.Context())
+					before = organization.Name
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 				path := browserHostedOrganizationBase + "/name"
@@ -129,7 +148,11 @@ func TestHostedMemberManagement(t *testing.T) {
 				}
 				f.api(t, "owner", http.MethodPut, path, map[string]string{"name": test.value, "idempotency_key": "rename-" + test.name}, test.status)
 				var after string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT name FROM organizations WHERE id=?", "org_browser_preview").Scan(&after); err != nil {
+				if err := f.service.accessRead(t.Context(), f.service.accessOrganization(), func(r tenantstore.Reader) error {
+					organization, err := r.AccessOrganization(t.Context())
+					after = organization.Name
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 				want := before
@@ -149,7 +172,7 @@ func TestHostedMemberManagement(t *testing.T) {
 					f.api(t, "owner", http.MethodPut, path, map[string]string{"name": "Conflicting name", "idempotency_key": "rename-owner"}, http.StatusConflict)
 					f.api(t, "owner", http.MethodPut, path, map[string]string{"name": "Missing key"}, http.StatusUnprocessableEntity)
 					var audits int
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM hosted_audit WHERE event='action' AND route=?", "PUT /api/v2/organizations/:organization/name").Scan(&audits); err != nil {
+					if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT COUNT(*) FROM hosted_audit WHERE organization_id=$1 AND event='action' AND route=$2", f.service.accessOrganization(), "PUT /api/v2/organizations/:organization/name").Scan(&audits); err != nil {
 						t.Fatal(err)
 					}
 					if audits != 2 {
@@ -173,13 +196,13 @@ func TestHostedMemberManagement(t *testing.T) {
 	})
 	t.Run("member identities", func(t *testing.T) {
 		for _, test := range []struct {
-			name, query           string
-			neverSignedIn, hidden bool
+			name                                string
+			neverSignedIn, missingEmail, hidden bool
 		}{
 			{name: "signed in member"},
 			{name: "provider member without local row", neverSignedIn: true},
-			{name: "signed in member with missing email", query: "UPDATE hosted_members SET email='' WHERE user_id='user_browser_viewer'"},
-			{name: "locally removed member stays hidden", query: "UPDATE hosted_members SET active=0 WHERE user_id='user_browser_viewer'", hidden: true},
+			{name: "signed in member with missing email", missingEmail: true},
+			{name: "locally removed member stays hidden", hidden: true},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
@@ -191,8 +214,20 @@ func TestHostedMemberManagement(t *testing.T) {
 					}
 				}
 				f.provider.users[user] = auth.HostedUser{ID: user, Email: "viewer@example.test", Name: "Provider Member"}
-				if test.query != "" {
-					if _, err := f.service.database.db.ExecContext(t.Context(), test.query); err != nil {
+				if test.missingEmail || test.hidden {
+					if err := f.service.accessWrite(t.Context(), f.service.accessOrganization(), func(w tenantstore.Writer) error {
+						member, err := w.AccessMember(t.Context(), user)
+						if err != nil {
+							return err
+						}
+						if test.missingEmail {
+							member.Email = ""
+						}
+						if test.hidden {
+							member.Active = false
+						}
+						return w.UpdateAccessMember(t.Context(), member)
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -207,7 +242,7 @@ func TestHostedMemberManagement(t *testing.T) {
 					if member.Email != "viewer@example.test" || member.NeverSignedIn != test.neverSignedIn {
 						t.Fatalf("member identity = %#v", member)
 					}
-					if (test.query != "" || test.neverSignedIn) && member.Name != "Provider Member" {
+					if (test.missingEmail || test.hidden || test.neverSignedIn) && member.Name != "Provider Member" {
 						t.Fatalf("provider name = %q", member.Name)
 					}
 				}
@@ -353,11 +388,13 @@ func TestHostedFleetVisibility(t *testing.T) {
 
 	now := f.service.config.now().UTC()
 	summary := testHostSummary(now)
-	raw, err := json.Marshal(summary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO runner_host_hours(organization_id,runner_id,hour,summary_json,segment_ids_json) VALUES(?,?,?,?,'[]')", f.service.config.Hosted.OrganizationID, activeID, formatHubTime(summary.Hour), string(raw)); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		acknowledged, err := w.AppendRunnerHostMetricSegments(t.Context(), activeID, []hostmetrics.Summary{summary}, now)
+		if err == nil && (len(acknowledged) != 1 || !acknowledged[0].Hour.Equal(summary.Hour) || !acknowledged[0].SegmentID.Equal(summary.SegmentID)) {
+			t.Fatalf("host summary acknowledgment = %#v", acknowledged)
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, account := range []string{"owner", "viewer"} {
@@ -450,9 +487,17 @@ func TestHostedFleetVisibility(t *testing.T) {
 		}
 	})
 	t.Run("names do not read retained collaboration quotas", func(t *testing.T) {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TABLE hosted_usage_counters"); err != nil {
+		admin := hostedPostgresAdmin(t, f.service)
+		if _, err := admin.ExecContext(t.Context(), "REVOKE SELECT ON hosted_usage_counters FROM "+postgres.RuntimeRoleName); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+			defer cancel()
+			if _, err := admin.ExecContext(ctx, "GRANT SELECT ON hosted_usage_counters TO "+postgres.RuntimeRoleName); err != nil {
+				t.Error(err)
+			}
+		})
 		if _, err := f.service.hostedFleetUsage(t.Context()); err == nil || !strings.Contains(err.Error(), "hosted_usage_counters") {
 			t.Fatalf("full fleet quota read = %v, want unavailable collaboration accounting", err)
 		}
@@ -627,21 +672,67 @@ func TestHostedProjectRank(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			f := newBrowserHostedFixture(t, true)
 			if scenario.hidden {
-				for i, id := range []string{"prj_rank_hidden_a", "prj_rank_hidden_b"} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects (id, organization_id, name, profile, created_at, scheduling_rank) SELECT ?, organization_id, ?, profile, created_at, ? FROM projects WHERE id = ?", id, "Hidden project "+id, i*2+1, f.project); err != nil {
-						t.Fatal(err)
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+					template, err := w.ProjectRecord(t.Context(), tracker.ProjectID(f.project))
+					if err != nil {
+						return err
 					}
-				}
-				for _, table := range []string{"hosted_project_grants", "token_grants"} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM "+table+" WHERE project_id IN ('prj_rank_hidden_a','prj_rank_hidden_b')"); err != nil {
-						t.Fatal(err)
+					for i, id := range []tracker.ProjectID{"prj_rank_hidden_a", "prj_rank_hidden_b"} {
+						if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.service.accessOrganization(), ID: id, Name: "Hidden project " + string(id), Profile: template.Core.Profile, SchedulingRank: int64(i*2 + 1)}, States: template.States}); err != nil {
+							return err
+						}
+						for _, user := range []string{"user_browser_owner", "user_browser_viewer"} {
+							member, err := w.AccessMember(t.Context(), user)
+							if err != nil {
+								return err
+							}
+							if err := w.DeleteAccessProjectGrant(t.Context(), user, id); err != nil {
+								return err
+							}
+							if err := w.DeleteAccessTokenGrant(t.Context(), member.PrincipalID, id); err != nil {
+								return err
+							}
+						}
 					}
-				}
-				for i, id := range []string{f.project, f.privateProject} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=? WHERE id=?", i*2, id); err != nil {
-						t.Fatal(err)
+					for i, id := range []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)} {
+						project, err := w.Project(t.Context(), id)
+						if err != nil {
+							return err
+						}
+						project.SchedulingRank = int64(i * 2)
+						if _, err := w.UpdateProject(t.Context(), project); err != nil {
+							return err
+						}
 					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
 				}
+			}
+			readRank := func() (organizationProjectRank, error) {
+				rank := organizationProjectRank{ProjectIDs: []tracker.ProjectID{}}
+				err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+					owner, err := organizationVisibleReader(r)
+					if err != nil {
+						return err
+					}
+					rank.Revision, err = owner.OrganizationSchedulingRevision(t.Context())
+					if err != nil {
+						return err
+					}
+					projects, err := owner.OrganizationRankProjects(t.Context(), 5)
+					if err != nil {
+						return err
+					}
+					if len(projects) > 4 {
+						return corestore.ErrInvalidPage
+					}
+					for _, project := range projects {
+						rank.ProjectIDs = append(rank.ProjectIDs, project.ID)
+					}
+					return nil
+				})
+				return rank, err
 			}
 			if scenario.role == "admin" {
 				f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_viewer/grants", map[string]any{"project_id": f.privateProject, "write": true}, http.StatusOK)
@@ -650,7 +741,7 @@ func TestHostedProjectRank(t *testing.T) {
 				f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_"+scenario.account+"/role", map[string]any{"role": scenario.role}, http.StatusOK)
 			}
 			path := browserHostedOrganizationBase + "/project-rank"
-			before, err := readOrganizationProjectRank(t.Context(), f.service.database.reader, tracker.OrganizationID(f.service.config.Hosted.OrganizationID))
+			before, err := readRank()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -682,7 +773,7 @@ func TestHostedProjectRank(t *testing.T) {
 					t.Fatalf("save leaked or misordered projects: %#v", saved)
 				}
 			}
-			after, err := readOrganizationProjectRank(t.Context(), f.service.database.reader, tracker.OrganizationID(f.service.config.Hosted.OrganizationID))
+			after, err := readRank()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -749,7 +840,25 @@ func TestHostedRunnerRoutingAuthority(t *testing.T) {
 				projects = append(projects, tracker.ProjectID(f.privateProject))
 			}
 			var enrollment runnerauth.Enrollment
-			browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/runner-enrollments", runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: projects, Operations: []string{runnerauth.Read}, TTLSeconds: 60}, http.StatusCreated), &enrollment)
+			if test.addProject || test.widenScope || test.narrowScope {
+				token, err := apikey.GenerateToken()
+				if err != nil {
+					t.Fatal(err)
+				}
+				now := f.service.config.now()
+				enrollment = runnerauth.Enrollment{ID: newNativeID("enrollment"), Token: token, ExpiresAt: now.Add(time.Minute)}
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+					member, err := w.AccessMember(t.Context(), "user_browser_viewer")
+					if err != nil {
+						return err
+					}
+					return w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: f.service.accessOrganization(), ID: enrollment.ID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken(token), Scope: "projects", Operations: []string{runnerauth.Read}, ProjectIDs: slices.Clone(projects), CreatedAt: now, ExpiresAt: enrollment.ExpiresAt, CreatedBy: member.PrincipalID})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/runner-enrollments", runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: projects, Operations: []string{runnerauth.Read}, TTLSeconds: 60}, http.StatusCreated), &enrollment)
+			}
 			credential, err := apikey.GenerateToken()
 			if err != nil {
 				t.Fatal(err)
@@ -778,17 +887,20 @@ func TestHostedRunnerRoutingAuthority(t *testing.T) {
 					runningProject = f.project
 				}
 				browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects/"+runningProject+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "private-running"}, Title: "Running work", State: "Todo"}, http.StatusOK), &issue)
-				now := f.service.config.now()
-				stamp := formatHubTime(now)
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'routing-lease',id,?,'routing-session',?,?,?,?,? FROM issues WHERE native_id=?`, binding.MachineID, formatHubTime(now.Add(time.Hour)), stamp, stamp, stamp, stamp, issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO lease_runners(lease_id,runner_id) VALUES('routing-lease',?)", binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.addProject || test.widenScope || test.narrowScope {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_enrollments SET created_by=(SELECT principal_id FROM hosted_members WHERE user_id='user_browser_viewer') WHERE id=?", enrollment.ID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+					item, err := w.WorkItem(t.Context(), tracker.ProjectID(runningProject), issue.WorkItemID)
+					if err != nil {
+						return err
+					}
+					lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(binding.MachineID), SessionID: "routing-session", LeaseID: "routing-lease", RunnerID: binding.RunnerID, TTL: time.Hour})
+					if err != nil {
+						return err
+					}
+					if lease.ProjectID == nil || *lease.ProjectID != tracker.ProjectID(runningProject) || lease.RunnerID == nil || *lease.RunnerID != binding.RunnerID {
+						t.Fatalf("routing lease lost project or runner: %#v", lease)
+					}
+					return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: f.service.accessOrganization(), LeaseID: lease.LeaseID, RunnerID: binding.RunnerID, AssignedAt: lease.AcquiredAt})
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}

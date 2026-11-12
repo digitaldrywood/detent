@@ -1,16 +1,20 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -38,6 +42,10 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 	}
 	hash, err := nativeCommandHash(request)
 	if err != nil {
+		return nil, err
+	}
+prepareReview:
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	replay, found, err := s.changeOperationRecordReceipt(ctx, scope, item, changeID, versionID, operation, request.IdempotencyKey, hash)
@@ -80,14 +88,27 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 		}
 	}
 	review := tracker.ChangeReview{SessionMachineID: sessionMachine, ImplementationReview: request.ImplementationReview, Validator: request.Validator, SecurityAudit: request.SecurityAudit, ID: payloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: payloadTimestamp(ctx, now)}
-	if request.Decision == "changes_requested" && len(review.IndependentFailures()) != 0 {
-		return nil, workItemStorageUnavailable()
+	var independent *preparedIndependentRepairs
+	if request.Decision == "changes_requested" && review.VersionID == change.CurrentVersion {
+		independent, err = s.prepareIndependentRepairs(ctx, scope, change.WorkItemID, review.IndependentFailures(), change.ID+"/"+review.ID, now)
+		if err != nil {
+			return nil, err
+		}
+		if independent != nil {
+			review.RepairDependencies, review.RepairRefusal = independent.dependencies, independent.refusal
+		}
 	}
 	raw, err := json.Marshal(review)
 	if err != nil {
 		return nil, err
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	var preparedContent *reviewDetailStore
+	var detailStore attachment.DetailStore
+	if owner := s.runDetailStore(); owner != nil {
+		preparedContent = &reviewDetailStore{DetailStore: owner, service: s, prepared: make(map[string]attachment.ArchiveReference)}
+		detailStore = preparedContent
+	}
+	content := eventstore.NewContent(detailStore)
 	var approvedPolicyRows currentChangePolicyRows
 	var approval ChangeVersionApproval
 	if request.Decision == "approved" || prepared != nil || request.Decision == "changes_requested" && versionID == change.CurrentVersion {
@@ -108,7 +129,7 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 		}
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		_, err := validateChangeRecordContent(ctx, r, scope, changeReviewContentFields(request), nil, false)
+		_, err := validateChangeRecordContent(ctx, r, scope, changeReviewContentFields(request), nil, "", false)
 		return err
 	}); err != nil {
 		return nil, projectRecordError(err)
@@ -154,7 +175,7 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 			if err != nil {
 				return nil, err
 			}
-			bodyKey, err := s.prepareWorkItemField(ctx, scope.organization, bodyRaw)
+			bodyRef, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, bodyRaw)
 			if err != nil {
 				return nil, err
 			}
@@ -176,7 +197,7 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 				return nil, err
 			}
 			kind, principal := scope.actor().Kind, scope.actor().PrincipalID
-			instructions = &preparedInstructions{item: itemRow, comment: corestore.Comment{OrganizationID: scope.organization, ID: comment.ID, ProjectID: scope.project, WorkItemID: itemRow.NativeID, Revision: 1, Sequence: itemRow.EventSequence + 2, BodyObjectKey: bodyKey, ActorKind: kind, ActorPrincipalID: principal, CreatedAt: review.CreatedAt, UpdatedAt: review.CreatedAt}, version: commentVersion, event: commentEvent}
+			instructions = &preparedInstructions{item: itemRow, comment: corestore.Comment{OrganizationID: scope.organization, ID: comment.ID, ProjectID: scope.project, WorkItemID: itemRow.NativeID, Revision: 1, Sequence: itemRow.EventSequence + 2, BodyObjectKey: bodyRef.PayloadObjectKey, ActorKind: kind, ActorPrincipalID: principal, CreatedAt: review.CreatedAt, UpdatedAt: review.CreatedAt}, version: commentVersion, event: commentEvent}
 		}
 	}
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, raw)
@@ -202,6 +223,15 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 			if workflowPlan != nil {
 				transition = workflowPlan.transition
 			}
+			if independent != nil {
+				refusal, err := s.checkIndependentRepairs(ctx, w, scope, independent)
+				if err != nil {
+					return err
+				}
+				if refusal != independent.refusal {
+					return corestore.ErrSerializationFailure
+				}
+			}
 			transitionReady, err := s.lockChangeWorkflowTransition(ctx, w, scope, transition)
 			if err != nil {
 				return err
@@ -219,7 +249,7 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 					return corestore.ErrRevisionConflict
 				}
 			}
-			if err := bindChangeRecordContent(ctx, w, scope, item, changeReviewContentFields(request), nil); err != nil {
+			if err := bindChangeRecordContent(ctx, w, scope, item, changeReviewContentFields(request), nil, ""); err != nil {
 				return err
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
@@ -277,6 +307,18 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 			if err != nil {
 				return fmt.Errorf("recheck review workflow: %w", err)
 			}
+			if preparedContent != nil {
+				keys := make([]string, 0, len(preparedContent.prepared))
+				for key := range preparedContent.prepared {
+					keys = append(keys, key)
+				}
+				slices.Sort(keys)
+				for _, key := range keys {
+					if err := s.registerChangeContentRecord(ctx, w, string(scope.organization), preparedContent.prepared[key], true); err != nil {
+						return err
+					}
+				}
+			}
 			if _, err := w.AppendEvidence(ctx, evidence); err != nil {
 				return fmt.Errorf("append review evidence: %w", err)
 			}
@@ -294,6 +336,9 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 					return err
 				}
 			}
+			if err := s.applyIndependentRepairs(ctx, w, scope, independent); err != nil {
+				return err
+			}
 			if transitionReady && workflowCurrent {
 				if err := s.applyChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
 					return fmt.Errorf("apply review workflow: %w", err)
@@ -310,6 +355,9 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 			if found {
 				return replay, nil
 			}
+			if independent != nil {
+				goto prepareReview
+			}
 			continue
 		}
 		if errors.Is(err, corestore.ErrRevisionConflict) {
@@ -325,4 +373,38 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 	default:
 	}
 	return raw, nil
+}
+
+type reviewDetailStore struct {
+	attachment.DetailStore
+	service  *Service
+	prepared map[string]attachment.ArchiveReference
+}
+
+func (store *reviewDetailStore) StoreDetail(ctx context.Context, organization string, raw []byte) (attachment.ArchiveReference, error) {
+	if store.DetailStore == nil {
+		return attachment.ArchiveReference{}, artifact.ErrStorage
+	}
+	expected, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(raw))
+	if err != nil {
+		return attachment.ArchiveReference{}, err
+	}
+	if previous, found := store.prepared[expected.Key]; found {
+		if previous != expected {
+			return attachment.ArchiveReference{}, artifact.ErrIntegrity
+		}
+		return previous, nil
+	}
+	if err := store.service.checkChangeContentAllowance(ctx, organization, store.prepared, expected); err != nil {
+		return attachment.ArchiveReference{}, err
+	}
+	actual, err := (runEventDetailStore{DetailStore: store.DetailStore}).StoreDetail(ctx, organization, raw)
+	if err != nil {
+		return attachment.ArchiveReference{}, err
+	}
+	if actual != expected {
+		return attachment.ArchiveReference{}, artifact.ErrIntegrity
+	}
+	store.prepared[expected.Key] = actual
+	return actual, nil
 }

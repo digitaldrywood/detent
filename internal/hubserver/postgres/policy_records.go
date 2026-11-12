@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -340,6 +341,9 @@ func (s *session) ApproveProjectPolicy(ctx context.Context, row policystore.Revi
 	if count != 1 {
 		return corestore.ErrRevisionConflict
 	}
+	if expected != row.PolicyID {
+		return s.recordBoardDelta(row.ProjectID, viewstore.BoardDelta{Topic: "board", EntityID: string(row.ProjectID), Kind: "invalidate"})
+	}
 	return nil
 }
 
@@ -514,6 +518,9 @@ func (s *session) SetReviewPolicy(ctx context.Context, row eventstore.ReviewPoli
 	}
 	if count != 1 {
 		return corestore.ErrRevisionConflict
+	}
+	if expected != row.ReviewPolicyID {
+		return s.recordBoardDelta(row.ProjectID, viewstore.BoardDelta{Topic: "board", EntityID: string(row.ProjectID), Kind: "invalidate"})
 	}
 	return nil
 }

@@ -160,23 +160,18 @@ func TestHubServeIdentityModes(t *testing.T) {
 		name        string
 		hosted      bool
 	}{
-		{name: "local compatibility"},
+		{name: "local PostgreSQL"},
 		{name: "hosted without GitHub flag", hosted: true},
 		{name: "hosted credential maintenance", hosted: true, maintenance: true},
 		{name: "hosted product GitHub App", hosted: true, app: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			directory := t.TempDir()
-			args := []string{"serve", "--database", filepath.Join(directory, "hub.db"), "--listen", "127.0.0.1:0"}
+			body := hubServePostgresConfig
 			if test.hosted {
-				path := filepath.Join(directory, "hosted.yaml")
-				body := "organization_id: org_customer\nbootstrap_subject: user_customer\npublic_url: https://tenant.example.test\nworkos:\n  client_id: client_example\n"
-				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				args = append(args, "--hosted-config", path)
+				body += "organization_id: org_example\nworkos_organization_id: org_provider\nbootstrap_subject: user_example\npublic_url: https://tenant.example.test\nworkos:\n  client_id: client_example\n"
 			}
+			args := []string{"serve", "--hosted-config", writeHubServeConfig(t, body), "--listen", "127.0.0.1:0"}
 			if test.maintenance {
 				args = append(args, "--credential-maintenance")
 			}
@@ -184,7 +179,12 @@ func TestHubServeIdentityModes(t *testing.T) {
 			cmd := newHubCommandWithRun("test", func(name string) string {
 				switch name {
 				case "DETENT_HUB_ADMIN_TOKEN":
+					if test.hosted {
+						t.Error("hosted mode resolved a local bootstrap token")
+					}
 					return "reporter-fixture"
+				case "TEST_HUB_POSTGRES_PASSWORD":
+					return "postgres-fixture-password"
 				case "DETENT_HUB_GITHUB_APP_ID", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY":
 					if test.app {
 						return "product-app-fixture"
@@ -202,6 +202,9 @@ func TestHubServeIdentityModes(t *testing.T) {
 				called = true
 				if cfg.CredentialMaintenance != test.maintenance || (cfg.Hosted != nil) != test.hosted {
 					t.Errorf("mode = maintenance %t, hosted %t", cfg.CredentialMaintenance, cfg.Hosted != nil)
+				}
+				if cfg.Postgres == nil || cfg.Hosted != nil && cfg.Hosted.Postgres != cfg.Postgres {
+					t.Error("serve did not receive the selected PostgreSQL connection")
 				}
 				return nil
 			})

@@ -8,14 +8,20 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -24,15 +30,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) {
 	for _, test := range []struct {
 		name, refusal   string
+		transfer        string
 		reasonCode      string
 		laterLease      string
 		qualified       bool
@@ -44,6 +53,13 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 		instance        bool
 		retainedWriter  bool
 	}{
+
+		{name: "saved commit dependency wait across Hub restart", transfer: "commit"},
+		{name: "unowned holding evidence retries after terminal receipt", transfer: "unowned"},
+		{name: "saved PR dependency wait across Hub restart", transfer: "pr"},
+		{name: "merge return lane across Hub restart", transfer: "merge"},
+		{name: "completed dependency releases saved source after restart", transfer: "ready"},
+		{name: "removed native edge releases saved source after restart", transfer: "removed"},
 		{name: "reported prerequisite registers dependency hold"},
 		{name: "instance-owned blocker recovers on any runner without a dependency", instance: true},
 		{name: "typed instance reason recovers after ended claim", instance: true, reasonCode: "instance_limitation", laterLease: "released", dirty: true},
@@ -72,6 +88,10 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 		{name: "configuration change permits dependency recovery", refusal: "policy"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.transfer != "" {
+				runNativeDependencyTransfer(t, factories, test.transfer)
+				return
+			}
 			var clockOffset atomic.Int64
 			clock := func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())) }
 			h := newNativeChangeHubConfigured(t, "Human Review", []tracker.NativeState{
@@ -497,4 +517,482 @@ func (r nativeDependencyRecoveryRunner) Run(ctx context.Context, request runner.
 	r.started <- request
 	<-ctx.Done()
 	return runner.RunResult{}, ctx.Err()
+}
+
+func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer string) {
+	t.Helper()
+	ctx := t.Context()
+	var retryClockOffset atomic.Int64
+	retryNow := func() time.Time { return time.Now().Add(time.Duration(retryClockOffset.Load())) }
+	var unlink func(context.Context) error
+	if transfer == "unowned" {
+		create := factories.New
+		var unlinked atomic.Bool
+		factories.New = func(host executioncontract.ExecutionHost, view executioncontract.ExecutionClaim) executioncontract.Execution {
+			actual := create(host, view)
+			return &nativeDependencyUnlinkedExecution{Lifecycle: actual.(Lifecycle), afterFinish: func(ctx context.Context) error {
+				if unlinked.Swap(true) {
+					return nil
+				}
+				if unlink == nil {
+					return errors.New("native relation removal fixture unavailable")
+				}
+				return unlink(ctx)
+			}}
+		}
+	}
+	lane := "Rework"
+	initialLane := "In Progress"
+	if transfer == "merge" {
+		lane = "Merging"
+	}
+	withPR := transfer == "pr" || transfer == "merge"
+	if withPR {
+		initialLane = lane
+	}
+	ready := transfer == "ready"
+	removed := transfer == "removed"
+	states := []tracker.NativeState{}
+	transitions := []string{"Todo", "In Progress", "Rework", "Merging", "Blocked", "Backlog", "Human Review", "Done"}
+	for _, name := range transitions {
+		states = append(states, tracker.NativeState{Name: name, Dispatchable: name == "Todo" || name == "In Progress" || name == "Rework" || name == "Merging", Terminal: name == "Done", Transitions: transitions})
+	}
+	h := newNativeChangeHubConfigured(t, "Human Review", states, true, true, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Clock: retryNow}, factories)
+	priority := 1
+	created, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Saved implementation", Body: "Preserve the saved implementation." + issueContractTestSections, State: initialLane, Priority: &priority})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := api.IssueFromNative(created)
+	request := orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Todo", "In Progress", "Rework", "Merging"}, PrioritizeUnblockers: true, DispatchPriorityByState: []string{"Merging", "Rework", "In Progress", "Todo"}}
+	priority = 2
+	prerequisite, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Prerequisite", Body: "Complete the prerequisite." + issueContractTestSections, State: "Backlog", Priority: &priority})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlink = func(ctx context.Context) error {
+		current, err := h.admin.Issue(ctx, created.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if len(current.Dependencies) != 1 || current.Dependencies[0] != prerequisite.WorkItemID {
+			return errors.New("terminal report did not create native dependency")
+		}
+		_, err = h.admin.Dependency(ctx, created.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: prerequisite.WorkItemID, Operation: "remove"})
+		return err
+	}
+	priority = 3
+	unrelated, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Unrelated work", Body: "Complete unrelated work." + issueContractTestSections, State: "Backlog", Priority: &priority})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitOutput := func(directory string, args ...string) string {
+		t.Helper()
+		command := exec.CommandContext(ctx, "git", append([]string{"-C", directory}, args...)...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("repository fixture: %v: %s", err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
+	source := nativeChangeSourceRepo(t)
+	remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
+	nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
+	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+	nativeChangeGit(t, source, "push", "-u", "origin", "main")
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "original"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceIssue := workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier}
+	original, err := backend.Create(ctx, workspaceIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := gitOutput(original.Path, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(original.Path, "saved-change.txt"), []byte("saved implementation"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	nativeChangeGit(t, original.Path, "add", "saved-change.txt")
+	nativeChangeGit(t, original.Path, "commit", "-m", "Save implementation")
+	head := gitOutput(original.Path, "rev-parse", "HEAD")
+	capture, err := workspace.CaptureChangeSource(ctx, original.Path, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, err := h.admin.CreateChange(ctx, created.WorkItemID, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Saved implementation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var external *tracker.ChangeExternalReference
+	if withPR {
+		external = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: nativeChangeRepository + "/pull/7"}
+	}
+	version := h.publishCapturedExternal(t, created.WorkItemID, change.ID, head, &capture, external, "", base)
+	if _, err := h.admin.ReviewChange(ctx, created.WorkItemID, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved"}); err != nil {
+		t.Fatal(err)
+	}
+	request.LandingCapacity = 1
+	request.NativeLandingBatch = transfer == "merge"
+	candidates, err := h.scheduler.FetchCandidateIssues(ctx, request)
+	if err != nil || len(candidates) != 1 || candidates[0].ID != issue.ID {
+		t.Fatalf("initial candidates=%+v error=%v", candidates, err)
+	}
+	if _, err := h.scheduler.AdoptClaim(ctx, candidates[0], time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	execution := h.scheduler.RunExecution(issue.ID)
+	if err := execution.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "example-model"}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "local_only", WorktreeState: "clean", HeadSHA: head, ExternalEffect: "none", EffectState: "none", Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: head}}
+	execution.(runner.DiffExecution).SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
+		return tracker.AttemptDiffRequest{BaseSHA: base, HeadSHA: head, Files: []tracker.AttemptDiffFile{{Path: "saved-change.txt", Status: tracker.DiffStatusAdded, Additions: 1, Patch: capture.Patch}}}, true
+	})
+	if err := execution.Checkpoint(ctx, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	report := fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '%s#%d'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: null\n```", h.project, prerequisite.Number)
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	candidateChanges := make(chan struct{}, 1)
+	completionSource := &nativeCompletionScheduling{Scheduler: h.scheduler, issue: candidates[0], released: make(chan error, 1), wake: candidateChanges}
+	completed := make(chan nativeCompletionRun, 1)
+	runtimeRunner, err := runner.NewRunner(runner.Dependencies{ProjectID: "local", Now: retryNow, ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), Workspace: backend, AgentBackend: &committingAgent{}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: config.DefaultAgentBackendID, Model: "example-model", Default: true}}}}, Prompt: "Preserve the saved implementation"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backendRunner := &nativeCompletionRunner{Runner: runtimeRunner, prepared: &runner.RunResult{FinalState: runner.FinalStateCompleted, FinalMessage: report, TurnStarted: true, DiffStats: runner.DiffStats{Status: "clean", HeadSHA: head, UnpushedCommits: 1}, NativeChange: &runner.NativeChange{Changed: true, ChangeID: change.ID, VersionID: version.ID, BaseSHA: base, HeadSHA: head, Reviewed: true, MergeResolution: transfer == "merge"}}, completed: completed, prepare: func(ctx context.Context, request runner.RunRequest) error {
+		if globalGate.PoolSnapshot().Available != 0 {
+			return errors.New("dependency worker did not acquire global slot")
+		}
+		return request.Execution.(runner.CompletionExecution).PrepareFinish(ctx, "succeeded", report, nil)
+	}}
+	var retryStarted chan nativeCompletionRun
+	if transfer == "unowned" {
+		retryStarted = make(chan nativeCompletionRun, 1)
+		backendRunner.retryStarted = retryStarted
+		completionSource.retryCandidates = make(chan error, 1)
+	}
+	completionOrch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, FailureRetryBaseDelay: time.Hour, MaxRetryBackoff: time.Hour, ActiveStates: request.WorkflowStates, TerminalStates: []string{"Done"}, AutoPromote: orchestrator.AutoPromoteConfig{HumanReview: new(false)}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: completionSource, Runner: backendRunner, GlobalDispatchGate: globalGate, Now: retryNow, Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completionCtx, completionCancel := context.WithCancel(ctx)
+	completionDone := make(chan error, 1)
+	go func() { completionDone <- completionOrch.Run(completionCtx) }()
+	var completionStop sync.Once
+	stopCompletion := func() {
+		completionStop.Do(func() {
+			completionCancel()
+			if err := <-completionDone; err != nil && !errors.Is(err, context.Canceled) {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(stopCompletion)
+	select {
+	case result := <-completed:
+		if result.err != nil {
+			t.Fatalf("dependency worker preparation: %v", result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("dependency worker did not complete")
+	}
+	var settled orchestrator.State
+	testenv.WaitUntil(t, ctx, func() error {
+		current, err := completionOrch.State(ctx)
+		if err != nil {
+			return err
+		}
+		if len(current.Running) != 0 {
+			return errors.New("dependency completion is still running")
+		}
+		settled = current
+		return nil
+	})
+	if transfer == "unowned" {
+		if globalGate.PoolSnapshot().Available != 1 || len(settled.Running) != 0 || len(settled.Claimed) != 0 || len(settled.Retry) != 1 || len(settled.Blocked) != 0 {
+			t.Fatalf("terminal unowned report lost retry or retained claim: %+v", settled)
+		}
+		retry, ok := settled.Retry[issue.ID]
+		if !ok || retry.Attempt != 1 {
+			t.Fatalf("unowned retry=%+v", retry)
+		}
+		select {
+		case err := <-completionSource.released:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatal("terminal retry did not release its finished execution")
+		}
+		originalAttempt := execution.(Lifecycle).CompletionData()
+		if originalAttempt.Runtime == nil || originalAttempt.Runtime.Completion == nil || originalAttempt.Runtime.Completion.AcceptanceRecorded {
+			t.Fatal("terminal dependency receipt lost unaccepted completion observation")
+		}
+		h.restart()
+		history, err := h.admin.History(ctx, created.WorkItemID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		finished := 0
+		for _, event := range history.Items {
+			if event.Type == "run.finished" && event.Data.Run != nil && event.Data.Run.AttemptID == originalAttempt.AttemptID {
+				finished++
+			}
+		}
+		if finished != 1 {
+			t.Fatalf("duplicate Finish produced %d terminal events", finished)
+		}
+		retryClockOffset.Add(int64(2 * time.Hour))
+		completionSource.resumeCandidates.Store(true)
+		candidateChanges <- struct{}{}
+		select {
+		case started := <-retryStarted:
+			if started.err != nil {
+				t.Fatalf("successor start: %v", started.err)
+			}
+			next := started.request
+			current := next.Execution.(Lifecycle).CompletionData()
+			if current.AttemptID == "" || current.AttemptID == originalAttempt.AttemptID || current.FencingToken <= originalAttempt.FencingToken || backendRunner.calls.Load() != 2 || globalGate.PoolSnapshot().Available != 0 {
+				t.Fatalf("retry reused terminal execution: previous=%+v current=%+v", originalAttempt, current)
+			}
+			evidence, err := h.native.RuntimeEvidence(ctx, created.WorkItemID, current.AttemptID)
+			if err != nil || evidence.Attempt == nil || evidence.Attempt.Status != "running" {
+				t.Fatalf("successor did not actually start: %+v error=%v", evidence.Attempt, err)
+			}
+		case err := <-completionSource.retryCandidates:
+			t.Fatalf("successor candidate fetch: %v", err)
+		case <-ctx.Done():
+			t.Fatal("terminal unowned report never started successor")
+		}
+		return
+	}
+	if globalGate.PoolSnapshot().Available != 1 || len(settled.Running) != 0 || len(settled.Claimed) != 0 || len(settled.Retry) != 0 || len(settled.Blocked) != 0 || len(settled.Completed) != 0 {
+		t.Fatalf("completed dependency wait: available=%d running=%d claimed=%d retry=%d blocked=%d completed=%d retry_error=%q", globalGate.PoolSnapshot().Available, len(settled.Running), len(settled.Claimed), len(settled.Retry), len(settled.Blocked), len(settled.Completed), settled.Retry[issue.ID].Error)
+	}
+	select {
+	case err := <-completionSource.released:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatal("completion returned without a claim release receipt")
+	}
+	if actual := h.state(t, issue.ID); actual != lane {
+		t.Fatalf("completed dependency wait lane=%s want=%s", actual, lane)
+	}
+	stopCompletion()
+	identity, err := runnerauth.Load(h.native.Transport().IdentityFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.native.Claim(ctx, tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: created.WorkItemID, MachineID: identity.Identity.MachineID, SessionID: "dependency-refusal", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: request.WorkflowStates}); !errors.Is(err, api.ErrNoClaimableWork) {
+		t.Fatalf("unfinished dependency claim=%v", err)
+	}
+	before, err := h.admin.History(ctx, created.WorkItemID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions := []tracker.CollaborationEvent{}
+	for _, event := range before.Items {
+		if event.Type == "scheduler.decision" {
+			decisions = append(decisions, event)
+		}
+	}
+	if len(decisions) != 2 {
+		t.Fatalf("scheduler decisions=%+v want claim and refusal", decisions)
+	}
+	var refusal tracker.CollaborationEvent
+	for _, event := range decisions {
+		if event.Data.Decision != nil && event.Data.Decision.Outcome == "skipped" {
+			refusal = event
+		}
+	}
+	if refusal.ID == "" || refusal.Data.Decision.Reason != "no_claimable_work" {
+		t.Fatalf("dependency refusal=%+v", refusal)
+	}
+	h.restart()
+	recovered, err := h.native.Recovery(ctx, created.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Issue.State != lane || slices.Contains(recovered.Issue.OmittedFields, "dependencies") || len(recovered.Issue.Dependencies) != 1 || recovered.Issue.Dependencies[0] != prerequisite.WorkItemID {
+		t.Fatalf("current dispatchable dependency intent=%+v", recovered.Issue)
+	}
+	if len(recovered.Attempts) != 1 {
+		t.Fatalf("persisted completed dependency attempts=%+v", recovered.Attempts)
+	}
+	previous := recovered.Attempts[0]
+	if previous.Runtime == nil || previous.Runtime.Completion == nil || previous.Runtime.Completion.AcceptanceRecorded {
+		t.Fatal("persisted dependency receipt lost unaccepted completion observation")
+	}
+	if previous.Status != "succeeded" || previous.Disposition == nil || previous.Disposition.Status != "blocked" || !reflect.DeepEqual(previous.Checkpoint, &checkpoint) {
+		t.Fatalf("durable dependency/source=%+v", previous)
+	}
+	detail, err := h.admin.Change(ctx, created.WorkItemID, change.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retained *tracker.ChangeVersion
+	for index := range detail.Versions {
+		if detail.Versions[index].ID == version.ID {
+			retained = &detail.Versions[index]
+		}
+	}
+	if retained == nil || retained.HeadSHA != head || retained.BaseSHA != base || !reflect.DeepEqual(retained.External, external) || !reflect.DeepEqual(retained.Source, version.Source) {
+		t.Fatalf("canonical saved version=%+v", retained)
+	}
+	bundle, err := h.admin.ChangeSource(ctx, created.WorkItemID, change.ID, version.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshSource := nativeChangeSourceRepo(t)
+	nativeChangeGit(t, freshSource, "remote", "add", "origin", nativeChangeRepository)
+	nativeChangeGit(t, freshSource, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+	if err := exec.CommandContext(ctx, "git", "-C", freshSource, "cat-file", "-e", head+"^{commit}").Run(); err == nil {
+		t.Fatal("fresh repository already contains saved source")
+	}
+	freshBackend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "restored"), SourceRoot: freshSource, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceIssue.NativeRework = true
+	workspaceIssue.Source = &workspace.ChangeSource{Version: *retained, Bundle: bundle, Transferred: true}
+	restored, err := freshBackend.Create(ctx, workspaceIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(restored.Path, "saved-change.txt"))
+	if err != nil || string(contents) != "saved implementation" || restored.Branch != original.Branch || gitOutput(restored.Path, "rev-parse", "HEAD") != head {
+		t.Fatalf("restored saved source branch=%s want=%s contents=%q error=%v", restored.Branch, original.Branch, contents, err)
+	}
+	after, err := h.admin.History(ctx, created.WorkItemID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRefusal := false
+	for _, event := range after.Items {
+		if event.ID == refusal.ID {
+			foundRefusal = reflect.DeepEqual(event, refusal)
+		}
+	}
+	if !foundRefusal {
+		t.Fatal("restart lost exact persisted scheduler refusal")
+	}
+	runtime, err := h.native.RuntimeEvidence(ctx, created.WorkItemID, "", tracker.NativeAdmissionContext{PolicyID: h.descriptor.ID, WorkflowStates: request.WorkflowStates, ObservedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.LatestDecision == nil || runtime.LatestDecision.ID != refusal.ID || runtime.LatestDecision.Data.Decision == nil || runtime.LatestDecision.Data.Decision.Reason != refusal.Data.Decision.Reason {
+		t.Fatalf("persisted refusal explanation=%+v want event=%s", runtime.LatestDecision, refusal.ID)
+	}
+	dependencyRefusal := false
+	for _, admission := range runtime.Admission {
+		for _, dependency := range admission.UnresolvedDependencies {
+			dependencyRefusal = dependencyRefusal || dependency.ID == prerequisite.WorkItemID
+		}
+	}
+	if !dependencyRefusal {
+		t.Fatalf("generic refusal lacks actual current dependency evidence: %+v", runtime.Admission)
+	}
+	if ready {
+		if _, err := h.admin.Transition(ctx, prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if _, err := h.admin.Transition(ctx, prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if removed {
+		current, err := h.admin.Issue(ctx, created.WorkItemID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.admin.Dependency(ctx, created.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: prerequisite.WorkItemID, Operation: "remove"}); err != nil {
+			t.Fatal(err)
+		}
+		changed, err := h.admin.Issue(ctx, created.WorkItemID)
+		if err != nil || len(changed.Dependencies) != 0 {
+			t.Fatalf("native edge removal=%+v error=%v", changed.Dependencies, err)
+		}
+	}
+	if _, err := h.admin.Transition(ctx, unrelated.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: unrelated.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan runner.RunRequest, 1)
+	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, PrioritizeUnblockers: true, ActiveStates: request.WorkflowStates, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: request.DispatchPriorityByState}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: nativeDependencyRecoveryRunner{started: started}, Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- orch.Run(runCtx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	want := string(prerequisite.WorkItemID)
+	if ready || removed {
+		want = issue.ID
+	}
+	select {
+	case run := <-started:
+		if run.Issue.ID != want {
+			t.Fatalf("capacity-one dispatched %s state=%s want %s; saved=%s prerequisite=%s unrelated=%s unrelated_priority=%d", run.Issue.ID, run.Issue.State, want, created.WorkItemID, prerequisite.WorkItemID, unrelated.WorkItemID, priority)
+		}
+		if want == issue.ID && run.Issue.State != lane {
+			t.Fatalf("return lane=%s want=%s", run.Issue.State, lane)
+		}
+	case <-ctx.Done():
+		t.Fatal("dependency restart did not dispatch")
+	}
+	for tick := 0; tick < 3; tick++ {
+		before, err := orch.State(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := orch.RequestRefresh(ctx); err != nil {
+			t.Fatal(err)
+		}
+		testenv.WaitUntil(t, ctx, func() error {
+			current, err := orch.State(ctx)
+			if err != nil {
+				return err
+			}
+			if len(current.Running) != 1 || current.Running[want].Issue.ID != want {
+				t.Fatalf("refresh displaced executable worker: %+v", current.Running)
+			}
+			if !current.LastRefreshAt.After(before.LastRefreshAt) {
+				return errors.New("refresh has not completed")
+			}
+			return nil
+		})
+	}
+}
+
+type nativeDependencyUnlinkedExecution struct {
+	Lifecycle
+	afterFinish func(context.Context) error
+}
+
+func (e *nativeDependencyUnlinkedExecution) Finish(ctx context.Context, outcome string) error {
+	if err := e.Lifecycle.Finish(ctx, outcome); err != nil {
+		return err
+	}
+	if outcome != "succeeded" {
+		return nil
+	}
+	runtime, ok := e.Lifecycle.(runner.RuntimeExecution)
+	if !ok {
+		return errors.New("native completion runtime unavailable")
+	}
+	observed := time.Now().UTC()
+	if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: observed, Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: false, ObservedAt: observed}}); err != nil {
+		return err
+	}
+	if err := e.Lifecycle.Finish(ctx, outcome); err != nil {
+		return err
+	}
+	return e.afterFinish(ctx)
 }

@@ -1,12 +1,9 @@
 package orchestrator
 
 import (
-	"context"
 	"slices"
-	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -43,27 +40,6 @@ func (o *Orchestrator) localIntakeIssues(state *State, issues []connector.Issue)
 	return slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool {
 		return !o.localIntakeAllows(state, issue)
 	})
-}
-
-func (o *Orchestrator) recoverLocalAdmissions(ctx context.Context, state *State) {
-	reader, ok := o.workAttempts.(store.LocalAdmissionStore)
-	if !ok || state == nil || state.localAdmissionRecovered || strings.TrimSpace(o.projectID) == "" {
-		return
-	}
-	ids, err := reader.ListLocalAdmittedIssueIDs(ctx, o.projectID)
-	if err != nil {
-		if o.logger != nil {
-			o.logger.Warn("local admitted cohort lookup failed", "project_id", o.projectID, "error", err)
-		}
-		return
-	}
-	if state.localAdmitted == nil {
-		state.localAdmitted = make(map[string]struct{}, len(ids))
-	}
-	state.localAdmissionRecovered = true
-	for _, id := range ids {
-		state.localAdmitted[id] = struct{}{}
-	}
 }
 
 func (o *Orchestrator) snapshotLocalIntake(state *State) {

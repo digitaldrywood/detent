@@ -12,7 +12,6 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/procgroup"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -32,12 +31,6 @@ type workerProcessFixOutcome struct {
 	StartedAt  time.Time `json:"started_at"`
 	RSSBytes   int64     `json:"rss_bytes"`
 	Outcome    string    `json:"outcome,omitempty"`
-}
-
-type workerProcessFixStore interface {
-	ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error)
-	MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error
-	Close() error
 }
 
 func newWorkerProcessesFixCommand(configPath *string, opts options) *cobra.Command {
@@ -102,13 +95,7 @@ func newWorkerProcessesFixCommand(configPath *string, opts options) *cobra.Comma
 					return err
 				}
 			}
-			processStore, err := store.Open(cmd.Context(), store.Config{Backend: store.BackendSQLite, Path: runtimeStorePath(BootConfig{Global: global})})
-			if err != nil {
-				return err
-			}
-			applyErr := applyWorkerProcessesFix(cmd.Context(), processStore, &result, procgroup.Terminate, time.Now)
-			closeErr := processStore.Close()
-			if err := errors.Join(applyErr, closeErr); err != nil {
+			if err := applyWorkerProcessesFix(cmd.Context(), &result, procgroup.Terminate); err != nil {
 				return err
 			}
 			result.Applied = true
@@ -137,29 +124,12 @@ func newWorkerProcessesFixResult(summary telemetry.OrphanedAgentProcesses) worke
 	return result
 }
 
-func applyWorkerProcessesFix(
-	ctx context.Context,
-	processStore workerProcessFixStore,
-	result *workerProcessesFixResult,
-	reap workerProcessReapFunc,
-	now func() time.Time,
-) error {
+func applyWorkerProcessesFix(ctx context.Context, result *workerProcessesFixResult, reap workerProcessReapFunc) error {
 	if result == nil || len(result.Processes) == 0 {
 		return nil
 	}
 	if reap == nil {
 		reap = procgroup.Terminate
-	}
-	if now == nil {
-		now = time.Now
-	}
-	registered, err := processStore.ListActiveWorkerProcesses(ctx)
-	if err != nil {
-		return fmt.Errorf("list worker processes: %w", err)
-	}
-	registrations := make(map[int64]store.WorkerProcess, len(registered))
-	for _, process := range registered {
-		registrations[process.SessionID] = process
 	}
 	for index := range result.Processes {
 		process := &result.Processes[index]
@@ -168,16 +138,6 @@ func applyWorkerProcessesFix(
 			return fmt.Errorf("reap worker process %d: %w", process.PID, err)
 		}
 		process.Outcome = string(outcome)
-		if err := cleanupWorkerProcessArtifacts(registrations[process.SessionID]); err != nil {
-			return fmt.Errorf("clean worker process %d artifacts: %w", process.PID, err)
-		}
-		if err := processStore.MarkSessionWorkerProcessReaped(ctx, process.SessionID, store.WorkerProcessReap{
-			ReapedAt: now().UTC(),
-			Outcome:  process.Outcome,
-			Reason:   "doctor_reap",
-		}); err != nil {
-			return fmt.Errorf("record worker process %d reap: %w", process.PID, err)
-		}
 	}
 	return nil
 }

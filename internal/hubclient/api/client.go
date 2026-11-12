@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -126,38 +125,6 @@ func (m Machine) workspaceReport() (*workspacesession.Capabilities, string) {
 	return &capabilities, m.WorkspaceIsolation
 }
 
-type MachineHeartbeat struct {
-	DisplayName  *string         `json:"display_name,omitempty"`
-	Capabilities *map[string]any `json:"capabilities,omitempty"`
-	Capacity     *int            `json:"capacity,omitempty"`
-	Version      *string         `json:"version,omitempty"`
-}
-
-type WorkItem struct {
-	tracker.WorkItem
-	Body string `json:"body"`
-}
-
-type ClaimRequest struct {
-	WorkItemID    tracker.WorkItemID `json:"work_item_id,omitempty"`
-	PolicyID      string             `json:"policy_id"`
-	MachineID     tracker.MachineID  `json:"machine_id"`
-	SessionID     string             `json:"session_id"`
-	TTLSeconds    int64              `json:"ttl_seconds"`
-	Repositories  []string           `json:"repositories,omitempty"`
-	WorkflowState []string           `json:"workflow_states,omitempty"`
-	Authors       []string           `json:"authors,omitempty"`
-	Assignees     []string           `json:"assignees,omitempty"`
-	LabelInclude  []string           `json:"label_include,omitempty"`
-	LabelExclude  []string           `json:"label_exclude,omitempty"`
-}
-
-type LeaseRequest struct {
-	FencingToken tracker.FencingToken `json:"fencing_token"`
-	TTLSeconds   int64                `json:"ttl_seconds,omitempty"`
-	Reason       string               `json:"reason,omitempty"`
-}
-
 type APIError struct {
 	Status          int
 	Code            string
@@ -240,50 +207,6 @@ func New(config Config) (*Client, error) {
 		client.httpClient = &transport
 	}
 	return client, nil
-}
-
-func (c *Client) RegisterMachine(ctx context.Context, machine Machine) (Machine, error) {
-	var response Machine
-	err := c.request(ctx, http.MethodPost, "/api/v1/machines/register", machine, &response)
-	return response, err
-}
-
-func (c *Client) HeartbeatMachine(ctx context.Context, id tracker.MachineID, heartbeat MachineHeartbeat) (Machine, error) {
-	var response Machine
-	err := c.request(ctx, http.MethodPost, "/api/v1/machines/"+url.PathEscape(string(id))+"/heartbeat", heartbeat, &response)
-	return response, err
-}
-
-func (c *Client) Claim(ctx context.Context, request ClaimRequest) (tracker.Lease, error) {
-	var lease tracker.Lease
-	err := c.request(ctx, http.MethodPost, "/api/v1/claims", request, &lease)
-	var apiErr *APIError
-	if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict && apiErr.Code == "no_claimable_work" {
-		return tracker.Lease{}, ErrNoClaimableWork
-	}
-	return lease, err
-}
-
-func (c *Client) WorkItem(ctx context.Context, id tracker.WorkItemID) (WorkItem, error) {
-	var response WorkItem
-	err := c.request(ctx, http.MethodGet, "/api/v1/work-items/"+strconv.FormatInt(int64(id), 10), nil, &response)
-	return response, err
-}
-
-func (c *Client) Renew(ctx context.Context, lease tracker.Lease, ttl time.Duration) (tracker.Lease, error) {
-	var renewed tracker.Lease
-	err := c.request(ctx, http.MethodPost, "/api/v1/leases/"+url.PathEscape(string(lease.ID))+"/renew", LeaseRequest{
-		FencingToken: lease.FencingToken,
-		TTLSeconds:   int64(ttl / time.Second),
-	}, &renewed)
-	return renewed, err
-}
-
-func (c *Client) Release(ctx context.Context, lease tracker.Lease, reason string) error {
-	return c.request(ctx, http.MethodPost, "/api/v1/leases/"+url.PathEscape(string(lease.ID))+"/release", LeaseRequest{
-		FencingToken: lease.FencingToken,
-		Reason:       strings.TrimSpace(reason),
-	}, nil)
 }
 
 func (c *Client) request(ctx context.Context, method string, path string, input any, output any) error {

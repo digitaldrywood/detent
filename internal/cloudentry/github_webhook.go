@@ -19,6 +19,7 @@ import (
 
 type githubRoutes struct {
 	mu             sync.Mutex
+	refreshes      refreshLocks
 	byRepository   map[string]map[string]struct{}
 	byOrganization map[string][]string
 	unavailable    map[string]bool
@@ -37,17 +38,17 @@ func (s *Service) initializeGitHubRoutes(ctx context.Context) error {
 			continue
 		}
 		if organization.Managed && s.config.Allocation != nil {
-			err = s.runStep(ctx, &organization, "tenant_start")
-		} else {
-			err = s.refreshGitHubRoutes(ctx, organization)
-		}
-		if err != nil {
 			s.githubRoutes.mu.Lock()
 			if s.githubRoutes.unavailable == nil {
 				s.githubRoutes.unavailable = make(map[string]bool)
 			}
 			s.githubRoutes.unavailable[organization.ID] = true
 			s.githubRoutes.mu.Unlock()
+			err = s.runStep(ctx, &organization, "tenant_start")
+		} else {
+			err = s.refreshGitHubRoutes(ctx, organization)
+		}
+		if err != nil {
 			s.config.Logger.Warn("read tenant GitHub repository bindings", "organization", organization.ID, "error", err)
 		}
 	}
@@ -59,8 +60,9 @@ func (s *Service) refreshGitHubRoutes(ctx context.Context, organization Organiza
 		return nil
 	}
 	routes := &s.githubRoutes
+	unlock := routes.refreshes.lock(organization.ID)
+	defer unlock()
 	routes.mu.Lock()
-	defer routes.mu.Unlock()
 	if routes.byRepository == nil {
 		routes.byRepository = make(map[string]map[string]struct{})
 		routes.byOrganization = make(map[string][]string)
@@ -68,16 +70,22 @@ func (s *Service) refreshGitHubRoutes(ctx context.Context, organization Organiza
 	if routes.unavailable == nil {
 		routes.unavailable = make(map[string]bool)
 	}
-	routes.unavailable[organization.ID] = true
-	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/github/repositories", struct{}{}, nil)
-	if err != nil {
-		return err
+	if _, loaded := routes.byOrganization[organization.ID]; !loaded {
+		routes.unavailable[organization.ID] = true
 	}
-	if status != http.StatusOK {
-		return fmt.Errorf("tenant GitHub repository bindings returned %d", status)
+	routes.mu.Unlock()
+	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/github/repositories", struct{}{}, nil)
+	if err == nil && status != http.StatusOK {
+		err = fmt.Errorf("tenant GitHub repository bindings returned %d", status)
 	}
 	var repositories []string
-	if err := json.Unmarshal(raw, &repositories); err != nil {
+	if err == nil {
+		err = json.Unmarshal(raw, &repositories)
+	}
+	routes.mu.Lock()
+	defer routes.mu.Unlock()
+	if err != nil {
+		routes.unavailable[organization.ID] = true
 		return err
 	}
 	for _, repository := range routes.byOrganization[organization.ID] {

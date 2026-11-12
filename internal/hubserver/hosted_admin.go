@@ -77,7 +77,7 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 			if err != nil {
 				return s.nativeAPIError(c, err)
 			}
-			if err := s.requireHostedRunnerProjects(c.Request().Context(), nil, credential, runnerManagementProjects(runner)); err != nil {
+			if err := s.requireHostedRunnerProjects(c.Request().Context(), credential, runnerManagementProjects(runner)); err != nil {
 				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 					return s.nativeAPIError(c, operatorAuthorizationError(err))
 				}
@@ -88,7 +88,7 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 			}
 			credential.ManageRunners = true
 		case strings.HasPrefix(c.Path(), enrollmentBase) || strings.HasPrefix(c.Path(), runnerBase) || c.Path() == "/api/v2/organizations/:organization/machines/:machine/routing":
-			if err := s.requireHostedRunnerAdministration(c.Request().Context(), nil, credential); err != nil {
+			if err := s.requireHostedRunnerAdministration(c.Request().Context(), credential); err != nil {
 				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 					return s.nativeAPIError(c, operatorAuthorizationError(err))
 				}
@@ -133,14 +133,14 @@ func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCrede
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	return s.requireHostedRunnerAdministration(ctx, nil, credential) == nil
+	return s.requireHostedRunnerAdministration(ctx, credential) == nil
 }
 
-func (s *Service) requireHostedRunnerAdministration(ctx context.Context, query nativeQueryer, credential apiCredential) error {
+func (s *Service) requireHostedRunnerAdministration(ctx context.Context, credential apiCredential) error {
 	if credential.EntryKey != nil && (credential.EntryKey.Access != "all" || len(credential.EntryKey.BlockedProjects) > 0) {
 		return operatortool.ErrAccessDenied
 	}
-	return s.requireHostedRunnerProjects(ctx, query, credential, nil)
+	return s.requireHostedRunnerProjects(ctx, credential, nil)
 }
 
 func runnerManagementProjects(runner runnerauth.Runner) []tracker.ProjectID {
@@ -159,7 +159,7 @@ func runnerManagementProjects(runner runnerauth.Runner) []tracker.ProjectID {
 	return projects
 }
 
-func (s *Service) requireHostedRunnerProjects(ctx context.Context, query nativeQueryer, credential apiCredential, projects []tracker.ProjectID) error {
+func (s *Service) requireHostedRunnerProjects(ctx context.Context, credential apiCredential, projects []tracker.ProjectID) error {
 	refusal := fmt.Errorf("%w: Runner changes need manage_runner on every allowed project and every project with running work; ask an owner or admin", operatortool.ErrAccessDenied)
 	if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" {
 		return refusal
@@ -170,85 +170,64 @@ func (s *Service) requireHostedRunnerProjects(ctx context.Context, query nativeQ
 	if projects != nil && len(projects) == 0 {
 		return fmt.Errorf("%w: An unassigned runner needs an owner or admin", operatortool.ErrAccessDenied)
 	}
-	if s.config.TenantRepository != nil {
-		return s.config.TenantRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Serving, func(reader tenantstore.Reader) error {
-			total := 0
-			check := func(project corestore.Project) error {
-				if project.DeletedAt != nil {
-					return corestore.ErrNotFound
+	if s.config.TenantRepository == nil {
+		return tenantauth.ErrUnavailable
+	}
+	return s.config.TenantRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Serving, func(reader tenantstore.Reader) error {
+		total := 0
+		check := func(project corestore.Project) error {
+			if project.DeletedAt != nil {
+				return corestore.ErrNotFound
+			}
+			grant, err := reader.AccessProjectGrant(ctx, credential.Hosted.Subject, project.ID)
+			if err != nil {
+				return err
+			}
+			if !grant.ManageRunner {
+				return refusal
+			}
+			total++
+			return nil
+		}
+		if projects != nil {
+			if len(projects) > corestore.MaxPageSize {
+				return refusal
+			}
+			seen := make(map[tracker.ProjectID]bool, len(projects))
+			for _, id := range projects {
+				if seen[id] {
+					return refusal
 				}
-				grant, err := reader.AccessProjectGrant(ctx, credential.Hosted.Subject, project.ID)
+				seen[id] = true
+				project, err := reader.Project(ctx, id)
 				if err != nil {
 					return err
 				}
-				if !grant.ManageRunner {
-					return refusal
+				if err := check(project); err != nil {
+					return err
 				}
-				total++
-				return nil
 			}
-			if projects != nil {
-				if len(projects) > corestore.MaxPageSize {
-					return refusal
-				}
-				seen := make(map[tracker.ProjectID]bool, len(projects))
-				for _, id := range projects {
-					if seen[id] {
-						return refusal
-					}
-					seen[id] = true
-					project, err := reader.Project(ctx, id)
-					if err != nil {
-						return err
-					}
+		} else {
+			page, err := reader.Projects(ctx, "", corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			if len(page) >= corestore.MaxPageSize {
+				return refusal
+			}
+			for _, project := range page {
+				if project.DeletedAt == nil {
 					if err := check(project); err != nil {
 						return err
 					}
 				}
-			} else {
-				page, err := reader.Projects(ctx, "", corestore.MaxPageSize)
-				if err != nil {
-					return err
-				}
-				if len(page) >= corestore.MaxPageSize {
-					return refusal
-				}
-				for _, project := range page {
-					if project.DeletedAt == nil {
-						if err := check(project); err != nil {
-							return err
-						}
-					}
-				}
 			}
-			if total == 0 {
-				return refusal
-			}
-			return nil
-		})
-	}
-	raw, err := sqlList(projects)
-	if err != nil {
-		return err
-	}
-	var project, name string
-	err = queryRowSQL(ctx, query, `SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND (? OR p.id IN (SELECT value FROM sql_rows(?))) AND NOT EXISTS
-(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=? AND g.manage_runner=1)
-ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, projects == nil, raw, credential.Hosted.Subject).Scan(&project, &name)
-	if err == nil {
-		return fmt.Errorf("%w: project %q (%s) lacks a manage_runner grant; ask an owner or admin", operatortool.ErrAccessDenied, name, project)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	var count int
-	if err := queryRowSQL(ctx, query, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id=? AND (? OR id IN (SELECT value FROM sql_rows(?)))", s.config.Hosted.OrganizationID, projects == nil, raw).Scan(&count); err != nil {
-		return err
-	}
-	if count == 0 || projects != nil && count != len(projects) {
-		return refusal
-	}
-	return nil
+		}
+		if total == 0 {
+			return refusal
+		}
+		return nil
+	})
 }
 
 func (s *Service) inviteHostedMember(c echo.Context) error {
@@ -267,7 +246,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
-	if err := s.validateHostedInvitationGrants(readCtx, nil, credential, email, nil); err != nil {
+	if err := s.validateHostedInvitationGrants(readCtx, credential, email, nil); err != nil {
 		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 		}

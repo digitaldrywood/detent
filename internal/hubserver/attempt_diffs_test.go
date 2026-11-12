@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,24 +40,22 @@ func newClaimedAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
 
 func claimedAttemptDiffFixture(t *testing.T, enrolled bool, cfg Config) *attemptDiffFixture {
 	t.Helper()
-	cfg.DatabasePath = filepath.Join(t.TempDir(), "hub.db")
-	service := openTestService(t, cfg)
-	f := newNativeFixture(t, service, "", "attempt-diff")
+	service := newClockedPostgresNativeService(t, cfg)
+	return claimAttemptDiffFixture(t, enrolled, newNativeFixture(t, service, "", "attempt-diff"))
+}
+
+func claimAttemptDiffFixture(t *testing.T, enrolled bool, f nativeFixture) *attemptDiffFixture {
+	t.Helper()
 	fixture := &attemptDiffFixture{nativeFixture: f}
 	policy := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", policy)
 	fixture.policy = policy.ID
 	fixture.issue = f.create(t, "diff-work")
-	machine := tracker.MachineID("diff-machine")
-	if enrolled {
-		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
-		r.enroll(t)
-		fixture.worker, machine, fixture.runnerID = r.redemption.Credential, r.binding.MachineID, r.binding.RunnerID
-	} else {
-		fixture.worker = f.worker(t, "attempt-diff-worker")
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", fixture.worker,
-			map[string]any{"id": machine, "hostname": "fixture", "display_name": "Fixture", "version": "test", "capacity": 1}), http.StatusOK)
-	}
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	r.enroll(t)
+	reportRunnerCapacity(t, f.service, f.base, r.redemption.Credential, r.binding.MachineID, r.redemption.DisplayName, r.redemption.BackendIsolation, r.redemption.Capacity)
+	fixture.worker, fixture.runnerID = r.redemption.Credential, r.binding.RunnerID
+	machine := r.binding.MachineID
 	capabilities := []string{"native_issues", "scoped_collaboration"}
 	if enrolled {
 		capabilities = append(capabilities, tracker.NativeExecutionCapability)

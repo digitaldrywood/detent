@@ -2,12 +2,11 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +16,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -26,16 +28,18 @@ import (
 func TestRunnerRemoval(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name     string
-		attempt  bool
-		finished bool
-		expired  bool
-		revoked  bool
-		sibling  bool
-		mcp      bool
-		want     int
+		name      string
+		attempt   bool
+		finished  bool
+		expired   bool
+		revoked   bool
+		sibling   bool
+		mcp       bool
+		zeroClock bool
+		want      int
 	}{
 		{name: "idle", want: http.StatusNoContent},
+		{name: "zero clock", zeroClock: true},
 		{name: "already revoked", revoked: true, want: http.StatusNoContent},
 		{name: "claimed work", want: http.StatusUnprocessableEntity},
 		{name: "running attempt", attempt: true, want: http.StatusUnprocessableEntity},
@@ -46,18 +50,30 @@ func TestRunnerRemoval(t *testing.T) {
 		{name: "busy sibling", attempt: true, sibling: true, want: http.StatusNoContent},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
+			clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+			f := newPostgresDefaultNativeFixture(t, Config{Clock: clock.Now})
+			f.service.echo.GET(hostedOrganizationBase+"/fleet", f.service.hostedFleet, f.service.localAppOnly)
+			repository := f.service.config.TenantRepository
+			organization := f.project.OrganizationID
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
 			worker := r
 			if test.sibling {
 				worker = sharedRunner(t, r)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(worker.binding.MachineID)+"/heartbeat", worker.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation}), http.StatusOK)
 			}
-			var item tracker.NativeIssue
 			if test.attempt || test.name == "claimed work" {
 				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-				item = f.create(t, "Removal history")
+			}
+			item := f.create(t, "Removal history")
+			if test.attempt || test.name == "claimed work" {
+				report := map[string]any{
+					"display_name": worker.redemption.DisplayName, "capacity": 2, "version": "test",
+					"backend_isolation": r.redemption.BackendIsolation,
+					"capacity_configuration": runnerauth.CapacityConfig{
+						Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: clock.Now(),
+					},
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(worker.binding.MachineID)+"/heartbeat", worker.redemption.Credential, report), http.StatusOK)
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker.redemption.Credential, tracker.NativeClaim{
 					PolicyID: hubTestPolicy().ID, WorkItemID: item.WorkItemID, MachineID: worker.binding.MachineID, SessionID: "remove-test",
 					TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
@@ -75,18 +91,25 @@ func TestRunnerRemoval(t *testing.T) {
 					}
 				}
 				if test.expired || test.finished {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at = ? WHERE lease_id = ?", formatHubTime(f.service.config.now().Add(-time.Second)), lease.ID); err != nil {
-						t.Fatal(err)
-					}
+					clock.Advance(lease.ExpiresAt.Sub(clock.Now()) + time.Second)
 				}
 			}
 			if test.revoked {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = ?", formatHubTime(f.service.config.now()), r.binding.RunnerID); err != nil {
+				err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					return w.RevokeAccessCredential(t.Context(), identity.TokenID, clock.Now())
+				})
+				if err != nil {
 					t.Fatal(err)
 				}
 			}
 			removed := test.want == http.StatusNoContent
-			if test.mcp {
+			if test.zeroClock {
+				assertRunnerRemovalWithZeroClock(t, f, r.binding.RunnerID, runnerstore.ErrInvalidRecord, 2)
+			} else if test.mcp {
 				result, err := removeRunnerThroughMCP(t, f, r.binding.RunnerID)
 				var refusal *operatortool.RequestError
 				var action struct {
@@ -105,43 +128,57 @@ func TestRunnerRemoval(t *testing.T) {
 					t.Fatalf("missing active-work explanation: %s", response.Body.String())
 				}
 			}
-			var removedAt, revokedAt sql.NullString
-			var name string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT r.removed_at, t.revoked_at, r.display_name FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.id = ?", r.binding.RunnerID).Scan(&removedAt, &revokedAt, &name); err != nil {
-				t.Fatal(err)
+			if test.name == "idle" {
+				assertRunnerRemovalWithZeroClock(t, f, r.binding.RunnerID, nil, 1)
 			}
-			if removedAt.Valid != removed || revokedAt.Valid != removed || name != "Runner" {
-				t.Fatalf("identity after removal: removed=%v revoked=%v name=%q", removedAt, revokedAt, name)
-			}
-			runners, err := f.service.listRunnerRoutingData(t.Context(), f.project.OrganizationID, 0, 0)
+			err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				identity, err := reader.RunnerIdentity(t.Context(), r.binding.RunnerID)
+				if err != nil {
+					return err
+				}
+				credential, err := reader.AccessCredential(t.Context(), identity.TokenID)
+				if err != nil {
+					return err
+				}
+				if (identity.RemovedAt != nil) != removed || (credential.RevokedAt != nil) != removed || identity.DisplayName != "Runner" {
+					return fmt.Errorf("identity after removal: removed=%v revoked=%v name=%q", identity.RemovedAt, credential.RevokedAt, identity.DisplayName)
+				}
+				return nil
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, runner := range runners {
-				if removed && runner.RunnerID == r.binding.RunnerID {
-					t.Fatal("removed runner still listed")
-				}
-			}
-			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
-			fleet, err := f.service.hostedFleetRunners(t.Context(), apiCredential{}, map[tracker.ProjectID]bool{f.project.ID: true})
+			runners, err := f.service.listRunnerRoutingData(t.Context(), organization, 16, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, runner := range fleet {
-				if removed && runner.ID == r.binding.RunnerID {
-					t.Fatal("removed runner still in hosted fleet")
-				}
+			if listed := slices.ContainsFunc(runners, func(runner runnerauth.Runner) bool { return runner.RunnerID == r.binding.RunnerID }); listed == removed {
+				t.Fatalf("runner routing listed=%v after removal=%v", listed, removed)
 			}
-			f.service.config.Hosted = nil
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			runtime, _, err := readRuntimeRunners(t.Context(), f.service.database.db, scope, f.service.config.now())
-			if err != nil {
+			fleetResponse := performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/fleet", testHubAdminToken, nil)
+			requireNativeStatus(t, fleetResponse, http.StatusOK)
+			var fleet hostedFleetResponse
+			decodeHubResponse(t, fleetResponse, &fleet)
+			if listed := slices.ContainsFunc(fleet.Runners, func(runner hostedFleetRunner) bool { return runner.ID == r.binding.RunnerID }); listed == removed {
+				t.Fatalf("runner fleet listed=%v after removal=%v", listed, removed)
+			}
+			credential, authStatus, err := f.service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(f.token), "", "")
+			if err != nil || authStatus != http.StatusOK {
+				t.Fatalf("project credential status=%d: %v", authStatus, err)
+			}
+			scope := nativeScope{organization: organization, project: f.project.ID, credential: credential}
+			var runtime tracker.NativeRuntimeEvidence
+			if err := f.service.readRuntimeAdmissionTenant(t.Context(), scope, item, &runtime, nil); err != nil {
 				t.Fatal(err)
 			}
-			for _, runner := range runtime {
-				if removed && runner.RunnerID == r.binding.RunnerID {
-					t.Fatal("removed runner still eligible")
-				}
+			if slices.Contains(runtime.Unavailable, "approved_dispatch_policy") {
+				t.Fatalf("runtime admission unavailable: %v", runtime.Unavailable)
+			}
+			if listed := slices.ContainsFunc(runtime.Admission, func(entry tracker.NativeRuntimeAdmission) bool { return entry.RunnerID == r.binding.RunnerID }); listed == removed {
+				t.Fatalf("runner runtime admission listed=%v after removal=%v", listed, removed)
+			}
+			if test.sibling && !slices.ContainsFunc(runtime.Admission, func(entry tracker.NativeRuntimeAdmission) bool { return entry.RunnerID == worker.binding.RunnerID }) {
+				t.Fatal("removing one runner hid its busy sibling")
 			}
 			status := http.StatusOK
 			if removed {
@@ -151,7 +188,7 @@ func TestRunnerRemoval(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), status)
 			if test.finished {
-				names, err := readHostedRunnerNames(t.Context(), f.service.database.db, f.project.OrganizationID, false)
+				names, err := f.service.readHostedRunnerNamesTenant(t.Context(), false)
 				if err != nil || names[r.binding.RunnerID].DisplayName != "Runner" {
 					t.Fatalf("historical name lookup = %#v, %v", names, err)
 				}
@@ -162,12 +199,54 @@ func TestRunnerRemoval(t *testing.T) {
 				if len(attempts.Items) != 1 || attempts.Items[0].Status != "succeeded" {
 					t.Fatalf("history after removal: %#v", attempts)
 				}
-				var historicalName string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT r.display_name FROM native_attempts a JOIN lease_runners lr ON lr.lease_id = a.lease_id JOIN runner_identities r ON r.id = lr.runner_id WHERE a.work_item_id = ?", item.WorkItemID).Scan(&historicalName); err != nil || historicalName != "Runner" {
-					t.Fatalf("historical runner name = %q, %v", historicalName, err)
+				historicalRunner := attempts.Items[0].RunnerID
+				if historicalRunner != r.binding.RunnerID {
+					t.Fatalf("historical runner = %q, want %q", historicalRunner, r.binding.RunnerID)
+				}
+				err = repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					identity, err := reader.RunnerIdentity(t.Context(), historicalRunner)
+					if err != nil {
+						return err
+					}
+					if identity.DisplayName != "Runner" {
+						return fmt.Errorf("historical runner name = %q", identity.DisplayName)
+					}
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
 				}
 			}
 		})
+	}
+}
+
+func assertRunnerRemovalWithZeroClock(t *testing.T, f nativeFixture, runnerID string, want error, wantClockReads int) {
+	t.Helper()
+	organization := f.project.OrganizationID
+	admin, status, err := f.service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(testHubAdminToken), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("admin credential status=%d: %v", status, err)
+	}
+
+	config := f.service.config
+	authorizationTime := config.now()
+	clockReads := 0
+	config.now = func() time.Time {
+		clockReads++
+		if clockReads == 1 {
+			return authorizationTime
+		}
+		return time.Time{}
+	}
+	service := &Service{database: f.service.database, config: config}
+	scope := nativeScope{organization: organization, credential: admin}
+	_, err = service.revokeRunnerIdentityCommand(t.Context(), scope, runnerID)
+	if !errors.Is(err, want) {
+		t.Fatalf("runner removal error = %v, want %v", err, want)
+	}
+	if clockReads != wantClockReads {
+		t.Fatalf("runner removal clock reads = %d, want %d", clockReads, wantClockReads)
 	}
 }
 
@@ -228,9 +307,14 @@ func (r *runnerFixture) enroll(t *testing.T) {
 
 func (r runnerFixture) identityPath() string { return r.base + "/runners/" + r.binding.RunnerID }
 
+func (r runnerFixture) reportCapacity(t *testing.T) {
+	t.Helper()
+	reportRunnerCapacity(t, r.service, r.nativeFixture.base, r.redemption.Credential, r.binding.MachineID, r.redemption.DisplayName, r.redemption.BackendIsolation, r.redemption.Capacity)
+}
+
 func TestRunnerEnrollmentSingleRedemption(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
+	f := newPostgresDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	start := make(chan struct{})
 	statuses := make(chan int, 8)
@@ -259,17 +343,35 @@ func TestRunnerEnrollmentSingleRedemption(t *testing.T) {
 		t.Fatalf("redemption winners = %d", winners)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments/redeem", r.enrollment.Token, r.redemption), http.StatusUnauthorized)
-	for _, token := range []string{r.enrollment.Token, r.redemption.Credential} {
-		var count int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM api_tokens WHERE token_hash = ?", token).Scan(&count); err != nil || count != 0 {
-			t.Fatalf("plaintext credential persisted: count=%d err=%v", count, err)
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		after := ""
+		for {
+			credentials, err := reader.AccessCredentials(t.Context(), after, corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			for _, credential := range credentials {
+				if credential.Hash == r.enrollment.Token || credential.Hash == r.redemption.Credential {
+					t.Fatal("plaintext credential persisted")
+				}
+			}
+			if len(credentials) < corestore.MaxPageSize {
+				return nil
+			}
+			next := credentials[len(credentials)-1].ID
+			if next <= after {
+				return errors.New("credential page did not advance")
+			}
+			after = next
 		}
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestRunnerUnboundEnrollment(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
+	f := newPostgresDefaultNativeFixture(t, Config{})
 	base := "/api/v2/organizations/" + string(f.project.OrganizationID)
 	create := func(t *testing.T, request runnerauth.EnrollmentRequest) runnerauth.Enrollment {
 		t.Helper()
@@ -303,9 +405,14 @@ func TestRunnerUnboundEnrollment(t *testing.T) {
 			body.SpriteName = test.sprite
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, body), test.status)
 			if test.status == http.StatusCreated {
-				var name string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(capabilities_json, '$.sprite_name') FROM machines WHERE id=?", body.MachineID).Scan(&name); err != nil || name != test.sprite {
-					t.Fatalf("persisted Sprite = %q, %v", name, err)
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					machine, err := reader.Machine(t.Context(), string(body.MachineID))
+					if err == nil && machine.SpriteName != test.sprite {
+						t.Fatalf("persisted Sprite = %q, want %q", machine.SpriteName, test.sprite)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
 				}
 			}
 		})
@@ -361,12 +468,22 @@ func TestRunnerUnboundEnrollment(t *testing.T) {
 		t.Fatalf("unbound redemption winners = %d, want 1", winners)
 	}
 	var runner, machine string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT runner_id, machine_id FROM runner_enrollments WHERE id = ?", enrollment.ID).Scan(&runner, &machine); err != nil || runner == "" || machine == "" {
-		t.Fatalf("redeemed enrollment binding = %q %q, %v", runner, machine, err)
-	}
-	var identities int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_identities WHERE id = ? AND machine_id = ?", runner, machine).Scan(&identities); err != nil || identities != 1 {
-		t.Fatalf("runner identity rows = %d, %v", identities, err)
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		stored, err := reader.RunnerEnrollment(t.Context(), enrollment.ID)
+		if err != nil {
+			return err
+		}
+		runner, machine = stored.RunnerID, string(stored.MachineID)
+		if runner == "" || machine == "" || stored.RedeemedAt == nil {
+			t.Fatalf("redeemed enrollment binding = %q %q", runner, machine)
+		}
+		identity, err := reader.RunnerIdentity(t.Context(), runner)
+		if err == nil && (identity.RunnerID != runner || string(identity.MachineID) != machine || identity.EnrollmentID != enrollment.ID) {
+			t.Fatalf("runner identity binding = %+v", identity)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	taken := create(t, unbound)
@@ -375,7 +492,7 @@ func TestRunnerUnboundEnrollment(t *testing.T) {
 
 func TestRunnerConcurrentRotationHasOneWinner(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
+	f := newPostgresDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read)
 	r.enroll(t)
 	start := make(chan struct{})
@@ -429,10 +546,14 @@ func TestRunnerEnrollmentValidationAndClock(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			now := time.Date(2026, 9, 5, 12, 0, 0, 123, time.UTC)
-			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "clock")
+			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+			clock := &leaseTestClock{value: now}
+			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}), "", "clock")
 			r := prepareRunner(t, f, runnerauth.Read)
 			test.change(&r, &now)
+			clock.mu.Lock()
+			clock.value = now
+			clock.mu.Unlock()
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/runner-enrollments/redeem", r.enrollment.Token, r.redemption), test.want)
 		})
 	}
@@ -440,9 +561,9 @@ func TestRunnerEnrollmentValidationAndClock(t *testing.T) {
 
 func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 9, 29, 0, 31, 39, 0, time.UTC)
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
-	f := newNativeFixture(t, openTestService(t, config), "", "lifecycle")
+	clock := &leaseTestClock{value: time.Date(2026, 9, 29, 0, 31, 39, 0, time.UTC)}
+	now := clock.Now()
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}), "", "lifecycle")
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	r.enroll(t)
 	if r.identity.Binding != r.binding || !r.identity.ExpiresAt.Equal(now.Add(runnerauth.CredentialTTL)) {
@@ -451,9 +572,10 @@ func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.service = openTestService(t, config)
+	f.service = reopenPostgresNativeService(t, f.service)
 	r.service = f.service
 	now = now.Add(12 * time.Hour)
+	clock.Advance(now.Sub(clock.Now()))
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), http.StatusOK)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/renew", r.redemption.Credential, struct{}{})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -465,8 +587,10 @@ func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	// Production sequence: last renewal 12:31:39Z, stopped 22:17Z,
 	// restarted the next day at 12:34Z, after the 12:31:39Z expiry.
 	now = time.Date(2026, 9, 29, 22, 17, 0, 0, time.UTC)
+	clock.Advance(now.Sub(clock.Now()))
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), http.StatusOK)
 	now = time.Date(2026, 9, 30, 12, 34, 0, 0, time.UTC)
+	clock.Advance(now.Sub(clock.Now()))
 	heartbeatPath := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
 	heartbeat := map[string]any{"capacity": 2, "version": "test"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeatPath, r.redemption.Credential, heartbeat), http.StatusUnauthorized)
@@ -502,20 +626,21 @@ func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.service = openTestService(t, config)
+	f.service = reopenPostgresNativeService(t, f.service)
 	now = now.Add(30 * 24 * time.Hour)
+	clock.Advance(now.Sub(clock.Now()))
 	for _, path := range []string{r.identityPath() + "/renew", r.identityPath() + "/rotate", f.base + "/claims", f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"} {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, replacement, struct{}{}), http.StatusUnauthorized)
 	}
 	var events string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT group_concat(kind, ',') FROM (SELECT kind FROM runner_identity_events WHERE runner_id = ? ORDER BY id)", r.binding.RunnerID).Scan(&events); err != nil || events != "enrolled,renewed,renewed,rotated,revoked" {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT string_agg(kind,',' ORDER BY event_id) FROM runner_identity_events WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, r.binding.RunnerID).Scan(&events); err != nil || events != "enrolled,renewed,renewed,rotated,revoked" {
 		t.Fatalf("lifecycle audit = %q, err=%v", events, err)
 	}
 }
 
 func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
+	f := newPostgresDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	r.enroll(t)
 	other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -552,9 +677,14 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", token, body), test.status)
 			if test.status == http.StatusOK {
-				var name, version string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(json_extract(capabilities_json, '$.sprite_name'), ''), version FROM machines WHERE id=?", r.binding.MachineID).Scan(&name, &version); err != nil || name != test.name || version != "develop-040e7195c" {
-					t.Fatalf("heartbeat Sprite identity = %q, version = %q, %v", name, version, err)
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					machine, err := reader.Machine(t.Context(), string(r.binding.MachineID))
+					if err == nil && (machine.SpriteName != test.name || machine.Version != "develop-040e7195c") {
+						t.Fatalf("heartbeat Sprite identity = %q, version = %q", machine.SpriteName, machine.Version)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
 				}
 			}
 		})
@@ -609,9 +739,14 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.base+"/machines/"+string(r.binding.MachineID)+"/routing", testHubAdminToken, runnerauth.HostChange{ExpectedRevision: 1, DisplayName: "Renamed", Capacity: 2}), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Worker override", "capacity": 2, "version": "test"}), http.StatusOK)
-	var display, machine string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id, display_name FROM machines WHERE id = ?", r.binding.MachineID).Scan(&machine, &display); err != nil || machine != string(r.binding.MachineID) || display != "Renamed" {
-		t.Fatal("rename did not preserve identity")
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		machine, err := reader.Machine(t.Context(), string(r.binding.MachineID))
+		if err == nil && (machine.ID != string(r.binding.MachineID) || machine.DisplayName != "Renamed") {
+			t.Fatal("rename did not preserve identity")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 	otherProject := newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, otherProject.base, r.redemption.Credential, nil), http.StatusNotFound)

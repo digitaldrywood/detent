@@ -13,6 +13,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -24,78 +27,71 @@ func explanationRead(ctx context.Context) bool {
 	return ok && value
 }
 
-func readRuntimeChangeDetail(ctx context.Context, q nativeQueryer, scope nativeScope, change tracker.ChangeRequest, now time.Time) (tracker.ChangeDetail, error) {
-	if !explanationRead(ctx) {
-		return readCurrentChangeDetailWithVersion(ctx, q, scope, change, now)
+func (s *Service) readExplanationCurrentChange(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, now time.Time) (*tracker.ChangeDetail, error) {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, nativeRunEventStorageUnavailable()
 	}
-	detail := tracker.ChangeDetail{Change: change}
-	version, found, err := readNativeChangeVersion(ctx, q, change)
-	if err != nil {
-		return detail, err
-	}
-	if found {
-		detail.Versions = []tracker.ChangeVersion{version}
-		detail.Reviews, err = changeRows[tracker.ChangeReview](ctx, q, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC LIMIT 65", change.ID, version.ID)
+	var change eventstore.Change
+	var version *eventstore.Version
+	var policy currentChangePolicyRows
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeBulkExportItem(ctx, r, scope, item); err != nil {
+			return err
+		}
+		row, err := r.LatestChange(ctx, scope.project, item)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
 		if err != nil {
-			return detail, err
+			return err
 		}
-		slices.Reverse(detail.Reviews)
-		detail.Checks, err = changeRows[tracker.ChangeCheck](ctx, q, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' ORDER BY sequence DESC LIMIT 65", change.ID, version.ID)
-		if err != nil {
-			return detail, err
+		if row.OrganizationID != scope.organization || row.ProjectID != scope.project {
+			return corestore.ErrNotFound
 		}
-		slices.Reverse(detail.Checks)
-	}
-	current, err := readChangeSummaryPolicy(ctx, q, scope)
+		change = row
+		if change.CurrentVersionID != nil {
+			current, err := r.Version(ctx, change.ID, *change.CurrentVersionID)
+			if err != nil {
+				return err
+			}
+			version = &current
+		}
+		policy, err = readChangeSummaryPolicyRows(ctx, r, scope)
+		return err
+	})
 	if err != nil {
-		return detail, err
+		return nil, projectRecordError(err)
 	}
-	detail.Summary = current.summarize(detail, now, false)
-	if len(detail.Checks) > 64 || len(detail.Reviews) > 64 {
-		detail.Summary.Status = "evidence_incomplete"
-		if len(detail.Checks) > 64 {
-			detail.Summary.Checks = "unknown"
-		}
-		if len(detail.Reviews) > 64 {
-			detail.Summary.NativeReview, detail.Summary.ExternalReview = "unknown", "unknown"
-		}
-		detail.Summary.Messages = []string{"Current-version check or review history is truncated"}
+	if change.ID == "" {
+		return nil, nil
 	}
-	return detail, nil
+	detail, err := s.hydrateCurrentChangeDetail(ctx, scope, item, change, version, policy, now)
+	if err != nil {
+		return nil, err
+	}
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.authorizeBulkExportItem(ctx, r, scope, item)
+	})
+	if err != nil {
+		return nil, projectRecordError(err)
+	}
+	return &detail, nil
 }
 
-func readExplanationCheckpoint(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (nativeSourceCheckpoint, error) {
-	rows, err := q.QueryContext(ctx, `SELECT a.id,l.machine_id,COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''),a.status,l.released_at,a.checkpoint_json,coalesce(a.failure_stage,'')='lease_release' AND a.cleanup_acknowledged_at IS NULL
-FROM (
- SELECT * FROM (SELECT id,lease_id,organization_id,status,COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) AS checkpoint_json,fencing_token,failure_stage,cleanup_acknowledged_at FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_preserves_source=1 ORDER BY fencing_token DESC LIMIT 1)
- UNION ALL
- SELECT * FROM (SELECT id,lease_id,organization_id,status,COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) AS checkpoint_json,fencing_token,failure_stage,cleanup_acknowledged_at FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_preserves_source IS NULL ORDER BY fencing_token DESC LIMIT 64)
-) a
-JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
-LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id LEFT JOIN machines m ON m.id=l.machine_id AND m.organization_id=a.organization_id
-ORDER BY a.fencing_token DESC`, scope.organization, scope.project, item, scope.organization, scope.project, item)
-	if err != nil {
-		return nativeSourceCheckpoint{}, err
+func attachRuntimeChangeDetail(result *tracker.NativeRuntimeEvidence, detail tracker.ChangeDetail) {
+	if len(detail.Versions) != 0 {
+		version := detail.Versions[0]
+		result.CurrentVersion = &tracker.NativeChangeVersionEvidence{NativeChangeReference: tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}, PublishedAt: version.CreatedAt, Validation: boundedChangeCommand(version.Validation), Landing: boundedChangeLanding(version.Landing)}
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var source nativeSourceCheckpoint
-		var raw sql.NullString
-		if err := rows.Scan(&source.AttemptID, &source.MachineID, &source.RunnerID, &source.RunnerName, &source.Status, &source.Released, &raw, &source.UnacknowledgedRelease); err != nil {
-			return source, err
-		}
-		if !raw.Valid {
-			continue
-		}
-		source.Checkpoint, err = decodeRunCheckpoint(ctx, q, raw.String)
-		if err != nil {
-			return source, err
-		}
-		if source.Checkpoint.PreservesSource() {
-			return source, nil
-		}
+	if detail.Summary.Status == "evidence_incomplete" {
+		result.Unavailable = append(result.Unavailable, "change_gate_history_truncated")
 	}
-	return nativeSourceCheckpoint{}, rows.Err()
+	detail.Change.Body = ""
+	detail.Change.LinkedIssues = nil
+	detail.Versions, detail.Reviews, detail.Checks, detail.Discussion = nil, nil, nil, nil
+	detail.Summary.Messages = nil
+	result.Change = &detail
 }
 
 func readExplanationFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string) ([]nativeFailure, bool, error) {
@@ -145,44 +141,6 @@ func readExplanationFailures(ctx context.Context, q nativeQueryer, scope nativeS
 	return failures, false, rows.Err()
 }
 
-func explanationBudgetAvailable(ctx context.Context, q nativeQueryer, scope nativeScope) (bool, error) {
-	project, err := readMonthlyBudgetSettings(ctx, q, scope)
-	if err != nil {
-		return false, err
-	}
-	scope.project = ""
-	organization, err := readMonthlyBudgetSettings(ctx, q, scope)
-	return !project.Policy.Enabled && !organization.Policy.Enabled, err
-}
-
-func explanationPlacementAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID) (bool, string, error) {
-	if allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, machine, id); err != nil || !allowed {
-		return allowed, reason, err
-	}
-	allowed, err := spriteAllocationRunnerAllowed(ctx, q, scope, machine)
-	if err != nil || !allowed {
-		return allowed, "Project Sprite allocation excludes this runner", err
-	}
-	placement, _, err := readPlacementPolicy(ctx, q, scope)
-	if err != nil {
-		return false, "", err
-	}
-	var raw, hostname string
-	if err := q.QueryRowContext(ctx, "SELECT capabilities_json,hostname FROM machines WHERE id=? AND organization_id=?", machine, scope.organization).Scan(&raw, &hostname); err != nil {
-		return false, "", err
-	}
-	var capabilities struct {
-		SpriteName string `json:"sprite_name"`
-	}
-	if err := decodeStorageJSON(ctx, []byte(raw), &capabilities); err != nil {
-		return false, "", err
-	}
-	if capabilities.SpriteName != hostname || !validSpritesSlug(hostname) {
-		return placement.Mode != "sprites_only", "Resolved placement " + placement.Mode + " governs local eligibility", nil
-	}
-	return true, "placement_capacity_unavailable", nil
-}
-
 func explanationRun(data tracker.NativeRunData) tracker.NativeRunData {
 	result := compactRun(data)
 	runtime := data.Runtime.WithoutActivitySpans()
@@ -191,61 +149,6 @@ func explanationRun(data tracker.NativeRunData) tracker.NativeRunData {
 	}
 	result.ArtifactIDs = result.ArtifactIDs[:min(len(result.ArtifactIDs), 16)]
 	return result
-}
-
-func readAdmissionLandingCapacity(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID, evidence *tracker.NativeRuntimeEvidence, now time.Time) (bool, int, error) {
-	if !explanationRead(ctx) {
-		return nativeLandingClaimCapacity(ctx, q, id, nativeLandingCapacityUnknown, now)
-	}
-	if evidence.Issue.State != "Merging" && (evidence.Issue.ListChange == nil || !evidence.Issue.ListChange.LandingPending) {
-		return true, 0, nil
-	}
-	var owners int
-	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM (SELECT id FROM runner_identities WHERE organization_id=? ORDER BY id LIMIT 65)", scope.organization).Scan(&owners); err != nil {
-		return false, 0, err
-	}
-	if owners > 64 {
-		return false, nativeLandingCapacityUnknown, nil
-	}
-	rows, err := q.QueryContext(ctx, `SELECT l.landing_capacity,i.organization_id,i.project_id,COALESCE(w.detent_state,'') FROM
-(SELECT issue_id,landing_capacity FROM leases INDEXED BY health_active_host WHERE machine_id IN (SELECT machine_id FROM runner_identities WHERE organization_id=? ORDER BY id LIMIT 64)
-AND released_at IS NULL AND expires_at>? ORDER BY machine_id,expires_at,lease_id LIMIT 1025) l
-JOIN issues i ON i.id=l.issue_id LEFT JOIN workflow_states w ON w.id=i.workflow_state_id`, scope.organization, formatHubTime(now))
-	if err != nil {
-		return false, 0, err
-	}
-	defer rows.Close()
-	observed, used, capacity := 0, 0, 0
-	for rows.Next() {
-		if observed == 1024 {
-			return false, nativeLandingCapacityUnknown, nil
-		}
-		observed++
-		var declared int
-		var organization tracker.OrganizationID
-		var project tracker.ProjectID
-		var state string
-		if err := rows.Scan(&declared, &organization, &project, &state); err != nil {
-			return false, 0, err
-		}
-		if organization != scope.organization || project != scope.project || declared <= 0 && state != "Merging" {
-			continue
-		}
-		used++
-		if declared > 0 && (capacity == 0 || declared < capacity) {
-			capacity = declared
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, 0, err
-	}
-	if capacity > 0 && used >= capacity {
-		return false, capacity, nil
-	}
-	if used > 0 {
-		return false, nativeLandingCapacityUnknown, nil
-	}
-	return true, 0, nil
 }
 
 func readExplanationIssue(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (tracker.NativeIssue, tracker.WorkItemID, error) {

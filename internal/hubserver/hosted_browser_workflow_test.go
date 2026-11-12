@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -67,9 +68,9 @@ func resolvedWorkflowPolicy(t *testing.T, states []policy.State, revision string
 func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project string) {
 	t.Helper()
 	base := browserHostedOrganizationBase + "/projects/" + project
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = ? WHERE id = ?", "example-org/example-project", project); err != nil {
-		t.Fatal(err)
-	}
+	coordinatorFixtureProject(t, f.service, tracker.OrganizationID(strings.TrimPrefix(browserHostedOrganizationBase, "/api/v2/organizations/")), tracker.ProjectID(project), func(row *projectstore.Record) {
+		row.Settings.CheckoutRepository = "example-org/example-project"
+	})
 	binding := runnerauth.NewBinding()
 	request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(project)}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 900}
 	var enrollment runnerauth.Enrollment

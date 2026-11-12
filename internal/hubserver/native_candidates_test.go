@@ -1,9 +1,11 @@
 package hubserver
 
 import (
+	"net/http"
+	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -12,57 +14,73 @@ func TestPublishedReviewCheckpoint(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name       string
-		checkpoint any
+		checkpoint bool
 		wantReview bool
 	}{
 		{name: "missing checkpoint"},
-		{name: "null checkpoint", checkpoint: "null"},
-		{name: "valid checkpoint", wantReview: true},
+		{name: "valid checkpoint", checkpoint: true, wantReview: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newChangeFixture(t, nil)
-			version := f.publish(t, "current", "")
+			f := newDispatchGuardFixture(t)
+			configureDispatchGuardState(t, f, tracker.NativeState{Name: "Fixing", Dispatchable: true, Transitions: []string{"Merging", "Blocked"}})
+			moveDispatchGuardFixture(t, f, "Fixing")
+			item := f.base + "/work-items/" + string(f.issue.WorkItemID)
+			finish := tracker.NativeRunEvent{
+				Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
+				Data: tracker.NativeRunData{
+					Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
+					LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded",
+					Disposition: &tracker.NativeDisposition{Status: "complete"},
+				},
+			}
+			input := changeTestInput()
+			input.RunID, input.AttemptID = f.run, f.attempt
+			if test.checkpoint {
+				checkpoint := finish
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome, checkpoint.Data.Disposition = "run.checkpointed", newNativeID("checkpoint"), "", nil
+				checkpoint.Data.Handoff = nativeTestCheckpoint()
+				checkpoint.Data.Handoff.WorktreeState, checkpoint.Data.Handoff.HeadSHA, checkpoint.Data.Handoff.WorkspaceDigest = "clean", input.HeadSHA, strings.Repeat("d", 64)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/events", f.worker, checkpoint), http.StatusOK)
+				finish.Data.Sequence++
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/events", f.worker, finish), http.StatusOK)
+
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: tracker.ChangeReviewPolicy{PolicyID: f.policy, RequireReview: true}}), http.StatusOK)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, item+"/changes", f.worker, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Title: "Published source", Body: "Owned source publication"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, item+"/changes/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ChangeVersionInput: input})
+			requireNativeStatus(t, response, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, response, &version)
+			rewriteDispatchAttemptFixture(t, f, func(run *tracker.NativeRunData) {
+				run.Finalization = &tracker.NativeFinalization{Changed: true, ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+			})
+			f.release(t)
+
 			runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			runner.enroll(t)
-			ctx := f.service.runDetailContext(t.Context())
-			now := f.service.config.now()
-			tx, err := f.service.database.db.BeginTx(ctx, nil)
-			if err != nil {
-				t.Fatal(err)
+			admission := map[string]any{"context": tracker.NativeAdmissionContext{ObservedAt: f.now, PolicyID: f.policy, WorkflowStates: []string{"Fixing"}}, "runner_revision": 1}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation, "admission": admission}), http.StatusOK)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, item+"/runtime", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var current tracker.NativeRuntimeEvidence
+			decodeHubResponse(t, response, &current)
+			if len(current.Admission) != 1 {
+				t.Fatalf("missing current admission: %s", response.Body)
 			}
-			defer tx.Rollback()
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			attempt := seedHealthRateAttempt(t, tx, scope, f.issue, string(runner.binding.MachineID), "succeeded", tracker.NativeRunData{
-				Disposition:  &tracker.NativeDisposition{Status: "complete"},
-				Finalization: &tracker.NativeFinalization{Changed: true, ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA},
-			}, now, -1)
-			checkpoint := test.checkpoint
+			exclusion := current.Admission[0].AnsweredExclusion
 			if test.wantReview {
-				checkpoint, err = marshalNative(tracker.NativeCheckpoint{WorktreeState: "clean", HeadSHA: version.HeadSHA})
-				if err != nil {
-					t.Fatal(err)
+				if exclusion == nil || exclusion.Kind != string(gate.ReasonAutomatedReviewMissing) || exclusion.AttemptID != f.attempt {
+					t.Fatalf("published review = %+v, want attempt %q awaiting review: %s", exclusion, f.attempt, response.Body)
 				}
+			} else if exclusion != nil {
+				t.Fatalf("published review = %+v without a checkpoint, want none", exclusion)
 			}
-			if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET checkpoint_json=?,work_item_revision=(SELECT revision FROM issues WHERE native_id=?),dispatch_generation=(SELECT dispatch_generation FROM issues WHERE native_id=?) WHERE id=?", checkpoint, f.issue.WorkItemID, f.issue.WorkItemID, attempt); err != nil {
-				t.Fatal(err)
-			}
-			var id tracker.WorkItemID
-			if err := tx.QueryRowContext(ctx, "SELECT id FROM issues WHERE native_id=?", f.issue.WorkItemID).Scan(&id); err != nil {
-				t.Fatal(err)
-			}
-			review, gotAttempt, err := readPublishedReview(ctx, tx, id, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := connector.ChangeReview{}
-			wantAttempt := ""
-			if test.wantReview {
-				want.Current = true
-				wantAttempt = attempt
-			}
-			if review != want || gotAttempt != wantAttempt {
-				t.Fatalf("published review = %+v, attempt = %q; want %+v, %q", review, gotAttempt, want, wantAttempt)
+			if got := f.candidate(t); got == test.wantReview {
+				t.Fatalf("candidate=%t, want %t", got, !test.wantReview)
 			}
 		})
 	}

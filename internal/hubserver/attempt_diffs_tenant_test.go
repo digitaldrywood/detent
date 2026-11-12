@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/diffbody"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -51,7 +52,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedStartupOrganization(t, store.postgres, "org_startup")
+	seedStartupOrganization(t, store.postgres, "org_startup", cfg.Hosted)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -64,16 +65,16 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if service.database.db != nil || service.database.reader != nil {
-		t.Fatal("PostgreSQL Hub created a legacy SQLite connection")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 
 	const organization tracker.OrganizationID = "org_startup"
 	const project tracker.ProjectID = "project_example"
 	const workerToken = "example_runner_token"
 	const tokenID = "credential_runner"
-	const runnerID = "runner_example"
-	const machineID tracker.MachineID = "machine_example"
+	const runnerID = "runner_0123456789abcdef0123456789abcdef"
+	const machineID tracker.MachineID = "machine_0123456789abcdef0123456789abcdef"
 	now := service.config.now().UTC()
 	expires := now.Add(time.Hour)
 	workerHash := apikey.HashToken(workerToken)
@@ -235,6 +236,73 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 		direct, err := reader.readAttemptDiff(t.Context(), nativeScope{organization: organization, project: project}, string(fixture.item), fixture.attempt.ID, tracker.DiffSourceAttempt, 1)
 		if err != nil || direct.ID != receipt.DiffID || len(direct.Files) != 3 || direct.Files[0].Patch != "+example" {
 			t.Fatalf("diff without legacy database=%+v error=%v", direct, err)
+		}
+		var object artifactstore.ArchiveObject
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			stored, err := r.LatestAttemptDiff(t.Context(), project, fixture.attempt.ID, tracker.DiffSourceAttempt)
+			if err != nil {
+				return err
+			}
+			object, err = r.ArchiveObject(t.Context(), stored.ArchiveID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if object.CollaborationBytes != object.Reference.CompressedSize {
+			t.Fatalf("diff debit=%d; want %d", object.CollaborationBytes, object.Reference.CompressedSize)
+		}
+		if index == 0 {
+			if _, err := admin.ExecContext(t.Context(), "UPDATE archive_objects SET collaboration_bytes=0 WHERE organization_id=$1 AND id=$2", organization, object.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var beforeShared int64
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			beforeShared, err = r.CollaborationBytes(t.Context())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.LockArchiveAccounting(t.Context()); err != nil {
+				return err
+			}
+			for range 2 {
+				registered, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: object.ID, Reference: object.Reference, CreatedAt: object.CreatedAt})
+				if err != nil {
+					return err
+				}
+				if registered.ID != object.ID {
+					return fmt.Errorf("shared diff registered as a new archive: %s", registered.ID)
+				}
+				usage, err := w.ChargeArchiveObject(t.Context(), registered.ID, beforeShared)
+				if err != nil {
+					return err
+				}
+				if !usage.Allowed || usage.Used != beforeShared {
+					return fmt.Errorf("shared diff registration changed existing debit: %+v", usage)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			used, err := r.CollaborationBytes(t.Context())
+			if err != nil {
+				return err
+			}
+			if used != beforeShared {
+				t.Fatalf("shared diff registration charged or refunded existing debit: before=%d after=%d", beforeShared, used)
+			}
+			current, err := r.ArchiveObject(t.Context(), object.ID)
+			if err == nil && current.CollaborationBytes != object.Reference.CompressedSize {
+				t.Fatalf("shared diff lost recorded debit=%d", current.CollaborationBytes)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
 		}
 		itemPath := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/work-items/"+string(fixture.item)+"/diff", ":organization", string(organization)), ":project", string(project))
 		itemRead := performHubAPIRequest(t, service, http.MethodGet, itemPath, workerToken, nil)

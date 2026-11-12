@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -159,4 +161,67 @@ func (s *session) AccessMemberCredentials(ctx context.Context, user, after strin
 		result = append(result, row)
 	}
 	return result, mapError(ctx, rows.Err())
+}
+
+func (s *session) AccessCredentialMetadataPage(ctx context.Context, offset, limit int) ([]accessstore.Credential, bool, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, false, err
+	}
+	if offset < 0 || offset > 100000 {
+		return nil, false, corestore.ErrInvalidPage
+	}
+	rows, err := s.db.Query(ctx, `SELECT c.organization_id,c.id,c.name,c.token_hash,c.token_fingerprint,c.scope,c.native_only,c.created_at,c.updated_at,c.rotated_at,c.revoked_at,c.expires_at,c.last_used_at,c.hosted_user_id,c.hosted_membership_id,c.operator_key_scope,c.operator_project_access,c.key_kind
+ FROM api_tokens c WHERE c.organization_id=$1 AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.organization_id=c.organization_id AND r.token_id=c.id)
+ ORDER BY c.id OFFSET $2 LIMIT $3`, s.organization, offset, limit+1)
+	if err != nil {
+		return nil, false, mapError(ctx, err)
+	}
+	defer rows.Close()
+	result := []accessstore.Credential{}
+	for rows.Next() {
+		var row accessstore.Credential
+		if err := rows.Scan(&row.OrganizationID, &row.ID, &row.Name, &row.Hash, &row.Fingerprint, &row.Scope, &row.NativeOnly, &row.CreatedAt, &row.UpdatedAt, &row.RotatedAt, &row.RevokedAt, &row.ExpiresAt, &row.LastUsedAt, &row.UserID, &row.MembershipID, &row.KeyScope, &row.ProjectAccess, &row.Kind); err != nil {
+			return nil, false, mapError(ctx, err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, mapError(ctx, err)
+	}
+	more := len(result) > limit
+	return result[:min(len(result), limit)], more, nil
+}
+
+func (s *session) AccessInstanceOrganizationPage(ctx context.Context, credential, hash string, offset, limit int) ([]accessstore.Organization, bool, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, false, err
+	}
+	if offset < 0 || offset > 100000 {
+		return nil, false, corestore.ErrInvalidPage
+	}
+	pageError := func(err error) error {
+		var state interface{ SQLState() string }
+		if errors.As(err, &state) && state.SQLState() == "28000" {
+			return accessstore.ErrDenied
+		}
+		return mapError(ctx, err)
+	}
+	rows, err := s.db.Query(ctx, `SELECT organization_id,name,local FROM public.operator_organization_metadata_page($1,$2,$3,$4)`, credential, hash, offset, limit)
+	if err != nil {
+		return nil, false, pageError(err)
+	}
+	defer rows.Close()
+	result := []accessstore.Organization{}
+	for rows.Next() {
+		var row accessstore.Organization
+		if err := rows.Scan(&row.OrganizationID, &row.Name, &row.Local); err != nil {
+			return nil, false, pageError(err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, pageError(err)
+	}
+	more := len(result) > limit
+	return result[:min(len(result), limit)], more, nil
 }

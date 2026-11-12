@@ -50,6 +50,7 @@ type Writer interface {
 	CreateAttachment(context.Context, Record) error
 	DeleteIconAttachment(context.Context, tracker.ProjectID, string, time.Time) error
 	BindAttachment(context.Context, Reference) error
+	ReplaceAttachmentReferences(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, []string, []string) error
 }
 
 type DeletionWriter interface {

@@ -2,13 +2,17 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *session) EnqueueGitHubOutbound(ctx context.Context, row projectstore.GitHubOutbound) error {
@@ -18,18 +22,18 @@ func (s *session) EnqueueGitHubOutbound(ctx context.Context, row projectstore.Gi
 	if err := validRecordPayload(s.organization, row.Payload.PayloadObjectKey, row.Payload.PayloadSHA256, row.Payload.PayloadBytes, row.Payload.PayloadContentBytes); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(ctx, `INSERT INTO github_outbound(organization_id,project_id,work_item_id,command_key,repository,issue_number,kind,target_node_id,next_attempt_at,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,outcome)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,'unattempted') ON CONFLICT(organization_id,command_key) DO NOTHING`, s.organization, row.ProjectID, row.WorkItemID, row.Key, row.Repository, row.IssueNumber, row.Kind, row.TargetNodeID, row.CreatedAt, row.Payload.PayloadObjectKey, row.Payload.PayloadSHA256, row.Payload.PayloadBytes, row.Payload.PayloadContentBytes)
+	_, err := s.db.Exec(ctx, `INSERT INTO github_outbound(organization_id,project_id,work_item_id,command_key,repository,issue_number,kind,target_node_id,next_attempt_at,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,outcome,coalesce_key)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,'unattempted',$14) ON CONFLICT(organization_id,command_key) DO NOTHING`, s.organization, row.ProjectID, row.WorkItemID, row.Key, row.Repository, row.IssueNumber, row.Kind, row.TargetNodeID, row.CreatedAt, row.Payload.PayloadObjectKey, row.Payload.PayloadSHA256, row.Payload.PayloadBytes, row.Payload.PayloadContentBytes, row.CoalesceKey)
 	return mapError(ctx, err)
 }
 
-const gitHubOutboundColumns = `o.id,o.project_id,o.work_item_id,o.command_key,o.repository,o.issue_number,o.kind,o.target_node_id,o.status,o.lease_id,o.attempts,o.created_at,o.next_attempt_at,o.payload_object_key,o.payload_sha256,o.payload_bytes,o.payload_content_bytes,o.outcome,o.phase,o.page_cursor,o.target_id,o.fallback_id,o.verification,o.page_sequence,o.source_updated_at,
+const gitHubOutboundColumns = `o.id,o.project_id,o.work_item_id,o.command_key,o.repository,o.issue_number,o.kind,o.target_node_id,o.status,o.lease_id,o.attempts,o.created_at,o.next_attempt_at,o.payload_object_key,o.payload_sha256,o.payload_bytes,o.payload_content_bytes,o.outcome,o.phase,o.page_cursor,o.target_id,o.fallback_id,o.verification,o.page_sequence,o.source_updated_at,o.coalesce_key,
 EXISTS(SELECT 1 FROM github_outbound_observations b WHERE b.organization_id=o.organization_id AND b.outbound_id=o.id AND b.verification=o.verification AND NOT b.ready)`
 
 func (s *session) scanGitHubOutbound(result pgx.Row, ctx context.Context) (projectstore.GitHubOutbound, error) {
 	var row projectstore.GitHubOutbound
 	row.Payload.OrganizationID = s.organization
-	err := result.Scan(&row.ID, &row.ProjectID, &row.WorkItemID, &row.Key, &row.Repository, &row.IssueNumber, &row.Kind, &row.TargetNodeID, &row.Status, &row.LeaseID, &row.Attempts, &row.CreatedAt, &row.NextAttemptAt, &row.Payload.PayloadObjectKey, &row.Payload.PayloadSHA256, &row.Payload.PayloadBytes, &row.Payload.PayloadContentBytes, &row.Outcome, &row.Progress.Stage, &row.Progress.Cursor, &row.Progress.TargetID, &row.Progress.FallbackID, &row.Progress.Verification, &row.Progress.Page, &row.Progress.SourceUpdatedAt, &row.Blocked)
+	err := result.Scan(&row.ID, &row.ProjectID, &row.WorkItemID, &row.Key, &row.Repository, &row.IssueNumber, &row.Kind, &row.TargetNodeID, &row.Status, &row.LeaseID, &row.Attempts, &row.CreatedAt, &row.NextAttemptAt, &row.Payload.PayloadObjectKey, &row.Payload.PayloadSHA256, &row.Payload.PayloadBytes, &row.Payload.PayloadContentBytes, &row.Outcome, &row.Progress.Stage, &row.Progress.Cursor, &row.Progress.TargetID, &row.Progress.FallbackID, &row.Progress.Verification, &row.Progress.Page, &row.Progress.SourceUpdatedAt, &row.CoalesceKey, &row.Blocked)
 	return row, mapError(ctx, err)
 }
 
@@ -41,7 +45,9 @@ func (s *session) ClaimGitHubOutbound(ctx context.Context, now, until time.Time,
 	if lease == "" || !until.After(now) {
 		return projectstore.GitHubOutbound{}, eventstore.ErrInvalidRecord
 	}
-	return s.scanGitHubOutbound(s.db.QueryRow(ctx, `WITH candidate AS (SELECT id FROM github_outbound WHERE organization_id=$1 AND status<>'completed' AND next_attempt_at<=$2 ORDER BY next_attempt_at,id LIMIT 1 FOR UPDATE SKIP LOCKED)
+	return s.scanGitHubOutbound(s.db.QueryRow(ctx, `WITH candidate AS (SELECT o.id FROM github_outbound o WHERE o.organization_id=$1 AND o.status IN ('pending','retrying','processing') AND o.next_attempt_at<=$2
+AND (o.coalesce_key='' OR NOT EXISTS (SELECT 1 FROM github_outbound previous WHERE previous.organization_id=o.organization_id AND previous.project_id=o.project_id AND previous.coalesce_key=o.coalesce_key AND previous.id<o.id AND previous.status IN ('pending','retrying','processing')))
+ORDER BY o.next_attempt_at,o.id LIMIT 1 FOR UPDATE OF o SKIP LOCKED)
 UPDATE github_outbound o SET status='processing',lease_id=$3,next_attempt_at=$4,attempts=attempts+1 FROM candidate c WHERE o.organization_id=$1 AND o.id=c.id
 RETURNING `+gitHubOutboundColumns, s.organization, now, lease, until), ctx)
 }
@@ -102,4 +108,76 @@ WHERE github_outbound_observations.verification<EXCLUDED.verification OR (github
 		}
 	}
 	return nil
+}
+
+func (s *session) SupersedeGitHubSummaries(ctx context.Context, project tracker.ProjectID, key string, at time.Time) error {
+	if project == "" || key == "" || at.IsZero() {
+		return eventstore.ErrInvalidRecord
+	}
+	_, err := s.db.Exec(ctx, `UPDATE github_outbound SET status='superseded',next_attempt_at=$4 WHERE organization_id=$1 AND project_id=$2 AND coalesce_key=$3 AND status IN ('pending','retrying') AND outcome IN ('unattempted','rejected') AND lease_id=''`, s.organization, project, key, at)
+	return mapError(ctx, err)
+}
+func (s *session) SupersedeGitHubCompatibilityWrites(ctx context.Context, project tracker.ProjectID, repositoryEnabled bool, at time.Time) error {
+	if project == "" || at.IsZero() {
+		return eventstore.ErrInvalidRecord
+	}
+	_, err := s.db.Exec(ctx, `UPDATE github_outbound SET status='superseded',next_attempt_at=$4 WHERE organization_id=$1 AND project_id=$2 AND status IN ('pending','retrying') AND outcome IN ('unattempted','rejected') AND lease_id='' AND (kind='workflow_label' OR (kind='workpad' AND coalesce_key='') OR (kind='merge_pull_request' AND NOT $3))`, s.organization, project, repositoryEnabled, at)
+	return mapError(ctx, err)
+}
+
+func (s *session) LatestGitHubWorkpad(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (projectstore.GitHubOutbound, error) {
+	return s.scanGitHubOutbound(s.db.QueryRow(ctx, `SELECT `+gitHubOutboundColumns+` FROM github_outbound o WHERE o.organization_id=$1 AND o.project_id=$2 AND o.work_item_id=$3 AND o.kind='workpad' AND o.status<>'superseded' ORDER BY o.id DESC LIMIT 1`, s.organization, project, item), ctx)
+}
+
+func (r *Repository) ImportCoreGitHubOutbound(ctx context.Context, row projectstore.GitHubOutbound, receipt eventstore.Receipt) error {
+	organization := row.Payload.OrganizationID
+	if err := validateCoreImportReceipt(organization, receipt, "core-github-outbox", receipt.CommandKey); err != nil {
+		return err
+	}
+	if row.ProjectID == "" || row.WorkItemID == "" || row.Key == "" || row.Repository == "" || row.Kind != "workpad" || row.IssueNumber < 0 || row.Attempts < 0 || row.CreatedAt.IsZero() || row.NextAttemptAt.IsZero() || row.LeaseID != "" {
+		return eventstore.ErrInvalidRecord
+	}
+	if row.IssueNumber == 0 && (row.Status != "superseded" || row.Outcome != "unattempted") {
+		return eventstore.ErrInvalidRecord
+	}
+	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+		replayed, err := coreImportReceiptReplay(ctx, s, receipt)
+		if err != nil || replayed {
+			return err
+		}
+		if _, err := s.queries.LockActiveProject(ctx, pgquery.LockActiveProjectParams{OrganizationID: organization, ID: row.ProjectID}); err != nil {
+			return mapError(ctx, err)
+		}
+		if _, err := s.LockWorkItem(ctx, row.ProjectID, row.WorkItemID); err != nil {
+			return err
+		}
+		project, err := s.ProjectRecord(ctx, row.ProjectID)
+		if err != nil {
+			return err
+		}
+		repository := project.Settings.CheckoutRepository
+		if repository == "" {
+			repository = project.Settings.Repository
+		}
+		if project.Core.Profile != "native" || repository != "" && !strings.EqualFold(repository, row.Repository) {
+			return corestore.ErrRevisionConflict
+		}
+		if _, err := s.GitHubOutbound(ctx, row.Key); !errors.Is(err, corestore.ErrNotFound) {
+			if err != nil {
+				return err
+			}
+			return corestore.ErrRevisionConflict
+		}
+		if row.IssueNumber > 0 {
+			if err := validRecordPayload(organization, row.Payload.PayloadObjectKey, row.Payload.PayloadSHA256, row.Payload.PayloadBytes, row.Payload.PayloadContentBytes); err != nil {
+				return err
+			}
+			if _, err := s.db.Exec(ctx, `INSERT INTO github_outbound(organization_id,project_id,work_item_id,command_key,repository,issue_number,kind,target_node_id,status,attempts,next_attempt_at,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,outcome,coalesce_key)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, organization, row.ProjectID, row.WorkItemID, row.Key, row.Repository, row.IssueNumber, row.Kind, row.TargetNodeID, row.Status, row.Attempts, row.NextAttemptAt, row.CreatedAt, row.Payload.PayloadObjectKey, row.Payload.PayloadSHA256, row.Payload.PayloadBytes, row.Payload.PayloadContentBytes, row.Outcome, row.CoalesceKey); err != nil {
+				return mapError(ctx, err)
+			}
+		}
+		_, err = s.PutReceipt(ctx, receipt)
+		return err
+	})
 }

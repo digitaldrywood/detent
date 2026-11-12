@@ -163,7 +163,7 @@ func TestCoreNeutralUsageRefusesInvalidSourceBeforeWriting(t *testing.T) {
 			case "attempt scope":
 				fixture.set("native_attempts", map[string]string{"id": "attempt_execution_import_second"}, map[string]any{"project_id": "prj_other"})
 			case "currency":
-				fixture.set("attempt_usage", map[string]string{"attempt_id": "attempt_execution_import_second"}, map[string]any{"currency": "EUR"})
+				fixture.set("attempt_usage", map[string]string{"attempt_id": "attempt_execution_import_second"}, map[string]any{"currency": "EURO"})
 			}
 			path := fixture.write()
 			var identity postgres.NeutralImportIdentity

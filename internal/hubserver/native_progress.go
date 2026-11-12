@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -174,39 +175,6 @@ func (o nativeProgressOwner) Load(ctx context.Context, project, issue, id string
 	return record, true, nil
 }
 
-func readNativeProgress(ctx context.Context, q nativeQueryer, scope nativeScope, issue, id string) (progresscheck.Record, bool, error) {
-	record := progresscheck.Record{RequestID: id, ProjectID: string(scope.project), IssueID: issue}
-	err := q.QueryRowContext(ctx, `SELECT evidence_revision, outcome, step, reason, defect_key, defect_title, defect_body, comment_id, defect_issue_id, diagnosis, instruction, convergence
- FROM native_progress_decisions WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND request_id = ?`, scope.organization, scope.project, issue, id).Scan(
-		&record.EvidenceRevision, &record.Decision.Outcome, &record.Decision.Step, &record.Decision.Reason,
-		&record.Decision.DefectKey, &record.Decision.DefectTitle, &record.Decision.DefectBody, &record.CommentID, &record.DefectIssueID, &record.Decision.Diagnosis, &record.Decision.Instruction, &record.Decision.Convergence)
-	if errors.Is(err, sql.ErrNoRows) {
-		return progresscheck.Record{}, false, nil
-	}
-	if err != nil {
-		return progresscheck.Record{}, false, fmt.Errorf("read progress decision: %w", err)
-	}
-	rows, err := q.QueryContext(ctx, `SELECT evidence_id, retrieved, retrieved_attempt_id, retrieved_source_sha FROM native_progress_evidence
- WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND request_id = ? ORDER BY position LIMIT ?`, scope.organization, scope.project, issue, id, progresscheck.MaxReceipts+1)
-	if err != nil {
-		return progresscheck.Record{}, false, fmt.Errorf("read progress evidence: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var evidence string
-		var retrieved bool
-		var attemptID, sourceSHA string
-		if err := rows.Scan(&evidence, &retrieved, &attemptID, &sourceSHA); err != nil {
-			return progresscheck.Record{}, false, err
-		}
-		record.Decision.Evidence = append(record.Decision.Evidence, evidence)
-		if retrieved {
-			record.Decision.RetrievedEvidence = append(record.Decision.RetrievedEvidence, progresscheck.EvidenceReference{ID: evidence, AttemptID: attemptID, SourceSHA: sourceSHA})
-		}
-	}
-	return record, true, rows.Err()
-}
-
 func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.Record) (progresscheck.Record, error) {
 	return o.publishTenant(ctx, record)
 }
@@ -354,16 +322,20 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 	actor.Kind = "machine"
 	actor.Agent = "progress-check"
 	commentScope.sourceActor = &actor
+	commentScope.action, commentScope.actionItem = operatortool.AddComment, record.IssueID
+	var defectMutation preparedWorkItemRecordMutation
 	body := nativeProgressCommentBody(record)
 	if record.Decision.Outcome == progresscheck.SystemDefect {
 		defectBody := issueorigin.Stamp(record.Decision.DefectBody, issueorigin.Origin{Kind: "worker", Instance: "progress-check", Source: record.RequestID, Fingerprint: issueorigin.Fingerprint("progress-check:" + record.Decision.DefectKey)})
 		defectScope := commentScope
 		defectScope.progressOrigin = &o
-		defectRaw, err := o.service.createNativeIssueCommand(ctx, defectScope, tracker.CreateIssue{
+		defectScope.action, defectScope.actionItem = operatortool.FileIssue, ""
+		request := tracker.CreateIssue{
 			Mutation: tracker.Mutation{IdempotencyKey: record.RequestID + "/defect", LeaseID: o.leaseID, FencingToken: o.fencingToken},
 			Title:    record.Decision.DefectTitle, Body: defectBody, State: "Backlog",
 			Provenance: &tracker.Provenance{Provider: "progress-check", ExternalID: record.Decision.DefectKey},
-		})
+		}
+		prepared, defectRaw, err := o.service.prepareWorkItemRecordMutation(ctx, defectScope, nativeCommandOptions{OperationID: nativeIssueCreationOperation(defectScope), Feature: "collaboration"}, request.Mutation, request, "")
 		if err != nil {
 			return progresscheck.Record{}, fmt.Errorf("file progress defect: %w", err)
 		}
@@ -371,14 +343,26 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		if err := json.Unmarshal(defectRaw, &defect); err != nil || defect.WorkItemID == "" {
 			return progresscheck.Record{}, eventstore.ErrInvalidRecord
 		}
+		defectMutation = prepared
 		record.DefectIssueID = string(defect.WorkItemID)
+		if defect.WebURL == "" {
+			defect.WebURL = prepared.browserPath
+			if defect.WebURL == "" {
+				defect.WebURL, err = o.service.nativeIssueRecordBrowserPath(ctx, o.scope, record.DefectIssueID)
+				if err != nil {
+					return progresscheck.Record{}, err
+				}
+			}
+		}
 		body += fmt.Sprintf("\n\nSystem defect: [#%d](%s)", defect.Number, defect.WebURL)
 	}
-	commentRaw, err := o.service.createNativeCommentCommand(ctx, commentScope, record.IssueID, tracker.CreateComment{
+	commentRequest := tracker.CreateComment{
 		Mutation:   tracker.Mutation{IdempotencyKey: record.RequestID, LeaseID: o.leaseID, FencingToken: o.fencingToken},
 		Body:       body,
 		Provenance: &tracker.Provenance{Provider: "progress-check", ExternalID: record.RequestID},
-	})
+	}
+	commentOptions := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(o.scope.organization) + "/projects/" + string(o.scope.project) + "/work-items/" + record.IssueID + "/comments", Item: record.IssueID, RequireLease: true, Feature: "collaboration"}
+	commentMutation, commentRaw, err := o.service.prepareWorkItemRecordMutation(ctx, commentScope, commentOptions, commentRequest.Mutation, commentRequest, "")
 	if err != nil {
 		return progresscheck.Record{}, fmt.Errorf("publish progress comment: %w", err)
 	}
@@ -390,7 +374,7 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 	if comment.Sequence > startingSequence+1 {
 		return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
 	}
-	expectedSequence := max(startingSequence, comment.Sequence)
+	expectedSequence := startingSequence
 	currentRequest, currentSequence, err := o.service.nativeProgressRequestTenant(ctx, o.scope, record.IssueID, o.request.PolicyID, o.request.Instance)
 	if err != nil {
 		return progresscheck.Record{}, err
@@ -416,12 +400,27 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 	if err != nil {
 		return progresscheck.Record{}, err
 	}
+	authority, err := o.service.beginProjectRecordAuthority(ctx, commentScope)
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
 	receiptWritten := false
+	replayed := false
 	err = o.service.config.TenantRepository.WriteTenant(ctx, o.scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if err := o.service.authorizeAccessScope(ctx, writer, commentScope, true); err != nil {
 			return err
 		}
-		removals, err := o.lockProgressRelationships(ctx, writer, record)
+		if _, err := writer.Receipt(ctx, nativeProgressReceiptActor, nativeProgressReceiptOperation(o.scope, record.IssueID), record.RequestID); err == nil {
+			replayed = true
+			return nil
+		} else if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		lockRecord := record
+		if defectMutation.plan.create && defectMutation.plan.comment.ID == "" && !defectMutation.plan.existing {
+			lockRecord.DefectIssueID = ""
+		}
+		removals, err := o.lockProgressRelationships(ctx, writer, lockRecord)
 		if err != nil {
 			return err
 		}
@@ -435,6 +434,16 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		if current.EventSequence != expectedSequence {
 			return &nativeError{Code: "revision_conflict", status: http.StatusConflict}
 		}
+		if defectMutation.write != nil {
+			if err := defectMutation.write(writer); err != nil {
+				return err
+			}
+		}
+		if commentMutation.write != nil {
+			if err := commentMutation.write(writer); err != nil {
+				return err
+			}
+		}
 		for start := 0; start < len(removals); start += corestore.MaxPageSize - 1 {
 			batch := removals[start:min(start+corestore.MaxPageSize-1, len(removals))]
 			refs := make([]corestore.WorkItemReference, len(batch))
@@ -446,7 +455,7 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 			}
 		}
 		if record.DefectIssueID != "" {
-			if err := writer.SetRelationship(ctx, corestore.Relationship{OrganizationID: o.scope.organization, ProjectID: o.scope.project, WorkItemID: tracker.NativeWorkItemID(record.IssueID), RelatedProjectID: o.scope.project, RelatedWorkItemID: tracker.NativeWorkItemID(record.DefectIssueID), Type: "dependency"}, "add", o.service.config.now().UTC()); err != nil {
+			if err := writer.SetRelationship(ctx, corestore.Relationship{OrganizationID: o.scope.organization, ProjectID: o.scope.project, WorkItemID: tracker.NativeWorkItemID(record.IssueID), RelatedProjectID: o.scope.project, RelatedWorkItemID: tracker.NativeWorkItemID(record.DefectIssueID), Type: "dependency", Provenance: "progress_check"}, "add", o.service.config.now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -454,6 +463,17 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		receiptWritten = err == nil
 		return err
 	})
+	err = errors.Join(err, releaseWorkItemAuthority(authority))
+	if err == nil && replayed {
+		retained, found, readErr := o.Load(ctx, record.ProjectID, record.IssueID, record.RequestID)
+		if readErr != nil {
+			return progresscheck.Record{}, readErr
+		}
+		if !found {
+			return progresscheck.Record{}, eventstore.ErrInvalidRecord
+		}
+		return retained, nil
+	}
 	if err != nil {
 		if !receiptWritten {
 			return progresscheck.Record{}, fmt.Errorf("store progress decision receipt: %w", err)
@@ -467,6 +487,7 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		}
 		return progresscheck.Record{}, errors.Join(fmt.Errorf("store progress decision receipt: %w", err), readErr)
 	}
+	o.service.signalNativeDispatch(o.scope)
 	return record, nil
 }
 
@@ -485,27 +506,4 @@ func nativeProgressCommentBody(record progresscheck.Record) string {
 		}
 	}
 	return body + "\n\nEvidence: " + strings.Join(record.Decision.Evidence, ", ")
-}
-
-func expireNativeProgressDependencies(ctx context.Context, tx *sql.Tx, scope nativeScope, item, eventType string, data tracker.CollaborationData) error {
-	if eventType == "run.finished" {
-		_, err := tx.ExecContext(ctx, `UPDATE issues SET progress_evidence_revision=progress_evidence_revision+1 WHERE organization_id=? AND project_id=? AND native_id=?`, scope.organization, scope.project, item)
-		return err
-	}
-	if eventType != "issue.edited" && eventType != "comment.created" && eventType != "comment.edited" && eventType != "run.checkpointed" && !strings.HasPrefix(eventType, "change.") {
-		return nil
-	}
-	actor := scope.actor()
-	if eventType == "comment.created" && actor.Kind == "machine" && actor.Agent == "progress-check" {
-		return nil
-	}
-	humanComment := ""
-	if actor.Kind == "human" && (eventType == "comment.created" || eventType == "comment.edited") {
-		humanComment = data.CommentID
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE issues SET progress_evidence_revision=progress_evidence_revision+1,progress_comment_sequence=CASE WHEN ?='comment.created' THEN event_sequence+1 ELSE progress_comment_sequence END,progress_human_comment_id=CASE WHEN ?<>'' THEN ? ELSE progress_human_comment_id END WHERE organization_id=? AND project_id=? AND native_id=?`, eventType, humanComment, humanComment, scope.organization, scope.project, item); err != nil {
-		return err
-	}
-	_, err := tx.ExecContext(ctx, `DELETE FROM issue_dependencies WHERE dependent_issue_id=(SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?) AND provenance='progress_check'`, scope.organization, scope.project, item)
-	return err
 }

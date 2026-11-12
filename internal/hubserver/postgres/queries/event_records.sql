@@ -44,6 +44,12 @@ ORDER BY i.native_id;
 -- name: RecordListEvent :many
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND sequence>sqlc.arg(after) ORDER BY sequence LIMIT sqlc.arg(page_limit);
 
+-- name: RecordProjectEvents :many
+SELECT * FROM collaboration_events
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+AND project_sequence>sqlc.arg(after_project_sequence)
+ORDER BY project_sequence,work_item_id LIMIT sqlc.arg(page_limit);
+
 -- name: RecordListEventBefore :many
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND sequence<sqlc.arg(before) ORDER BY sequence DESC LIMIT sqlc.arg(page_limit);
 
@@ -68,8 +74,8 @@ CROSS JOIN LATERAL (
 SELECT * FROM collaboration_versions WHERE organization_id=sqlc.arg(organization_id) AND record_id=sqlc.arg(record_id) AND revision=sqlc.arg(revision);
 
 -- name: RecordInsertCollaborationVersion :one
-INSERT INTO collaboration_versions (organization_id, project_id, work_item_id, record_id, revision, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(record_id), sqlc.arg(revision), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes)) RETURNING *;
+INSERT INTO collaboration_versions (organization_id,project_id,work_item_id,record_id,revision,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,source_known,source_scheduled,source_observed_at)
+VALUES(sqlc.arg(organization_id),sqlc.arg(project_id),sqlc.arg(work_item_id),sqlc.arg(record_id),sqlc.arg(revision),sqlc.arg(payload_object_key),sqlc.arg(payload_sha256),sqlc.arg(payload_bytes),sqlc.arg(payload_content_bytes),sqlc.arg(source_known),sqlc.arg(source_scheduled),sqlc.arg(source_observed_at)) RETURNING *;
 
 -- name: RecordGetChange :one
 SELECT * FROM change_requests WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id);
@@ -102,19 +108,48 @@ AND EXISTS (SELECT 1 FROM change_issue_links l WHERE l.organization_id=c.organiz
 ORDER BY c.id LIMIT sqlc.arg(page_limit);
 
 -- name: RecordGetLink :one
-SELECT * FROM change_issue_links WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND work_item_id=sqlc.arg(work_item_id);
+SELECT organization_id,project_id,work_item_id,change_id,created_at FROM change_issue_links WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND work_item_id=sqlc.arg(work_item_id);
 
 -- name: RecordInsertLink :one
-INSERT INTO change_issue_links (organization_id, project_id, work_item_id, change_id, created_at)
-SELECT c.organization_id,c.project_id,sqlc.arg(work_item_id),c.id,c.created_at FROM change_requests c
-WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND c.id=sqlc.arg(change_id) RETURNING *;
+INSERT INTO change_issue_links (organization_id, project_id, work_item_id, change_id, created_at, retained_pr_version_id)
+SELECT c.organization_id,c.project_id,sqlc.arg(work_item_id),c.id,c.created_at,(
+ SELECT v.id FROM change_versions v
+ WHERE v.organization_id=c.organization_id AND v.change_id=c.id AND v.external_provider='github' AND v.external_url<>''
+ ORDER BY v.number DESC LIMIT 1
+) FROM change_requests c
+WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND c.id=sqlc.arg(change_id)
+RETURNING organization_id,project_id,work_item_id,change_id,created_at;
+
+-- name: RecordRetainPullRequestVersion :execrows
+UPDATE change_issue_links l SET retained_pr_version_id=v.id
+FROM change_versions v
+WHERE l.organization_id=sqlc.arg(organization_id) AND l.change_id=sqlc.arg(change_id)
+ AND v.organization_id=l.organization_id AND v.change_id=l.change_id AND v.id=sqlc.arg(version_id)
+ AND v.external_provider='github' AND v.external_url<>''
+ AND (l.retained_pr_version_id IS NULL OR EXISTS (
+  SELECT 1 FROM change_versions previous
+  WHERE previous.organization_id=l.organization_id AND previous.change_id=l.change_id AND previous.id=l.retained_pr_version_id
+   AND previous.number<v.number
+ ));
+
+-- name: RecordWorkItemPullRequestVersion :one
+WITH selected AS MATERIALIZED (
+ SELECT source_link.organization_id,source_link.project_id,source_link.work_item_id,source_link.change_id,source_link.retained_pr_version_id
+ FROM change_issue_links AS source_link
+ WHERE source_link.organization_id=sqlc.arg(organization_id) AND source_link.project_id=sqlc.arg(project_id) AND source_link.work_item_id=sqlc.arg(work_item_id)
+  AND source_link.retained_pr_version_id IS NOT NULL
+ ORDER BY source_link.created_at DESC,source_link.change_id DESC LIMIT 1
+)
+SELECT l.organization_id,l.project_id,l.work_item_id,l.change_id,v.id AS version_id,v.number,v.head_sha,v.repository,
+ v.policy_revision_id,v.attempt_id,v.external_provider,v.external_id,v.external_url
+FROM selected l JOIN change_versions v ON v.organization_id=l.organization_id AND v.change_id=l.change_id AND v.id=l.retained_pr_version_id;
 
 -- name: RecordGetVersion :one
 SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND id=sqlc.arg(id);
 
 -- name: RecordInsertVersion :one
-INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes, implementing_session_id, implementing_machine_id)
-VALUES (sqlc.arg(organization_id), sqlc.arg(id), sqlc.arg(change_id), sqlc.arg(number), sqlc.arg(head_sha), sqlc.arg(base_sha), sqlc.arg(merge_base_sha), sqlc.arg(repository), sqlc.arg(policy_revision_id), sqlc.arg(attempt_id), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(external_provider), sqlc.arg(external_id), sqlc.arg(external_url), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version), sqlc.narg(source_object_key), sqlc.narg(source_sha256), sqlc.narg(source_bytes), sqlc.narg(source_content_bytes), sqlc.arg(implementing_session_id), sqlc.arg(implementing_machine_id)) RETURNING *;
+INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes, implementing_session_id, implementing_machine_id,project_id,landing_history_known)
+VALUES (sqlc.arg(organization_id), sqlc.arg(id), sqlc.arg(change_id), sqlc.arg(number), sqlc.arg(head_sha), sqlc.arg(base_sha), sqlc.arg(merge_base_sha), sqlc.arg(repository), sqlc.arg(policy_revision_id), sqlc.arg(attempt_id), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(external_provider), sqlc.arg(external_id), sqlc.arg(external_url), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version), sqlc.narg(source_object_key), sqlc.narg(source_sha256), sqlc.narg(source_bytes), sqlc.narg(source_content_bytes), sqlc.arg(implementing_session_id), sqlc.arg(implementing_machine_id),(SELECT c.project_id FROM change_requests c WHERE c.organization_id=sqlc.arg(organization_id) AND c.id=sqlc.arg(change_id)),sqlc.arg(landing_history_known)) RETURNING *;
 
 -- name: RecordListVersion :many
 SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND number>sqlc.arg(after) ORDER BY number LIMIT sqlc.arg(page_limit);
@@ -138,19 +173,53 @@ ORDER BY a.fencing_token DESC
 LIMIT 1;
 
 -- name: RecordInsertLandingReceipt :one
-INSERT INTO change_landing_receipts (organization_id, attempt_id, version_id, merge_sha, repository, base_ref, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES (sqlc.arg(organization_id), sqlc.arg(attempt_id), sqlc.arg(version_id), sqlc.arg(merge_sha), sqlc.arg(repository), sqlc.arg(base_ref), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes))
+INSERT INTO change_landing_receipts (organization_id, attempt_id, version_id, merge_sha, repository, base_ref, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes,issue_id,change_id,fencing_token,repository_identity,project_id)
+VALUES (sqlc.arg(organization_id), sqlc.arg(attempt_id), sqlc.arg(version_id), sqlc.arg(merge_sha), sqlc.arg(repository), sqlc.arg(base_ref), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes),sqlc.arg(issue_id),sqlc.arg(change_id),sqlc.arg(fencing_token),sqlc.arg(repository_identity),sqlc.arg(project_id))
 ON CONFLICT (organization_id, attempt_id) DO NOTHING RETURNING *;
 
 -- name: RecordProjectPolicyLanding :one
-SELECT v.change_id,v.external_url,v.actor_principal_id
-FROM change_landing_receipts l
-JOIN change_versions v ON v.organization_id=l.organization_id AND v.id=l.version_id
-JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id
-WHERE l.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id)
-  AND l.merge_sha=sqlc.arg(merge_sha) AND lower(l.repository)=lower(sqlc.arg(repository))
-  AND l.base_ref=sqlc.arg(base_ref)
-ORDER BY c.id,v.number DESC
+SELECT sqlc.embed(v),c.work_item_id
+FROM unnest(sqlc.arg(repositories)::text[]) AS repository_names(name)
+CROSS JOIN LATERAL (
+  SELECT candidate.id,candidate.change_id,candidate.number
+  FROM change_versions candidate
+  WHERE candidate.organization_id=sqlc.arg(organization_id)
+    AND candidate.project_id=sqlc.arg(project_id)
+    AND candidate.landed_merge_sha=sqlc.arg(merge_sha)
+    AND lower(candidate.repository)=repository_names.name
+    AND candidate.landed_base_ref=sqlc.arg(base_ref)
+    AND candidate.landed_at IS NOT NULL
+    AND candidate.landing_history_known
+  ORDER BY candidate.change_id,candidate.number DESC
+  LIMIT 1
+) picked
+JOIN change_versions v ON v.organization_id=sqlc.arg(organization_id)
+  AND v.project_id=sqlc.arg(project_id) AND v.id=picked.id
+JOIN change_requests c ON c.organization_id=v.organization_id
+  AND c.project_id=v.project_id AND c.id=v.change_id
+ORDER BY picked.change_id,picked.number DESC
+LIMIT 1;
+
+-- name: RecordProjectPolicyLandingHistory :one
+SELECT sqlc.embed(v),c.work_item_id
+FROM unnest(sqlc.arg(repositories)::text[]) AS repository_names(name)
+CROSS JOIN LATERAL (
+  SELECT candidate.id,candidate.change_id,candidate.number
+  FROM change_versions candidate
+  WHERE candidate.organization_id=sqlc.arg(organization_id)
+    AND candidate.project_id=sqlc.arg(project_id)
+    AND candidate.landed_merge_sha=sqlc.arg(merge_sha)
+    AND lower(candidate.repository)=repository_names.name
+    AND candidate.landed_at IS NOT NULL
+    AND candidate.landing_history_known
+  ORDER BY candidate.change_id,candidate.number DESC
+  LIMIT 1
+) picked
+JOIN change_versions v ON v.organization_id=sqlc.arg(organization_id)
+  AND v.project_id=sqlc.arg(project_id) AND v.id=picked.id
+JOIN change_requests c ON c.organization_id=v.organization_id
+  AND c.project_id=v.project_id AND c.id=v.change_id
+ORDER BY picked.change_id,picked.number DESC
 LIMIT 1;
 
 -- name: RecordListViewedFiles :many
@@ -172,8 +241,8 @@ SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AN
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND kind=sqlc.arg(kind) AND source_key=sqlc.arg(source_key);
 
 -- name: RecordInsertEvidence :one
-INSERT INTO change_evidence (organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version,review_kind,review_landing,review_session_known,review_session_id,review_session_machine)
-VALUES (sqlc.arg(organization_id), sqlc.arg(change_id), sqlc.arg(sequence), sqlc.narg(version_id), sqlc.arg(kind), sqlc.narg(source_key), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(decision), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version),sqlc.arg(review_kind),sqlc.arg(review_landing),sqlc.arg(review_session_known),sqlc.arg(review_session_id),sqlc.arg(review_session_machine)) RETURNING *;
+INSERT INTO change_evidence (organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version,review_kind,review_landing,review_session_known,review_session_id,review_session_machine,project_id,quality_at)
+VALUES (sqlc.arg(organization_id), sqlc.arg(change_id), sqlc.arg(sequence), sqlc.narg(version_id), sqlc.arg(kind), sqlc.narg(source_key), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(decision), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version),sqlc.arg(review_kind),sqlc.arg(review_landing),sqlc.arg(review_session_known),sqlc.arg(review_session_id),sqlc.arg(review_session_machine),(SELECT c.project_id FROM change_requests c WHERE c.organization_id=sqlc.arg(organization_id) AND c.id=sqlc.arg(change_id)) ,CASE WHEN sqlc.arg(kind)='review' THEN sqlc.arg(created_at)::timestamptz ELSE sqlc.narg(escape_observed_at)::timestamptz END) RETURNING *;
 
 -- name: RecordListEvidence :many
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND sequence>sqlc.arg(after) ORDER BY sequence LIMIT sqlc.arg(page_limit);
@@ -194,7 +263,7 @@ UPDATE change_requests SET evidence_sequence=greatest(evidence_sequence, sqlc.ar
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) RETURNING evidence_sequence;
 
 -- name: RecordListLink :many
-SELECT * FROM change_issue_links WHERE organization_id=$1 AND change_id=$2 AND work_item_id>sqlc.arg(after) ORDER BY work_item_id LIMIT sqlc.arg(page_limit);
+SELECT organization_id,project_id,work_item_id,change_id,created_at FROM change_issue_links WHERE organization_id=$1 AND change_id=$2 AND work_item_id>sqlc.arg(after) ORDER BY work_item_id LIMIT sqlc.arg(page_limit);
 
 -- name: RecordUpdateChange :one
 UPDATE change_requests SET revision=revision+1, title=sqlc.arg(title), current_version_id=sqlc.narg(current_version_id),
@@ -292,14 +361,44 @@ SELECT * FROM (
 ) selected ORDER BY sequence;
 
 -- name: RecordChangePriorApproval :one
+WITH unknown_approvals AS MATERIALIZED (
+ SELECT e.version_id FROM change_evidence e
+ WHERE e.organization_id=sqlc.arg(organization_id) AND e.change_id=sqlc.arg(change_id) AND e.sequence<=sqlc.arg(through)
+ AND e.kind='review' AND e.review_kind='' AND e.decision='approved' AND e.version_id IS NOT NULL
+ ORDER BY e.sequence DESC LIMIT 201
+)
 SELECT EXISTS (SELECT 1 FROM change_evidence e
 WHERE e.organization_id=sqlc.arg(organization_id) AND e.change_id=sqlc.arg(change_id)
 AND e.version_id<>sqlc.arg(version_id) AND e.sequence<=sqlc.arg(through)
 AND e.kind='review' AND e.review_kind='human' AND e.decision='approved') AS approved,
-EXISTS (SELECT 1 FROM change_evidence e
-WHERE e.organization_id=sqlc.arg(organization_id) AND e.change_id=sqlc.arg(change_id)
-AND e.version_id<>sqlc.arg(version_id) AND e.sequence<=sqlc.arg(through)
-AND e.kind='review' AND e.review_kind='' AND e.decision='approved') AS unprojected;
+(EXISTS (SELECT 1 FROM unknown_approvals WHERE version_id<>sqlc.arg(version_id))
+ OR (SELECT count(*) FROM unknown_approvals)>200)::boolean AS unprojected;
+
+-- name: RecordRecoveryChangeEvidence :many
+WITH scoped AS NOT MATERIALIZED (
+ SELECT e.* FROM change_evidence e
+ WHERE e.organization_id=sqlc.arg(organization_id) AND e.change_id=sqlc.arg(change_id) AND e.sequence<=sqlc.arg(through)
+), recent_reviews AS (
+ SELECT * FROM scoped WHERE kind='review' AND version_id=sqlc.arg(version_id) ORDER BY sequence DESC LIMIT 32
+), landing_review AS (
+ SELECT * FROM scoped WHERE kind='review' AND version_id=sqlc.arg(version_id) AND review_kind='security_audit' AND review_landing
+ ORDER BY sequence DESC LIMIT 1
+), version_discussion AS (
+ SELECT * FROM scoped WHERE kind='discussion' AND version_id=sqlc.arg(version_id) ORDER BY sequence DESC LIMIT 32
+), unversioned_discussion AS (
+ SELECT * FROM scoped WHERE kind='discussion' AND version_id IS NULL ORDER BY sequence DESC LIMIT 32
+), recent_discussion AS (
+ SELECT * FROM (
+  SELECT * FROM version_discussion UNION ALL SELECT * FROM unversioned_discussion
+ ) discussion ORDER BY sequence DESC LIMIT 32
+), unknown_approvals AS (
+ SELECT * FROM scoped WHERE sqlc.arg(include_prior_unprojected)::boolean
+ AND kind='review' AND review_kind='' AND decision='approved' AND version_id IS NOT NULL
+ ORDER BY sequence DESC LIMIT 401
+)
+SELECT * FROM (
+ SELECT * FROM recent_reviews UNION SELECT * FROM landing_review UNION SELECT * FROM recent_discussion UNION SELECT * FROM unknown_approvals
+) selected ORDER BY sequence;
 
 -- name: RecordChangePublicationCheckpoints :many
 WITH matching AS (
@@ -407,7 +506,7 @@ SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_i
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND type='scheduler.decision' AND scheduler_outcome='claimed' ORDER BY sequence DESC LIMIT 1;
 
 -- name: RecordGetVersionWorkItemID :one
-SELECT i.id FROM change_versions v JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
+SELECT i.id AS issue_id,c.id AS change_id,c.project_id,v.repository FROM change_versions v JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
 WHERE v.organization_id=sqlc.arg(organization_id) AND v.id=sqlc.arg(id);
 
 -- name: RecordListHistoryEvent :many
@@ -415,3 +514,107 @@ SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_i
 
 -- name: RecordListHistoryEventBefore :many
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND NOT history_hidden AND sequence<sqlc.arg(before) ORDER BY sequence DESC LIMIT sqlc.arg(page_limit);
+
+-- name: RecordValidationCandidates :many
+WITH matches AS MATERIALIZED (
+ SELECT r.attempt_id,r.version_id,r.change_id,r.fencing_token,r.merge_sha,r.issue_id,(r.merge_sha=sqlc.arg(head_sha)) AS head_matches FROM change_landing_receipts r
+ WHERE r.organization_id=sqlc.arg(organization_id) AND r.issue_id=sqlc.arg(issue_id) AND r.repository_identity=sqlc.arg(repository_identity) AND r.merge_sha=sqlc.arg(head_sha)
+ ORDER BY r.fencing_token DESC,r.attempt_id DESC LIMIT 21
+), recent AS MATERIALIZED (
+ SELECT r.attempt_id,r.version_id,r.change_id,r.fencing_token,r.merge_sha,r.issue_id,(r.merge_sha=sqlc.arg(head_sha)) AS head_matches FROM change_landing_receipts r
+ WHERE r.organization_id=sqlc.arg(organization_id) AND r.issue_id=sqlc.arg(issue_id) AND r.repository_identity=sqlc.arg(repository_identity)
+ ORDER BY r.fencing_token DESC,r.attempt_id DESC LIMIT 21
+), selected AS (
+ SELECT * FROM matches UNION SELECT * FROM recent
+)
+SELECT attempt_id,version_id,change_id,fencing_token,issue_id FROM selected
+ORDER BY head_matches DESC,fencing_token DESC,attempt_id DESC LIMIT 21;
+
+-- name: RecordValidationChangeCandidates :many
+WITH matches AS MATERIALIZED (
+ SELECT r.attempt_id,r.version_id,r.change_id,r.fencing_token,r.merge_sha,r.issue_id,(r.merge_sha=sqlc.arg(head_sha)) AS head_matches FROM change_landing_receipts r
+ WHERE r.organization_id=sqlc.arg(organization_id) AND r.issue_id=sqlc.arg(issue_id) AND r.repository_identity=sqlc.arg(repository_identity) AND r.change_id=sqlc.arg(change_id) AND r.merge_sha=sqlc.arg(head_sha)
+ ORDER BY r.fencing_token DESC,r.attempt_id DESC LIMIT 21
+), recent AS MATERIALIZED (
+ SELECT r.attempt_id,r.version_id,r.change_id,r.fencing_token,r.merge_sha,r.issue_id,(r.merge_sha=sqlc.arg(head_sha)) AS head_matches FROM change_landing_receipts r
+ WHERE r.organization_id=sqlc.arg(organization_id) AND r.issue_id=sqlc.arg(issue_id) AND r.repository_identity=sqlc.arg(repository_identity) AND r.change_id=sqlc.arg(change_id)
+ ORDER BY r.fencing_token DESC,r.attempt_id DESC LIMIT 21
+), selected AS (
+ SELECT * FROM matches UNION SELECT * FROM recent
+)
+SELECT attempt_id,version_id,change_id,fencing_token,issue_id FROM selected
+ORDER BY head_matches DESC,fencing_token DESC,attempt_id DESC LIMIT 21;
+
+-- name: RecordPendingProjectScheduledSources :one
+SELECT EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.source_revision<>i.revision)
+ OR EXISTS(SELECT 1 FROM native_comments c WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND c.source_revision<>c.revision);
+
+-- name: RecordProjectScheduledSources :many
+WITH candidates AS MATERIALIZED (
+ (SELECT i.native_id AS work_item_id,i.native_id::text AS record_id,i.revision,COALESCE(i.source_observed_at,'epoch'::timestamptz) AS source_observed_at FROM issues i
+ WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.source_revision=i.revision AND i.source_scheduled ORDER BY i.source_observed_at DESC,i.native_id DESC LIMIT 41)
+ UNION ALL
+ (SELECT c.work_item_id,c.id,c.revision,COALESCE(c.source_observed_at,'epoch'::timestamptz) FROM native_comments c
+ WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND c.source_revision=c.revision AND c.source_scheduled ORDER BY c.source_observed_at DESC,c.id DESC LIMIT 41)
+)
+SELECT candidates.work_item_id,candidates.record_id,candidates.revision,candidates.source_observed_at FROM candidates ORDER BY candidates.source_observed_at DESC,candidates.record_id DESC LIMIT 41;
+
+-- name: RecordPendingWorkItemScheduledSources :one
+SELECT EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(work_item_id) AND i.source_revision<>i.revision)
+ OR EXISTS(SELECT 1 FROM native_comments c WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND c.work_item_id=sqlc.arg(work_item_id) AND c.source_revision<>c.revision);
+
+-- name: RecordWorkItemScheduledSources :many
+WITH candidates AS MATERIALIZED (
+ (SELECT i.native_id AS work_item_id,i.native_id::text AS record_id,i.revision,COALESCE(i.source_observed_at,'epoch'::timestamptz) AS source_observed_at FROM issues i
+ WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(work_item_id) AND i.source_revision=i.revision AND i.source_scheduled ORDER BY i.source_observed_at DESC,i.native_id DESC LIMIT 41)
+ UNION ALL
+ (SELECT c.work_item_id,c.id,c.revision,COALESCE(c.source_observed_at,'epoch'::timestamptz) FROM native_comments c
+ WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND c.work_item_id=sqlc.arg(work_item_id) AND c.source_revision=c.revision AND c.source_scheduled ORDER BY c.source_observed_at DESC,c.id DESC LIMIT 41)
+)
+SELECT candidates.work_item_id,candidates.record_id,candidates.revision,candidates.source_observed_at FROM candidates ORDER BY candidates.source_observed_at DESC,candidates.record_id DESC LIMIT 41;
+
+-- name: RecordUnclassifiedScheduledSources :many
+WITH pending AS MATERIALIZED (
+ (SELECT i.project_id,i.native_id AS work_item_id,i.native_id::text AS record_id,i.revision,COALESCE(i.body_object_key,'') AS body_object_key,i.body_object_key IS NULL AS body_missing FROM issues i
+ WHERE i.organization_id=sqlc.arg(organization_id) AND i.source_revision<>i.revision AND (i.project_id,i.native_id)>(sqlc.arg(after_project_id)::text,sqlc.arg(after_record_id)::text) ORDER BY i.project_id,i.native_id LIMIT sqlc.arg(page_limit))
+ UNION ALL
+ (SELECT c.project_id,c.work_item_id,c.id,c.revision,c.body_object_key,false FROM native_comments c
+ WHERE c.organization_id=sqlc.arg(organization_id) AND c.source_revision<>c.revision AND (c.project_id,c.id)>(sqlc.arg(after_project_id)::text,sqlc.arg(after_record_id)::text) ORDER BY c.project_id,c.id LIMIT sqlc.arg(page_limit))
+)
+SELECT pending.project_id,pending.work_item_id,pending.record_id,pending.revision,pending.body_object_key,pending.body_missing::boolean AS body_missing FROM pending ORDER BY pending.project_id,pending.record_id LIMIT sqlc.arg(page_limit);
+
+-- name: RecordClassifyScheduledIssue :execrows
+UPDATE issues SET source_revision=revision,source_scheduled=sqlc.arg(source_scheduled),source_observed_at=sqlc.arg(source_observed_at)::timestamptz
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND native_id=sqlc.arg(work_item_id) AND revision=sqlc.arg(revision)
+AND (NOT sqlc.arg(only_pending)::boolean OR body_object_key IS NOT DISTINCT FROM sqlc.narg(expected_body_object_key)::text)
+AND (NOT sqlc.arg(only_pending)::boolean OR source_revision<>revision)
+AND (source_revision,source_scheduled,source_observed_at) IS DISTINCT FROM (revision,sqlc.arg(source_scheduled),sqlc.arg(source_observed_at)::timestamptz);
+
+-- name: RecordClassifyScheduledComment :execrows
+UPDATE native_comments SET source_revision=revision,source_scheduled=sqlc.arg(source_scheduled),source_observed_at=sqlc.arg(source_observed_at)::timestamptz
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND id=sqlc.arg(record_id) AND revision=sqlc.arg(revision)
+AND (NOT sqlc.arg(only_pending)::boolean OR body_object_key IS NOT DISTINCT FROM sqlc.narg(expected_body_object_key)::text)
+AND (NOT sqlc.arg(only_pending)::boolean OR source_revision<>revision)
+AND (source_revision,source_scheduled,source_observed_at) IS DISTINCT FROM (revision,sqlc.arg(source_scheduled),sqlc.arg(source_observed_at)::timestamptz);
+
+-- name: RecordValidationProjectCandidates :many
+WITH matches AS MATERIALIZED (
+ SELECT r.attempt_id,r.version_id,r.change_id,r.fencing_token,r.merge_sha,r.issue_id,(r.merge_sha=sqlc.arg(head_sha)) AS head_matches FROM change_landing_receipts r
+ WHERE r.organization_id=sqlc.arg(organization_id) AND r.project_id=sqlc.arg(project_id) AND r.repository_identity=sqlc.arg(repository_identity) AND r.merge_sha=sqlc.arg(head_sha)
+ ORDER BY r.fencing_token DESC,r.attempt_id DESC LIMIT 21
+), recent AS MATERIALIZED (
+ SELECT r.attempt_id,r.version_id,r.change_id,r.fencing_token,r.merge_sha,r.issue_id,(r.merge_sha=sqlc.arg(head_sha)) AS head_matches FROM change_landing_receipts r
+ WHERE r.organization_id=sqlc.arg(organization_id) AND r.project_id=sqlc.arg(project_id) AND r.repository_identity=sqlc.arg(repository_identity)
+ ORDER BY r.fencing_token DESC,r.attempt_id DESC LIMIT 21
+), selected AS (
+ SELECT * FROM matches UNION SELECT * FROM recent
+)
+SELECT attempt_id,version_id,change_id,fencing_token,issue_id FROM selected
+ORDER BY head_matches DESC,fencing_token DESC,attempt_id DESC LIMIT 21;
+
+-- name: RecordAttemptEvents :many
+SELECT * FROM collaboration_events
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+ AND work_item_id=sqlc.arg(work_item_id) AND attempt_id=sqlc.arg(attempt_id) AND attempt_id<>''
+ AND sequence>sqlc.arg(after)
+ORDER BY sequence LIMIT sqlc.arg(page_limit);

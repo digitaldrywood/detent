@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -972,6 +973,26 @@ func TestAppBootstrapPreferenceChoices(t *testing.T) {
 			}
 		})
 	}
+	t.Run("reported details preserve provider order and clone efforts", func(t *testing.T) {
+		report := providercapacity.Report{Provider: "example", ModelDetails: []providercapacity.ModelDetail{{ID: "z-model", Label: "Example model", Provider: "model-provider", ReasoningEfforts: []string{"medium", "max"}, DefaultReasoningEffort: "max", Legacy: true, Default: true}}}
+		models := []conversationModel{conversationModelFromReport(report, "z-model"), conversationModelFromReport(report, "a-model")}
+		choices := appBootstrapModelChoices(models, "a-model")
+		if len(choices) != 3 || choices[0].ID != "auto" || choices[0].Default || choices[1].ID != "z-model" || choices[2].ID != "a-model" || !choices[2].Default {
+			t.Fatalf("model ordering/defaults = %+v", choices)
+		}
+		choice := choices[1]
+		if choice.Label != "Example model" || choice.Provider != "model-provider" || choice.Default || !choice.BackendDefault || !choice.Legacy || choice.DefaultEffort != "max" || !slices.Equal(choice.Efforts, []string{"medium", "max"}) {
+			t.Fatalf("model detail = %+v", choice)
+		}
+		if choices[2].Label != "a-model" || choices[2].Provider != "example" || len(choices[2].Efforts) != 0 {
+			t.Fatalf("identifier-only model = %+v", choices[2])
+		}
+		report.ModelDetails[0].ReasoningEfforts[0] = "changed"
+		if !slices.Equal(choices[1].Efforts, []string{"medium", "max"}) {
+			t.Fatal("published effort ladder aliases the source report")
+		}
+	})
+
 }
 
 func TestConversationChoiceLabel(t *testing.T) {

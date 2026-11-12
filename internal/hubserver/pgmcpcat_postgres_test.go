@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -37,6 +40,44 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 	for _, org := range []string{"org_startup", "org_other"} {
 		service := f.services[org]
 		pgmcpcatSeed(t, service, tracker.OrganizationID(org))
+		now := service.config.now().UTC()
+		blocker := tracker.NativeIssue{
+			NativeReference: tracker.NativeReference{OrganizationID: tracker.OrganizationID(org), ProjectID: "compat", WorkItemID: "wi_compat_blocker", Number: 2, Revision: 1, Profile: "github_compatible"},
+			Title: "Example dependency blocker", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: org + "_owner"},
+			CreatedAt: now, UpdatedAt: now,
+		}
+		blockerRaw, err := json.Marshal(blocker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{
+			OrganizationID: blocker.OrganizationID, ProjectID: blocker.ProjectID, WorkItemID: blocker.WorkItemID, RecordID: string(blocker.WorkItemID), Revision: 1,
+		}, blockerRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		document, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{
+			OrganizationID: blocker.OrganizationID, ProjectID: blocker.ProjectID, WorkItemID: blocker.WorkItemID, ID: "issue:" + string(blocker.WorkItemID),
+			SourceID: string(blocker.WorkItemID), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: now,
+		}, searchstore.Text{Title: blocker.Title})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), blocker.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{
+				OrganizationID: blocker.OrganizationID, ProjectID: blocker.ProjectID, NativeID: blocker.WorkItemID, Number: 2, Revision: 1,
+				Title: blocker.Title, WorkflowStateName: &blocker.State, ActorKind: &blocker.Actor.Kind, ActorPrincipalID: &blocker.Actor.PrincipalID,
+				NativeCreatedAt: now, NativeUpdatedAt: now,
+			}); err != nil {
+				return err
+			}
+			if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+				return err
+			}
+			return w.PutSearch(t.Context(), document, 0)
+		}); err != nil {
+			t.Fatal(err)
+		}
 		lease := seedEntryRuntimeAttempt(t, service, tracker.OrganizationID(org), "wi_item")
 		if err := service.refreshBoardRecord(t.Context(), tracker.OrganizationID(org), viewstore.BoardCandidate{ProjectID: "project", WorkItemID: "wi_item"}, service.config.now()); err != nil {
 			t.Fatal(err)
@@ -57,6 +98,7 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 			{operatortool.Dashboard, "project", `"limit":2`, `"project"`},
 			{operatortool.OrderItem, "compat", `"identifier":"#1","queue_scope":"compat","state":"Todo","rank":"001","request_id":"order"`, `"applied"`},
 			{operatortool.SetQueuePriority, "compat", `"identifier":"#1","queue_scope":"compat","state":"Todo","queue_priority":"high","request_id":"priority"`, `"applied"`},
+			{operatortool.SetDependency, "compat", `"identifier":"#1","related":"wi_compat_blocker","operation":"add","request_id":"dependency"`, `"applied"`},
 			{operatortool.VerifyFix, "project", `"identifier":"#2","expected_revision":"1","result":"verified","request_id":"verify"`, `"verified"`},
 			{operatortool.VerifyFix, "project", `"identifier":"#3","expected_revision":"1","result":"not_fixed","comment":"Example retained verification evidence","request_id":"reopen"`, `"Todo"`},
 			{operatortool.StopRun, "project", fmt.Sprintf(`"identifier":"#1","expected_revision":"1","lease_id":%q,"fencing_token":%d,"destination":"Todo","priority":1,"request_id":"stop"`, lease.LeaseID, lease.FencingToken), `"Todo"`},
@@ -110,6 +152,72 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 					}
 					call(t, test.name, arguments, http.StatusForbidden)
 					permission = apikey.ScopeWrite
+				}
+				if test.name == operatortool.SetDependency {
+					collided := call(t, test.name, strings.Replace(arguments, `"operation":"add"`, `"operation":"remove"`, 1), http.StatusConflict)
+					if !strings.Contains(collided, `"code":"revision_conflict"`) {
+						t.Fatalf("changed dependency request reused the receipt: %s", collided)
+					}
+					crossProject := call(t, test.name, `"project_id":"compat","identifier":"#1","related":"wi_item","operation":"add","request_id":"cross-project"`, http.StatusUnprocessableEntity)
+					if !strings.Contains(crossProject, `"code":"not_found"`) {
+						t.Fatalf("dependency lookup escaped its project: %s", crossProject)
+					}
+					call(t, test.name, `"project_id":"compat","identifier":"#1","related":"wi_compat_blocker","relationship_type":"related","operation":"add","request_id":"related"`, http.StatusUnprocessableEntity)
+					call(t, test.name, `"project_id":"compat","identifier":"#2","related":"wi_compat_item","operation":"add","request_id":"cycle"`, http.StatusUnprocessableEntity)
+
+					checkDependency := func(want bool, eventCount int) {
+						t.Helper()
+						if err := service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+							source, err := r.WorkItem(t.Context(), "compat", "wi_compat_item")
+							if err != nil {
+								return err
+							}
+							var applied struct {
+								WorkItemID int64  `json:"work_item_id"`
+								Kind       string `json:"kind"`
+								Status     string `json:"status"`
+							}
+							got := pgmcpcatPayload(raw)
+							if err := json.Unmarshal([]byte(got), &applied); err != nil || applied.WorkItemID != source.ID || applied.Kind != "set_dependency" || applied.Status != "applied" || source.Revision != 1 {
+								t.Errorf("compatibility response or revision changed: %s, revision %d, error %v", got, source.Revision, err)
+							}
+							page, err := r.Relationships(t.Context(), "compat", source.NativeID, corestore.RelationshipCursor{}, 4)
+							if err != nil {
+								return err
+							}
+							if !want && len(page.Items) != 0 || want && (len(page.Items) != 1 || page.Items[0].Type != "dependency" || page.Items[0].Direction != "blocked_by" || page.Items[0].RelatedProjectID != "compat" || page.Items[0].RelatedWorkItemID != blocker.WorkItemID) {
+								t.Errorf("unexpected compatibility dependency facts: %+v", page.Items)
+							}
+							events, err := r.Events(t.Context(), "compat", source.NativeID, 0, 4)
+							if err != nil {
+								return err
+							}
+							dependencyEvents, orderEvents := 0, 0
+							for _, event := range events {
+								switch event.Type {
+								case "dependency.changed":
+									dependencyEvents++
+								case "queue.order_changed":
+									orderEvents++
+								default:
+									t.Errorf("unexpected compatibility dependency event: %q", event.Type)
+								}
+							}
+							if dependencyEvents != eventCount || orderEvents != 1 {
+								t.Errorf("got %d dependency events and %d order events, want %d and the one order_item event", dependencyEvents, orderEvents, eventCount)
+							}
+							return nil
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					checkDependency(true, 1)
+					remove := strings.Replace(strings.Replace(arguments, `"operation":"add"`, `"operation":"remove"`, 1), `"request_id":"dependency"`, `"request_id":"remove-dependency"`, 1)
+					call(t, test.name, remove, http.StatusOK)
+					if replay := call(t, test.name, arguments, http.StatusOK); pgmcpcatPayload(replay) != pgmcpcatPayload(raw) {
+						t.Fatalf("add receipt changed after removal: %s", replay)
+					}
+					checkDependency(false, 2)
 				}
 			})
 		}

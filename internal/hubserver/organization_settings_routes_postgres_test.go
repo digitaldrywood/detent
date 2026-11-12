@@ -13,6 +13,15 @@ import (
 
 func TestPostgresOrganizationMembersAndSecretRoutes(t *testing.T) {
 	repository := projectRecordPostgres(t)
+	now := time.Now().UTC()
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example organization", CreatedAt: now}); err != nil {
+			return err
+		}
+		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_security", ProviderID: "org_provider", BootstrapSubject: "user_owner", Deployment: "origin", PublicURL: "http://127.0.0.1:7777"})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	providerCalls := 0
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.AccessRepository = repository
@@ -23,18 +32,9 @@ func TestPostgresOrganizationMembersAndSecretRoutes(t *testing.T) {
 			return spritesTestResponse(`{"sprites":[]}`, http.StatusOK), nil
 		})}
 	})
-	now := time.Now().UTC()
-	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example organization", CreatedAt: now}); err != nil {
-			return err
-		}
-		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_security", ProviderID: "org_provider"})
-	}); err != nil {
-		t.Fatal(err)
-	}
 	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
 	member := f.user(t, "member", "member", "member@example.test", "", "")
-	disableLegacyPostgresTestHandles(t, f.service, repository)
+	configurePostgresTestRoutes(t, f.service, repository)
 	base := "/api/v2/organizations/org_security"
 	for _, test := range []struct {
 		user hostedSecurityUser

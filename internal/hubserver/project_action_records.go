@@ -77,6 +77,9 @@ func normalizeActionRecord(a *workspacesession.Action) error {
 	for _, f := range fields {
 		value, err := f.normalize(*f.value)
 		if err != nil {
+			if f.value == &a.Icon {
+				return nativeInvalid(err.Error())
+			}
 			return nativePublicInvalid(err.Error())
 		}
 		*f.value = value
@@ -232,6 +235,11 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 			}
 			if current.Action.Revision != previous.Action.Revision {
 				return nativeConflict(tracker.Revision(current.Action.Revision))
+			}
+		}
+		if previous.Action.ID != "" && (method == "DELETE" || previous.Command != next.Command) {
+			if err := w.LockArchiveAccounting(ctx); err != nil {
+				return err
 			}
 		}
 		if method == "DELETE" {

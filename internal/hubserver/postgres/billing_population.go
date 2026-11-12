@@ -11,10 +11,14 @@ import (
 )
 
 func (s *session) BillingPopulation(ctx context.Context, metric string, now time.Time, connected time.Duration) (int64, bool, error) {
-	if metric == "retained_collaboration_events" {
+	if metric == "retained_collaboration_events" || metric == "events_total" || metric == "history_records" {
+		name := metric
+		if name == "events_total" {
+			name = "retained_collaboration_events"
+		}
 		var count int64
 		var initialized bool
-		err := s.db.QueryRow(ctx, `SELECT value,initialized FROM hosted_usage_counters WHERE organization_id=$1 AND name='retained_collaboration_events'`, s.organization).Scan(&count, &initialized)
+		err := s.db.QueryRow(ctx, `SELECT value,initialized FROM hosted_usage_counters WHERE organization_id=$1 AND name=$2`, s.organization, name).Scan(&count, &initialized)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, false, nil
 		}

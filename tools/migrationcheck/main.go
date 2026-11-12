@@ -35,13 +35,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if err := checkMigrations(os.DirFS(*root), []migrationSchema{
-		{"internal/store/migrations", 68, 68},
-		{"internal/hubserver/migrations", 70, 71},
+		{"internal/hubserver/postgres/migrations", 0, 0},
 	}); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	fmt.Fprintln(stdout, "Migration versions are unique within each schema and new Hub/store filenames use UTC YYYYMMDDHHMMSS_name.sql timestamps.")
+	fmt.Fprintln(stdout, "Migration versions are unique within each schema and new PostgreSQL filenames use UTC YYYYMMDDHHMMSS_name.sql timestamps.")
 	return 0
 }
 
@@ -66,7 +65,7 @@ func checkMigrations(root fs.FS, schemas []migrationSchema) error {
 				failures = append(failures, fmt.Errorf("invalid migration version: %s", name))
 				continue
 			}
-			if schema.sequentialThrough != 0 && version > schema.sequentialThrough {
+			if schema.sequentialThrough == 0 || version > schema.sequentialThrough {
 				_, timestampErr := time.Parse("20060102150405", prefix)
 				if len(prefix) != 14 || timestampErr != nil || suffix == ".sql" {
 					failures = append(failures, fmt.Errorf("noncanonical migration filename: %s; use UTC YYYYMMDDHHMMSS_name.sql", name))

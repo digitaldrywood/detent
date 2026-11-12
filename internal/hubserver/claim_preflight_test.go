@@ -1,15 +1,23 @@
 package hubserver
 
 import (
+	"bytes"
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -20,131 +28,191 @@ import (
 func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 8, 18, 0, 0, 0, time.UTC)
-	open := func(t *testing.T) (*Service, int64, int64) {
+	open := func(t *testing.T) (nativeFixture, *sql.DB, []tracker.NativeIssue) {
 		t.Helper()
-		service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
-		if err := service.stopGitHubWebhookMaintenance(); err != nil {
-			t.Fatal(err)
-		}
-		repositoryID, first := seedProjection(t, service.database.db)
-		if _, err := service.database.db.ExecContext(t.Context(), "UPDATE repositories SET last_reconciled_at = ? WHERE id = ?", formatHubTime(now), repositoryID); err != nil {
-			t.Fatal(err)
-		}
-		inserted, err := service.database.db.ExecContext(t.Context(), "INSERT INTO issues (repository_id, workflow_state_id, github_node_id, github_number, title, url, github_state, source_version, source_updated_at, synchronized_at, created_at, updated_at) SELECT repository_id, workflow_state_id, 'I_second', 2, 'Second', 'https://example.test/2', github_state, source_version, source_updated_at, synchronized_at, created_at, updated_at FROM issues WHERE id = ?", first)
-		if err != nil {
-			t.Fatal(err)
-		}
-		second, err := inserted.LastInsertId()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return service, first, second
-	}
-	query := claimCandidateQuery{Repositories: []string{"digitaldrywood/detent"}}
-	claim := func(service *Service, machine tracker.MachineID, session string) (tracker.Lease, error) {
-		return service.database.claimNext(t.Context(), tracker.ClaimRequest{MachineID: machine, SessionID: session, TTL: time.Minute}, query, time.Hour)
-	}
-
-	tests := []struct {
-		name string
-		run  func(t *testing.T, service *Service, first, second int64)
-	}{
-		{name: "a refusal with no candidate never takes the writer", run: func(t *testing.T, service *Service, first, second int64) {
-			seedHubMachine(t, service, "machine-a", now)
-			seedHubMachine(t, service, "machine-b", now)
-			seedHubMachine(t, service, "machine-c", now)
-			if _, err := claim(service, "machine-a", "session-a"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := claim(service, "machine-b", "session-b"); err != nil {
-				t.Fatal(err)
-			}
-			var before int64
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&before); err != nil {
-				t.Fatal(err)
-			}
-			writer, err := service.database.db.BeginTx(t.Context(), nil)
+		repository, admin := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
+			config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, claimPreflightTrace{})
+		})
+		service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
+		for _, organization := range []nativeOrganization{{ID: "org_first_second", Name: "Second", Slug: "second"}, {ID: "org_first", Name: "First", Slug: "first"}} {
+			seedPostgresHubAdmin(t, repository, service, organization)
+			key := bytes.Repeat([]byte{0x5a}, 32)
+			envelope, err := service.config.SecretKeys.Seal(key, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
 			if err != nil {
 				t.Fatal(err)
 			}
-			done := make(chan error, 1)
-			go func() {
-				_, claimErr := claim(service, "machine-c", "session-c")
-				done <- claimErr
-			}()
-			select {
-			case claimErr := <-done:
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization.ID, ID: newNativeID("hub"), CursorKey: key}); err != nil {
+					return err
+				}
+				return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		service.localOrganization, service.database.hostedOrganization, service.requestMetrics.organization = "org_first", "org_first", "org_first"
+		f := newNativeFixture(t, service, "org_first", "claim preflight")
+		return f, admin, []tracker.NativeIssue{f.create(t, "first"), f.create(t, "second")}
+	}
+	type claimRunner struct {
+		scope   nativeScope
+		request tracker.NativeClaim
+	}
+	newRunner := func(t *testing.T, f nativeFixture) claimRunner {
+		t.Helper()
+		runner := prepareRunner(t, f, runnerauth.Claim)
+		runner.redemption.Capacity = 1
+		runner.enroll(t)
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.UpdateRunnerCapacityConfig(t.Context(), runner.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(runner.redemption.Credential), "", "")
+		if err != nil {
+			t.Fatalf("runner authentication status=%d: %v", status, err)
+		}
+		return claimRunner{scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, request: tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: runner.binding.MachineID, TTLSeconds: 60, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}}
+	}
+	for _, name := range []string{"a refusal with no candidate never takes the writer", "concurrent claims never oversubscribe one host slot", "a selected candidate taken before commit moves to the next one"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f, admin, issues := open(t)
+			claim := func(ctx context.Context, runner claimRunner, session string, item tracker.NativeWorkItemID) (string, error) {
+				request := runner.request
+				request.SessionID, request.WorkItemID = session, item
+				lease, err := f.service.claimNativeIssueTenant(ctx, runner.scope, request, time.Minute)
+				return lease.LeaseID, err
+			}
+			switch name {
+			case "a refusal with no candidate never takes the writer":
+				first, second, third := newRunner(t, f), newRunner(t, f), newRunner(t, f)
+				positive := &claimPreflightProbe{attempted: make(chan struct{})}
+				positiveContext := context.WithValue(t.Context(), claimPreflightProbeKey{}, positive)
+				if _, err := claim(positiveContext, first, "session-a", issues[0].WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := claim(positiveContext, second, "session-b", issues[1].WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if positive.writers.Load() == 0 || positive.mutations.Load() == 0 {
+					t.Fatal("claim trace did not observe actual successful claim writes")
+				}
+				held, release, writerDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+				go func() {
+					writerDone <- f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+						if err := w.LockAccessOrganization(t.Context()); err != nil {
+							return err
+						}
+						close(held)
+						<-release
+						return nil
+					})
+				}()
+				select {
+				case <-held:
+				case err := <-writerDone:
+					t.Fatalf("hold organization writer: %v", err)
+				}
+				var releaseOnce sync.Once
+				unlock := func() {
+					releaseOnce.Do(func() {
+						close(release)
+						if err := <-writerDone; err != nil {
+							t.Error(err)
+						}
+					})
+				}
+				t.Cleanup(unlock)
+				probe := &claimPreflightProbe{attempted: make(chan struct{})}
+				ctx := context.WithValue(t.Context(), claimPreflightProbeKey{}, probe)
+				done := make(chan error, 1)
+				go func() { _, err := claim(ctx, third, "session-c", ""); done <- err }()
+				var claimErr error
+				select {
+				case claimErr = <-done:
+					unlock()
+				case <-probe.attempted:
+					unlock()
+					claimErr = <-done
+					t.Fatalf("refused claim entered the writer: %v", claimErr)
+				case <-testenv.WaitContext(t, t.Context()).Done():
+					unlock()
+					claimErr = <-done
+					t.Fatalf("refused claim waited for the held writer: %v", claimErr)
+				}
 				if !errors.Is(claimErr, ErrNoClaimableWork) {
 					t.Fatalf("refused claim error = %v, want no claimable work", claimErr)
 				}
-			case <-testenv.WaitContext(t, t.Context()).Done():
-				t.Fatal("refused claim waited for the held writer")
-			}
-			if err := writer.Rollback(); err != nil {
-				t.Fatal(err)
-			}
-			var after int64
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&after); err != nil || after != before {
-				t.Fatalf("refused claim wrote %d rows, err=%v", after-before, err)
-			}
-		}},
-		{name: "concurrent claims never oversubscribe one host slot", run: func(t *testing.T, service *Service, first, second int64) {
-			seedHubMachine(t, service, "machine-a", now)
-			const contenders = 8
-			var wait sync.WaitGroup
-			errs := make(chan error, contenders)
-			for index := range contenders {
-				wait.Add(1)
-				go func() {
-					defer wait.Done()
-					_, claimErr := claim(service, "machine-a", fmt.Sprintf("session-%d", index))
-					errs <- claimErr
-				}()
-			}
-			wait.Wait()
-			close(errs)
-			won := 0
-			for claimErr := range errs {
-				if claimErr == nil {
-					won++
-				} else if !errors.Is(claimErr, ErrNoClaimableWork) {
-					t.Fatalf("claim error = %v", claimErr)
+				if probe.queries.Load() == 0 || probe.writers.Load() != 0 || probe.mutations.Load() != 0 {
+					t.Fatalf("refused claim queries=%d writers=%d mutations=%d, want queries and zero writes", probe.queries.Load(), probe.writers.Load(), probe.mutations.Load())
+				}
+			case "concurrent claims never oversubscribe one host slot":
+				runner := newRunner(t, f)
+				const contenders = 8
+				var wait sync.WaitGroup
+				errs := make(chan error, contenders)
+				for index := range contenders {
+					wait.Go(func() { _, err := claim(t.Context(), runner, fmt.Sprintf("session-%d", index), ""); errs <- err })
+				}
+				wait.Wait()
+				close(errs)
+				won := 0
+				for err := range errs {
+					if err == nil {
+						won++
+					} else if !errors.Is(err, ErrNoClaimableWork) {
+						t.Fatalf("claim error = %v", err)
+					}
+				}
+				var active int
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM leases WHERE organization_id=$1 AND machine_id=$2 AND released_at IS NULL", f.project.OrganizationID, runner.request.MachineID).Scan(&active); err != nil {
+					t.Fatal(err)
+				}
+				if won != 1 || active != 1 {
+					t.Fatalf("winners = %d active leases = %d, want 1 and 1 for a capacity-1 host", won, active)
+				}
+			case "a selected candidate taken before commit moves to the next one":
+				first, second := newRunner(t, f), newRunner(t, f)
+				request := second.request
+				request.SessionID, request.WorkItemID = "session-b", issues[0].WorkItemID
+				plan, err := f.service.readNativeClaimPlan(t.Context(), second.scope, request, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				taken, err := claim(t.Context(), first, "session-a", issues[0].WorkItemID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.claimNativeIssueTenantWithPlan(t.Context(), second.scope, request, time.Minute, now, plan, nil); !errors.Is(err, ErrNoClaimableWork) {
+					t.Fatalf("stale selected plan error = %v, want no claimable work", err)
+				}
+				selected, err := claim(t.Context(), second, "session-b", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					for _, pair := range []struct {
+						lease string
+						item  tracker.NativeWorkItemID
+					}{{taken, issues[0].WorkItemID}, {selected, issues[1].WorkItemID}} {
+						lease, err := r.Lease(t.Context(), pair.lease)
+						if err != nil {
+							return err
+						}
+						item, err := r.WorkItem(t.Context(), f.project.ID, pair.item)
+						if err != nil {
+							return err
+						}
+						if lease.IssueID != item.ID {
+							return fmt.Errorf("claim after stale plan lease=%s issue=%d, want item %s (%d)", pair.lease, lease.IssueID, pair.item, item.ID)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
 				}
 			}
-			var active int
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM leases WHERE machine_id = 'machine-a' AND released_at IS NULL").Scan(&active); err != nil {
-				t.Fatal(err)
-			}
-			if won != 1 || active != 1 {
-				t.Fatalf("winners = %d active leases = %d, want 1 and 1 for a capacity-1 host", won, active)
-			}
-		}},
-		{name: "a selected candidate taken before commit moves to the next one", run: func(t *testing.T, service *Service, first, second int64) {
-			seedHubMachine(t, service, "machine-a", now)
-			seedHubMachine(t, service, "machine-b", now)
-			var revision int64
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT revision FROM issues WHERE id = ?", first).Scan(&revision); err != nil {
-				t.Fatal(err)
-			}
-			taken, err := service.Tracker().Claim(t.Context(), tracker.ClaimRequest{WorkItemID: tracker.WorkItemID(first), MachineID: "machine-a", SessionID: "session-a", TTL: time.Minute})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = service.database.claimNextOn(t.Context(), service.database.db, nil, claimMode{hint: &claimSelected{id: tracker.WorkItemID(first), revision: revision}}, tracker.ClaimRequest{MachineID: "machine-b", SessionID: "session-b", TTL: time.Minute}, query, time.Hour)
-			if !errors.Is(err, errClaimHintStale) {
-				t.Fatalf("stale hint error = %v, want stale hint", err)
-			}
-			lease, err := claim(service, "machine-b", "session-b")
-			if err != nil || lease.WorkItemID != tracker.WorkItemID(second) || taken.WorkItemID != tracker.WorkItemID(first) {
-				t.Fatalf("claim after stale hint = %+v, %v; want the second work item", lease, err)
-			}
-		}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			service, first, second := open(t)
-			test.run(t, service, first, second)
 		})
 	}
 }
@@ -229,5 +297,54 @@ func TestClaimRetryAfterCommittedDecisionUsesFreshEventIDs(t *testing.T) {
 	}
 	if events != 2 || len(ids) != 2 {
 		t.Fatalf("scheduler decisions=%d distinct ids=%d, want 2 committed events with distinct ids", events, len(ids))
+	}
+}
+
+type claimPreflightProbeKey struct{}
+type claimPreflightProbe struct {
+	queries   atomic.Int64
+	writers   atomic.Int64
+	mutations atomic.Int64
+	attempted chan struct{}
+	once      sync.Once
+}
+type claimPreflightTrace struct{}
+
+func (claimPreflightTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	traceClaimPreflight(ctx, data.SQL)
+	return ctx
+}
+func (claimPreflightTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (claimPreflightTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	for _, query := range data.Batch.QueuedQueries {
+		traceClaimPreflight(ctx, query.SQL)
+	}
+	return ctx
+}
+func (claimPreflightTrace) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+func (claimPreflightTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData)     {}
+func traceClaimPreflight(ctx context.Context, query string) {
+	probe, ok := ctx.Value(claimPreflightProbeKey{}).(*claimPreflightProbe)
+	if !ok {
+		return
+	}
+	probe.queries.Add(1)
+	statement := strings.ToLower(strings.TrimSpace(query))
+	for strings.HasPrefix(statement, "--") {
+		_, rest, found := strings.Cut(statement, "\n")
+		if !found {
+			return
+		}
+		statement = strings.TrimSpace(rest)
+	}
+	if strings.HasPrefix(statement, "begin") && !strings.Contains(statement, "read only") {
+		probe.writers.Add(1)
+		probe.once.Do(func() { close(probe.attempted) })
+	}
+	for _, prefix := range []string{"insert ", "update ", "delete ", "merge ", "truncate "} {
+		if strings.HasPrefix(statement, prefix) {
+			probe.mutations.Add(1)
+			break
+		}
 	}
 }

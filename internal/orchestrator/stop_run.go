@@ -312,8 +312,12 @@ func (o *Orchestrator) completeOperatorStopCompletion(ctx context.Context, state
 	o.deferBackendCapacityProbe(state, running, completedAt, runpkg.ErrOperatorStopped)
 	result.CompletedAt = completedAt
 	transitionErr := o.finishOperatorStopTransition(ctx, state, running.Issue, &result)
-	if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
-		o.logger.Warn("operator stop claim release failed", "issue_id", event.IssueID, "error", err)
+	releaseErr := runpkg.ErrExecutionAuthorityUnavailable
+	if o.scheduling != nil {
+		releaseErr = o.scheduling.ReleaseClaim(ctx, event.IssueID, runpkg.FinalStateOperatorStopped)
+	}
+	if releaseErr != nil && o.logger != nil {
+		o.logger.Warn("operator stop claim release failed", "issue_id", event.IssueID, "error", releaseErr)
 	}
 	if transitionErr != nil {
 		if o.logger != nil {
@@ -357,8 +361,16 @@ func (o *Orchestrator) persistedWorkerProcess(ctx context.Context, running Runni
 
 func (o *Orchestrator) finishOperatorStopTransition(ctx context.Context, state *State, issue connector.Issue, result *StopRunResult) error {
 	if result.Destination == StopRunDestinationTodo {
-		if err := o.connector.SetField(ctx, issue.ID, "Priority", result.PriorityName); err != nil {
-			return o.failOperatorStopTransition(ctx, state, issue, result, fmt.Errorf("set priority to %s: %w", result.PriorityName, err))
+		var priorityErr error
+		if setter, ok := o.connector.(interface {
+			SetIssuePriority(context.Context, string, int) error
+		}); ok {
+			priorityErr = setter.SetIssuePriority(ctx, issue.ID, result.Priority)
+		} else {
+			priorityErr = o.connector.SetField(ctx, issue.ID, "Priority", result.PriorityName)
+		}
+		if priorityErr != nil {
+			return o.failOperatorStopTransition(ctx, state, issue, result, fmt.Errorf("set priority to %s: %w", result.PriorityName, priorityErr))
 		}
 	}
 	metadata := workflowLaneMetadata{}

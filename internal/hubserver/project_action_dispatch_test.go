@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -102,6 +104,41 @@ func TestWorkspaceHubDispatchesAQueuedRunToTheRunner(t *testing.T) {
 	if finished.Output != "hello\n" || finished.OutputBytes != int64(len("hello\n")) {
 		t.Fatalf("run = %#v, want the output recorded", finished)
 	}
+	t.Run("unreadable command does not stall later queued work", func(t *testing.T) {
+		f := newRelayFixture(t, withExec)
+		runner := f.dialRunner(t)
+		badAction := f.action(t, "Unavailable command", "printf unavailable")
+		bad := f.queuedRun(t, badAction)
+		f.advance(time.Microsecond)
+		goodAction := f.action(t, "Available command", "printf available")
+		good := f.queuedRun(t, goodAction)
+		result, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE project_action_runs SET command_object_key=command_object_key||'/missing' WHERE organization_id=$1 AND project_id=$2 AND id=$3", f.project.OrganizationID, f.project.ID, bad)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil || count != 1 {
+			t.Fatalf("scoped unreadable command fixture rows=%d error=%v", count, err)
+		}
+		f.waitedOutTheGrace()
+		f.dispatch(t)
+		handed := runner.receive()
+		var payload workspacesession.ExecRun
+		decodeFramePayload(t, handed, &payload)
+		if handed.Type != workspacesession.TypeExecRun || payload.RunID != good || payload.Command != "printf available" {
+			t.Fatalf("later queued command was not dispatched: frame=%+v payload=%+v", handed, payload)
+		}
+		if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
+			row, err := reader.(postgres.RelayActionReader).ActionRun(t.Context(), postgres.ActionRunInput{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: bad})
+			if err == nil && (row.Status != "queued" || row.ClaimedBy != "") {
+				t.Fatalf("unreadable command was claimed: %+v", row)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 }
 
 func TestWorkspaceHubDispatchLeavesARunAlone(t *testing.T) {
@@ -129,10 +166,7 @@ func TestWorkspaceHubDispatchLeavesARunAlone(t *testing.T) {
 				// A workspace can become the one an attempt is editing after a
 				// run was queued on it, and a command must not write into a
 				// worktree a model is using.
-				if _, err := f.service.database.db.ExecContext(t.Context(),
-					"UPDATE workspace_sessions SET read_only = 1 WHERE id = ?", f.workspace); err != nil {
-					t.Fatal(err)
-				}
+				f.markReadOnly(t)
 				f.waitedOutTheGrace()
 				return run
 			},
@@ -142,10 +176,7 @@ func TestWorkspaceHubDispatchLeavesARunAlone(t *testing.T) {
 			prepare: func(t *testing.T, f *relayFixture, action workspacesession.Action) string {
 				t.Helper()
 				run := f.queuedRun(t, action)
-				if _, err := f.service.database.db.ExecContext(t.Context(),
-					"UPDATE workspace_sessions SET state = 'closing' WHERE id = ?", f.workspace); err != nil {
-					t.Fatal(err)
-				}
+				f.updateWorkspace(t, func(arg *postgres.WorkspaceUpdate) { arg.State = workspacesession.StateClosing })
 				f.waitedOutTheGrace()
 				return run
 			},

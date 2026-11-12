@@ -1,8 +1,10 @@
 package staleness_test
 
 import (
+	"context"
 	"errors"
-	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,17 +14,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func TestAcknowledgementsProjectsPersistedAndLiveState(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
+func TestAcknowledgementsProjectsStoredAndLiveState(t *testing.T) {
 	t.Parallel()
-	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = backend.Close() })
+	backend := &warningStateStore{}
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	if err := backend.AcknowledgeStalenessWarning(t.Context(), "detent", "warning-1", now.Add(-time.Hour)); err != nil {
 		t.Fatalf("AcknowledgeStalenessWarning() error = %v", err)
@@ -72,17 +66,9 @@ func TestAcknowledgementsProjectsPersistedAndLiveState(t *testing.T) {
 	}
 }
 
-func TestAcknowledgementsReleaseExpiredRecurringEpisode(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
+func TestAcknowledgementsFollowReconciledStoreState(t *testing.T) {
 	t.Parallel()
-	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = backend.Close() })
+	backend := &warningStateStore{}
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	if err := backend.AcknowledgeStalenessWarning(t.Context(), "detent", "warning-1", now.Add(-31*24*time.Hour)); err != nil {
 		t.Fatalf("AcknowledgeStalenessWarning() error = %v", err)
@@ -139,4 +125,59 @@ func assertWarningIdentities(t *testing.T, snapshots *hub.Hub[telemetry.Snapshot
 			t.Fatalf("warning identities = %v, want %v", got, want)
 		}
 	}
+}
+
+type warningStateStore struct {
+	mu     sync.Mutex
+	states []store.StalenessWarningState
+}
+
+func (s *warningStateStore) ListStalenessWarningStates(_ context.Context, projectID string) ([]store.StalenessWarningState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.projectStates(projectID), nil
+}
+
+func (s *warningStateStore) RecordStalenessWarningReminder(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (s *warningStateStore) AcknowledgeStalenessWarning(ctx context.Context, projectID string, warningID string, at time.Time) error {
+	return s.AcknowledgeStalenessWarnings(ctx, projectID, []string{warningID}, at)
+}
+
+func (s *warningStateStore) AcknowledgeStalenessWarnings(_ context.Context, projectID string, warningIDs []string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, warningID := range warningIDs {
+		index := slices.IndexFunc(s.states, func(state store.StalenessWarningState) bool {
+			return state.ProjectID == projectID && state.WarningID == warningID
+		})
+		if index < 0 {
+			s.states = append(s.states, store.StalenessWarningState{ProjectID: projectID, WarningID: warningID, AcknowledgedAt: &at})
+			continue
+		}
+		s.states[index].AcknowledgedAt = &at
+	}
+	return nil
+}
+
+func (s *warningStateStore) ReconcileStalenessWarningStates(_ context.Context, projectID string, activeWarningIDs []string, _ time.Time, inactiveBefore time.Time) ([]store.StalenessWarningState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.states = slices.DeleteFunc(s.states, func(state store.StalenessWarningState) bool {
+		return state.ProjectID == projectID && !slices.Contains(activeWarningIDs, state.WarningID) &&
+			state.AcknowledgedAt != nil && state.AcknowledgedAt.Before(inactiveBefore)
+	})
+	return s.projectStates(projectID), nil
+}
+
+func (s *warningStateStore) projectStates(projectID string) []store.StalenessWarningState {
+	states := []store.StalenessWarningState{}
+	for _, state := range s.states {
+		if state.ProjectID == projectID {
+			states = append(states, state)
+		}
+	}
+	return states
 }

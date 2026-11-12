@@ -15,13 +15,18 @@ import (
 
 func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Filter) (activitystore.Snapshot, error) {
 	out := activitystore.Snapshot{States: map[tracker.ProjectID][]tracker.NativeState{}, Sequences: map[string]int64{}, Created: map[int64]bool{}}
-	if len(filter.Projects) > 100 || filter.Limit < 1 || filter.Limit > 200 || !filter.From.Before(filter.To) || filter.To.After(filter.Now) || filter.To.Sub(filter.From) > 90*24*time.Hour {
+	if len(filter.Projects) > 100 || filter.Limit < 1 || filter.Limit > activitystore.IssuePopulationLimit || !filter.From.Before(filter.To) || filter.To.After(filter.Now) || filter.To.Sub(filter.From) > 90*24*time.Hour {
 		return out, corestore.ErrInvalidPage
 	}
 	projects := make([]string, len(filter.Projects))
 	for i, id := range filter.Projects {
 		projects[i] = string(id)
 	}
+	durations, clipped, err := s.activityDurationPopulation(ctx, filter, projects)
+	if err != nil {
+		return out, err
+	}
+	out.Durations, out.DurationsPartial = durations, clipped
 	rows, err := s.db.Query(ctx, `SELECT w.project_id,w.name,w.terminal,w.dispatchable,w.operator_only,coalesce(c.sequence,0) FROM project_workflow_states w LEFT JOIN project_event_cursors c ON c.organization_id=w.organization_id AND c.project_id=w.project_id WHERE w.organization_id=$1 AND w.project_id=ANY($2) ORDER BY w.project_id,w.board_rank`, s.organization, projects)
 	if err != nil {
 		return out, mapError(ctx, err)
@@ -59,7 +64,7 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
-	out.Partial = out.Partial || population > activitystore.PopulationLimit
+	out.IssuesPartial = out.IssuesPartial || population > activitystore.PopulationLimit
 	rows, err = s.db.Query(ctx, `WITH recent AS MATERIALIZED(SELECT * FROM issues WHERE organization_id=$1 AND native_updated_at>=$3 ORDER BY native_updated_at DESC,id DESC LIMIT $4)
  SELECT i.id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(i.workflow_state_name,''),i.native_created_at FROM recent i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
  WHERE i.project_id=ANY($2) AND NOT i.archived AND p.deleted_at IS NULL AND w.terminal AND ($5='' OR i.actor_principal_id=$5) ORDER BY i.native_updated_at DESC,i.id DESC LIMIT $6`, s.organization, projects, filter.From, activitystore.PopulationLimit, filter.Principal, filter.Limit+1)
@@ -77,7 +82,7 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 		if count <= filter.Limit {
 			issues[issue.ID] = issue
 		} else {
-			out.Partial = true
+			out.IssuesPartial = true
 		}
 	}
 	err = rows.Err()
@@ -93,30 +98,36 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err = s.db.Query(ctx, `SELECT id,project_id,native_id,coalesce(workflow_state_name,''),native_created_at FROM issues WHERE organization_id=$1 AND id=ANY($2)`, s.organization, ids)
+	rows, err = s.db.Query(ctx, `SELECT id,project_id,native_id,coalesce(workflow_state_name,''),native_created_at,native_updated_at FROM issues WHERE organization_id=$1 AND id=ANY($2) ORDER BY native_updated_at DESC,native_id LIMIT $3`, s.organization, ids, filter.Limit)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
+	selectedIDs := make([]int64, 0, min(len(ids), filter.Limit))
 	for rows.Next() {
 		var id int64
 		var project tracker.ProjectID
 		var item tracker.NativeWorkItemID
 		var state string
-		var created time.Time
-		if err := rows.Scan(&id, &project, &item, &state, &created); err != nil {
+		var created, updated time.Time
+		if err := rows.Scan(&id, &project, &item, &state, &created, &updated); err != nil {
 			rows.Close()
 			return out, mapError(ctx, err)
 		}
 		issue := issues[id]
 		issue.State = state
-		issue.CreatedAt = created
+		issue.CreatedAt, issue.UpdatedAt = created, updated
 		issues[id] = issue
+		selectedIDs = append(selectedIDs, id)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
+	if len(selectedIDs) < len(ids) {
+		out.IssuesPartial = true
+	}
+	ids = selectedIDs
 	rows, err = s.db.Query(ctx, `SELECT i.id,e.sequence,e.type,e.from_state,e.to_state,e.recorded_at FROM issues i CROSS JOIN LATERAL(SELECT sequence,type,from_state,to_state,recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type IN('issue.created','workflow.transitioned') AND e.recorded_at<=$3 ORDER BY e.sequence DESC LIMIT $4)e WHERE i.organization_id=$1 AND i.id=ANY($2) ORDER BY i.id,e.sequence DESC`, s.organization, ids, filter.Now, activitystore.HistoryLimit+1)
 	if err != nil {
 		return out, mapError(ctx, err)
@@ -134,7 +145,7 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 			issue := issues[transition.IssueID]
 			issue.Partial = true
 			issues[transition.IssueID] = issue
-			out.Partial = true
+			out.IssuesPartial = true
 			continue
 		}
 		if kind == "issue.created" {
@@ -169,7 +180,7 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 			issue := issues[a.IssueID]
 			issue.Partial = true
 			issues[a.IssueID] = issue
-			out.Partial = true
+			out.IssuesPartial = true
 			continue
 		}
 		if _, ok := known[a.ID]; !ok {
@@ -293,4 +304,43 @@ func (s *session) activityCandidates(ctx context.Context, f activitystore.Filter
 		out = append(out, a)
 	}
 	return out, partial, mapError(ctx, rows.Err())
+}
+
+func (s *session) activityDurationPopulation(ctx context.Context, filter activitystore.Filter, projects []string) ([]activitystore.Duration, bool, error) {
+	if len(projects) == 0 {
+		return nil, false, nil
+	}
+	var count int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM (SELECT id FROM native_attempts WHERE organization_id=$1 AND status<>'running' AND updated_at>=$2 ORDER BY updated_at DESC,id DESC LIMIT $3) candidates`, s.organization, filter.From, activitystore.PopulationLimit+1).Scan(&count); err != nil {
+		return nil, false, mapError(ctx, err)
+	}
+	var running, examined int
+	if err := s.db.QueryRow(ctx, `WITH candidates AS MATERIALIZED (
+ SELECT updated_at,started_at FROM native_attempts WHERE organization_id=$1 AND status='running' ORDER BY id LIMIT $4
+) SELECT count(*) FILTER (WHERE updated_at>=$2 AND started_at<$3),count(*) FROM candidates`, s.organization, filter.From, filter.To, activitystore.PopulationLimit+1).Scan(&running, &examined); err != nil {
+		return nil, false, mapError(ctx, err)
+	}
+	rows, err := s.db.Query(ctx, `WITH candidates AS MATERIALIZED (
+ SELECT id,issue_id,lease_id,status,started_at FROM native_attempts WHERE organization_id=$1 AND status<>'running' AND updated_at>=$3 ORDER BY updated_at DESC,id DESC LIMIT $5
+)
+ SELECT i.project_id,a.id,coalesce(f.role,''),a.status,coalesce(f.duration_seconds,0),coalesce(f.phase_timing_status,'')<>'complete'
+ FROM candidates a JOIN issues i ON i.organization_id=$1 AND i.id=a.issue_id JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
+ LEFT JOIN runner_lease_assignments r ON r.organization_id=$1 AND r.lease_id=a.lease_id
+ LEFT JOIN report_attempt_facts af ON af.organization_id=$1 AND af.attempt_id=a.id
+ LEFT JOIN report_event_facts f ON f.organization_id=$1 AND f.event_id=af.latest_event_id
+ WHERE i.project_id=ANY($2) AND NOT i.archived AND p.deleted_at IS NULL AND a.started_at<$4 AND ($6='' OR i.actor_principal_id=$6) AND ($7='' OR r.runner_id=$7)
+ ORDER BY a.id`, s.organization, projects, filter.From, filter.To, activitystore.PopulationLimit, filter.Principal, filter.RunnerID)
+	if err != nil {
+		return nil, false, mapError(ctx, err)
+	}
+	defer rows.Close()
+	out := []activitystore.Duration{}
+	for rows.Next() {
+		var fact activitystore.Duration
+		if err := rows.Scan(&fact.ProjectID, &fact.AttemptID, &fact.Role, &fact.Status, &fact.Seconds, &fact.Partial); err != nil {
+			return nil, false, mapError(ctx, err)
+		}
+		out = append(out, fact)
+	}
+	return out, count+running > activitystore.PopulationLimit || examined > activitystore.PopulationLimit, mapError(ctx, rows.Err())
 }

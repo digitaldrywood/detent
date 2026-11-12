@@ -1326,26 +1326,26 @@
       "family": "source",
       "organization": "binding",
       "columns": {
-        "attempts": {"source":"[8,\"attempts\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "coalesce_key": {"source":"[15,\"coalesce_key\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "completed_at": {"source":"[11,\"completed_at\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "created_at": {"source":"[13,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "desired_issue_number": {"source":"[18,\"desired_issue_number\",\"INTEGER\",0,null,0,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "desired_json": {"source":"[6,\"desired_json\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "desired_summary": {"source":"[19,\"desired_summary\",\"INTEGER\",0,null,0,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "idempotency_key": {"source":"[1,\"idempotency_key\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "issue_id": {"source":"[3,\"issue_id\",\"INTEGER\",0,null,0,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "last_attempt_at": {"source":"[10,\"last_attempt_at\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "mutation_kind": {"source":"[4,\"mutation_kind\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "next_retry_at": {"source":"[9,\"next_retry_at\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "operator_action": {"source":"[17,\"operator_action\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "processing_started_at": {"source":"[16,\"processing_started_at\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "repository_id": {"source":"[2,\"repository_id\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "status": {"source":"[7,\"status\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "target_node_id": {"source":"[5,\"target_node_id\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "terminal_error": {"source":"[12,\"terminal_error\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "updated_at": {"source":"[14,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "attempts": {"source":"[8,\"attempts\",\"INTEGER\",1,\"0\",0,0]","disposition":"transform","codec":"int64","null":"reject","empty":"reject","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "coalesce_key": {"source":"[15,\"coalesce_key\",\"TEXT\",0,null,0,0]","disposition":"transform","codec":"text","null":"preserve","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "completed_at": {"source":"[11,\"completed_at\",\"TEXT\",0,null,0,0]","disposition":"transform","codec":"text","null":"preserve","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "created_at": {"source":"[13,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"transform","codec":"text","null":"reject","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "desired_issue_number": {"source":"[18,\"desired_issue_number\",\"INTEGER\",0,null,0,0]","disposition":"transform","codec":"int64","null":"preserve","empty":"reject","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "desired_json": {"source":"[6,\"desired_json\",\"TEXT\",1,null,0,0]","disposition":"transform","codec":"text","null":"reject","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "desired_summary": {"source":"[19,\"desired_summary\",\"INTEGER\",0,null,0,0]","disposition":"transform","codec":"int64","null":"preserve","empty":"reject","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"transform","codec":"int64","null":"preserve","empty":"reject","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "idempotency_key": {"source":"[1,\"idempotency_key\",\"TEXT\",1,null,0,0]","disposition":"transform","codec":"text","null":"reject","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "issue_id": {"source":"[3,\"issue_id\",\"INTEGER\",0,null,0,0]","disposition":"transform","codec":"int64","null":"preserve","empty":"reject","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "last_attempt_at": {"source":"[10,\"last_attempt_at\",\"TEXT\",0,null,0,0]","disposition":"transform","codec":"text","null":"preserve","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "mutation_kind": {"source":"[4,\"mutation_kind\",\"TEXT\",1,null,0,0]","disposition":"transform","codec":"text","null":"reject","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "next_retry_at": {"source":"[9,\"next_retry_at\",\"TEXT\",0,null,0,0]","disposition":"transform","codec":"text","null":"preserve","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "operator_action": {"source":"[17,\"operator_action\",\"TEXT\",0,null,0,0]","disposition":"transform","codec":"text","null":"preserve","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "processing_started_at": {"source":"[16,\"processing_started_at\",\"TEXT\",0,null,0,0]","disposition":"transform","codec":"text","null":"preserve","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "repository_id": {"source":"[2,\"repository_id\",\"INTEGER\",1,null,0,0]","disposition":"transform","codec":"int64","null":"reject","empty":"reject","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "status": {"source":"[7,\"status\",\"TEXT\",1,null,0,0]","disposition":"transform","codec":"text","null":"reject","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "target_node_id": {"source":"[5,\"target_node_id\",\"TEXT\",0,null,0,0]","disposition":"transform","codec":"text","null":"preserve","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "terminal_error": {"source":"[12,\"terminal_error\",\"TEXT\",0,null,0,0]","disposition":"transform","codec":"text","null":"preserve","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]},
+        "updated_at": {"source":"[14,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"transform","codec":"text","null":"reject","empty":"preserve","transform":"archive-json","targets":[{"table":"public.native_commands","column":"payload_object_key","type":"text"},{"table":"public.native_commands","column":"payload_sha256","type":"text"},{"table":"public.native_commands","column":"payload_bytes","type":"bigint"},{"table":"public.native_commands","column":"payload_content_bytes","type":"bigint"}]}
       }
     },
     "hub/github_webhook_inbox": {
@@ -1870,10 +1870,63 @@
       "family": "board",
       "organization": "row",
       "columns": {
-        "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "scope": {"source":"[2,\"scope\",\"TEXT\",1,null,3,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "user_id": {"source":"[1,\"user_id\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "view_query": {"source":"[3,\"view_query\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "organization_id": {
+          "source": "[0,\"organization_id\",\"TEXT\",1,null,1,0]",
+          "disposition": "column",
+          "codec": "text",
+          "null": "reject",
+          "empty": "preserve",
+          "targets": [
+            {
+              "table": "public.hosted_work_view_preferences",
+              "column": "organization_id",
+              "type": "text"
+            }
+          ]
+        },
+        "scope": {
+          "source": "[2,\"scope\",\"TEXT\",1,null,3,0]",
+          "disposition": "transform",
+          "codec": "text",
+          "null": "reject",
+          "empty": "preserve",
+          "targets": [
+            {
+              "table": "public.hosted_work_view_preferences",
+              "column": "scope",
+              "type": "text"
+            }
+          ],
+          "transform": "work-view-scope"
+        },
+        "user_id": {
+          "source": "[1,\"user_id\",\"TEXT\",1,null,2,0]",
+          "disposition": "column",
+          "codec": "text",
+          "null": "reject",
+          "empty": "preserve",
+          "targets": [
+            {
+              "table": "public.hosted_work_view_preferences",
+              "column": "user_id",
+              "type": "text"
+            }
+          ]
+        },
+        "view_query": {
+          "source": "[3,\"view_query\",\"TEXT\",1,null,0,0]",
+          "disposition": "column",
+          "codec": "text",
+          "null": "reject",
+          "empty": "preserve",
+          "targets": [
+            {
+              "table": "public.hosted_work_view_preferences",
+              "column": "view_query",
+              "type": "text"
+            }
+          ]
+        }
       }
     },
     "hub/hosted_work_view_projects": {

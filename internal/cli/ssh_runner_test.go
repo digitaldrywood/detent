@@ -29,7 +29,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestSSHServiceProxyKeepsCentralAuthority(t *testing.T) {
@@ -439,11 +438,7 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 	cfg.Hooks.AfterCreate = "printf created > \"$HOME/after-create\""
 	cfg.Hooks.BeforeRun = "printf before > \"$HOME/before-run\""
 	cfg.Hooks.AfterRun = "printf after > \"$HOME/after-run\""
-	sessions, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: filepath.Join(root, "sessions.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { sessions.Close() })
+	sessions := &memorySessions{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	built, err := buildRunner(config.Workflow{Config: cfg, Prompt: "Complete the fixture."}, "ssh-fixture", source, globalconfig.Memory{}, gobudget.Budget{}, sessions, logger, serviceapi.Connection{})
 	if err != nil {
@@ -626,9 +621,8 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		t.Fatal("host loss suppressed local execution")
 	}
 	waitSSHFixtureFile(t, ctx, filepath.Join(remoteHome, "worker-finished"))
-	orphans, err := sessions.(store.OrphanSessionStore).ListOrphanedAgentSessions(ctx, "ssh-fixture")
-	if err != nil || len(orphans) != 0 {
-		t.Fatalf("host loss left open central sessions: %v %v", orphans, err)
+	if open := sessions.open(); open != 0 {
+		t.Fatalf("host loss left %d open central sessions", open)
 	}
 	credentials, err := filepath.Glob(filepath.Join(root, "worker-*", "github-cli", "hosts.yml"))
 	if err != nil || len(credentials) != 0 {

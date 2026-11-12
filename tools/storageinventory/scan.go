@@ -60,7 +60,7 @@ func scanRepository(files fs.FS) (sourceInventory, error) {
 	if result.TargetTables == nil {
 		return result, errors.New("decode target table classification: empty map")
 	}
-	for _, root := range []string{"internal", "cmd", "db"} {
+	for _, root := range []string{"internal", "cmd"} {
 		err := fs.WalkDir(files, root, func(name string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr

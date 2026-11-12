@@ -82,6 +82,10 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 				frame.Gap, frame.Sequence, frame.Deltas = true, head, []tracker.NativeBoardDelta{}
 				break
 			}
+			if row.Topic != "card" {
+				frame.Sequence = row.Sequence
+				continue
+			}
 			delta := tracker.NativeBoardDelta{Sequence: row.Sequence}
 			for _, item := range []struct {
 				ref  *attachment.ArchiveReference

@@ -91,6 +91,18 @@ func (p *Template) Database(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx, cancel := testContext(t)
 	defer cancel()
+	return p.DatabaseContext(ctx, t)
+}
+
+func (p *Template) DatabaseContext(ctx context.Context, t testing.TB) *sql.DB {
+	t.Helper()
+	if ctx == nil {
+		t.Fatal("PostgreSQL fixtures require an explicit context deadline")
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || deadline.IsZero() {
+		t.Fatal("PostgreSQL fixtures require an explicit context deadline")
+	}
 	p.once.Do(func() { p.err = p.initialize(ctx, os.Getenv(Environment)) })
 	if p.err != nil {
 		t.Fatalf("initialize PostgreSQL fixture: %v", p.err)
@@ -100,9 +112,9 @@ func (p *Template) Database(t *testing.T) *sql.DB {
 		t.Fatalf("clone PostgreSQL fixture: %v", err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := testContext(t)
+		cleanupCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 		defer cancel()
-		if err := cleanup(ctx); err != nil {
+		if err := cleanup(cleanupCtx); err != nil {
 			t.Errorf("clean PostgreSQL fixture: %v", err)
 		}
 	})

@@ -1,23 +1,41 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -106,13 +124,12 @@ func withGit(fixture *relayFixture) { fixture.git = true }
 
 func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture {
 	t.Helper()
-	fixture := &relayFixture{clock: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)}
+	fixture := &relayFixture{clock: time.Now().UTC().Truncate(time.Microsecond)}
 	for _, option := range options {
 		option(fixture)
 	}
 	recording := !fixture.noRecording
 	f := newDefaultNativeFixture(t, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"),
 		Workspace: &WorkspaceConfig{Enabled: true,
 			Terminal: WorkspaceTerminalConfig{
 				Enabled: fixture.terminal && !fixture.terminalDisabled,
@@ -148,14 +165,7 @@ func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture
 	fixture.lease = fixture.claim(t)
 	fixture.bind(t)
 	if fixture.readOnly {
-		// A workspace is held read-only by the attempt it was opened on still
-		// running. The flag is what the relay reads, and
-		// setting it here is the shortest honest way to reach that state
-		// without a second attempt's whole lifecycle in the fixture.
-		if _, err := service.database.db.ExecContext(t.Context(),
-			"UPDATE workspace_sessions SET read_only = 1 WHERE id = ?", fixture.workspace); err != nil {
-			t.Fatal(err)
-		}
+		fixture.markReadOnly(t)
 	}
 	return fixture
 }
@@ -177,21 +187,22 @@ func (f *relayFixture) capabilities() workspacesession.Capabilities {
 // be an attempt, a lease and a dispatch to assert one boolean.
 func (f *relayFixture) markReadOnly(t *testing.T) {
 	t.Helper()
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE workspace_sessions SET read_only = 1 WHERE id = ?", f.workspace); err != nil {
-		t.Fatal(err)
-	}
+	f.updateWorkspace(t, func(arg *postgres.WorkspaceUpdate) { arg.ReadOnly = true })
 }
 
 // record reads the workspace row the relay fences against, for the checks that
 // are tested against the database rather than over a socket.
 func (f *relayFixture) record(t *testing.T) workspaceRecord {
 	t.Helper()
-	record, err := readWorkspaceByID(t.Context(), f.service.database.db, f.workspace)
-	if err != nil {
+	var row postgres.WorkspaceSession
+	if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
+		var err error
+		row, err = reader.(postgres.WorkspaceReader).WorkspaceSession(t.Context(), f.project.ID, f.workspace)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	return record
+	return relayWorkspaceRecord(row)
 }
 
 // reportCapabilities is the runner's heartbeat carrying what it can serve for a
@@ -205,7 +216,8 @@ func (f *relayFixture) reportCapabilities(t *testing.T, capabilities workspacese
 		map[string]any{
 			"display_name": "runner", "capacity": 8, "version": "test",
 			"provider_reports": []providercapacity.Report{report}, "workspace_capabilities": capabilities,
-			"workspace_isolation": workspacesession.IsolationContainer,
+			"workspace_isolation":    workspacesession.IsolationContainer,
+			"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.at()},
 		})
 	requireNativeStatus(t, response, http.StatusOK)
 }
@@ -235,12 +247,18 @@ func (f *relayFixture) open(t *testing.T, body map[string]any) string {
 // dispatchItem is the native issue the hub created to dispatch the workspace.
 func (f *relayFixture) dispatchItem(t *testing.T) string {
 	t.Helper()
-	var item string
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT work_item_id FROM workspace_items WHERE workspace_id = ?", f.workspace).Scan(&item); err != nil {
+	var page claimstore.CandidatePage
+	if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
+		var err error
+		page, err = reader.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: f.project.ID, WorkspaceLane: true, AvailableAt: f.at(), Limit: 1})
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	return item
+	if len(page.Items) != 1 {
+		t.Fatalf("workspace dispatch candidates=%+v, want one", page.Items)
+	}
+	return string(page.Items[0].WorkItemID)
 }
 
 // claim takes the workspace item's lease for the fixture's runner.
@@ -352,10 +370,7 @@ func (f *relayFixture) awaitAttached(t *testing.T, before uint64) {
 func (f *relayFixture) advanceServing(t *testing.T, d time.Duration) {
 	t.Helper()
 	f.advance(d)
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE workspace_sessions SET last_heartbeat_at = ? WHERE id = ?", formatHubTime(f.at()), f.workspace); err != nil {
-		t.Fatal(err)
-	}
+	f.updateWorkspace(t, func(arg *postgres.WorkspaceUpdate) { arg.LastHeartbeatAt = new(f.at()) })
 }
 
 func (f *relayFixture) dial(t *testing.T, url string, header http.Header) *relayClient {
@@ -864,22 +879,20 @@ func TestWorkspaceRelayWritesAnAuditRowForEveryPersonConnection(t *testing.T) {
 	person := f.dialPerson(t)
 	person.send(filesListFrame(""))
 
-	waitFor(t, func() bool {
-		var rows int
-		if err := f.service.database.db.QueryRowContext(t.Context(),
-			"SELECT count(*) FROM workspace_relay_sessions WHERE workspace_id = ?", f.workspace).Scan(&rows); err != nil {
-			return false
-		}
-		return rows == 1
-	})
+	readRows := func() ([]postgres.RelaySession, error) {
+		var rows []postgres.RelaySession
+		err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
+			var err error
+			rows, err = reader.(postgres.RelayActionReader).RelaySessions(t.Context(), postgres.RelaySessionsInput{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkspaceID: f.workspace, Limit: 2})
+			return err
+		})
+		return rows, err
+	}
+	waitFor(t, func() bool { rows, err := readRows(); return err == nil && len(rows) == 1 })
 	_ = person.socket.Close(websocket.StatusNormalClosure, "done")
 	waitFor(t, func() bool {
-		var closed, bytesIn int64
-		var reason string
-		err := f.service.database.db.QueryRowContext(t.Context(),
-			"SELECT count(closed_at), coalesce(max(bytes_in),0), coalesce(max(close_reason),'') FROM workspace_relay_sessions WHERE workspace_id = ?",
-			f.workspace).Scan(&closed, &bytesIn, &reason)
-		return err == nil && closed == 1 && bytesIn > 0 && reason != ""
+		rows, err := readRows()
+		return err == nil && len(rows) == 1 && rows[0].ClosedAt != nil && rows[0].BytesIn > 0 && rows[0].CloseReason != ""
 	})
 }
 
@@ -944,7 +957,15 @@ func (f *relayFixture) queuedRun(t *testing.T, action workspacesession.Action) s
 // only prove what was forwarded.
 func (f *relayFixture) runRow(t *testing.T, runID string) actionRunRecord {
 	t.Helper()
-	run, err := readProjectActionRunByID(t.Context(), f.service.database.db, runID)
+	var row postgres.ActionRun
+	if err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(reader tenantstore.Reader) error {
+		var err error
+		row, err = reader.(postgres.RelayActionReader).ActionRun(t.Context(), postgres.ActionRunInput{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: runID})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.service.actionRunRecord(t.Context(), row, true)
 	if err != nil {
 		t.Fatalf("read run %s: %v", runID, err)
 	}
@@ -1274,9 +1295,11 @@ func TestWorkspaceRelayRefusesARunFrameItMayNotStart(t *testing.T) {
 	// run of another workspace does not exist for it.
 	other := f.open(t, map[string]any{"idempotency_key": "ws-other",
 		"work_item_id": string(f.create(t, "other-subject").WorkItemID), "requires": []string{"files"}})
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE project_action_runs SET workspace_id = ? WHERE id = ?", other, run); err != nil {
+	if result, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(),
+		"UPDATE project_action_runs SET workspace_id=$4 WHERE organization_id=$1 AND project_id=$2 AND id=$3", f.project.OrganizationID, f.project.ID, run, other); err != nil {
 		t.Fatal(err)
+	} else if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		t.Fatalf("rehome rows=%d error=%v", rows, err)
 	}
 	person.send(execRunFrame(run, action))
 	if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeNotFound {
@@ -1532,25 +1555,22 @@ func TestWorkspaceRelayCarriesAGitFailureWithItsStderr(t *testing.T) {
 // cannot say which of the three a case means.
 func (f *relayFixture) seedHostedMember(t *testing.T, name, role, grant string) *relayConnection {
 	t.Helper()
-	now := formatHubTime(f.at())
+	now := f.at()
 	principal := "hosted_" + name
 	subject := "user_" + name
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO api_tokens
- (id,name,token_hash,token_fingerprint,scope,created_at,updated_at) VALUES (?,?,?,?,'operator',?,?)`,
-		principal, principal, apikey.HashToken(principal), principal[:8], now, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_members
- (user_id,email,membership_id,role,active,principal_id,created_at,updated_at) VALUES (?,?,?,?,1,?,?,?)`,
-		subject, name+"@example.test", "membership_"+name, role, principal, now, now); err != nil {
-		t.Fatal(err)
-	}
-	if grant != "" {
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_project_grants
- (user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,?,?,?,0)`,
-			subject, string(f.project.OrganizationID), string(f.project.ID), grant == "write"); err != nil {
-			t.Fatal(err)
+	if err := f.service.accessWrite(t.Context(), f.project.OrganizationID, func(writer tenantstore.Writer) error {
+		if err := writer.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: principal, Name: principal, Hash: apikey.HashToken(principal + string(f.project.OrganizationID)), Scope: "operator", CreatedAt: now, UpdatedAt: now, NativeOnly: true, Kind: "service", ProjectAccess: "selected"}); err != nil {
+			return err
 		}
+		if err := writer.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: f.project.OrganizationID, UserID: subject, Email: name + "@example.test", MembershipID: "membership_" + name, Role: role, Active: true, PrincipalID: principal, CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		if grant != "" {
+			return writer.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: f.project.OrganizationID, UserID: subject, ProjectID: f.project.ID, CanWrite: grant == "write"})
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	return &relayConnection{
 		id: "relayconn_" + name, workspaceID: f.workspace, principalID: principal,
@@ -1572,18 +1592,24 @@ func (f *relayFixture) seedHostedMember(t *testing.T, name, role, grant string) 
 // the socket path is covered by the refusals above.
 func TestWorkspaceRelayGitWriteAuthority(t *testing.T) {
 	t.Parallel()
-	f := newRelayFixture(t, withGit)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
+	first := newNativeFixture(t, service, "", "First write grant project")
+	second := newNativeFixture(t, service, first.project.OrganizationID+"_second", "Second write grant project")
+	relay := &workspaceService{server: service, logger: service.config.Logger}
 	for _, test := range []struct {
 		name      string
 		role      string
 		grant     string
 		token     bool
 		readOnly  bool
+		inactive  bool
 		exec      bool
 		frameType string
 		want      string
 	}{
 		{name: "member with write", role: "member", grant: "write", frameType: workspacesession.TypeGitCommit},
+		{name: "inactive member with write", role: "member", grant: "write", inactive: true, frameType: workspacesession.TypeGitCommit, want: workspacesession.CodeForbidden},
 		{name: "exec run with write", role: "member", grant: "write", exec: true},
 		{name: "exec run with read only", role: "member", grant: "read", exec: true, want: workspacesession.CodeForbidden},
 		{name: "exec run by a viewer", role: "viewer", grant: "write", exec: true, want: workspacesession.CodeForbidden},
@@ -1622,18 +1648,35 @@ func TestWorkspaceRelayGitWriteAuthority(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			record := f.record(t)
-			record.ReadOnly = test.readOnly
-			connection := &relayConnection{id: "relayconn_token", workspaceID: f.workspace}
-			if !test.token {
-				connection = f.seedHostedMember(t, strings.ReplaceAll(test.name, " ", "-"), test.role, test.grant)
-			}
-			frame := gitFrame(test.frameType, "Commit from the authority table")
-			if test.exec {
-				frame = execRunFrame(newNativeID("actionrun"), workspacesession.Action{ID: newNativeID("action"), Command: "make test"})
-			}
-			if code := f.service.workspaces.refuseRelayWrite(t.Context(), record, connection, frame); code != test.want {
-				t.Fatalf("refuseRelayWrite = %q, want %q", code, test.want)
+			for _, f := range []nativeFixture{first, second} {
+				record := workspaceRecord{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ReadOnly: test.readOnly}
+				connection := &relayConnection{id: "relayconn_token"}
+				if !test.token {
+					subject := "user_" + strings.ReplaceAll(test.name, " ", "-")
+					principal := "principal_" + subject
+					if err := service.accessWrite(t.Context(), record.OrganizationID, func(w tenantstore.Writer) error {
+						if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: record.OrganizationID, ID: principal, Name: principal, Hash: apikey.HashToken(string(record.OrganizationID) + principal), Scope: "operator", NativeOnly: true, Kind: "personal", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+							return err
+						}
+						if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: record.OrganizationID, UserID: subject, Email: subject + "@example.test", MembershipID: "membership_" + subject, Role: test.role, Active: !test.inactive, PrincipalID: principal, CreatedAt: now, UpdatedAt: now}); err != nil {
+							return err
+						}
+						if test.grant != "" {
+							return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: record.OrganizationID, UserID: subject, ProjectID: record.ProjectID, CanWrite: test.grant == "write"})
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					connection = &relayConnection{id: "relayconn_" + subject, subject: subject, sessionHash: "session_hash_" + subject, hostedRole: test.role}
+				}
+				frame := gitFrame(test.frameType, "Commit from the authority table")
+				if test.exec {
+					frame = execRunFrame(newNativeID("actionrun"), workspacesession.Action{ID: newNativeID("action"), Command: "make test"})
+				}
+				if code := relay.refuseRelayWrite(t.Context(), record, connection, frame); code != test.want {
+					t.Fatalf("refuseRelayWrite = %q, want %q", code, test.want)
+				}
 			}
 		})
 	}
@@ -1661,16 +1704,52 @@ func TestWorkspaceRelayGitWriteCheckIgnoresOtherChannels(t *testing.T) {
 // is made as.
 func TestRelayActorStampsTheAuthor(t *testing.T) {
 	t.Parallel()
-	f := newRelayFixture(t)
-	f.seedHostedMember(t, "ada.lovelace", "member", "write")
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
+	organizations := []tracker.OrganizationID{tracker.OrganizationID(service.localOrganization), tracker.OrganizationID(service.localOrganization + "_second")}
+	for index, organization := range organizations {
+		email := "ada.lovelace@example.test"
+		if index == 1 {
+			email = "other.member@example.test"
+		}
+		if err := service.accessWrite(t.Context(), organization, func(w tenantstore.Writer) error {
+			members := []struct {
+				name, subject, email string
+				active               bool
+			}{
+				{name: "ada.lovelace", subject: "user_ada.lovelace", email: email, active: true},
+				{name: "inactive", subject: "user_inactive", email: "active.member@example.test", active: index == 1},
+				{name: "operator", subject: "operator-relay", email: "named.member@example.test", active: true},
+			}
+			if index == 1 {
+				members = append(members, struct {
+					name, subject, email string
+					active               bool
+				}{name: "support", subject: "support@example.test", email: "support.member@example.test", active: true})
+			}
+			for _, member := range members {
+				principal := "hosted_" + member.name
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: principal, Name: principal, Hash: apikey.HashToken(string(organization) + "_" + principal), Fingerprint: principal, Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "selected", Kind: "personal"}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: member.subject, Email: member.email, MembershipID: "membership_" + member.name, Role: "member", Active: member.active, PrincipalID: principal, CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, test := range []struct {
-		name      string
-		principal relayPrincipal
-		wantName  string
-		wantEmail string
+		name         string
+		organization tracker.OrganizationID
+		principal    relayPrincipal
+		wantName     string
+		wantEmail    string
 	}{
 		{
-			name: "hosted member",
+			name: "hosted member", organization: organizations[0],
 			principal: relayPrincipal{
 				credential:  apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_ada.lovelace"}},
 				subject:     "user_ada.lovelace",
@@ -1679,12 +1758,39 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 			wantName: "Ada Lovelace", wantEmail: "ada.lovelace@example.test",
 		},
 		{
+			name: "same subject in second tenant", organization: organizations[1],
+			principal: relayPrincipal{
+				credential:  apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_ada.lovelace"}},
+				subject:     "user_ada.lovelace",
+				principalID: "hosted_ada.lovelace",
+			},
+			wantName: "Other Member", wantEmail: "other.member@example.test",
+		},
+		{
+			name: "inactive member", organization: organizations[0],
+			principal: relayPrincipal{
+				credential:  apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_inactive"}},
+				subject:     "user_inactive",
+				principalID: "hosted_inactive",
+			},
+			wantName: "user_inactive",
+		},
+		{
+			name: "same subject active in second tenant", organization: organizations[1],
+			principal: relayPrincipal{
+				credential:  apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_inactive"}},
+				subject:     "user_inactive",
+				principalID: "hosted_inactive",
+			},
+			wantName: "Active Member", wantEmail: "active.member@example.test",
+		},
+		{
 			// A support actor holds no membership row, so there is no email to
 			// author with and the runner refuses the commit. That is the only
 			// correct answer: attributing it to the person being stood in for
 			// would put a name in the repository's history that never typed
 			// it.
-			name: "support actor",
+			name: "support actor", organization: organizations[0],
 			principal: relayPrincipal{
 				credential: apiCredential{Hosted: &auth.HostedIdentity{
 					Subject: "user_ada.lovelace", SupportActor: "support@example.test",
@@ -1698,7 +1804,7 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 		{
 			// An operator token is not a person. It names the credential so a
 			// runner's log says which one acted, and authors nothing.
-			name: "operator token",
+			name: "operator token", organization: organizations[0],
 			principal: relayPrincipal{
 				credential: apiCredential{Name: "operator-relay", ID: "tok_1"},
 				subject:    "operator-relay", principalID: "tok_1",
@@ -1708,8 +1814,8 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			connection := &relayConnection{id: "relayconn_actor", workspaceID: f.workspace}
-			actor := f.service.relayActor(t.Context(), connection, test.principal)
+			connection := &relayConnection{id: "relayconn_actor"}
+			actor := service.relayActor(t.Context(), test.organization, connection, test.principal)
 			if actor.Name != test.wantName || actor.Email != test.wantEmail {
 				t.Fatalf("actor = %+v, want name %q and email %q", actor, test.wantName, test.wantEmail)
 			}
@@ -1718,6 +1824,394 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 			}
 			if actor.ConnectionID != connection.id {
 				t.Fatalf("actor connection = %q, want %q", actor.ConnectionID, connection.id)
+			}
+		})
+	}
+}
+
+func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	var clock atomic.Int64
+	clock.Store(base.UnixNano())
+	f := newSharedRouteFixture(t, func(cfg *Config) {
+		cfg.Hosted.SharedEntry = nil
+		cfg.Hosted.Provider = newHostedSecurityProvider()
+		cfg.Clock = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	})
+	for caseIndex, test := range []struct {
+		name, fault             string
+		token                   bool
+		localDenied, fullDenied bool
+	}{
+		{name: "current"},
+		{name: "read-only project grant", fault: "read_grant"},
+		{name: "inactive member", fault: "member", localDenied: true, fullDenied: true},
+		{name: "revoked session", fault: "session", localDenied: true, fullDenied: true},
+		{name: "session expiry boundary", fault: "session_expiry", localDenied: true, fullDenied: true},
+		{name: "withdrawn grant", fault: "grant", localDenied: true, fullDenied: true},
+		{name: "changed principal", fault: "principal", fullDenied: true},
+		{name: "changed session", fault: "session_id", fullDenied: true},
+		{name: "provider membership revoked", fault: "provider_member", fullDenied: true},
+		{name: "provider session revoked", fault: "provider_session", fullDenied: true},
+		{name: "terminal workspace", fault: "terminal", localDenied: true, fullDenied: true},
+		{name: "workspace no longer bound", fault: "unbound", localDenied: true},
+		{name: "released lease", fault: "lease_released", localDenied: true},
+		{name: "lease expiry boundary", fault: "lease_expiry", localDenied: true},
+		{name: "mismatched fence rejected by owner", fault: "fence"},
+		{name: "wrong project", fault: "project", localDenied: true, fullDenied: true},
+		{name: "wrong tenant", fault: "organization", localDenied: true, fullDenied: true},
+		{name: "current token", token: true},
+		{name: "revoked token waits for full refresh", token: true, fault: "token_revoked", fullDenied: true},
+		{name: "expired token waits for full refresh", token: true, fault: "token_expiry", fullDenied: true},
+		{name: "reporter owns subject", fault: "reporter_own"},
+		{name: "reporter legacy subject", fault: "reporter_legacy", fullDenied: true},
+		{name: "reporter other subject", fault: "reporter_other", fullDenied: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock.Store(base.UnixNano())
+			t.Cleanup(func() { clock.Store(base.UnixNano()) })
+			type fixture struct {
+				server     *Service
+				c          echo.Context
+				scope      nativeScope
+				record     workspaceRecord
+				connection *relayConnection
+				workspace  postgres.WorkspaceSession
+				lease      leasestore.Lease
+				subject    string
+				membership string
+				session    string
+			}
+			var fixtures []fixture
+			for _, organization := range []tracker.OrganizationID{"org_startup", "org_other"} {
+				server := f.services[string(organization)]
+				provider := server.config.Hosted.Provider.(*hostedSecurityProvider)
+				suffix := fmt.Sprintf("relay_%02d", caseIndex)
+				project := tracker.ProjectID("prj_" + suffix)
+				workspaceID := fmt.Sprintf("ws_%032x", caseIndex+1)
+				subject := "user_" + suffix
+				role := "member"
+				if strings.HasPrefix(test.fault, "reporter_") {
+					role = "reporter"
+				}
+				expires := base.Add(7 * 24 * time.Hour)
+				if test.fault == "session_expiry" {
+					expires = base.Add(time.Hour)
+				}
+				identity := auth.Identity{Subject: subject, Email: suffix + "@example.test", EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: subject, OrganizationID: server.config.Hosted.WorkOSOrganizationID, SessionID: "session_" + suffix, CreatedAt: base, ExpiresAt: expires}}
+				membership, err := provider.CreateMembership(t.Context(), subject, identity.Hosted.OrganizationID, role)
+				if err != nil {
+					t.Fatal(err)
+				}
+				provider.mu.Lock()
+				provider.sessions[identity.Hosted.SessionID] = *identity.Hosted
+				provider.mu.Unlock()
+				if err := server.addHostedMember(t.Context(), identity, membership); err != nil {
+					t.Fatal(err)
+				}
+				cookie, _, err := server.hostedSessions.CreateIdentitySession(t.Context(), identity)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodGet, "/relay", nil).WithContext(t.Context())
+				request.AddCookie(&http.Cookie{Name: hostedCookie, Value: cookie})
+				c := server.echo.NewContext(request, httptest.NewRecorder())
+				principal, err := server.relayPrincipal(t.Context(), c)
+				if err != nil {
+					t.Fatal(err)
+				}
+				value := fixture{server: server, c: c, subject: subject, membership: membership.ID, session: identity.Hosted.SessionID}
+				runner, machine, worker := "runner_"+suffix, "machine_"+suffix, "worker_"+suffix
+				tokenID, rawToken := "token_"+suffix, "example-token-"+suffix
+				if err := server.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: suffix, Slug: strings.ReplaceAll(suffix, "_", "-"), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+						return err
+					}
+					if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: subject, ProjectID: project, CanWrite: test.fault != "read_grant"}); err != nil {
+						return err
+					}
+					if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: principal.principalID, ProjectID: project}); err != nil {
+						return err
+					}
+					for _, credential := range []accessstore.Credential{
+						{OrganizationID: organization, ID: worker, Name: worker, Hash: apikey.HashToken(worker), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: base, UpdatedAt: base},
+						{OrganizationID: organization, ID: tokenID, Name: tokenID, Hash: apikey.HashToken(rawToken), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: base, UpdatedAt: base, ExpiresAt: new(base.Add(time.Hour))},
+					} {
+						if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
+							return err
+						}
+					}
+					if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: tokenID, ProjectID: project}); err != nil {
+						return err
+					}
+					if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_" + suffix, RunnerID: runner, MachineID: tracker.MachineID(machine), TokenHash: apikey.HashToken("enrollment_" + suffix), Scope: "projects", ProjectIDs: []tracker.ProjectID{project}, Operations: []string{runnerauth.Read, runnerauth.Claim}, CreatedAt: base, ExpiresAt: expires, CreatedBy: principal.principalID}); err != nil {
+						return err
+					}
+					if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_"+suffix, runner, tracker.MachineID(machine), base); err != nil {
+						return err
+					}
+					if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: machine, Hostname: "example-host-" + suffix, Capacity: 2}); err != nil {
+						return err
+					}
+					if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: runner, MachineID: tracker.MachineID(machine), TokenID: worker, EnrollmentID: "enrollment_" + suffix, Scope: "projects", State: "active", Revision: 1, Operations: []string{runnerauth.Read, runnerauth.Claim}, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{project}, CreatedAt: base, ExpiresAt: expires, LastHeartbeatAt: base}); err != nil {
+						return err
+					}
+					if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: tracker.NativeWorkItemID("wi_subject_" + suffix), Number: 1, Title: "Example subject", ActorKind: new("human"), ActorPrincipalID: new(principal.principalID)}); err != nil {
+						return err
+					}
+					item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: tracker.NativeWorkItemID("wi_dispatch_" + suffix), Number: 2, Title: "Example workspace item"})
+					if err != nil {
+						return err
+					}
+					owner := w.(postgres.WorkspaceWriter)
+					value.workspace, err = owner.CreateWorkspaceSession(t.Context(), postgres.WorkspaceCreate{OrganizationID: organization, ProjectID: project, ID: workspaceID, SubjectWorkItemID: "wi_subject_" + suffix, Ref: "refs/heads/example", Requires: []string{workspacesession.CapabilityFiles}, IdleTimeoutSeconds: 300, ExpiresAt: base.Add(7 * 24 * time.Hour), RequestedExpiresAt: base.Add(time.Hour), CreatedBy: principal.principalID, CreatedAt: base})
+					if err != nil {
+						return err
+					}
+					if err := owner.PutWorkspaceItem(t.Context(), claimstore.WorkspaceItem{OrganizationID: organization, ProjectID: project, WorkItemID: item.NativeID, WorkspaceID: workspaceID, CreatedAt: base}); err != nil {
+						return err
+					}
+					value.lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: machine, RunnerID: runner, SessionID: "runner_session_" + suffix, LeaseID: "lease_" + suffix, TTL: 48 * time.Hour})
+					if err != nil {
+						return err
+					}
+					for _, state := range []string{workspacesession.StateStarting, workspacesession.StateReady} {
+						current := value.workspace
+						value.workspace, err = owner.UpdateWorkspaceSession(t.Context(), postgres.WorkspaceUpdate{OrganizationID: organization, ProjectID: project, ID: workspaceID, ExpectedRevision: current.Revision, ExpectedRunnerID: current.RunnerID, ExpectedLeaseID: current.LeaseID, ExpectedFencingToken: current.FencingToken, State: state, RunnerID: runner, MachineID: machine, LeaseID: value.lease.LeaseID, FencingToken: value.lease.FencingToken, UpdatedAt: base})
+						if err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if test.token {
+					credential, _, err := server.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(rawToken), "", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					request.Header.Set(echo.HeaderAuthorization, "Bearer "+rawToken)
+					c.Set("hub_api_credential", credential)
+					principal, err = server.relayPrincipal(t.Context(), c)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				value.connection = &relayConnection{id: "connection_" + suffix, workspaceID: workspaceID, principalID: principal.principalID, sessionID: principal.sessionID, sessionHash: principal.credential.SessionHash, subject: subject}
+				value.scope = nativeScope{organization: organization, project: project, credential: principal.credential}
+				value.record = workspaceRecord{ID: workspaceID, OrganizationID: organization, ProjectID: project, SubjectWorkItemID: value.workspace.SubjectWorkItemID, LeaseID: tracker.LeaseID(value.workspace.LeaseID), FencingToken: tracker.FencingToken(value.workspace.FencingToken)}
+				fixtures = append(fixtures, value)
+			}
+			for index := range fixtures {
+				value := &fixtures[index]
+				relay := &workspaceService{server: value.server}
+				if err := relay.revalidatePersonLocally(t.Context(), value.record, value.connection); err != nil {
+					t.Fatalf("%s current local authority=%v", value.scope.organization, err)
+				}
+				if err := relay.revalidatePerson(t.Context(), value.c, value.scope, value.record, value.connection); err != nil {
+					t.Fatalf("%s current full authority=%v", value.scope.organization, err)
+				}
+			}
+			for index := range fixtures {
+				clock.Store(base.UnixNano())
+				value := &fixtures[index]
+				relay := &workspaceService{server: value.server}
+				if err := relay.revalidatePersonLocally(t.Context(), value.record, value.connection); err != nil {
+					t.Fatalf("%s unaffected local authority=%v", value.scope.organization, err)
+				}
+				if err := relay.revalidatePerson(t.Context(), value.c, value.scope, value.record, value.connection); err != nil {
+					t.Fatalf("%s unaffected full authority=%v", value.scope.organization, err)
+				}
+				update := func(state string, fencing int64) error {
+					return value.server.config.TenantRepository.WriteTenant(t.Context(), value.scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+						current := value.workspace
+						updated, err := w.(postgres.WorkspaceWriter).UpdateWorkspaceSession(t.Context(), postgres.WorkspaceUpdate{OrganizationID: current.OrganizationID, ProjectID: current.ProjectID, ID: current.ID, ExpectedRevision: current.Revision, ExpectedRunnerID: current.RunnerID, ExpectedLeaseID: current.LeaseID, ExpectedFencingToken: current.FencingToken, State: state, RunnerID: current.RunnerID, MachineID: current.MachineID, LeaseID: current.LeaseID, FencingToken: fencing, UpdatedAt: base})
+						if err == nil {
+							value.workspace = updated
+						}
+						return err
+					})
+				}
+				var err error
+				switch test.fault {
+				case "member", "session", "grant", "lease_released", "token_revoked", "reporter_legacy", "reporter_other":
+					err = value.server.config.TenantRepository.WriteTenant(t.Context(), value.scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+						switch test.fault {
+						case "member":
+							member, err := w.AccessMember(t.Context(), value.subject)
+							if err != nil {
+								return err
+							}
+							member.Active = false
+							return w.UpdateAccessMember(t.Context(), member)
+						case "session":
+							return w.RevokeAccessSession(t.Context(), value.connection.sessionHash, base)
+						case "grant":
+							return w.DeleteAccessProjectGrant(t.Context(), value.subject, value.scope.project)
+						case "lease_released":
+							_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: value.lease.LeaseID, FencingToken: value.lease.FencingToken}, "example")
+							return err
+						case "token_revoked":
+							return w.RevokeAccessCredential(t.Context(), value.connection.principalID, base)
+						default:
+							item, err := w.WorkItem(t.Context(), value.scope.project, tracker.NativeWorkItemID(value.record.SubjectWorkItemID))
+							if err != nil {
+								return err
+							}
+							item.ActorPrincipalID = nil
+							if test.fault == "reporter_other" {
+								item.ActorPrincipalID = new("other_principal")
+							}
+							_, err = w.UpdateWorkItem(t.Context(), item)
+							return err
+						}
+					})
+				case "session_expiry", "token_expiry":
+					clock.Store(base.Add(time.Hour).UnixNano())
+				case "lease_expiry":
+					clock.Store(value.lease.ExpiresAt.UnixNano())
+				case "principal":
+					value.connection.principalID = "other_principal"
+				case "session_id":
+					value.connection.sessionID = "other_session"
+				case "provider_member", "provider_session":
+					provider := value.server.config.Hosted.Provider.(*hostedSecurityProvider)
+					provider.mu.Lock()
+					if test.fault == "provider_session" {
+						delete(provider.sessions, value.session)
+					} else {
+						member := provider.members[value.membership]
+						member.Status = "inactive"
+						provider.members[value.membership] = member
+					}
+					provider.mu.Unlock()
+				case "terminal":
+					for _, state := range []string{workspacesession.StateClosing, workspacesession.StateClosed} {
+						if err = update(state, value.workspace.FencingToken); err != nil {
+							break
+						}
+					}
+				case "unbound":
+					err = update(workspacesession.StateRequested, value.workspace.FencingToken)
+				case "fence":
+					if err := update(workspacesession.StateReady, value.workspace.FencingToken+1); !errors.Is(err, corestore.ErrRevisionConflict) {
+						t.Fatalf("mismatched fence update=%v, want revision conflict", err)
+					}
+				case "project":
+					value.record.ProjectID = "prj_missing"
+				case "organization":
+					if value.record.OrganizationID == "org_startup" {
+						value.record.OrganizationID = "org_other"
+					} else {
+						value.record.OrganizationID = "org_startup"
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := relay.revalidatePersonLocally(t.Context(), value.record, value.connection); (err != nil) != test.localDenied {
+					t.Fatalf("%s local error=%v, want denied=%v", value.scope.organization, err, test.localDenied)
+				}
+				if err := relay.revalidatePerson(t.Context(), value.c, value.scope, value.record, value.connection); (err != nil) != test.fullDenied {
+					t.Fatalf("%s full error=%v, want denied=%v", value.scope.organization, err, test.fullDenied)
+				}
+				if test.fault == "" || test.fault == "terminal" || test.fault == "lease_released" {
+					activity := &workspaceService{server: value.server, logger: value.server.config.Logger}
+					readWorkspace := func() (postgres.WorkspaceSession, error) {
+						var row postgres.WorkspaceSession
+						err := value.server.accessRead(t.Context(), value.scope.organization, func(r tenantstore.Reader) error {
+							var err error
+							row, err = r.(postgres.WorkspaceReader).WorkspaceSession(t.Context(), value.scope.project, value.record.ID)
+							return err
+						})
+						return row, err
+					}
+					if test.fault == "" {
+						clock.Store(base.Add(2 * time.Second).UnixNano())
+						if err := value.server.accessWrite(t.Context(), value.scope.organization, func(w tenantstore.Writer) error {
+							current := value.workspace
+							_, err := w.(postgres.WorkspaceWriter).UpdateWorkspaceSession(t.Context(), postgres.WorkspaceUpdate{OrganizationID: current.OrganizationID, ProjectID: current.ProjectID, ID: current.ID, ExpectedRevision: current.Revision, ExpectedRunnerID: current.RunnerID, ExpectedLeaseID: current.LeaseID, ExpectedFencingToken: current.FencingToken, State: current.State, Reason: "example-bound", RunnerID: current.RunnerID, MachineID: current.MachineID, LeaseID: current.LeaseID, FencingToken: current.FencingToken, HeadSHA: strings.Repeat("a", 40), Capabilities: []string{"files", "diff"}, Isolation: workspacesession.IsolationContainer, Worktree: "retained", MachineHostname: "example-host", WorktreePath: "/workspace/example", ReadOnly: true, OpenedAt: &base, LastActivityAt: new(base.Add(time.Second)), LastHeartbeatAt: new(base.Add(2 * time.Second)), UpdatedAt: base.Add(2 * time.Second)})
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					before, err := readWorkspace()
+					if err != nil {
+						t.Fatal(err)
+					}
+					touchedAt := base.Add(time.Minute)
+					clock.Store(touchedAt.UnixNano())
+					activity.touchWorkspace(t.Context(), value.record)
+					after, err := readWorkspace()
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := before
+					if test.fault == "" {
+						want.LastActivityAt = &touchedAt
+					}
+					if !reflect.DeepEqual(after, want) {
+						t.Fatalf("%s activity changed owner metadata or ignored terminal/lease fence: before=%+v after=%+v", value.scope.organization, before, after)
+					}
+					if test.fault == "" {
+						principal, err := value.server.relayPrincipal(t.Context(), value.c)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := activity.openRelayAudit(t.Context(), value.record, value.connection, principal); err != nil {
+							t.Fatal(err)
+						}
+						readAudit := func() (postgres.RelaySession, error) {
+							var row postgres.RelaySession
+							err := value.server.accessRead(t.Context(), value.scope.organization, func(r tenantstore.Reader) error {
+								rows, err := r.(postgres.RelayActionReader).RelaySessions(t.Context(), postgres.RelaySessionsInput{OrganizationID: value.scope.organization, ProjectID: value.scope.project, WorkspaceID: value.record.ID, Limit: 2})
+								if err != nil {
+									return err
+								}
+								if len(rows) != 1 {
+									return fmt.Errorf("relay audit count=%d, want1", len(rows))
+								}
+								row = rows[0]
+								return nil
+							})
+							return row, err
+						}
+						row, err := readAudit()
+						if err != nil || row.OrganizationID != value.scope.organization || row.ProjectID != value.scope.project || row.WorkspaceID != value.record.ID || row.ID != value.connection.auditID || row.ConnectionID != value.connection.id || row.PrincipalID != principal.principalID || row.Subject != principal.subject || row.SupportReason != principal.supportReason || len(row.Channels) != 0 || !row.OpenedAt.Equal(touchedAt) || row.ClosedAt != nil {
+							t.Fatalf("scoped opened audit=%+v error=%v", row, err)
+						}
+						value.connection.countIn(13)
+						value.connection.countOut(29)
+						wrongConnection := &relayConnection{id: "other_connection", auditID: value.connection.auditID}
+						activity.closeRelayAudit(t.Context(), value.record, wrongConnection, "wrong_connection")
+						foreign := value.record
+						if foreign.OrganizationID == "org_startup" {
+							foreign.OrganizationID = "org_other"
+						} else {
+							foreign.OrganizationID = "org_startup"
+						}
+						activity.closeRelayAudit(t.Context(), foreign, value.connection, "wrong_tenant")
+						row, err = readAudit()
+						if err != nil || row.ClosedAt != nil || row.BytesIn != 0 || row.BytesOut != 0 || row.CloseReason != "" {
+							t.Fatalf("foreign close changed audit=%+v error=%v", row, err)
+						}
+						activity.closeRelayAudit(t.Context(), value.record, value.connection, "person_closed")
+						row, err = readAudit()
+						if err != nil || row.ClosedAt == nil || !row.ClosedAt.Equal(touchedAt) || row.BytesIn != 13 || row.BytesOut != 29 || row.CloseReason != "person_closed" {
+							t.Fatalf("audit close lost exact bytes/reason/time: %+v error=%v", row, err)
+						}
+						value.connection.countIn(7)
+						value.connection.countOut(11)
+						clock.Store(touchedAt.Add(time.Second).UnixNano())
+						activity.closeRelayAudit(t.Context(), value.record, value.connection, "later_close")
+						again, err := readAudit()
+						if err != nil || !reflect.DeepEqual(again, row) {
+							t.Fatalf("already closed audit changed: before=%+v after=%+v error=%v", row, again, err)
+						}
+					}
+				}
 			}
 		})
 	}
@@ -1803,8 +2297,7 @@ func newHostedWorkspaceFixture(t *testing.T) hostedSecurityFixture {
 	t.Helper()
 	provider := newHostedSecurityProvider()
 	service := openTestService(t, Config{
-		DatabasePath: hostedTestDatabasePath(t),
-		Workspace:    &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: true}},
+		Workspace: &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: true}},
 		Hosted: &HostedConfig{
 			OrganizationID:       "org_security",
 			WorkOSOrganizationID: "org_provider",
@@ -1814,19 +2307,12 @@ func newHostedWorkspaceFixture(t *testing.T) hostedSecurityFixture {
 		},
 	})
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
-	raw, err := json.Marshal(states)
-	if err != nil {
-		t.Fatal(err)
-	}
 	project := tracker.ProjectID("prj_security")
-	now := formatHubTime(time.Now())
-	if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) VALUES (?,?,'workspace-project','native',?,?,0)", project, service.config.Hosted.OrganizationID, string(raw), now); err != nil {
+	if err := service.accessWrite(t.Context(), tracker.OrganizationID(service.config.Hosted.OrganizationID), func(writer tenantstore.Writer) error {
+		_, err := writer.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: tracker.OrganizationID(service.config.Hosted.OrganizationID), ID: project, Name: "Example workspace project", Profile: "native"}, States: states})
+		return err
+	}); err != nil {
 		t.Fatal(err)
-	}
-	for _, state := range states {
-		if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", project, state.Name, state.Name, state.Terminal, state.Dispatchable, now, now); err != nil {
-			t.Fatal(err)
-		}
 	}
 	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
 }
@@ -1845,10 +2331,15 @@ func TestWorkspaceRelayTicketNeedsOnlyRead(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusCreated)
 	var session workspacesession.Session
 	decodeHubResponse(t, response, &session)
-	record, err := readWorkspaceByID(t.Context(), f.service.database.db, session.ID)
-	if err != nil {
+	var stored postgres.WorkspaceSession
+	if err := f.service.accessRead(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), func(reader tenantstore.Reader) error {
+		var err error
+		stored, err = reader.(postgres.WorkspaceReader).WorkspaceSession(t.Context(), f.project, session.ID)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
+	record := relayWorkspaceRecord(stored)
 	record.Capabilities = &workspacesession.Capabilities{Files: true, Diff: true, Terminal: true, Git: true}
 	tests := []struct {
 		name         string
@@ -1975,12 +2466,14 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newRelayFixture(t)
-			if _, err := f.service.database.db.ExecContext(t.Context(),
-				"UPDATE workspace_sessions SET state = ? WHERE id = ?", test.state, f.workspace); err != nil {
-				t.Fatal(err)
+			if current := f.record(t); current.State != test.state {
+				if !workspacesession.Transition(current.State, test.state) {
+					f.updateWorkspace(t, func(arg *postgres.WorkspaceUpdate) { arg.State = workspacesession.StateClosing })
+				}
+				f.updateWorkspace(t, func(arg *postgres.WorkspaceUpdate) { arg.State = test.state })
 			}
 			connection := &relayConnection{
-				id: newNativeID("relayconn"), workspaceID: f.workspace, runner: test.runner,
+				id: newNativeID("relayconn"), workspaceID: f.workspace, runner: test.runner, scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID},
 				out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
 			}
 			relay := f.service.workspaces.relay
@@ -2043,7 +2536,7 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 					execRuns: map[string]*execRunState{},
 				}
 			}
-			if got := relay.beginExecRun("ws_1", test.streamID, "actionrun_1", "action_1", test.expecting); got != test.want {
+			if got := relay.beginExecRun("ws_1", test.streamID, &execRunState{runID: "actionrun_1", actionID: "action_1"}, test.expecting); got != test.want {
 				t.Fatalf("beginExecRun = %v, want %v", got, test.want)
 			}
 			if test.roomless {
@@ -2054,6 +2547,288 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			}
 		})
 	}
+	t.Run("PostgreSQL runtime owner preserves claim and output", func(t *testing.T) {
+		fixture := newPostgresRelayRuntimeFixture(t, false)
+		for _, v := range fixture.tenants {
+			command, err := fixture.server.runDetailStore().StoreDetail(t.Context(), string(v.record.OrganizationID), []byte("printf example"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.server.accessWrite(t.Context(), v.record.OrganizationID, func(writer tenantstore.Writer) error {
+				owner := writer.(postgres.RelayActionWriter)
+				if err := owner.CreateProjectAction(t.Context(), actionstore.Record{Action: workspacesession.Action{ID: "action_relay", OrganizationID: string(v.record.OrganizationID), ProjectID: string(v.record.ProjectID), Name: "Example", CreatedBy: "fixture", Revision: 1, CreatedAt: fixture.service.now(), UpdatedAt: fixture.service.now()}, Command: command}); err != nil {
+					return err
+				}
+				_, err := owner.CreateActionRun(t.Context(), postgres.CreateActionRunInput{OrganizationID: v.record.OrganizationID, ProjectID: v.record.ProjectID, ID: "actionrun_relay", ActionID: "action_relay", WorkspaceID: v.record.ID, CreatedBy: "fixture", CreatedAt: fixture.service.now()})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			person := &relayConnection{id: "relayconn_" + string(v.record.OrganizationID), workspaceID: v.record.ID, out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
+			stream := &relayStream{id: person.id + ":1", channel: workspacesession.ChannelExec, connectionID: person.id}
+			fixture.service.relay.rooms[v.record.ID] = &relayRoom{workspaceID: v.record.ID, runner: v.runner, people: map[string]*relayConnection{person.id: person}, streams: map[string]*relayStream{stream.id: stream}, detached: map[string]*relayStream{}, execRuns: map[string]*execRunState{}}
+			frame := execRunFrame("actionrun_relay", workspacesession.Action{ID: "action_relay", Command: "printf example"})
+			capture := new(runtimeHistoryTraceCapture)
+			ctx := context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture)
+			if code := fixture.service.startExecRun(ctx, person, v.runner, v.record, stream, frame); code != "" {
+				t.Fatalf("start refusal=%s", code)
+			}
+			capture.mu.Lock()
+			queries := slices.Clone(capture.statements)
+			capture.mu.Unlock()
+			_, data := runtimeCapacityStatements(queries)
+			if len(data) != 11 || len(queries) != 17 {
+				t.Fatalf("runtime claim owner statements=%d full statements=%d want11/17", len(data), len(queries))
+			}
+			if code := fixture.service.startExecRun(t.Context(), person, v.runner, v.record, stream, frame); code != workspacesession.CodeAlreadyRunning {
+				t.Fatalf("duplicate refusal=%s", code)
+			}
+			fixture.service.recordExecFrame(t.Context(), v.runner, stream, execOutputFrame(stream.id, workspacesession.ExecOutput{Data: "example output"}))
+			fixture.service.recordExecFrame(t.Context(), v.runner, stream, execExitedFrame(stream.id, 0))
+			var row postgres.ActionRun
+			if err := fixture.server.accessRead(t.Context(), v.record.OrganizationID, func(reader tenantstore.Reader) error {
+				var err error
+				row, err = reader.(postgres.RelayActionReader).ActionRun(t.Context(), postgres.ActionRunInput{OrganizationID: v.record.OrganizationID, ProjectID: v.record.ProjectID, ID: "actionrun_relay"})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if row.Status != "succeeded" || row.ClaimedBy != stream.id || row.Revision != 3 || row.OutputSequence != 1 || row.OutputObjectKey == nil || row.OutputContentBytes != int64(len("example output")) {
+				t.Fatalf("real runtime receipt=%+v", row)
+			}
+			ref := attachment.ArchiveReference{Key: *row.OutputObjectKey, SHA256: row.OutputSha256, CompressedSize: row.OutputBytes, UncompressedSize: row.OutputContentBytes, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
+			stored, err := readChangeContent(fixture.server.contentContext(t.Context()), string(v.record.OrganizationID), ref)
+			if err != nil || string(stored) != "example output" {
+				t.Fatalf("stored runtime output=%q error=%v", stored, err)
+			}
+			fixture.service.recordExecFrame(t.Context(), v.runner, stream, execExitedFrame(stream.id, 7))
+			if err := fixture.server.accessRead(t.Context(), v.record.OrganizationID, func(reader tenantstore.Reader) error {
+				got, err := reader.(postgres.RelayActionReader).ActionRun(t.Context(), postgres.ActionRunInput{OrganizationID: v.record.OrganizationID, ProjectID: v.record.ProjectID, ID: "actionrun_relay"})
+				if err == nil && !reflect.DeepEqual(got, row) {
+					t.Fatalf("late exit overwrote first terminal response: got=%+v want=%+v", got, row)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.server.accessRead(t.Context(), v.record.OrganizationID, func(reader tenantstore.Reader) error {
+				object, err := reader.ArchiveObjectByReference(t.Context(), ref)
+				if err != nil {
+					return err
+				}
+				var count int
+				if err := usagePostgresAdmin(t, fixture.server).QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND archive_id=$2 AND owner_kind='project-action-run-output' AND owner_id=$3`, v.record.OrganizationID, object.ID, actionstore.ArchiveOwnerID(v.record.ProjectID, row.ID)).Scan(&count); err != nil {
+					return err
+				}
+				if count != 1 {
+					t.Fatalf("runtime output owner count=%d want1", count)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.server.accessWrite(t.Context(), v.record.OrganizationID, func(writer tenantstore.Writer) error {
+				_, err := writer.(postgres.RelayActionWriter).CreateActionRun(t.Context(), postgres.CreateActionRunInput{OrganizationID: v.record.OrganizationID, ProjectID: v.record.ProjectID, ID: "actionrun_recovery_exit", ActionID: "action_relay", WorkspaceID: v.record.ID, CreatedBy: "fixture", CreatedAt: fixture.service.now()})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			recoveryStream := &relayStream{id: person.id + ":3", channel: workspacesession.ChannelExec, connectionID: person.id}
+			fixture.service.relay.rooms[v.record.ID].streams[recoveryStream.id] = recoveryStream
+			if code := fixture.service.startExecRun(t.Context(), person, v.runner, v.record, recoveryStream, execRunFrame("actionrun_recovery_exit", workspacesession.Action{ID: "action_relay", Command: "printf example"})); code != "" {
+				t.Fatalf("recovery-exit setup refusal=%s", code)
+			}
+			if err := fixture.server.accessWrite(t.Context(), v.record.OrganizationID, func(writer tenantstore.Writer) error {
+				owner := writer.(postgres.WorkspaceWriter)
+				row, err := owner.WorkspaceSession(t.Context(), v.record.ProjectID, v.record.ID)
+				if err != nil {
+					return err
+				}
+				_, err = owner.UpdateWorkspaceSession(t.Context(), postgres.WorkspaceUpdate{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, ExpectedRevision: row.Revision, ExpectedRunnerID: row.RunnerID, ExpectedLeaseID: row.LeaseID, ExpectedFencingToken: row.FencingToken, State: workspacesession.StateRequested, Reason: workspacesession.ReasonHubRestarted, UpdatedAt: fixture.service.now()})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			fixture.service.recordExecFrame(t.Context(), v.runner, recoveryStream, execOutputFrame(recoveryStream.id, workspacesession.ExecOutput{Data: "retained during recovery"}))
+			fixture.service.recordExecFrame(t.Context(), v.runner, recoveryStream, execExitedFrame(recoveryStream.id, 17))
+			if err := fixture.server.accessRead(t.Context(), v.record.OrganizationID, func(reader tenantstore.Reader) error {
+				got, err := reader.(postgres.RelayActionReader).ActionRun(t.Context(), postgres.ActionRunInput{OrganizationID: v.record.OrganizationID, ProjectID: v.record.ProjectID, ID: "actionrun_recovery_exit"})
+				if err == nil && (got.Status != "failed" || !got.ExitCode.Valid || got.ExitCode.Int32 != 17 || got.Reason != "" || got.LeaseID != v.lease.LeaseID || got.OutputContentBytes != int64(len("retained during recovery"))) {
+					t.Fatalf("cleared workspace binding lost actual exit facts=%+v", got)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.server.accessWrite(t.Context(), v.record.OrganizationID, func(writer tenantstore.Writer) error {
+				owner := writer.(postgres.WorkspaceWriter)
+				for _, state := range []string{workspacesession.StateStarting, workspacesession.StateReady} {
+					row, err := owner.WorkspaceSession(t.Context(), v.record.ProjectID, v.record.ID)
+					if err != nil {
+						return err
+					}
+					if _, err := owner.UpdateWorkspaceSession(t.Context(), postgres.WorkspaceUpdate{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, ExpectedRevision: row.Revision, ExpectedRunnerID: row.RunnerID, ExpectedLeaseID: row.LeaseID, ExpectedFencingToken: row.FencingToken, State: state, RunnerID: v.record.RunnerID, MachineID: string(v.record.MachineID), LeaseID: string(v.record.LeaseID), FencingToken: int64(v.record.FencingToken), Capabilities: []string{"files", "exec"}, UpdatedAt: fixture.service.now()}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.server.accessWrite(t.Context(), v.record.OrganizationID, func(writer tenantstore.Writer) error {
+				_, err := writer.(postgres.RelayActionWriter).CreateActionRun(t.Context(), postgres.CreateActionRunInput{OrganizationID: v.record.OrganizationID, ProjectID: v.record.ProjectID, ID: "actionrun_removed", ActionID: "action_relay", WorkspaceID: v.record.ID, CreatedBy: "fixture", CreatedAt: fixture.service.now()})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			removedStream := &relayStream{id: person.id + ":2", channel: workspacesession.ChannelExec, connectionID: person.id}
+			fixture.service.relay.rooms[v.record.ID].streams[removedStream.id] = removedStream
+			if code := fixture.service.startExecRun(t.Context(), person, v.runner, v.record, removedStream, execRunFrame("actionrun_removed", workspacesession.Action{ID: "action_relay", Command: "printf example"})); code != "" {
+				t.Fatalf("removed-run setup refusal=%s", code)
+			}
+			fixture.service.recordExecFrame(t.Context(), v.runner, removedStream, execOutputFrame(removedStream.id, workspacesession.ExecOutput{Data: "retained after removal"}))
+			if err := fixture.server.accessWrite(t.Context(), v.record.OrganizationID, func(writer tenantstore.Writer) error {
+				return writer.RemoveRunnerIdentity(t.Context(), v.record.RunnerID, fixture.service.now())
+			}); err != nil {
+				t.Fatal(err)
+			}
+			fixture.service.recordExecFrame(t.Context(), v.runner, removedStream, execExitedFrame(removedStream.id, 0))
+			if err := fixture.server.accessRead(t.Context(), v.record.OrganizationID, func(reader tenantstore.Reader) error {
+				got, err := reader.(postgres.RelayActionReader).ActionRun(t.Context(), postgres.ActionRunInput{OrganizationID: v.record.OrganizationID, ProjectID: v.record.ProjectID, ID: "actionrun_removed"})
+				if err == nil && (got.Status != "failed" || got.Reason != "stream_closed" || got.ExitCode.Valid || got.OutputContentBytes != int64(len("retained after removal"))) {
+					t.Fatalf("removed runner lost failure/output=%+v", got)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+		}
+	})
+
+	t.Run("configured tenants maintain only their bounded relay work", func(t *testing.T) {
+		fixture := newPostgresRelayRuntimeFixture(t, true)
+		repository := fixture.server.config.TenantRepository.(*postgres.Repository)
+		hosted := *fixture.server.config.Hosted
+		hosted.OrganizationID = "org_first_second"
+		hosted.WorkOSOrganizationID = "provider_org_first_second"
+		hosted.BootstrapSubject = "user_org_first_second"
+		second := openPostgresHubTestService(t, repository, Config{Hosted: &hosted, SecretKeys: fixture.server.config.SecretKeys, RunDetails: fixture.server.config.RunDetails, now: fixture.server.config.now})
+		secondService := newWorkspaceService(second, WorkspaceConfig{Enabled: true})
+		t.Cleanup(func() { secondService.relay.stop(t.Context()) })
+		services := []*workspaceService{fixture.service, secondService}
+		for index, value := range fixture.tenants {
+			if services[index].server.appOrganizationID() != string(value.record.OrganizationID) {
+				t.Fatalf("configured maintenance organization=%s want=%s", services[index].server.appOrganizationID(), value.record.OrganizationID)
+			}
+			command, err := fixture.server.runDetailStore().StoreDetail(t.Context(), string(value.record.OrganizationID), []byte("printf maintenance"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.server.accessWrite(t.Context(), value.record.OrganizationID, func(writer tenantstore.Writer) error {
+				owner := writer.(postgres.RelayActionWriter)
+				now := fixture.service.now()
+				if err := owner.CreateProjectAction(t.Context(), actionstore.Record{Action: workspacesession.Action{ID: "action_maintenance", OrganizationID: string(value.record.OrganizationID), ProjectID: string(value.record.ProjectID), Name: "Example maintenance", CreatedBy: "fixture", Revision: 1, CreatedAt: now, UpdatedAt: now}, Command: command}); err != nil {
+					return err
+				}
+				for number := range actionRunDispatchBatch + 1 {
+					if _, err := owner.CreateActionRun(t.Context(), postgres.CreateActionRunInput{OrganizationID: value.record.OrganizationID, ProjectID: value.record.ProjectID, ID: fmt.Sprintf("actionrun_%03d", number), ActionID: "action_maintenance", WorkspaceID: value.record.ID, CreatedBy: "fixture", CreatedAt: now.Add(-2 * actionRunDispatchGrace)}); err != nil {
+						return err
+					}
+				}
+				for number := range hubmaintenance.ItemLimit + 1 {
+					if _, err := owner.CreateRelayTicket(t.Context(), postgres.CreateRelayTicketInput{OrganizationID: value.record.OrganizationID, ProjectID: value.record.ProjectID, Digest: fmt.Sprintf("ticket_%03d", number), WorkspaceID: value.record.ID, SessionID: "session_example", PrincipalID: value.workerScope.credential.ID, Subject: "example-subject", CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(-30 * time.Second)}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			services[index].relay.rooms[value.record.ID] = &relayRoom{workspaceID: value.record.ID, runner: value.runner, people: map[string]*relayConnection{}, streams: map[string]*relayStream{}, detached: map[string]*relayStream{}, execRuns: map[string]*execRunState{}}
+		}
+		assertCounts := func(tenant int, queued, running, failed, tickets int) {
+			t.Helper()
+			value := fixture.tenants[tenant]
+			if err := fixture.server.accessRead(t.Context(), value.record.OrganizationID, func(reader tenantstore.Reader) error {
+				owner := reader.(postgres.RelayActionReader)
+				rows, err := owner.RecentActionRuns(t.Context(), value.record.ProjectID, "action_maintenance", nil, actionRunDispatchBatch+1)
+				if err != nil {
+					return err
+				}
+				counts := map[string]int{}
+				for _, row := range rows {
+					counts[row.Status]++
+					if row.Status == "failed" && (row.Reason != workspacesession.RunReasonWorkspaceEnd || row.FinishedAt == nil) {
+						t.Fatalf("maintenance lost terminal receipt: %+v", row)
+					}
+				}
+				if len(rows) != actionRunDispatchBatch+1 || counts["queued"] != queued || counts["running"] != running || counts["failed"] != failed {
+					t.Fatalf("%s run statuses=%v want queued/running/failed=%d/%d/%d", value.record.OrganizationID, counts, queued, running, failed)
+				}
+				page, err := owner.RelayTicketPage(t.Context(), "", hubmaintenance.ItemLimit)
+				if err != nil {
+					return err
+				}
+				if len(page) != min(tickets, hubmaintenance.ItemLimit) {
+					t.Fatalf("%s ticket page count=%d want%d", value.record.OrganizationID, len(page), min(tickets, hubmaintenance.ItemLimit))
+				}
+				var count int
+				if err := usagePostgresAdmin(t, fixture.server).QueryRowContext(t.Context(), "SELECT count(*) FROM workspace_relay_tickets WHERE organization_id=$1 AND project_id=$2", value.record.OrganizationID, value.record.ProjectID).Scan(&count); err != nil {
+					return err
+				}
+				if count != tickets {
+					t.Fatalf("%s ticket total=%d want%d", value.record.OrganizationID, count, tickets)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for index, service := range services {
+			service.dispatchQueuedActionRuns(t.Context())
+			if err := service.sweepRelayTickets(t.Context(), service.now()); err != nil {
+				t.Fatal(err)
+			}
+			for tenant := range services {
+				if tenant <= index {
+					assertCounts(tenant, 1, actionRunDispatchBatch, 0, 1)
+				} else {
+					assertCounts(tenant, actionRunDispatchBatch+1, 0, 0, hubmaintenance.ItemLimit+1)
+				}
+			}
+		}
+		for index, value := range fixture.tenants {
+			if err := fixture.server.accessWrite(t.Context(), value.record.OrganizationID, func(writer tenantstore.Writer) error {
+				owner := writer.(postgres.WorkspaceWriter)
+				row, err := owner.WorkspaceSession(t.Context(), value.record.ProjectID, value.record.ID)
+				if err != nil {
+					return err
+				}
+				for _, state := range []string{workspacesession.StateClosing, workspacesession.StateClosed} {
+					row, err = owner.UpdateWorkspaceSession(t.Context(), postgres.WorkspaceUpdate{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, ExpectedRevision: row.Revision, ExpectedRunnerID: row.RunnerID, ExpectedLeaseID: row.LeaseID, ExpectedFencingToken: row.FencingToken, State: state, Reason: "closed", RunnerID: row.RunnerID, MachineID: row.MachineID, LeaseID: row.LeaseID, FencingToken: row.FencingToken, UpdatedAt: services[index].now()})
+					if err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			services[index].sweepActionRuns(t.Context())
+			if err := services[index].sweepRelayTickets(t.Context(), services[index].now()); err != nil {
+				t.Fatal(err)
+			}
+			for tenant := range services {
+				if tenant <= index {
+					assertCounts(tenant, 0, 0, actionRunDispatchBatch+1, 0)
+				} else {
+					assertCounts(tenant, 1, actionRunDispatchBatch, 0, 1)
+				}
+			}
+		}
+	})
+
 }
 
 func TestWorkspaceRelayDetachPersonClosesItsExecStreamsOnTheRunner(t *testing.T) {
@@ -2093,5 +2868,150 @@ func TestWorkspaceRelayDetachPersonClosesItsExecStreamsOnTheRunner(t *testing.T)
 	case sent := <-runner.out:
 		t.Fatalf("runner received an extra frame %+v", sent.frame)
 	default:
+	}
+}
+
+type postgresRelayRuntimeTenant struct {
+	fixture     nativeFixture
+	workerScope nativeScope
+	record      workspaceRecord
+	runner      *relayConnection
+	lease       leasestore.Lease
+}
+
+type postgresRelayRuntimeFixture struct {
+	server  *Service
+	service *workspaceService
+	clock   *atomic.Int64
+	tenants []postgresRelayRuntimeTenant
+}
+
+func newPostgresRelayRuntimeFixture(t *testing.T, hosted bool) postgresRelayRuntimeFixture {
+	t.Helper()
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	clock := new(atomic.Int64)
+	clock.Store(base.UnixNano())
+	cfg := Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }}
+	if hosted {
+		cfg.Hosted = &HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", BootstrapSubject: "user_org_first", PublicURL: "http://127.0.0.1:7777", Provider: newHostedSecurityProvider()}
+	}
+	server := newClockedPostgresNativeService(t, cfg)
+	admin := usagePostgresAdmin(t, server)
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
+	config, err := connection.PoolConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgtransport.Configure(config)
+	config.MaxConns = 3
+	if config.ConnConfig.Tracer == nil {
+		config.ConnConfig.Tracer = runtimeHistoryTrace{}
+	} else {
+		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, runtimeHistoryTrace{})
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
+	if err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	originalTenant, originalAccess, originalPostgres := server.config.TenantRepository, server.config.AccessRepository, server.database.postgres
+	t.Cleanup(func() {
+		server.config.TenantRepository, server.config.AccessRepository, server.database.postgres = originalTenant, originalAccess, originalPostgres
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	server.config.TenantRepository, server.config.AccessRepository, server.database.postgres = repository, repository, repository
+	service := newWorkspaceService(server, WorkspaceConfig{Enabled: true})
+	originalWorkspace := server.workspaces
+	server.workspaces = service
+	t.Cleanup(func() { service.relay.stop(t.Context()); server.workspaces = originalWorkspace })
+	result := postgresRelayRuntimeFixture{server: server, service: service, clock: clock}
+	for index, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		f := newNativeFixture(t, server, organization, "Example relay")
+		runner, machine, worker := "runner_relay", "machine_relay", "worker_relay"
+		workerToken := "example-worker-" + string(organization)
+		expires := base.Add(time.Hour)
+		var session postgres.WorkspaceSession
+		var lease leasestore.Lease
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: worker, Name: "Example runner", Hash: apikey.HashToken(workerToken), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: base, UpdatedAt: base, ExpiresAt: &expires}); err != nil {
+				return err
+			}
+			if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: worker, ProjectID: f.project.ID}); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_relay", RunnerID: runner, MachineID: tracker.MachineID(machine), TokenHash: apikey.HashToken("enrollment-" + string(organization)), Scope: "projects", ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim}, CreatedAt: base, ExpiresAt: expires, CreatedBy: "fixture"}); err != nil {
+				return err
+			}
+			if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_relay", runner, tracker.MachineID(machine), base); err != nil {
+				return err
+			}
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: machine, Hostname: "example-host", Capacity: 2}); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: runner, MachineID: tracker.MachineID(machine), TokenID: worker, EnrollmentID: "enrollment_relay", Scope: "projects", State: "active", Revision: 1, Operations: []string{runnerauth.Read, runnerauth.Claim}, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}, CreatedAt: base, ExpiresAt: expires, LastHeartbeatAt: base}); err != nil {
+				return err
+			}
+			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: f.project.ID, NativeID: "wi_relay_subject", Number: 1, Title: "Example subject"}); err != nil {
+				return err
+			}
+			item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: f.project.ID, NativeID: "wi_relay_dispatch", Number: 2, Title: "Example workspace item"})
+			if err != nil {
+				return err
+			}
+			owner := w.(postgres.WorkspaceWriter)
+			session, err = owner.CreateWorkspaceSession(t.Context(), postgres.WorkspaceCreate{OrganizationID: organization, ProjectID: f.project.ID, ID: fmt.Sprintf("ws_%032x", index+1), SubjectWorkItemID: "wi_relay_subject", Ref: "refs/heads/example", Requires: []string{"files", "exec"}, IdleTimeoutSeconds: 300, ExpiresAt: expires, RequestedExpiresAt: expires, CreatedBy: "fixture", CreatedAt: base})
+			if err != nil {
+				return err
+			}
+			if err := owner.PutWorkspaceItem(t.Context(), claimstore.WorkspaceItem{OrganizationID: organization, ProjectID: f.project.ID, WorkItemID: item.NativeID, WorkspaceID: session.ID, CreatedAt: base}); err != nil {
+				return err
+			}
+			lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: machine, RunnerID: runner, SessionID: "session_relay", LeaseID: "lease_relay", TTL: time.Hour})
+			if err != nil {
+				return err
+			}
+
+			for _, state := range []string{"starting", "ready"} {
+				session, err = owner.UpdateWorkspaceSession(t.Context(), postgres.WorkspaceUpdate{OrganizationID: organization, ProjectID: f.project.ID, ID: session.ID, ExpectedRevision: session.Revision, ExpectedRunnerID: session.RunnerID, ExpectedLeaseID: session.LeaseID, ExpectedFencingToken: session.FencingToken, State: state, RunnerID: runner, MachineID: machine, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, Capabilities: []string{"files", "exec"}, UpdatedAt: base})
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		credential, _, err := server.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(workerToken), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := nativeScope{organization: organization, project: f.project.ID, credential: credential}
+		record := relayWorkspaceRecord(session)
+		connection := &relayConnection{id: "relayrunner_" + string(organization), workspaceID: session.ID, runner: true, scope: scope, owner: record.owner(), principalID: worker, sessionID: lease.LeaseID, out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
+		result.tenants = append(result.tenants, postgresRelayRuntimeTenant{fixture: f, workerScope: scope, record: record, runner: connection, lease: lease})
+	}
+	return result
+}
+
+func (f *relayFixture) updateWorkspace(t *testing.T, change func(*postgres.WorkspaceUpdate)) {
+	t.Helper()
+	if err := f.service.accessWrite(t.Context(), f.project.OrganizationID, func(writer tenantstore.Writer) error {
+		owner := writer.(postgres.WorkspaceWriter)
+		row, err := owner.WorkspaceSession(t.Context(), f.project.ID, f.workspace)
+		if err != nil {
+			return err
+		}
+		arg := postgres.WorkspaceUpdate{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ID: row.ID, ExpectedRevision: row.Revision, ExpectedRunnerID: row.RunnerID, ExpectedLeaseID: row.LeaseID, ExpectedFencingToken: row.FencingToken, State: row.State, Reason: row.Reason, RunnerID: row.RunnerID, MachineID: row.MachineID, LeaseID: row.LeaseID, FencingToken: row.FencingToken, HeadSHA: row.HeadSHA, Capabilities: row.Capabilities, Isolation: row.Isolation, Worktree: row.Worktree, MachineHostname: row.MachineHostname, WorktreePath: row.WorktreePath, ReadOnly: row.ReadOnly, OpenedAt: row.OpenedAt, LastActivityAt: row.LastActivityAt, LastHeartbeatAt: row.LastHeartbeatAt, RebindDeadline: row.RebindDeadline, UpdatedAt: f.at()}
+		change(&arg)
+		_, err = owner.UpdateWorkspaceSession(t.Context(), arg)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

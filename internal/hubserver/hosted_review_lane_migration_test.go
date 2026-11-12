@@ -1,17 +1,12 @@
 package hubserver
 
 import (
-	"database/sql"
-	"encoding/json"
-	"fmt"
-	"path/filepath"
-	"reflect"
+	"errors"
 	"strings"
 	"testing"
-	"testing/fstest"
 
-	"github.com/pressly/goose/v3"
-
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -30,10 +25,6 @@ func hostedReviewLaneStates() []tracker.NativeState {
 // template onto the template with Human Review, and leaves every other
 // workflow as it was. Applying it again changes nothing.
 func TestHostedReviewLaneMigration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	hostedLaneMigrationTest(t, hostedLaneMigration{
 		from: 35, to: 36, file: "migrations/00036_hosted_review_lane.sql", lane: "Human Review", dispatchable: false,
@@ -73,10 +64,6 @@ func hostedDirectLandingStates() []tracker.NativeState {
 // the runner that lands it, and leaves every other workflow as it was.
 // Migration 37 (observed policies) lies between them and touches no lanes.
 func TestHostedLandingLaneMigration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	hostedLaneMigrationTest(t, hostedLaneMigration{
 		from: 37, to: 38, file: "migrations/00038_hosted_landing_lane.sql", lane: "Merging", dispatchable: true,
@@ -89,10 +76,6 @@ func TestHostedLandingLaneMigration(t *testing.T) {
 // move from In Progress straight to Merging when its version needs no
 // review, and leaves every other workflow as it was.
 func TestHostedDirectLandingMigration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	hostedLaneMigrationTest(t, hostedLaneMigration{
 		from: 38, to: 39, file: "migrations/00039_hosted_direct_landing.sql", lane: "Merging", dispatchable: true,
@@ -102,10 +85,6 @@ func TestHostedDirectLandingMigration(t *testing.T) {
 }
 
 func TestHostedBlockedLaneMigration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	hostedLaneMigrationTest(t, hostedLaneMigration{
 		from: 47, to: 48, file: "migrations/00048_hosted_blocked_lane.sql", lane: "Blocked", dispatchable: false,
@@ -132,114 +111,66 @@ type hostedLaneMigration struct {
 
 func hostedLaneMigrationTest(t *testing.T, migration hostedLaneMigration) {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "hub.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	if _, err := db.ExecContext(t.Context(), fmt.Sprintf("PRAGMA application_id = %d", hubApplicationID)); err != nil {
-		t.Fatal(err)
-	}
-	files, err := migrationFiles.ReadDir("migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	migrations := fstest.MapFS{}
-	for _, file := range files {
-		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		migrations[file.Name()] = &fstest.MapFile{Data: data}
-	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.UpTo(t.Context(), migration.from); err != nil {
-		t.Fatal(err)
-	}
+	service := newPostgresNativeService(t, Config{})
+	organization := tracker.OrganizationID("org_migrate")
+	source := historicalWorkflowSource(t, organization)
 	oldTemplate := migration.before
 	customized := append([]tracker.NativeState(nil), oldTemplate...)
 	customized[1].Transitions = append(append([]string(nil), customized[1].Transitions...), "Todo")
-	encoded := func(states []tracker.NativeState) string {
-		raw, err := marshalNative(states)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return raw
-	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO organizations (id, name, created_at) VALUES ('org_migrate', 'Migrate', ?)", testTimestamp); err != nil {
-		t.Fatal(err)
-	}
+	collapsed := append([]tracker.NativeState(nil), oldTemplate...)
+	encoded := func(states []tracker.NativeState) string { t.Helper(); return string(historyTestJSON(t, states)) }
 	projects := []struct {
-		id     string
-		states string
-		want   []tracker.NativeState
+		id, states string
+		want       []tracker.NativeState
 	}{
 		{id: "prj_old_template", states: encoded(oldTemplate), want: migration.after},
 		{id: "prj_old_template_spaced", states: strings.ReplaceAll(encoded(oldTemplate), ",", ", "), want: migration.after},
-		{id: "prj_customized", states: encoded(customized), want: customized},
+		{id: "prj_customized", states: encoded(customized), want: collapsed},
 		{id: "prj_current", states: encoded(migration.after), want: migration.after},
 	}
 	for _, project := range projects {
-		if _, err := db.ExecContext(t.Context(), "INSERT INTO projects (id, organization_id, name, profile, states_json, created_at, github_repository_enabled) VALUES (?, 'org_migrate', ?, 'native', ?, ?, 0)", project.id, project.id, project.states, testTimestamp); err != nil {
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.ProjectRecord(t.Context(), tracker.ProjectID(project.id))
+			return err
+		}); !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("historical project%s already exists: %v", project.id, err)
+		}
+		source.add("projects", map[string]any{"id": project.id, "organization_id": organization, "name": project.id, "profile": "native", "states_json": project.states, "created_at": testTimestamp, "github_repository_enabled": 0, "integration_revision": 7})
+	}
+	path := source.write()
+	for _, pass := range []string{"migrated", "applied again"} {
+		if err := importHistoricalWorkflowSource(t, service, organization, path); err != nil {
 			t.Fatal(err)
 		}
-		var states []tracker.NativeState
-		if err := json.Unmarshal([]byte(project.states), &states); err != nil {
-			t.Fatal(err)
-		}
-		for _, state := range states {
-			if _, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", project.id, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if _, err := provider.UpTo(t.Context(), migration.to); err != nil {
-		t.Fatal(err)
-	}
-	check := func(t *testing.T) {
-		t.Helper()
-		for _, project := range projects {
-			var raw string
-			if err := db.QueryRowContext(t.Context(), "SELECT states_json FROM projects WHERE id = ?", project.id).Scan(&raw); err != nil {
-				t.Fatal(err)
-			}
-			var states []tracker.NativeState
-			if err := json.Unmarshal([]byte(raw), &states); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(states, project.want) {
-				t.Fatalf("%s states = %#v, want %#v", project.id, states, project.want)
-			}
-			var lanes, added int
-			if err := db.QueryRowContext(t.Context(), "SELECT count(*), coalesce(sum(source_name = ? AND terminal = 0 AND dispatchable = ?), 0) FROM workflow_states WHERE project_id = ?", migration.lane, migration.dispatchable, project.id).Scan(&lanes, &added); err != nil {
-				t.Fatal(err)
-			}
-			wantAdded := 0
-			for _, state := range project.want {
-				if state.Name == migration.lane {
-					wantAdded = 1
+		t.Run(pass, func(t *testing.T) {
+			for _, project := range projects {
+				record, _ := readHistoricalWorkflowProject(t, service, organization, tracker.ProjectID(project.id))
+				want := reporterUpgradedHostedStates()
+				if project.id == "prj_customized" {
+					want = append([]tracker.NativeState{{Name: "Triage", Transitions: []string{"Todo"}}}, project.want...)
+				}
+				if !historicalWorkflowStatesEqual(record.States, want) || record.Settings.Revision != 7 {
+					t.Fatalf("%s states=%#v want=%#v revision=%d", project.id, record.States, want, record.Settings.Revision)
+				}
+				original := readHistoricalWorkflowOriginal(t, service, organization, tracker.ProjectID(project.id))
+				if original.States != project.states {
+					t.Fatalf("%s historical state bytes changed", project.id)
+				}
+				added, wantAdded := 0, 0
+				for _, state := range record.States {
+					if state.Name == migration.lane && !state.Terminal && state.Dispatchable == migration.dispatchable {
+						added++
+					}
+				}
+				for _, state := range want {
+					if state.Name == migration.lane {
+						wantAdded = 1
+					}
+				}
+				if len(record.States) != len(want) || added != wantAdded {
+					t.Fatalf("%s workflow lanes=%d (%s %d), want%d (%s %d)", project.id, len(record.States), migration.lane, added, len(want), migration.lane, wantAdded)
 				}
 			}
-			if lanes != len(project.want) || added != wantAdded {
-				t.Fatalf("%s workflow lanes = %d (%s %d), want %d (%s %d)", project.id, lanes, migration.lane, added, len(project.want), migration.lane, wantAdded)
-			}
-		}
+		})
 	}
-	t.Run("migrated", check)
-	up, err := migrationFiles.ReadFile(migration.file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	statements, _, _ := strings.Cut(string(up), "-- +goose Down")
-	if _, err := db.ExecContext(t.Context(), strings.TrimPrefix(statements, "-- +goose Up")); err != nil {
-		t.Fatal(err)
-	}
-	t.Run("applied again", check)
 }

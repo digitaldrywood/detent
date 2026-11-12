@@ -19,6 +19,8 @@ type FleetName struct {
 }
 
 type FleetLease struct {
+	WorkflowState      string
+	CapacityProject    string
 	RuntimeAttemptID   string
 	RuntimeHeartbeatAt *time.Time
 	RenewedAt          time.Time
@@ -98,4 +100,42 @@ type OnboardingReader interface {
 
 type SourceRecoveryDestinationReader interface {
 	SourceRecoveryDestination(context.Context, tracker.ProjectID, string, time.Time) (SourceRecoveryCandidate, error)
+}
+
+type RuntimeProviderReport struct {
+	CapacityOwner bool
+	RunnerID      string
+	Report        providercapacity.Report
+}
+
+type RuntimeProviderSnapshot struct {
+	Reports             []RuntimeProviderReport
+	Leases              []FleetLease
+	Candidates          int
+	OwnersTruncated     bool
+	CandidatesTruncated bool
+}
+
+type RuntimeCapacityQuery struct {
+	ProjectID   tracker.ProjectID
+	RunnerID    string
+	At          time.Time
+	Explanation bool
+}
+
+type RuntimeCapacitySnapshot struct {
+	Records   []RuntimeCapacityRunner
+	Leases    []FleetLease
+	Providers RuntimeProviderSnapshot
+	Truncated bool
+}
+
+type RuntimeCapacityReader interface {
+	RuntimeCapacitySnapshot(context.Context, RuntimeCapacityQuery) (RuntimeCapacitySnapshot, error)
+}
+
+type RuntimeCapacityRunner struct {
+	Runner         runnerauth.Runner
+	MachineVersion string
+	Reports        []providercapacity.Report
 }

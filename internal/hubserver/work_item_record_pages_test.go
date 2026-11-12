@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -251,7 +253,32 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 			}
 			service.config.TenantRepository = repository
 
-			scope := nativeScope{organization: org.ID, project: project.ID}
+			credential, status, err := service.authenticateTenantAPIHash(t.Context(), org.ID, apikey.HashToken(testHubAdminToken), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("detail fixture credential status=%d: %v", status, err)
+			}
+			scope := nativeScope{organization: org.ID, project: project.ID, credential: credential}
+			readHead := func() int64 {
+				t.Helper()
+				var head viewstore.BoardSequence
+				if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					head, err = r.BoardSequence(t.Context(), project.ID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if head.Sequence == 0 {
+					t.Fatal("detail fixture has no source head")
+				}
+				return head.Sequence
+			}
+			assertHead := func(value tracker.NativeIssue, head int64) {
+				t.Helper()
+				if value.ChangeSequence != head || slices.Contains(value.OmittedFields, "change_sequence") {
+					t.Fatalf("detail head=%d want=%d omitted=%v", value.ChangeSequence, head, value.OmittedFields)
+				}
+			}
 			assertReadinessOmitted := func(issue tracker.NativeIssue) {
 				t.Helper()
 				if issue.DependencyReady || issue.SchedulingEligible != nil || !slices.Contains(issue.OmittedFields, "dependency_ready") || !slices.Contains(issue.OmittedFields, "scheduling_eligible") {
@@ -263,6 +290,14 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertReadinessOmitted(coldPage)
+			assertHead(coldPage, readHead())
+			detailPath := strings.TrimSuffix(path, "/comments")
+			response = performHubAPIRequest(t, service, http.MethodGet, detailPath, testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var coldREST tracker.NativeIssue
+			decodeHubResponse(t, response, &coldREST)
+			assertHead(coldREST, readHead())
+			assertReadinessOmitted(coldREST)
 			if size == 2 {
 				if got, err := service.workItemResource(t.Context(), scope, string(issue.WorkItemID), url.Values{}); err != nil || got.Body != workItemRecordBody {
 					t.Fatalf("cold detail: %v", err)
@@ -271,6 +306,114 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				response = performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
 				requireNativeStatus(t, response, http.StatusOK)
+				changed := false
+				var currentIssue tracker.NativeIssue
+				objects.afterRead = func() {
+					changed = true
+					title := "Changed during immutable object hydration"
+					updated := performHubAPIRequest(t, service, http.MethodPatch, detailPath, testHubAdminToken, tracker.UpdateIssue{
+						Mutation: tracker.Mutation{IdempotencyKey: "detail-source-change"}, ExpectedRevision: issue.Revision, Title: &title,
+					})
+					requireNativeStatus(t, updated, http.StatusOK)
+					decodeHubResponse(t, updated, &currentIssue)
+				}
+				response = performHubAPIRequest(t, service, http.MethodGet, detailPath, testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusConflict)
+				if !changed || objects.afterRead != nil {
+					t.Fatal("cold detail did not exercise the object-read source change")
+				}
+				var conflict nativeError
+				decodeHubResponse(t, response, &conflict)
+				if conflict.Code != "revision_conflict" || conflict.CurrentRevision != currentIssue.Revision || currentIssue.Revision != issue.Revision+1 {
+					t.Fatalf("content change refusal: %+v current=%v original=%v", conflict, currentIssue.Revision, issue.Revision)
+				}
+				issue = currentIssue
+				beforeHead := readHead()
+				var beforeEvent, afterEvent corestore.WorkItem
+				if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					beforeEvent, err = r.WorkItem(t.Context(), project.ID, issue.WorkItemID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				activityAt := beforeEvent.LastActivityAt.Add(time.Minute)
+				eventRaw, err := json.Marshal(tracker.CollaborationEvent{
+					ID: newNativeID("evt"), OrganizationID: org.ID, ProjectID: project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID,
+					Type: "run.checkpointed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: activityAt,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				event, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), org.ID, eventRaw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				changed = false
+				objects.afterRead = func() {
+					changed = true
+					if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+						_, err := w.AppendEvent(t.Context(), event)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						afterEvent, err = r.WorkItem(t.Context(), project.ID, issue.WorkItemID)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				response = performHubAPIRequest(t, service, http.MethodGet, detailPath, testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var afterEventREST tracker.NativeIssue
+				decodeHubResponse(t, response, &afterEventREST)
+				if !changed || objects.afterRead != nil || afterEvent.Revision != beforeEvent.Revision || afterEvent.EventSequence != beforeEvent.EventSequence+1 || !afterEvent.LastActivityAt.Equal(activityAt) {
+					t.Fatalf("event-only fixture did not preserve content revision: before=%+v after=%+v fired=%t", beforeEvent, afterEvent, changed)
+				}
+				if afterEventREST.Revision != issue.Revision || afterEventREST.Title != issue.Title || afterEventREST.Body != workItemRecordBody || !afterEventREST.LastActivityAt.Equal(afterEvent.LastActivityAt) || afterEventREST.ChangeSequence <= beforeHead {
+					t.Fatalf("event-only detail lost current metadata: %+v headBefore=%d", afterEventREST, beforeHead)
+				}
+				assertHead(afterEventREST, readHead())
+				assertReadinessOmitted(afterEventREST)
+
+				readerID, readerToken := "detail_reader", "example-detail-reader-"+string(org.ID)
+				now := service.config.now()
+				if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org.ID, ID: readerID, Name: "Example detail reader", Hash: apikey.HashToken(readerToken), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				readerCredential, readerStatus, err := service.authenticateTenantAPIHash(t.Context(), org.ID, apikey.HashToken(readerToken), "", "")
+				if err != nil || readerStatus != http.StatusOK {
+					t.Fatalf("detail reader credential status=%d: %v", readerStatus, err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, detailPath, readerToken, nil), http.StatusOK)
+				changed = false
+				objects.afterRead = func() {
+					changed = true
+					if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.RevokeAccessCredential(t.Context(), readerID, service.config.now())
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				response = performHubAPIRequest(t, service, http.MethodGet, detailPath, readerToken, nil)
+				requireNativeStatus(t, response, http.StatusForbidden)
+				var denied apiErrorResponse
+				decodeHubResponse(t, response, &denied)
+				if !changed || objects.afterRead != nil || denied.Code != "access_denied" {
+					t.Fatalf("detail did not refuse revocation between snapshots: changed=%t response=%+v", changed, denied)
+				}
+				changed = false
+				objects.afterRead = func() { changed = true }
+				_, err = service.readWorkItemSourcePage(t.Context(), nativeScope{organization: org.ID, project: project.ID, credential: readerCredential}, string(issue.WorkItemID))
+				objects.afterRead = nil
+				if !errors.Is(err, accessstore.ErrDenied) || changed {
+					t.Fatalf("revoked authority reached immutable content: objectRead=%t err=%v", changed, err)
+				}
 			}
 			_, pendingErr := service.readCommentPageModel(t.Context(), scope, string(issue.WorkItemID), url.Values{"limit": {"50"}})
 			var publicErr *nativeError
@@ -320,11 +463,18 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 			}
 
 			objects.forbidden = true
-			corePage, err := service.workItemResource(t.Context(), nativeScope{organization: org.ID, project: project.ID}, string(issue.WorkItemID), url.Values{})
+			corePage, err := service.workItemResource(t.Context(), scope, string(issue.WorkItemID), url.Values{})
 			if err != nil || corePage.Body != workItemRecordBody || corePage.OrganizationID != org.ID || corePage.ProjectID != project.ID || corePage.WorkItemID != issue.WorkItemID {
 				t.Fatalf("typed item page: err=%v body=%q", err, corePage.Body)
 			}
 			assertReadinessOmitted(corePage)
+			assertHead(corePage, readHead())
+			response = performHubAPIRequest(t, service, http.MethodGet, detailPath, testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var warmREST tracker.NativeIssue
+			decodeHubResponse(t, response, &warmREST)
+			assertHead(warmREST, readHead())
+			assertReadinessOmitted(warmREST)
 
 			for _, part := range []string{"", "/relationships", "/references"} {
 				durations := []time.Duration{}
@@ -444,6 +594,7 @@ type pageObjectProbe struct {
 	t          *testing.T
 	repository *postgres.Repository
 	forbidden  bool
+	afterRead  func()
 }
 
 func (p *pageObjectProbe) ReadDetail(ctx context.Context, org string, ref attachment.ArchiveReference) ([]byte, error) {
@@ -453,7 +604,13 @@ func (p *pageObjectProbe) ReadDetail(ctx context.Context, org string, ref attach
 	if p.repository.Stats().AcquiredConns() != 0 {
 		p.t.Error("object read held a database connection")
 	}
-	return p.DetailStore.ReadDetail(ctx, org, ref)
+	raw, err := p.DetailStore.ReadDetail(ctx, org, ref)
+	if err == nil && p.afterRead != nil {
+		afterRead := p.afterRead
+		p.afterRead = nil
+		afterRead()
+	}
+	return raw, err
 }
 
 func (r commentPageCountingReader) WorkItemPageReady(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, kind string) (bool, error) {

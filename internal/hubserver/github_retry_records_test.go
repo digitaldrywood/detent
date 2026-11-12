@@ -41,7 +41,7 @@ func TestGitHubDiscoveryFailureBackoff(t *testing.T) {
 			service.config.ImportBackend = backend
 			service.config.jitter = func() float64 { return test.jitter }
 			for _, project := range []tracker.ProjectID{"first", "second"} {
-				row, err := service.prepareGitHubBatchRecord(t.Context(), nativeScope{organization: "org", project: project}, &tracker.GitHubBatch{ID: "batch_" + string(project), Revision: 1, Status: "discovering", HubOwned: true, Automatic: true, Limit: 1000, Discovery: tracker.GitHubDiscovery{Repository: "example-org/example-project"}})
+				row, err := service.prepareGitHubBatchRecord(t.Context(), testGitHubBatchIssuer(t, service, "org", project), &tracker.GitHubBatch{ID: "batch_" + string(project), Revision: 1, Status: "discovering", HubOwned: true, RequestedBy: new(testGitHubBatchIssuer(t, service, "org", project).actor()), Automatic: true, Limit: 1000, Discovery: tracker.GitHubDiscovery{Repository: "example-org/example-project"}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -137,7 +137,7 @@ func TestGitHubBatchMissingTransportReturnsError(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		row, err := service.prepareGitHubBatchRecord(t.Context(), scope, &tracker.GitHubBatch{ID: "batch_" + string(project), Revision: 1, HubOwned: true, Status: "discovering", Discovery: tracker.GitHubDiscovery{Repository: scope.integrationRepository}})
+		row, err := service.prepareGitHubBatchRecord(t.Context(), testGitHubBatchIssuer(t, service, "org", project), &tracker.GitHubBatch{ID: "batch_" + string(project), Revision: 1, HubOwned: true, Status: "discovering", RequestedBy: new(testGitHubBatchIssuer(t, service, "org", project).actor()), Discovery: tracker.GitHubDiscovery{Repository: scope.integrationRepository}})
 		if err != nil {
 			t.Fatal(err)
 		}

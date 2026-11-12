@@ -27,10 +27,11 @@ func (s *Service) planVerificationRecord(ctx context.Context, scope nativeScope,
 			return plan, err
 		}
 		plan.verificationComment = &comment
-		plan.verificationAttachments, err = s.prepareWorkItemAttachmentReferences(ctx, scope, comment.plan)
+		attachments, err := s.prepareWorkItemAttachmentReferences(ctx, scope, comment.plan)
 		if err != nil {
 			return plan, err
 		}
+		plan.verificationAttachments = attachments.current
 	}
 	if request.Result == tracker.VerifyResultVerified {
 		actor := scope.actor()

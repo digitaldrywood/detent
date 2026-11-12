@@ -1,12 +1,15 @@
 package hubgithub
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"reflect"
 	"testing"
 	"time"
 
+	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
@@ -28,7 +31,7 @@ func TestReconcilerUsesCursorAndRepositoryIdentity(t *testing.T) {
 			method: http.MethodGet,
 			path:   "/repositories/100",
 			response: reconcileRepository{
-				ID: 100, NodeID: "R_repo", Name: "renamed", Owner: restActor{Login: "new-owner"}, UpdatedAt: updatedAt,
+				ID: 100, NodeID: "R_repo", Name: "renamed", Owner: restActor{Login: "new-owner"}, DefaultBranch: "primary", UpdatedAt: updatedAt,
 			},
 		},
 		{
@@ -87,7 +90,7 @@ func TestReconcilerUsesCursorAndRepositoryIdentity(t *testing.T) {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 	client.assertDone()
-	wantRepository := hubserver.RepositorySource{NodeID: "R_repo", DatabaseID: &databaseID, Owner: "new-owner", Name: "renamed", UpdatedAt: updatedAt}
+	wantRepository := hubserver.RepositorySource{DefaultBranch: "primary", NodeID: "R_repo", DatabaseID: &databaseID, Owner: "new-owner", Name: "renamed", UpdatedAt: updatedAt}
 	if !reflect.DeepEqual(snapshot.Repository, wantRepository) {
 		t.Fatalf("repository = %#v, want %#v", snapshot.Repository, wantRepository)
 	}
@@ -190,4 +193,140 @@ func TestReconcilerHydratesRequestedPullRequestDetails(t *testing.T) {
 	if details.Reviews.Approvals != 1 || details.Reviews.ChangesRequested != 0 || details.Reviews.Comments != 1 || details.Reviews.Decision != "changes_requested" || details.Reviews.State != "p1" {
 		t.Fatalf("reviews = %#v, want current P1 to block the effective review summary", details.Reviews)
 	}
+	t.Run("targeted", func(t *testing.T) {
+		repository := reconcileRepository{DefaultBranch: "primary", ID: 100, NodeID: "R_repo", Name: "renamed", Owner: restActor{Login: "new-owner"}, UpdatedAt: updatedAt}
+		targeted := detailedPullRequest
+		targeted.Base.Repository = &repository
+		for _, name := range []string{"current", "wrong_repository", "wrong_number", "wrong_head", "wrong_node"} {
+			t.Run(name, func(t *testing.T) {
+				pull := targeted
+				sourceRepository := repository
+				pull.Base.Repository = &sourceRepository
+				switch name {
+				case "wrong_repository":
+					sourceRepository.Name = "other"
+				case "wrong_number":
+					pull.Number++
+				case "wrong_head":
+					pull.Head.SHA = "other"
+				case "wrong_node":
+					sourceRepository.NodeID = "R_other"
+				}
+				steps := []restStep{{method: http.MethodGet, path: "/repos/new-owner/renamed/pulls/18", response: pull}}
+				if name == "current" {
+					steps = append(steps,
+						restStep{method: http.MethodGet, path: "/repos/new-owner/renamed/commits/head/check-runs?per_page=100", response: restCheckRuns{CheckRuns: []restCheckRun{{ID: 1, Name: "CI", Status: "completed", Conclusion: "success"}}}},
+						restStep{method: http.MethodGet, path: "/repos/new-owner/renamed/commits/head/statuses?per_page=100", response: []restStatus{{Context: "deploy", State: "success"}}},
+						restStep{method: http.MethodGet, path: "/repos/new-owner/renamed/pulls/18/reviews?per_page=100", response: []restReview{changesRequested, approved, commented}})
+				}
+				client := &scriptedRESTClient{t: t, steps: steps}
+				snapshot, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{
+					Repository: hubserver.RepositoryTarget{Owner: "new-owner", Name: "renamed", NodeID: "R_repo"}, TargetedPullRequests: true,
+					Hydrations: []hubserver.HydrationRequest{{ObjectKind: "pull_request", GitHubNumber: 18, HeadSHA: "head", RequestCount: 1}},
+				})
+				client.assertDone()
+				if name != "current" {
+					if err == nil || !hubserver.IsPermanent(err) {
+						t.Fatalf("changed provider identity was not definitely refused: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(snapshot.PullRequests) != 1 || len(snapshot.PullRequestDetails) != 1 || snapshot.PullRequests[0].HeadSHA != "head" || snapshot.Repository.NodeID != "R_repo" || snapshot.Repository.DefaultBranch != "primary" {
+					t.Fatalf("targeted snapshot=%+v", snapshot)
+				}
+				details := snapshot.PullRequestDetails[0]
+				if details.MergeableState == nil || *details.MergeableState != "clean" || details.Checks == nil || details.Checks.Total != 2 || details.Checks.Passed != 2 || details.Checks.Conclusion != "success" || details.Reviews == nil || details.Reviews.Approvals != 1 || details.Reviews.ChangesRequested != 0 || details.Reviews.Comments != 1 || details.Reviews.Decision != "changes_requested" || details.Reviews.State != "p1" {
+					t.Fatalf("targeted facts=%+v", details)
+				}
+			})
+		}
+	})
+
+	t.Run("targeted_failure_classification", func(t *testing.T) {
+		for _, test := range []struct {
+			name      string
+			stage     string
+			err       error
+			permanent bool
+		}{
+			{name: "not_found", err: &connectorgithub.StatusError{StatusCode: http.StatusNotFound, Err: connectorgithub.ErrNotFound}, permanent: true},
+			{name: "gone", err: &connectorgithub.StatusError{StatusCode: http.StatusGone, Err: connectorgithub.ErrUnexpectedStatus}, permanent: true},
+			{name: "unauthorized", err: &connectorgithub.StatusError{StatusCode: http.StatusUnauthorized, Err: connectorgithub.ErrAuthenticationFailed}},
+			{name: "missing_token", err: connectorgithub.ErrMissingToken},
+			{name: "authentication_failed", err: connectorgithub.ErrAuthenticationFailed},
+			{name: "bad_request", err: &connectorgithub.StatusError{StatusCode: http.StatusBadRequest, Err: connectorgithub.ErrUnexpectedStatus}},
+			{name: "method_not_allowed", err: &connectorgithub.StatusError{StatusCode: http.StatusMethodNotAllowed, Err: connectorgithub.ErrUnexpectedStatus}},
+			{name: "unprocessable", err: &connectorgithub.StatusError{StatusCode: http.StatusUnprocessableEntity, Err: connectorgithub.ErrUnexpectedStatus}},
+			{name: "raw_not_found", err: connectorgithub.ErrNotFound, permanent: true},
+			{name: "status_not_found", err: &connectorgithub.StatusError{StatusCode: http.StatusNotFound, Err: connectorgithub.ErrUnexpectedStatus}, permanent: true},
+			{name: "throttled", err: &connectorgithub.StatusError{StatusCode: http.StatusTooManyRequests, Err: connectorgithub.ErrRateLimited}},
+			{name: "forbidden_rate_limit", err: &connectorgithub.StatusError{StatusCode: http.StatusForbidden, Err: connectorgithub.ErrRateLimited}},
+			{name: "ambiguous_forbidden", err: &connectorgithub.StatusError{StatusCode: http.StatusForbidden, Err: connectorgithub.ErrUnexpectedStatus}},
+			{name: "request_timeout", err: &connectorgithub.StatusError{StatusCode: http.StatusRequestTimeout, Err: connectorgithub.ErrTransient}},
+			{name: "upstream_failure", err: &connectorgithub.StatusError{StatusCode: http.StatusBadGateway, Err: connectorgithub.ErrTransient}},
+			{name: "uncertain_transport", err: errors.New("connection interrupted")},
+			{name: "caller_cancelled", err: context.Canceled},
+			{name: "caller_deadline", err: context.DeadlineExceeded},
+			{name: "check_runs_not_found", stage: "check_runs", err: &connectorgithub.StatusError{StatusCode: http.StatusNotFound, Err: connectorgithub.ErrNotFound}},
+			{name: "check_runs_gone", stage: "check_runs", err: &connectorgithub.StatusError{StatusCode: http.StatusGone, Err: connectorgithub.ErrUnexpectedStatus}},
+			{name: "check_runs_raw_not_found", stage: "check_runs", err: connectorgithub.ErrNotFound},
+			{name: "statuses_not_found", stage: "statuses", err: &connectorgithub.StatusError{StatusCode: http.StatusNotFound, Err: connectorgithub.ErrNotFound}},
+			{name: "statuses_gone", stage: "statuses", err: &connectorgithub.StatusError{StatusCode: http.StatusGone, Err: connectorgithub.ErrUnexpectedStatus}},
+			{name: "statuses_raw_not_found", stage: "statuses", err: connectorgithub.ErrNotFound},
+			{name: "reviews_not_found", stage: "reviews", err: &connectorgithub.StatusError{StatusCode: http.StatusNotFound, Err: connectorgithub.ErrNotFound}},
+			{name: "reviews_gone", stage: "reviews", err: &connectorgithub.StatusError{StatusCode: http.StatusGone, Err: connectorgithub.ErrUnexpectedStatus}},
+			{name: "reviews_raw_not_found", stage: "reviews", err: connectorgithub.ErrNotFound},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				steps := []restStep{{method: http.MethodGet, path: "/repos/new-owner/renamed/pulls/18", err: test.err}}
+				if test.stage != "" {
+					pull := detailedPullRequest
+					pull.Base.Repository = &reconcileRepository{ID: 100, NodeID: "R_repo", Name: "renamed", Owner: restActor{Login: "new-owner"}, UpdatedAt: updatedAt}
+					steps = []restStep{{method: http.MethodGet, path: "/repos/new-owner/renamed/pulls/18", response: pull}}
+					checkStep := restStep{method: http.MethodGet, path: "/repos/new-owner/renamed/commits/head/check-runs?per_page=100", response: restCheckRuns{CheckRuns: []restCheckRun{}}}
+					statusStep := restStep{method: http.MethodGet, path: "/repos/new-owner/renamed/commits/head/statuses?per_page=100", response: []restStatus{}}
+					reviewStep := restStep{method: http.MethodGet, path: "/repos/new-owner/renamed/pulls/18/reviews?per_page=100"}
+					switch test.stage {
+					case "check_runs":
+						checkStep.err = test.err
+						steps = append(steps, checkStep)
+					case "statuses":
+						statusStep.err = test.err
+						steps = append(steps, checkStep, statusStep)
+					case "reviews":
+						reviewStep.err = test.err
+						steps = append(steps, checkStep, statusStep, reviewStep)
+					default:
+						t.Fatalf("unknown read stage %q", test.stage)
+					}
+				}
+				client := &scriptedRESTClient{t: t, steps: steps}
+				_, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{Repository: hubserver.RepositoryTarget{Owner: "new-owner", Name: "renamed", NodeID: "R_repo"}, TargetedPullRequests: true, Hydrations: []hubserver.HydrationRequest{{ObjectKind: "pull_request", GitHubNumber: 18, HeadSHA: "head", RequestCount: 1}}})
+				client.assertDone()
+				if !errors.Is(err, test.err) || hubserver.IsPermanent(err) != test.permanent {
+					t.Fatalf("targeted failure=%v permanent=%v want=%v", err, hubserver.IsPermanent(err), test.permanent)
+				}
+			})
+		}
+		t.Run("invalid_target_request", func(t *testing.T) {
+			client := &scriptedRESTClient{t: t}
+			_, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{Repository: hubserver.RepositoryTarget{Owner: "new-owner", Name: "renamed"}, TargetedPullRequests: true})
+			client.assertDone()
+			if err == nil || hubserver.IsPermanent(err) {
+				t.Fatalf("request-shape fault became definite PR refusal: %v", err)
+			}
+		})
+		incomplete := detailedPullRequest
+		incomplete.Base.Repository = nil
+		client := &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/new-owner/renamed/pulls/18", response: incomplete}}}
+		_, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{Repository: hubserver.RepositoryTarget{Owner: "new-owner", Name: "renamed"}, TargetedPullRequests: true, Hydrations: []hubserver.HydrationRequest{{ObjectKind: "pull_request", GitHubNumber: 18, HeadSHA: "head", RequestCount: 1}}})
+		client.assertDone()
+		if err == nil || hubserver.IsPermanent(err) {
+			t.Fatalf("incomplete source falsely classified definite: %v", err)
+		}
+	})
+
 }

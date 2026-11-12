@@ -48,8 +48,9 @@ func (s *Service) populateClaimRecoveryProjections(ctx context.Context) error {
 
 func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) error {
 	backfillErr := s.maintainNativeBackfills(ctx)
-	cleanupErr := s.runNativeRetentionStages(ctx, []nativeRetentionStage{
-		{"expire native records", func(ctx context.Context) error { return s.expireNativeRecords(ctx, now) }},
+	cleanupErr := s.expireNativeRecords(ctx, now)
+	conversationErr := s.runNativeRetentionStages(ctx, []nativeRetentionStage{
+		{"archive issue payloads", func(ctx context.Context) error { return s.archiveClosedNativeIssues(ctx, now) }},
 		{"compact conversation events", func(ctx context.Context) error {
 			if s.conversations == nil {
 				return nil
@@ -58,7 +59,7 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 			return err
 		}},
 	})
-	return errors.Join(backfillErr, cleanupErr)
+	return errors.Join(backfillErr, cleanupErr, conversationErr)
 }
 
 func (s *Service) runNativeRetentionStages(ctx context.Context, stages []nativeRetentionStage) error {
@@ -87,24 +88,39 @@ func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error 
 		return errors.New("runner host metric retention requires an organization")
 	}
 	cutoff := now.UTC().Truncate(time.Hour).Add(-720 * time.Hour)
-	if err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		if err := w.PruneRunnerHostMetrics(ctx, cutoff, runnerstore.MaxRunnerHostPruneBatch); err != nil {
-			return err
-		}
-		if _, err := w.PruneExpiredArtifactReadGrants(ctx, now, artifactstore.MaxReadGrantPruneBatch); err != nil {
-			return err
-		}
-		if _, err := w.PruneExpiredArtifactUploadAuthorizations(ctx, artifactstore.MaxUploadAuthorizationPruneBatch); err != nil {
-			return err
-		}
-		writer, ok := w.(corestore.DuplicateChallengeWriter)
-		if !ok {
-			return workItemStorageUnavailable()
-		}
-		_, err := writer.PruneDuplicateChallenges(ctx, now, commandReceiptPruneBatch)
-		return err
-	}); err != nil {
-		return fmt.Errorf("expire PostgreSQL native records: %w", err)
-	}
-	return s.retainCommandPayloads(ctx, now)
+	return s.runNativeRetentionStages(ctx, []nativeRetentionStage{
+		{"archive closed issues", func(ctx context.Context) error { return s.retainClosedWorkItems(ctx, organization, now) }},
+		{"prune legacy read audits", func(ctx context.Context) error {
+			return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+				_, err := w.PruneAccessAuditReads(ctx, commandReceiptPruneBatch)
+				return err
+			})
+		}},
+		{"prune expired audits", func(ctx context.Context) error {
+			return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+				_, err := w.PruneAccessAuditsBefore(ctx, now.Add(-hostedAuditRetention), commandReceiptPruneBatch)
+				return err
+			})
+		}},
+		{"prune native records", func(ctx context.Context) error {
+			return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+				if err := w.PruneRunnerHostMetrics(ctx, cutoff, runnerstore.MaxRunnerHostPruneBatch); err != nil {
+					return err
+				}
+				if _, err := w.PruneExpiredArtifactReadGrants(ctx, now, artifactstore.MaxReadGrantPruneBatch); err != nil {
+					return err
+				}
+				if _, err := w.PruneExpiredArtifactUploadAuthorizations(ctx, artifactstore.MaxUploadAuthorizationPruneBatch); err != nil {
+					return err
+				}
+				writer, ok := w.(corestore.DuplicateChallengeWriter)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				_, err := writer.PruneDuplicateChallenges(ctx, now, commandReceiptPruneBatch)
+				return err
+			})
+		}},
+		{"expire command receipts", func(ctx context.Context) error { return s.retainCommandPayloads(ctx, now) }},
+	})
 }

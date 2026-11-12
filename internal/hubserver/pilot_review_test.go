@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -35,7 +38,9 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: previous.Policy.ID, Policy: descriptor}), http.StatusOK)
 		principal := "pilot-ci-" + project
 		seedHubAPIToken(t, f.service, principal, principal+"-credential", apiScopeOperator)
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,?,?)", principal, organization, project); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
+			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(organization), TokenID: principal, ProjectID: tracker.ProjectID(project)})
+		}); err != nil {
 			t.Fatal(err)
 		}
 		human := project == f.project

@@ -1,9 +1,7 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -13,8 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -23,49 +25,18 @@ type conversationFixture struct {
 	store        *conversationStore
 	organization tracker.OrganizationID
 	owner        string
+	ownerToken   string
 	other        string
 }
 
 func newConversationFixture(t *testing.T) conversationFixture {
 	t.Helper()
-	f := newDefaultNativeFixture(t, Config{})
-	organization := f.project.OrganizationID
-	principal := func(name string) string {
-		response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "principal-" + name, "scope": "operator"})
-		requireNativeStatus(t, response, http.StatusCreated)
-		var token tokenResponse
-		decodeHubResponse(t, response, &token)
-		return token.ID
-	}
-	store := newConversationStore(f.service.database.db)
-	store.reader = f.service.database.reader
-	store.contents = &conversationContentFixture{}
-	owner, other := principal("owner"), principal("other")
-	f.service.tokenUseWork.Wait()
-	return conversationFixture{
-		nativeFixture: f,
-		store:         store,
-		organization:  organization,
-		owner:         owner,
-		other:         other,
-	}
-}
-
-func (f conversationFixture) tx(t *testing.T) *sql.Tx {
-	t.Helper()
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatalf("BeginTx() error = %v", err)
-	}
-	t.Cleanup(func() { _ = tx.Rollback() })
-	return tx
-}
-
-func (f conversationFixture) commit(t *testing.T, tx *sql.Tx) {
-	t.Helper()
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("Commit() error = %v", err)
-	}
+	clock := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{Conversation: &ConversationConfig{Enabled: true, ArchiveContents: &conversationContentFixture{}}, now: func() time.Time { return clock }})
+	f.service.registerConversationRoutes(f.service.echo)
+	owner := conversationFixturePrincipal(t, f, "owner")
+	other := conversationFixturePrincipal(t, f, "other")
+	return conversationFixture{nativeFixture: f, store: f.service.conversations.store, organization: f.project.OrganizationID, owner: owner.ID, ownerToken: owner.Token, other: other.ID}
 }
 
 func (f conversationFixture) record(owner, title string, at time.Time) conversationRecord {
@@ -86,15 +57,9 @@ func (f conversationFixture) record(owner, title string, at time.Time) conversat
 
 func (f conversationFixture) create(t *testing.T, record conversationRecord) conversationRecord {
 	t.Helper()
-	if f.store.contents == nil {
-		return f.createLegacyConversation(t, record)
+	if err := f.createRecord(t.Context(), &record); err != nil {
+		t.Fatal(err)
 	}
-	ctx := prepareTestConversationRecord(t, f.store, record)
-	tx := f.tx(t)
-	if err := f.store.createConversation(ctx, tx, &record); err != nil {
-		t.Fatalf("createConversation() error = %v", err)
-	}
-	f.commit(t, tx)
 	return record
 }
 
@@ -110,11 +75,9 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 	shared = f.create(t, shared)
 	issue := f.nativeFixture.create(t, "linked user chat")
 	shared.WorkItemID, shared.LinkedAt = string(issue.WorkItemID), &base
-	tx := f.tx(t)
-	if err := f.updateConversation(t, t.Context(), tx, &shared, shared.Revision); err != nil {
+	if err := f.updateConversation(t, t.Context(), &shared, shared.Revision); err != nil {
 		t.Fatal(err)
 	}
-	f.commit(t, tx)
 	worker := f.record(f.owner, "worker session", base.Add(time.Hour))
 	worker.Origin, worker.Visibility = conversationOriginWorker, conversation.VisibilityShared
 	workerIssue := f.nativeFixture.create(t, "runner issue")
@@ -136,8 +99,7 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 		{"organization", ""},
 	} {
 		t.Run(scope.name+" lists only user origins", func(t *testing.T) {
-			tx := f.tx(t)
-			got, _, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: scope.project, Principal: f.owner, Limit: 10})
+			got, _, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: scope.project, Principal: f.owner, Limit: 10})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -155,7 +117,7 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 					if listed != test.listed {
 						t.Fatalf("listed = %v, want %v", listed, test.listed)
 					}
-					read, err := f.store.readConversation(t.Context(), tx, f.organization, f.project.ID, test.record.ID)
+					read, err := f.readConversation(t.Context(), f.project.ID, test.record.ID)
 					if err != nil || read.Origin != test.record.Origin {
 						t.Fatalf("direct read = %#v, %v", read, err)
 					}
@@ -165,8 +127,7 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 	}
 
 	t.Run("read", func(t *testing.T) {
-		tx := f.tx(t)
-		got, err := f.store.readConversation(t.Context(), tx, f.organization, f.project.ID, newer.ID)
+		got, err := f.readConversation(t.Context(), f.project.ID, newer.ID)
 		if err != nil {
 			t.Fatalf("readConversation() error = %v", err)
 		}
@@ -178,24 +139,21 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 		}
 	})
 	t.Run("read missing is not found", func(t *testing.T) {
-		tx := f.tx(t)
-		_, err := f.store.readConversation(t.Context(), tx, f.organization, f.project.ID, conversation.NewConversationID())
+		_, err := f.readConversation(t.Context(), f.project.ID, conversation.NewConversationID())
 		var failure *nativeError
 		if !errors.As(err, &failure) || failure.Code != "not_found" {
 			t.Fatalf("readConversation() error = %v, want not_found", err)
 		}
 	})
 	t.Run("read across project is not found", func(t *testing.T) {
-		tx := f.tx(t)
-		_, err := f.store.readConversation(t.Context(), tx, f.organization, tracker.ProjectID("proj_other"), newer.ID)
+		_, err := f.readConversation(t.Context(), tracker.ProjectID("proj_other"), newer.ID)
 		var failure *nativeError
 		if !errors.As(err, &failure) || failure.Code != "not_found" {
 			t.Fatalf("readConversation() error = %v, want not_found", err)
 		}
 	})
 	t.Run("list for owner", func(t *testing.T) {
-		tx := f.tx(t)
-		got, next, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 10})
+		got, next, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 10})
 		if err != nil {
 			t.Fatalf("listConversations() error = %v", err)
 		}
@@ -218,8 +176,7 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 		}
 	})
 	t.Run("list for other principal", func(t *testing.T) {
-		tx := f.tx(t)
-		got, _, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.other, Limit: 10})
+		got, _, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.other, Limit: 10})
 		if err != nil {
 			t.Fatalf("listConversations() error = %v", err)
 		}
@@ -228,9 +185,8 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 		}
 	})
 	t.Run("list filters by settled", func(t *testing.T) {
-		tx := f.tx(t)
 		value := true
-		got, _, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 10, Settled: &value})
+		got, _, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 10, Settled: &value})
 		if err != nil {
 			t.Fatalf("listConversations() error = %v", err)
 		}
@@ -238,7 +194,7 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 			t.Fatalf("listConversations(settled) = %#v", got)
 		}
 		value = false
-		got, _, err = f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 10, Settled: &value})
+		got, _, err = f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 10, Settled: &value})
 		if err != nil {
 			t.Fatalf("listConversations() error = %v", err)
 		}
@@ -249,15 +205,14 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 	// A page boundary that falls between the active and the settled group
 	// still resumes in order: the cursor carries the group.
 	t.Run("cursor crosses the settled boundary", func(t *testing.T) {
-		tx := f.tx(t)
-		first, next, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 3})
+		first, next, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 3})
 		if err != nil {
 			t.Fatalf("listConversations() error = %v", err)
 		}
 		if len(first) != 3 || next == "" {
 			t.Fatalf("first page = %#v next = %q", first, next)
 		}
-		second, last, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 3, Cursor: next})
+		second, last, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 3, Cursor: next})
 		if err != nil {
 			t.Fatalf("listConversations(cursor) error = %v", err)
 		}
@@ -266,8 +221,7 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 		}
 	})
 	t.Run("list across projects", func(t *testing.T) {
-		tx := f.tx(t)
-		got, _, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Principal: f.owner, Limit: 10})
+		got, _, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Principal: f.owner, Limit: 10})
 		if err != nil {
 			t.Fatalf("listConversations() error = %v", err)
 		}
@@ -276,32 +230,30 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 		}
 	})
 	t.Run("list pages with cursor", func(t *testing.T) {
-		tx := f.tx(t)
-		first, next, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 2})
+		first, next, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 2})
 		if err != nil {
 			t.Fatalf("listConversations() error = %v", err)
 		}
 		if len(first) != 2 || next == "" {
 			t.Fatalf("first page = %d rows, cursor %q", len(first), next)
 		}
-		second, last, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Cursor: next, Limit: 2})
+		second, last, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Cursor: next, Limit: 2})
 		if err != nil {
 			t.Fatalf("listConversations(cursor) error = %v", err)
 		}
 		if len(second) != 2 || second[0].ID != older.ID || second[1].ID != settled.ID || last != "" {
 			t.Fatalf("second page = %#v, cursor %q", second, last)
 		}
-		if _, _, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Cursor: "not-a-cursor", Limit: 2}); err == nil {
+		if _, _, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Cursor: "not-a-cursor", Limit: 2}); err == nil {
 			t.Fatal("invalid cursor must be rejected")
 		}
 	})
 	t.Run("last message orders before updated", func(t *testing.T) {
-		tx := f.tx(t)
 		message := conversationMessageRecord{ConversationID: older.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "bump", Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CreatedAt: base.Add(time.Hour), UpdatedAt: base.Add(time.Hour)}
-		if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
+		if err := f.appendMessage(t, t.Context(), &message); err != nil {
 			t.Fatalf("appendMessage() error = %v", err)
 		}
-		got, _, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 10})
+		got, _, err := f.listConversations(t.Context(), conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 10})
 		if err != nil {
 			t.Fatalf("listConversations() error = %v", err)
 		}
@@ -317,16 +269,15 @@ func TestConversationStoreUpdateRevision(t *testing.T) {
 	now := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
 	record := f.create(t, f.record(f.owner, "title", now))
 
-	tx := f.tx(t)
 	record.Title = "renamed"
 	record.UpdatedAt = now.Add(time.Second)
-	if err := f.updateConversation(t, t.Context(), tx, &record, 1); err != nil {
+	if err := f.updateConversation(t, t.Context(), &record, 1); err != nil {
 		t.Fatalf("updateConversation() error = %v", err)
 	}
 	if record.Revision != 2 {
 		t.Fatalf("revision = %d, want 2", record.Revision)
 	}
-	got, err := f.store.readConversation(t.Context(), tx, f.organization, f.project.ID, record.ID)
+	got, err := f.readConversation(t.Context(), f.project.ID, record.ID)
 	if err != nil {
 		t.Fatalf("readConversation() error = %v", err)
 	}
@@ -335,19 +286,28 @@ func TestConversationStoreUpdateRevision(t *testing.T) {
 	}
 	stale := got
 	stale.Title = "stale"
-	err = f.updateConversation(t, t.Context(), tx, &stale, 1)
-	var revision *errConversationRevision
-	if !errors.As(err, &revision) || revision.Current != 2 {
+	err = f.updateConversation(t, t.Context(), &stale, 1)
+	current, readErr := f.readConversation(t.Context(), f.project.ID, record.ID)
+	if !errors.Is(err, corestore.ErrRevisionConflict) || readErr != nil || current.Revision != 2 {
 		t.Fatalf("updateConversation(stale) error = %v, want revision conflict at 2", err)
 	}
 	missing := got
 	missing.ID = conversation.NewConversationID()
-	err = f.updateConversation(t, t.Context(), tx, &missing, 2)
-	var failure *nativeError
-	if !errors.As(err, &failure) || failure.Code != "not_found" {
-		t.Fatalf("updateConversation(missing) error = %v, want not_found", err)
+	err = f.updateConversation(t, t.Context(), &missing, 2)
+	if !errors.Is(err, corestore.ErrRevisionConflict) {
+		t.Fatalf("updateConversation(missing) error=%v, want absent CAS target", err)
 	}
-	f.commit(t, tx)
+	if _, readErr := f.readConversation(t.Context(), f.project.ID, missing.ID); readErr == nil {
+		t.Fatal("missing conversation became readable after refused update")
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+missing.ID, f.ownerToken, map[string]any{"title": "missing"})
+	requireNativeStatus(t, response, http.StatusNotFound)
+	var missingResponse apiErrorResponse
+	decodeHubResponse(t, response, &missingResponse)
+	if missingResponse.Code != "not_found" {
+		t.Fatalf("updateConversation(missing) code=%s, want not_found", missingResponse.Code)
+	}
+
 }
 
 func TestConversationStoreLinkedIssueIsUnique(t *testing.T) {
@@ -358,40 +318,44 @@ func TestConversationStoreLinkedIssueIsUnique(t *testing.T) {
 	first := f.create(t, f.record(f.owner, "first", now))
 	second := f.create(t, f.record(f.owner, "second", now))
 
-	tx := f.tx(t)
 	first.WorkItemID = string(issue.WorkItemID)
 	linkedAt := now.Add(time.Second)
 	first.LinkedAt = &linkedAt
 	first.Visibility = conversation.VisibilityShared
-	if err := f.updateConversation(t, t.Context(), tx, &first, 1); err != nil {
+	if err := f.updateConversation(t, t.Context(), &first, 1); err != nil {
 		t.Fatalf("updateConversation(link) error = %v", err)
 	}
 	second.WorkItemID = string(issue.WorkItemID)
 	second.LinkedAt = &linkedAt
-	err := f.updateConversation(t, t.Context(), tx, &second, 1)
-	var linked *errConversationLinked
-	if !errors.As(err, &linked) || linked.ExistingConversationID != first.ID {
+	err := f.updateConversation(t, t.Context(), &second, 1)
+	var linked conversationstore.Conversation
+	readLinked := func() error {
+		return f.readTenant(t.Context(), func(r tenantstore.Reader) error {
+			var err error
+			linked, err = r.ConversationByWorkItem(t.Context(), f.project.ID, string(issue.WorkItemID))
+			return err
+		})
+	}
+	if !errors.Is(err, corestore.ErrUniqueViolation) || readLinked() != nil || linked.ID != first.ID {
 		t.Fatalf("updateConversation(second link) error = %v, want conversation_already_linked with %q", err, first.ID)
 	}
 	fresh := f.record(f.owner, "fresh", now)
 	fresh.WorkItemID = string(issue.WorkItemID)
 	fresh.LinkedAt = &linkedAt
-	err = f.store.createConversation(t.Context(), tx, &fresh)
-	if !errors.As(err, &linked) || linked.ExistingConversationID != first.ID {
+	err = f.createRecord(t.Context(), &fresh)
+	if !errors.Is(err, corestore.ErrUniqueViolation) || readLinked() != nil || linked.ID != first.ID {
 		t.Fatalf("createConversation(linked) error = %v, want conversation_already_linked", err)
 	}
 	unknown := f.record(f.owner, "unknown issue", now)
 	unknown.WorkItemID = "wi_missing"
 	unknown.LinkedAt = &linkedAt
-	err = f.store.createConversation(t.Context(), tx, &unknown)
-	var failure *nativeError
-	if !errors.As(err, &failure) || failure.Code != "not_found" {
+	err = f.createRecord(t.Context(), &unknown)
+	var foreignKey interface{ SQLState() string }
+	if !errors.As(err, &foreignKey) || foreignKey.SQLState() != "23503" {
 		t.Fatalf("createConversation(unknown issue) error = %v, want not_found", err)
 	}
-	f.commit(t, tx)
 
-	tx = f.tx(t)
-	got, err := f.store.readConversation(t.Context(), tx, f.organization, f.project.ID, first.ID)
+	got, err := f.readConversation(t.Context(), f.project.ID, first.ID)
 	if err != nil {
 		t.Fatalf("readConversation() error = %v", err)
 	}
@@ -399,7 +363,7 @@ func TestConversationStoreLinkedIssueIsUnique(t *testing.T) {
 		t.Fatalf("readConversation() = %#v", got)
 	}
 	// The partial unique index is a backstop for direct writes.
-	if _, err := tx.ExecContext(t.Context(), "UPDATE conversations SET work_item_id = ? WHERE id = ?", issue.WorkItemID, second.ID); err == nil {
+	if _, err := nativeAttemptTestDatabase(t, f.nativeFixture).ExecContext(t.Context(), "UPDATE conversations SET work_item_id=$1 WHERE organization_id=$2 AND project_id=$3 AND id=$4", issue.WorkItemID, f.organization, f.project.ID, second.ID); err == nil {
 		t.Fatal("partial unique index must reject a second link")
 	}
 }
@@ -417,23 +381,14 @@ func TestConversationStoreMessagesSequenceUnderConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			ctx := context.Background()
-			tx, err := f.service.database.db.BeginTx(ctx, nil)
-			if err != nil {
-				failures <- err
-				return
-			}
-			defer func() { _ = tx.Rollback() }()
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "message " + strconv.Itoa(i), Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CommandKey: "key-" + strconv.Itoa(i), CreatedAt: now.Add(time.Duration(i) * time.Millisecond), UpdatedAt: now}
-			if err := f.appendMessage(t, ctx, tx, &message); err != nil {
+			if err := f.appendMessage(t, ctx, &message); err != nil {
 				failures <- err
 				return
 			}
 			if message.ID == "" || message.Seq <= 0 {
 				failures <- errors.New("appendMessage must allocate id and seq")
 				return
-			}
-			if err := tx.Commit(); err != nil {
-				failures <- err
 			}
 		}()
 	}
@@ -442,8 +397,7 @@ func TestConversationStoreMessagesSequenceUnderConcurrency(t *testing.T) {
 	for err := range failures {
 		t.Fatalf("concurrent appendMessage error = %v", err)
 	}
-	tx := f.tx(t)
-	messages, err := f.store.listMessages(t.Context(), tx, record.ID, 0, 100)
+	messages, err := f.listMessages(t.Context(), record.ID, 0, 100)
 	if err != nil {
 		t.Fatalf("listMessages() error = %v", err)
 	}
@@ -458,7 +412,7 @@ func TestConversationStoreMessagesSequenceUnderConcurrency(t *testing.T) {
 			t.Fatalf("messages[%d] = %#v", i, message)
 		}
 	}
-	page, err := f.store.listMessages(t.Context(), tx, record.ID, 11, 5)
+	page, err := f.listMessages(t.Context(), record.ID, 11, 5)
 	if err != nil {
 		t.Fatalf("listMessages(before) error = %v", err)
 	}
@@ -472,17 +426,17 @@ func TestConversationStoreMessagesSequenceUnderConcurrency(t *testing.T) {
 	updated.ProviderItemID = "item_1"
 	updated.Text = "edited"
 	updated.UpdatedAt = now.Add(time.Hour)
-	if err := f.updateMessage(t, t.Context(), tx, updated); err != nil {
+	if err := f.updateMessage(t, t.Context(), updated); err != nil {
 		t.Fatalf("updateMessage() error = %v", err)
 	}
-	again, err := f.store.listMessages(t.Context(), tx, record.ID, 2, 1)
+	again, err := f.listMessages(t.Context(), record.ID, 2, 1)
 	if err != nil {
 		t.Fatalf("listMessages() error = %v", err)
 	}
 	if len(again) != 1 || again[0].Delivery != conversation.DeliveryDelivered || again[0].AttemptID != "att_1" || again[0].TurnID != "turn_1" || again[0].ProviderItemID != "item_1" || again[0].Text != "edited" || !again[0].UpdatedAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("updated message = %#v", again)
 	}
-	got, err := f.store.readConversation(t.Context(), tx, f.organization, f.project.ID, record.ID)
+	got, err := f.readConversation(t.Context(), f.project.ID, record.ID)
 	if err != nil {
 		t.Fatalf("readConversation() error = %v", err)
 	}
@@ -491,7 +445,7 @@ func TestConversationStoreMessagesSequenceUnderConcurrency(t *testing.T) {
 	}
 	missing := updated
 	missing.ID = conversation.NewMessageID()
-	if err := f.updateMessage(t, t.Context(), tx, missing); err == nil {
+	if err := f.updateMessage(t, t.Context(), missing); err == nil {
 		t.Fatal("updateMessage(missing) must fail")
 	}
 }
@@ -509,9 +463,8 @@ func TestConversationStoreQuestions(t *testing.T) {
 	f := newConversationFixture(t)
 	now := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
 	record := f.create(t, f.record(f.owner, "questions", now))
-	tx := f.tx(t)
 	message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageStatus, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "runner"}, CreatedAt: now, UpdatedAt: now}
-	if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
+	if err := f.appendMessage(t, t.Context(), &message); err != nil {
 		t.Fatalf("appendMessage() error = %v", err)
 	}
 	expires := now.Add(24 * time.Hour)
@@ -529,10 +482,10 @@ func TestConversationStoreQuestions(t *testing.T) {
 		},
 		RequestID: "req_1",
 	}
-	if err := f.upsertQuestion(t, t.Context(), tx, question); err != nil {
+	if err := f.upsertQuestion(t, t.Context(), question); err != nil {
 		t.Fatalf("upsertQuestion() error = %v", err)
 	}
-	pending, err := f.store.listPendingQuestions(t.Context(), tx, record.ID)
+	pending, err := f.pendingQuestions(t.Context(), record.ID)
 	if err != nil {
 		t.Fatalf("listPendingQuestions() error = %v", err)
 	}
@@ -543,29 +496,29 @@ func TestConversationStoreQuestions(t *testing.T) {
 	question.Answers = map[string][]string{"p": {"yes"}}
 	question.AnsweredBy = f.owner
 	question.UpdatedAt = now.Add(time.Minute)
-	if err := f.upsertQuestion(t, t.Context(), tx, question); err != nil {
+	if err := f.upsertQuestion(t, t.Context(), question); err != nil {
 		t.Fatalf("upsertQuestion(update) error = %v", err)
 	}
-	got, err := f.store.readQuestion(t.Context(), tx, record.ID, question.ID)
+	got, err := f.readQuestion(t.Context(), record.ID, question.ID)
 	if err != nil {
 		t.Fatalf("readQuestion() error = %v", err)
 	}
 	if got.Status != conversation.QuestionAnswered || len(got.Answers["p"]) != 1 || got.Answers["p"][0] != "yes" || got.AnsweredBy != f.owner || !got.UpdatedAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("readQuestion() = %#v", got)
 	}
-	pending, err = f.store.listPendingQuestions(t.Context(), tx, record.ID)
+	pending, err = f.pendingQuestions(t.Context(), record.ID)
 	if err != nil {
 		t.Fatalf("listPendingQuestions() error = %v", err)
 	}
 	if len(pending) != 0 {
 		t.Fatalf("answered question still pending: %#v", pending)
 	}
-	_, err = f.store.readQuestion(t.Context(), tx, record.ID, conversation.NewQuestionID())
+	_, err = f.readQuestion(t.Context(), record.ID, conversation.NewQuestionID())
 	var failure *nativeError
 	if !errors.As(err, &failure) || failure.Code != "not_found" {
 		t.Fatalf("readQuestion(missing) error = %v, want not_found", err)
 	}
-	_, err = f.store.readQuestion(t.Context(), tx, conversation.NewConversationID(), question.ID)
+	_, err = f.readQuestion(t.Context(), conversation.NewConversationID(), question.ID)
 	if !errors.As(err, &failure) || failure.Code != "not_found" {
 		t.Fatalf("readQuestion(wrong conversation) error = %v, want not_found", err)
 	}
@@ -580,16 +533,15 @@ func TestConversationStoreCommandsAndReceipts(t *testing.T) {
 	command := conversation.Command{Key: "cmd-1", Kind: conversation.CommandMessage, Text: "hello"}
 	hash := conversation.RequestHash(command)
 
-	tx := f.tx(t)
-	existing, conflict, err := f.reserveCommand(t, t.Context(), tx, record.ID, command.Key, command.Kind, hash, now)
+	existing, conflict, err := f.reserveCommand(t, t.Context(), record.ID, command.Key, command.Kind, hash, now)
 	if err != nil || existing != nil || conflict {
 		t.Fatalf("reserveCommand(first) = %#v, %v, %v", existing, conflict, err)
 	}
 	receipt := conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliveryQueued, MessageID: "msg_x", UpdatedAt: now.Add(time.Second)}
-	if err := f.updateReceipt(t, t.Context(), tx, record.ID, command.Key, receipt); err != nil {
+	if err := f.updateReceipt(t, t.Context(), record.ID, command.Key, receipt); err != nil {
 		t.Fatalf("updateReceipt() error = %v", err)
 	}
-	existing, conflict, err = f.reserveCommand(t, t.Context(), tx, record.ID, command.Key, command.Kind, hash, now.Add(time.Minute))
+	existing, conflict, err = f.reserveCommand(t, t.Context(), record.ID, command.Key, command.Kind, hash, now.Add(time.Minute))
 	if err != nil || conflict || existing == nil {
 		t.Fatalf("reserveCommand(replay) = %#v, %v, %v", existing, conflict, err)
 	}
@@ -598,19 +550,18 @@ func TestConversationStoreCommandsAndReceipts(t *testing.T) {
 	}
 	other := command
 	other.Text = "different"
-	existing, conflict, err = f.reserveCommand(t, t.Context(), tx, record.ID, command.Key, command.Kind, conversation.RequestHash(other), now)
+	existing, conflict, err = f.reserveCommand(t, t.Context(), record.ID, command.Key, command.Kind, conversation.RequestHash(other), now)
 	if err != nil || !conflict || existing == nil || existing.Key != command.Key {
 		t.Fatalf("reserveCommand(conflict) = %#v, %v, %v", existing, conflict, err)
 	}
-	if err := f.updateReceipt(t, t.Context(), tx, record.ID, "missing", receipt); err == nil {
+	if err := f.updateReceipt(t, t.Context(), record.ID, "missing", receipt); err == nil {
 		t.Fatal("updateReceipt(missing) must fail")
 	}
 	// The same key in another conversation is independent.
-	existing, conflict, err = f.reserveCommand(t, t.Context(), tx, second.ID, command.Key, command.Kind, hash, now)
+	existing, conflict, err = f.reserveCommand(t, t.Context(), second.ID, command.Key, command.Kind, hash, now)
 	if err != nil || existing != nil || conflict {
 		t.Fatalf("reserveCommand(other conversation) = %#v, %v, %v", existing, conflict, err)
 	}
-	f.commit(t, tx)
 }
 
 func TestConversationStoreEvents(t *testing.T) {
@@ -619,69 +570,113 @@ func TestConversationStoreEvents(t *testing.T) {
 	now := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
 	record := f.create(t, f.record(f.owner, "events", now))
 
-	tx := f.tx(t)
-	seq, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageDelta, map[string]any{"message_id": "msg_1", "seq": 1, "text": "hel"}, now)
-	if err != nil || seq != 1 {
-		t.Fatalf("appendEvent() = %d, %v", seq, err)
-	}
-	seq, err = f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]any{"seq": 1}, now)
-	if err != nil || seq != 2 {
-		t.Fatalf("appendEvent() = %d, %v", seq, err)
-	}
-	got, err := f.store.readConversation(t.Context(), tx, f.organization, f.project.ID, record.ID)
+	bodies := []any{map[string]any{"message_id": "msg_1", "seq": 1, "text": "hel"}, map[string]any{"seq": 1}}
+	kinds := []conversation.EventType{conversation.EventMessageDelta, conversation.EventHeartbeat}
+	plan, err := f.publication(t.Context(), record.ID)
 	if err != nil {
-		t.Fatalf("readConversation() error = %v", err)
+		t.Fatal(err)
 	}
-	if got.EventSeq != 2 {
-		t.Fatalf("event_seq = %d, want 2", got.EventSeq)
+	for _, body := range bodies {
+		if err := preparePGWorkerEvent(t.Context(), plan, body); err != nil {
+			t.Fatal(err)
+		}
 	}
-	events, err := f.store.listEvents(t.Context(), tx, record.ID, 0, 10)
-	if err != nil {
-		t.Fatalf("listEvents() error = %v", err)
+	ctx := context.WithValue(t.Context(), pgWorkerPublicationKey{}, plan)
+	rollback := errors.New("deliberate conversation rollback")
+	err = f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, now); err != nil {
+			return err
+		}
+		for index, body := range bodies {
+			if err := appendPGConversationEvent(ctx, w, f.organization, record.ID, kinds[index], body, now); err != nil {
+				return err
+			}
+			got, err := w.Conversation(ctx, f.project.ID, record.ID)
+			if err != nil || got.EventSequence != int64(index+1) {
+				t.Fatalf("appendEvent() sequence=%d, %v", got.EventSequence, err)
+			}
+		}
+		page, err := w.ConversationEvents(ctx, record.ID, 0, 10)
+		if err != nil {
+			return err
+		}
+		var events []conversation.Event
+		for _, row := range page.Items {
+			content, ok := plan.reads.load(string(f.organization) + "/" + row.ContentReference)
+			if !ok {
+				t.Fatal("published uncommitted event content is absent")
+			}
+			var payload conversationContent
+			if err := json.Unmarshal(content, &payload); err != nil {
+				return err
+			}
+			event := row.Event
+			event.Data = payload.Data
+			events = append(events, event)
+		}
+		if len(events) != 2 || events[0].Seq != 1 || events[0].Type != conversation.EventMessageDelta || events[1].Seq != 2 || string(events[0].Data) != `{"message_id":"msg_1","seq":1,"text":"hel"}` {
+			t.Fatalf("listEvents() = %#v", events)
+		}
+		after, err := w.ConversationEvents(ctx, record.ID, 1, 10)
+		if err != nil || len(after.Items) != 1 || after.Items[0].Seq != 2 {
+			t.Fatalf("listEvents(after=1) = %#v, %v", after.Items, err)
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("rollback error = %v", err)
 	}
-	if len(events) != 2 || events[0].Seq != 1 || events[0].Type != conversation.EventMessageDelta || events[1].Seq != 2 || string(events[0].Data) != `{"message_id":"msg_1","seq":1,"text":"hel"}` {
-		t.Fatalf("listEvents() = %#v", events)
-	}
-	events, err = f.store.listEvents(t.Context(), tx, record.ID, 1, 10)
-	if err != nil {
-		t.Fatalf("listEvents(after) error = %v", err)
-	}
-	if len(events) != 1 || events[0].Seq != 2 {
-		t.Fatalf("listEvents(after=1) = %#v", events)
-	}
-	if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventType("bogus"), nil, now); err == nil {
+	if _, err := f.appendEvent(t, t.Context(), record.ID, conversation.EventType("bogus"), nil, now); err == nil {
 		t.Fatal("appendEvent(bogus type) must fail")
 	}
-	if _, err := f.appendEvent(t, t.Context(), tx, conversation.NewConversationID(), conversation.EventHeartbeat, nil, now); err == nil {
+	if _, err := f.appendEvent(t, t.Context(), conversation.NewConversationID(), conversation.EventHeartbeat, nil, now); err == nil {
 		t.Fatal("appendEvent(missing conversation) must fail")
 	}
-	// A rolled back transaction leaves neither the event nor the counter.
-	_ = tx.Rollback()
-	tx = f.tx(t)
-	got, err = f.store.readConversation(t.Context(), tx, f.organization, f.project.ID, record.ID)
+	got, err := f.readConversation(t.Context(), f.project.ID, record.ID)
 	if err != nil {
-		t.Fatalf("readConversation() error = %v", err)
+		t.Fatal(err)
 	}
-	events, err = f.store.listEvents(t.Context(), tx, record.ID, 0, 10)
+	events, err := f.listEvents(t.Context(), record.ID, 0, 10)
 	if err != nil {
-		t.Fatalf("listEvents() error = %v", err)
+		t.Fatal(err)
 	}
 	if got.EventSeq != 0 || len(events) != 0 {
 		t.Fatalf("rollback left event_seq=%d events=%d", got.EventSeq, len(events))
-	}
-	if err := tx.Rollback(); err != nil {
-		t.Fatal(err)
 	}
 	t.Run("external content stays isolated across conversations and organizations", func(t *testing.T) {
 		objects := &conversationContentFixture{}
 		f.store.contents = objects
 		f.store.database = f.service.database
-		chat := &conversationService{server: f.service, store: f.store}
 		response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Second organization"})
 		requireNativeStatus(t, response, http.StatusCreated)
 		var organization nativeOrganization
 		decodeHubResponse(t, response, &organization)
 		foreign := newNativeFixture(t, f.service, organization.ID, "second-org-project")
+		var owner accessstore.Credential
+		if err := f.readTenant(t.Context(), func(r tenantstore.Reader) error {
+			var err error
+			owner, err = r.AccessCredential(t.Context(), f.owner)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		owner.OrganizationID = organization.ID
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessCredential(t.Context(), owner); err != nil {
+				return err
+			}
+			return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: f.owner, ProjectID: foreign.project.ID})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		scoped := func(record conversationRecord) conversationFixture {
+			value := f
+			if record.OrganizationID == organization.ID {
+				value.organization, value.nativeFixture = organization.ID, foreign
+			}
+			return value
+		}
+
 		records := []conversationRecord{}
 		text := strings.Repeat("shared tool output ", 200)
 		for index := range 4 {
@@ -692,28 +687,23 @@ func TestConversationStoreEvents(t *testing.T) {
 			}
 			record = f.create(t, record)
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Delivery: conversation.DeliveryCompleted, Text: text, Data: []byte("{}"), Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
-			ctx, err := chat.prepareContents(t.Context(), string(record.OrganizationID), string(record.ProjectID), f.owner, message)
-			if err != nil {
+			ctx := t.Context()
+			if err := scoped(record).appendMessage(t, ctx, &message); err != nil {
 				t.Fatal(err)
 			}
-			tx := f.tx(t)
-			if err := f.appendMessage(t, ctx, tx, &message); err != nil {
+			if _, err := scoped(record).appendEvent(t, ctx, record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.appendEvent(t, ctx, tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
-				t.Fatal(err)
-			}
-			f.commit(t, tx)
 			records = append(records, record)
 		}
 		var ids []string
 		for _, record := range records {
-			messages, err := f.store.listMessages(t.Context(), f.service.database.reader, record.ID, 0, 50)
+			messages, err := scoped(record).listMessages(t.Context(), record.ID, 0, 50)
 			if err != nil || len(messages) != 1 || messages[0].Text != text {
 				t.Fatalf("content read for %s: %v", record.ID, err)
 			}
 			ids = append(ids, messages[0].ContentID)
-			replay, err := f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 0)
+			replay, err := f.publishedRecordEvents(t.Context(), record, 0)
 			if err != nil || len(replay) != 1 {
 				t.Fatalf("replay for %s: %v", record.ID, err)
 			}
@@ -728,7 +718,7 @@ func TestConversationStoreEvents(t *testing.T) {
 		if ids[0] != ids[1] || ids[2] != ids[3] || ids[0] == ids[2] || len(objects.content) != 8 {
 			t.Fatalf("org deduplication=%v objects=%d", ids, len(objects.content))
 		}
-		if _, err := f.store.readConversation(t.Context(), f.service.database.reader, f.organization, f.project.ID, records[2].ID); err == nil {
+		if _, err := f.readConversation(t.Context(), f.project.ID, records[2].ID); err == nil {
 			t.Fatal("foreign conversation was readable")
 		}
 		f.store.contents = objects
@@ -739,11 +729,10 @@ func TestConversationStoreEvents(t *testing.T) {
 				t.Fatal(err)
 			}
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: "Running " + tool, Data: data, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: now, UpdatedAt: now}
-			tx := f.tx(t)
-			if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
+			if err := scoped(record).appendMessage(t, t.Context(), &message); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
+			if _, err := scoped(record).appendEvent(t, t.Context(), record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
 				t.Fatal(err)
 			}
 			for _, status := range []string{"completed", "saved"} {
@@ -752,12 +741,11 @@ func TestConversationStoreEvents(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := f.updateChatMessage(t, chat, t.Context(), tx, message, now); err != nil {
+				if err := scoped(record).updateChatMessage(t, t.Context(), message, now); err != nil {
 					t.Fatal(err)
 				}
 			}
-			f.commit(t, tx)
-			replay, err := f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 1)
+			replay, err := f.publishedRecordEvents(t.Context(), record, 1)
 			if err != nil || len(replay) != 3 {
 				t.Fatalf("inline tool replay: events=%d error=%v", len(replay), err)
 			}
@@ -777,16 +765,36 @@ func TestConversationStoreEvents(t *testing.T) {
 					t.Fatalf("inline revision crossed a boundary: %+v", got)
 				}
 			}
+			rows, err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryContext(t.Context(), "SELECT body_json FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2", record.OrganizationID, record.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var oversized int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=? AND (length(CAST(body_json AS BLOB))>2048 OR json_type(body_json,'$.text') IS NOT NULL OR json_type(body_json,'$.data') IS NOT NULL)`, record.ID).Scan(&oversized); err != nil || oversized != 0 {
+			for rows.Next() {
+				var body []byte
+				if err := rows.Scan(&body); err != nil {
+					t.Fatal(err)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(body, &fields); err != nil {
+					t.Fatal(err)
+				}
+				if len(body) > 2048 || fields["text"] != nil || fields["data"] != nil {
+					oversized++
+				}
+			}
+			err = errors.Join(rows.Err(), rows.Close())
+			if err != nil || oversized != 0 {
 				t.Fatalf("noncompact events=%d error=%v", oversized, err)
 			}
 		}
 		f.store.contents = objects
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_messages SET content_attachment_id=? WHERE conversation_id=?", ids[2], records[0].ID); err != nil {
+		if result, err := nativeAttemptTestDatabase(t, f.nativeFixture).ExecContext(t.Context(), "UPDATE conversation_messages SET content_attachment_id=$1 WHERE organization_id=$2 AND conversation_id=$3", ids[2], f.organization, records[0].ID); err != nil {
 			t.Fatal(err)
+		} else if count, err := result.RowsAffected(); err != nil || count != 2 {
+			t.Fatalf("scoped corruption rows=%d error=%v", count, err)
 		}
-		if _, err := f.store.listMessages(t.Context(), f.service.database.reader, records[0].ID, 0, 50); err == nil {
+		if _, err := f.listMessages(t.Context(), records[0].ID, 0, 50); err == nil {
 			t.Fatal("foreign object reference was hydrated")
 		}
 	})
@@ -800,203 +808,71 @@ func TestConversationStoreStartsAndAudience(t *testing.T) {
 	record := f.create(t, f.record(f.owner, "starts", now))
 	other := f.create(t, f.record(f.owner, "other", now))
 
-	tx := f.tx(t)
-	if err := f.store.recordStart(t.Context(), tx, "att_1", record.ID, now); err != nil {
+	if err := f.writeTenant(t.Context(), func(w tenantstore.Writer) error { return w.RecordStart(t.Context(), "att_1", record.ID, now) }); err != nil {
 		t.Fatalf("recordStart() error = %v", err)
 	}
-	err := f.store.recordStart(t.Context(), tx, "att_1", other.ID, now)
-	var started *errConversationStarted
-	if !errors.As(err, &started) || started.ConversationID != record.ID || started.AttemptID != "att_1" {
+	err := f.writeTenant(t.Context(), func(w tenantstore.Writer) error { return w.RecordStart(t.Context(), "att_1", other.ID, now) })
+	var existing string
+	readErr := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), "SELECT conversation_id FROM conversation_starts WHERE organization_id=$1 AND attempt_id='att_1'", f.organization).Scan(&existing)
+	if !errors.Is(err, corestore.ErrUniqueViolation) || readErr != nil || existing != record.ID {
 		t.Fatalf("recordStart(duplicate) error = %v, want started conflict for %q", err, record.ID)
 	}
-	if err := f.store.recordStart(t.Context(), tx, "att_2", record.ID, now); err != nil {
+	if err := f.writeTenant(t.Context(), func(w tenantstore.Writer) error { return w.RecordStart(t.Context(), "att_2", record.ID, now) }); err != nil {
 		t.Fatalf("recordStart(second attempt) error = %v", err)
 	}
-	if err := f.store.recordAudience(t.Context(), tx, record.ID, f.owner, conversation.VisibilityPrivate, conversation.VisibilityShared, now); err != nil {
+	if err := f.writeTenant(t.Context(), func(w tenantstore.Writer) error {
+		return w.RecordAudience(t.Context(), record.ID, f.owner, conversation.VisibilityPrivate, conversation.VisibilityShared, now)
+	}); err != nil {
 		t.Fatalf("recordAudience() error = %v", err)
 	}
 	var count int
-	if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_audience_events WHERE conversation_id = ? AND from_visibility = 'private' AND to_visibility = 'shared' AND actor_principal_id = ?", record.ID, f.owner).Scan(&count); err != nil {
+	if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_audience_events WHERE organization_id=$1 AND conversation_id=$2 AND from_visibility='private' AND to_visibility='shared' AND actor_principal_id=$3", f.organization, record.ID, f.owner).Scan(&count); err != nil {
 		t.Fatalf("count audience events: %v", err)
 	}
 	if count != 1 {
 		t.Fatalf("audience events = %d, want 1", count)
 	}
-	f.commit(t, tx)
 }
 
-func (f conversationFixture) appendMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message *conversationMessageRecord) error {
-	t.Helper()
-	if err := validateConversationMessage(message); err != nil {
-		return err
-	}
-	var organization string
-	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", message.ConversationID).Scan(&organization); err != nil {
-		return err
-	}
-	content, err := messageContent(*message)
-	if err != nil {
-		return err
-	}
-	ctx, err = f.store.preparePayload(ctx, organization, content)
-	if err != nil {
-		return err
-	}
-	return f.store.appendMessage(ctx, tx, message)
+func (f conversationFixture) writeTenant(ctx context.Context, write func(tenantstore.Writer) error) error {
+	return f.service.config.TenantRepository.WriteTenant(ctx, f.organization, corestore.Serving, write)
 }
 
-func (f conversationFixture) appendEvent(t *testing.T, ctx context.Context, tx *sql.Tx, id string, kind conversation.EventType, body any, now time.Time) (int64, error) {
-	t.Helper()
-	if body == nil {
-		body = map[string]any{}
-	}
-	raw, err := marshalNative(compactConversationEvent(body))
-	if err != nil {
-		return 0, err
-	}
-	var organization string
-	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", id).Scan(&organization); err != nil {
-		return 0, err
-	}
-	ctx, err = f.store.preparePayload(ctx, organization, []byte(raw))
-	if err != nil {
-		return 0, err
-	}
-	return f.store.appendEvent(ctx, tx, id, kind, body, now)
+func (f conversationFixture) readConversation(ctx context.Context, project tracker.ProjectID, id string) (conversationRecord, error) {
+	record, err := f.readRecord(ctx, project, id)
+	return record, translateConversationError(err)
 }
 
-func (f conversationFixture) prepareMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message conversationMessageRecord) (context.Context, error) {
-	t.Helper()
-	var organization string
-	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", message.ConversationID).Scan(&organization); err != nil {
-		return ctx, err
-	}
-	content, err := messageContent(message)
-	if err != nil {
-		return ctx, err
-	}
-	return f.store.preparePayload(ctx, organization, content)
+func (f conversationFixture) listConversations(ctx context.Context, query conversationListQuery) (records []conversationRecord, next string, err error) {
+	err = f.readTenant(ctx, func(r tenantstore.Reader) error {
+		page, err := r.Conversations(ctx, conversationstore.ConversationQuery{ProjectID: query.Project, PrincipalID: query.Principal, Cursor: query.Cursor, Limit: query.Limit, Settled: query.Settled})
+		for _, record := range page.Items {
+			records = append(records, conversationRecordFromStore(record))
+		}
+		next = page.Next
+		return err
+	})
+	return
 }
 
-func (f conversationFixture) updateMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message conversationMessageRecord) error {
-	t.Helper()
-	ctx, err := f.prepareMessage(t, ctx, tx, message)
-	if err != nil {
+func (f conversationFixture) publication(ctx context.Context, id string) (*conversationPublicationPlan, error) {
+	var record conversationRecord
+	err := f.readTenant(ctx, func(r tenantstore.Reader) error {
+		row, err := r.ConversationByID(ctx, id)
+		record = conversationRecordFromStore(row)
 		return err
+	})
+	if err != nil {
+		return nil, err
 	}
-	return f.store.updateMessage(ctx, tx, message)
+	return &conversationPublicationPlan{service: f.recordChat(record.OrganizationID), record: record, now: record.UpdatedAt}, nil
 }
 
-func (f conversationFixture) updateChatMessage(t *testing.T, chat *conversationService, ctx context.Context, tx *sql.Tx, message conversationMessageRecord, now time.Time) error {
-	t.Helper()
-	ctx, err := f.prepareMessage(t, ctx, tx, message)
-	if err != nil {
+func (f conversationFixture) createRecord(ctx context.Context, record *conversationRecord) error {
+	if err := validateConversationRecord(record); err != nil {
 		return err
 	}
-	var organization string
-	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", message.ConversationID).Scan(&organization); err != nil {
-		return err
-	}
-	fact := message
-	if err := tx.QueryRowContext(ctx, "SELECT revision+1 FROM conversation_messages WHERE id=?", message.ID).Scan(&fact.Revision); err != nil {
-		return err
-	}
-	content, err := messageContent(message)
-	if err != nil {
-		return err
-	}
-	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(content))
-	if err != nil {
-		return err
-	}
-	fact.ContentID, fact.UpdatedAt = contentArchiveID(organization, ref), now
-	raw, err := marshalNative(compactConversationEvent(projectMessage(fact)))
-	if err != nil {
-		return err
-	}
-	ctx, err = f.store.preparePayload(ctx, organization, []byte(raw))
-	if err != nil {
-		return err
-	}
-	return chat.updateMessage(ctx, tx, message, now)
-}
-
-func (f conversationFixture) appendDelta(t *testing.T, chat *conversationService, ctx context.Context, tx *sql.Tx, message *conversationMessageRecord, text string, now time.Time) error {
-	t.Helper()
-	var organization string
-	var revision int64
-	if err := tx.QueryRowContext(ctx, "SELECT c.organization_id,m.revision+1 FROM conversations c JOIN conversation_messages m ON m.conversation_id=c.id WHERE m.id=?", message.ID).Scan(&organization, &revision); err != nil {
-		return err
-	}
-	raw, err := marshalNative(conversationDeltaFact{Text: text, Revision: revision, MessageID: message.ID, Offset: int64(len(message.Text)), Bytes: len(text)})
-	if err != nil {
-		return err
-	}
-	ctx, err = f.store.preparePayload(ctx, organization, []byte(raw))
-	if err != nil {
-		return err
-	}
-	return chat.appendDelta(ctx, tx, message, text, now)
-}
-
-func (f conversationFixture) insertLegacyMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message *conversationMessageRecord) error {
-	t.Helper()
-	if err := validateConversationMessage(message); err != nil {
-		return err
-	}
-	if err := tx.QueryRowContext(ctx, "SELECT coalesce(max(seq),0)+1 FROM conversation_messages WHERE conversation_id=?", message.ConversationID).Scan(&message.Seq); err != nil {
-		return err
-	}
-	actor, err := marshalNative(message.Actor)
-	if err != nil {
-		return err
-	}
-	message.Revision = 1
-	_, err = tx.ExecContext(ctx, "INSERT INTO conversation_messages("+conversationMessageColumns+") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", message.ID, message.ConversationID, message.Seq, message.Role, message.Kind, message.Text, string(message.Data), message.Delivery, message.AttemptID, message.ThreadID, message.TurnID, message.ProviderItemID, actor, message.CommandKey, conversationTime(message.CreatedAt), conversationTime(message.UpdatedAt), "", message.Revision)
-	if err != nil {
-		return err
-	}
-	metadata, err := messageQueryMetadata(message.Data, message.Actor.Kind)
-	if err != nil {
-		return err
-	}
-	if err := metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE conversations SET last_message_at=? WHERE id=?", conversationTime(message.CreatedAt), message.ConversationID)
-	return err
-}
-
-func (f conversationFixture) createLegacyConversation(t *testing.T, record conversationRecord) conversationRecord {
-	t.Helper()
-	if err := validateConversationRecord(&record); err != nil {
-		t.Fatal(err)
-	}
-	if record.Revision == 0 {
-		record.Revision = 1
-	}
-	execution, err := marshalNative(record.Execution)
-	if err != nil {
-		t.Fatal(err)
-	}
-	preferences, err := marshalNative(record.Preferences)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx := f.tx(t)
-	_, err = tx.ExecContext(t.Context(), `INSERT INTO conversations (`+conversationColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.ID, record.OrganizationID, record.ProjectID, record.OwnerPrincipalID, record.OwnerSubject, record.Origin, record.Title, record.Visibility, record.Status, nullString(record.SubjectWorkItemID), nullString(record.WorkItemID), conversationNullTime(record.LinkedAt), record.Revision, record.ProviderThreadID, record.ProviderThreadRunnerID, record.ProviderThreadOrigin, execution, record.EventSeq, preferences, conversationTime(record.CreatedAt), conversationTime(record.UpdatedAt), conversationNullTime(record.LastMessageAt), conversationNullTime(record.SettledAt), record.Archived, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := executionQueryMetadata(record.Execution).write(t.Context(), tx, "conversations", "id=?", record.ID); err != nil {
-		t.Fatal(err)
-	}
-	f.commit(t, tx)
-	return record
-}
-
-func (f conversationFixture) updateConversation(t *testing.T, ctx context.Context, tx *sql.Tx, record *conversationRecord, revision int64) error {
-	t.Helper()
+	plan := &conversationPublicationPlan{service: f.recordChat(record.OrganizationID), record: *record, now: record.UpdatedAt}
 	raw, err := recordPayload(*record)
 	if err != nil {
 		return err
@@ -1005,64 +881,300 @@ func (f conversationFixture) updateConversation(t *testing.T, ctx context.Contex
 	if err != nil {
 		return err
 	}
-	ctx, err = f.store.preparePayload(ctx, string(record.OrganizationID), content)
+	ref, err := plan.prepare(ctx, content)
 	if err != nil {
 		return err
 	}
-	return f.store.updateConversation(ctx, tx, record, revision)
+	record.ContentID = contentArchiveID(string(record.OrganizationID), ref)
+	return f.service.config.TenantRepository.WriteTenant(ctx, record.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, record.OrganizationID, plan.prepared, record.CreatedAt); err != nil {
+			return err
+		}
+		row, err := w.CreateConversation(ctx, conversationRecordToStore(*record))
+		if err == nil {
+			*record = conversationRecordFromStore(row)
+		}
+		return err
+	})
 }
 
-func (f conversationFixture) prepareValue(t *testing.T, ctx context.Context, tx *sql.Tx, id string, raw []byte) (context.Context, error) {
+func (f conversationFixture) updateConversation(t *testing.T, ctx context.Context, record *conversationRecord, expected int64) error {
 	t.Helper()
-	var organization string
-	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", id).Scan(&organization); err != nil {
-		return ctx, err
+	plan := &conversationPublicationPlan{service: f.recordChat(record.OrganizationID), record: *record, now: record.UpdatedAt}
+	raw, err := recordPayload(*record)
+	if err != nil {
+		return err
 	}
 	content, err := messageContent(conversationMessageRecord{Data: raw})
 	if err != nil {
-		return ctx, err
+		return err
 	}
-	return f.store.preparePayload(ctx, organization, content)
-}
-
-func (f conversationFixture) upsertQuestion(t *testing.T, ctx context.Context, tx *sql.Tx, record conversationQuestionRecord) error {
-	t.Helper()
-	raw, err := questionPayload(record)
+	ref, err := plan.prepare(ctx, content)
 	if err != nil {
 		return err
 	}
-	ctx, err = f.prepareValue(t, ctx, tx, record.ConversationID, raw)
+	record.ContentID = contentArchiveID(string(record.OrganizationID), ref)
+	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, record.UpdatedAt); err != nil {
+			return err
+		}
+		row, err := w.UpdateConversation(ctx, conversationRecordToStore(*record), expected)
+		if err == nil {
+			*record = conversationRecordFromStore(row)
+		}
+		return err
+	})
+}
+
+func (f conversationFixture) appendMessage(t *testing.T, ctx context.Context, message *conversationMessageRecord) error {
+	t.Helper()
+	if err := validateConversationMessage(message); err != nil {
+		return err
+	}
+	plan, err := f.publication(ctx, message.ConversationID)
 	if err != nil {
 		return err
 	}
-	return f.store.upsertQuestion(ctx, tx, record)
+	if err := preparePGConversationMessage(ctx, plan, message); err != nil {
+		return err
+	}
+	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, message.CreatedAt); err != nil {
+			return err
+		}
+		row, err := w.CreateMessage(ctx, conversationMessageToStore(f.organization, *message))
+		if err == nil {
+			message.ID, message.Seq, message.Revision = row.ID, row.Sequence, row.Revision
+		}
+		return err
+	})
 }
 
-func (f conversationFixture) reserveCommand(t *testing.T, ctx context.Context, tx *sql.Tx, id, key string, kind conversation.CommandKind, hash string, now time.Time) (*conversation.Receipt, bool, error) {
+func (f conversationFixture) listMessages(ctx context.Context, id string, before int64, limit int) ([]conversationMessageRecord, error) {
+	return (&conversationTurnCoordinator{service: f.recordChat(f.organization)}).coordinatorMessages(ctx, conversationstore.MessageFilter{ConversationID: id, BeforeSequence: before, Limit: limit})
+}
+
+func (f conversationFixture) updateMessage(t *testing.T, ctx context.Context, message conversationMessageRecord) error {
 	t.Helper()
-	raw, err := json.Marshal(conversation.Receipt{Key: key, Kind: kind, Status: conversation.DeliverySaved, UpdatedAt: now.UTC()})
+	plan, err := f.publication(ctx, message.ConversationID)
 	if err != nil {
-		return nil, false, err
+		return err
 	}
-	ctx, err = f.prepareValue(t, ctx, tx, id, raw)
+	message, err = plan.message(ctx, message)
 	if err != nil {
-		return nil, false, err
+		return err
 	}
-	return f.store.reserveCommand(ctx, tx, id, key, kind, hash, now)
+	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		stored, err := w.Message(ctx, message.ConversationID, message.ID)
+		if err != nil {
+			return err
+		}
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, message.UpdatedAt); err != nil {
+			return err
+		}
+		_, err = w.UpdateMessage(ctx, conversationMessageToStore(f.organization, message), stored.Revision)
+		return err
+	})
 }
 
-func (f conversationFixture) updateReceipt(t *testing.T, ctx context.Context, tx *sql.Tx, id, key string, receipt conversation.Receipt) error {
+func (f conversationFixture) updateChatMessage(t *testing.T, ctx context.Context, message conversationMessageRecord, now time.Time) error {
+	t.Helper()
+	plan, err := f.publication(ctx, message.ConversationID)
+	if err != nil {
+		return err
+	}
+	var stored conversationstore.Message
+	if err := f.readTenant(ctx, func(r tenantstore.Reader) error {
+		var err error
+		stored, err = r.Message(ctx, message.ConversationID, message.ID)
+		return err
+	}); err != nil {
+		return err
+	}
+	message.Revision, message.UpdatedAt = stored.Revision+1, now
+	message, err = plan.message(ctx, message)
+	if err != nil {
+		return err
+	}
+	body := projectMessage(message)
+	if err := preparePGWorkerEvent(ctx, plan, body); err != nil {
+		return err
+	}
+	ctx = context.WithValue(ctx, pgWorkerPublicationKey{}, plan)
+	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, now); err != nil {
+			return err
+		}
+		if _, err := w.UpdateMessage(ctx, conversationMessageToStore(f.organization, message), stored.Revision); err != nil {
+			return err
+		}
+		return appendPGConversationEvent(ctx, w, f.organization, message.ConversationID, conversation.EventMessageUpdated, body, now)
+	})
+}
+
+func (f conversationFixture) appendEvent(t *testing.T, ctx context.Context, id string, kind conversation.EventType, body any, now time.Time) (seq int64, err error) {
+	t.Helper()
+	plan, err := f.publication(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	if body == nil {
+		body = map[string]any{}
+	}
+	if err := preparePGWorkerEvent(ctx, plan, body); err != nil {
+		return 0, err
+	}
+	ctx = context.WithValue(ctx, pgWorkerPublicationKey{}, plan)
+	err = f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, now); err != nil {
+			return err
+		}
+		if err := appendPGConversationEvent(ctx, w, f.organization, id, kind, body, now); err != nil {
+			return err
+		}
+		row, err := w.ConversationByID(ctx, id)
+		seq = row.EventSequence
+		return err
+	})
+	return
+}
+
+func (f conversationFixture) listEvents(ctx context.Context, id string, after int64, limit int) ([]conversation.Event, error) {
+	record, err := f.readRecord(ctx, f.project.ID, id)
+	if err != nil {
+		return nil, err
+	}
+	events, err := f.publishedRecordEvents(ctx, record, after)
+	if len(events) > limit {
+		events = events[:limit]
+	}
+	return events, err
+}
+
+func (f conversationFixture) upsertQuestion(t *testing.T, ctx context.Context, question conversationQuestionRecord) error {
+	t.Helper()
+	plan, err := f.publication(ctx, question.ConversationID)
+	if err != nil {
+		return err
+	}
+	if err := plan.prepareQuestion(ctx, question); err != nil {
+		return err
+	}
+	ctx = context.WithValue(ctx, pgWorkerPublicationKey{}, plan)
+	stored, err := preparedPGConversationQuestion(ctx, conversationstore.Question{OrganizationID: f.organization, ConversationID: question.ConversationID, Question: question.Question, RequestID: question.RequestID})
+	if err != nil {
+		return err
+	}
+	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, question.UpdatedAt); err != nil {
+			return err
+		}
+		return w.UpsertQuestion(ctx, stored)
+	})
+}
+
+func (f conversationFixture) readQuestion(ctx context.Context, id, questionID string) (question conversationQuestionRecord, err error) {
+	var row conversationstore.Question
+	err = f.readTenant(ctx, func(r tenantstore.Reader) error {
+		var err error
+		row, err = r.Question(ctx, id, questionID)
+		return err
+	})
+	if err != nil {
+		return question, translateConversationError(err)
+	}
+	row, err = f.recordChat(f.organization).server.hydratePGConversationQuestion(ctx, f.organization, row)
+	return conversationQuestionRecord{Question: row.Question, RequestID: row.RequestID, ContentID: row.ContentReference}, err
+}
+
+func (f conversationFixture) pendingQuestions(ctx context.Context, id string) (questions []conversationQuestionRecord, err error) {
+	var rows []conversationstore.Question
+	err = f.readTenant(ctx, func(r tenantstore.Reader) error { var err error; rows, err = r.Questions(ctx, id, "", 100); return err })
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row.Status != conversation.QuestionPending {
+			continue
+		}
+		question, err := f.readQuestion(ctx, id, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		questions = append(questions, question)
+	}
+	return
+}
+
+func (f conversationFixture) reserveCommand(t *testing.T, ctx context.Context, id, key string, kind conversation.CommandKind, hash string, now time.Time) (existing *conversation.Receipt, conflict bool, err error) {
+	t.Helper()
+	receipt := conversation.Receipt{Key: key, Kind: kind, Status: conversation.DeliverySaved, UpdatedAt: now.UTC()}
+	plan, err := f.publication(ctx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := plan.prepareValue(ctx, raw); err != nil {
+		return nil, false, err
+	}
+	content, err := messageContent(conversationMessageRecord{Data: raw})
+	if err != nil {
+		return nil, false, err
+	}
+	ref := plan.prepared[string(f.organization)+"/"+artifact.Digest(content)]
+	err = f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, now); err != nil {
+			return err
+		}
+		row, inserted, err := w.ReserveCommand(ctx, conversationstore.Command{OrganizationID: f.organization, ConversationID: id, Key: key, Kind: kind, RequestHash: hash, Receipt: receipt, CreatedAt: now, UpdatedAt: now, ContentReference: contentArchiveID(string(f.organization), ref)})
+		if errors.Is(err, corestore.ErrUniqueViolation) {
+			existing, conflict = &row.Receipt, true
+			return nil
+		}
+		if err == nil && !inserted {
+			existing = &row.Receipt
+		}
+		return err
+	})
+	return
+}
+
+func (f conversationFixture) updateReceipt(t *testing.T, ctx context.Context, id, key string, receipt conversation.Receipt) error {
 	t.Helper()
 	if receipt.Key == "" {
 		receipt.Key = key
+	}
+	plan, err := f.publication(ctx, id)
+	if err != nil {
+		return err
 	}
 	raw, err := json.Marshal(receipt)
 	if err != nil {
 		return err
 	}
-	ctx, err = f.prepareValue(t, ctx, tx, id, raw)
+	if err := plan.prepareValue(ctx, raw); err != nil {
+		return err
+	}
+	content, err := messageContent(conversationMessageRecord{Data: raw})
 	if err != nil {
 		return err
 	}
-	return f.store.updateReceipt(ctx, tx, id, key, receipt)
+	ref := plan.prepared[string(f.organization)+"/"+artifact.Digest(content)]
+	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
+		row, found, err := w.Command(ctx, id, key)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return corestore.ErrNotFound
+		}
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, receipt.UpdatedAt); err != nil {
+			return err
+		}
+		row.Receipt, row.UpdatedAt, row.ContentReference = receipt, receipt.UpdatedAt, contentArchiveID(string(f.organization), ref)
+		return w.UpdateCommand(ctx, row)
+	})
 }

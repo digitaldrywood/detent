@@ -1,6 +1,12 @@
 -- name: CutoverReceipt :one
 SELECT * FROM github_cutovers WHERE organization_id=$1 AND project_id=$2 AND checkpoint=$3;
 
+-- name: LatestProjectCutoverReceipt :one
+SELECT * FROM github_cutovers
+WHERE organization_id=$1 AND project_id=$2
+ORDER BY created_at DESC, checkpoint DESC
+LIMIT 1;
+
 -- name: StoreCutoverReceipt :one
 INSERT INTO github_cutovers(organization_id,project_id,checkpoint,source_profile,expected_revision,receipt_object_key,receipt_sha256,receipt_bytes,receipt_content_bytes,actor_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *;
 

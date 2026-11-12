@@ -37,6 +37,12 @@ func (s *session) PrepareAttachmentArchive(ctx context.Context, r attachmentstor
 	return n == 1, nil
 }
 
+func (s *session) StorageArchiveUploader(ctx context.Context, project tracker.ProjectID) (string, error) {
+	var uploader string
+	err := s.db.QueryRow(ctx, `SELECT token_id FROM token_grants WHERE organization_id=$1 AND project_id=$2 ORDER BY token_id LIMIT 1`, s.organization, project).Scan(&uploader)
+	return uploader, mapError(ctx, err)
+}
+
 func (s *session) PublishAttachmentArchive(ctx context.Context, r attachmentstore.ArchiveRecord, item tracker.NativeWorkItemID) error {
 	if err := s.checkOrganization(r.OrganizationID); err != nil {
 		return err
@@ -57,7 +63,7 @@ func (s *session) AttachmentArchive(ctx context.Context, q attachmentstore.Archi
  AND ($5::text IS NULL OR storage_binding_id=$5)
  AND EXISTS (SELECT 1 FROM attachment_archive_references r WHERE r.organization_id=a.organization_id AND r.project_id=$2 AND r.work_item_id=$3 AND r.attachment_id=a.id)
  AND (($6='' AND NOT EXISTS (SELECT 1 FROM issue_archive_sections r JOIN attachments b ON b.organization_id=r.organization_id AND b.id=r.attachment_id WHERE r.organization_id=$1 AND r.project_id=$2 AND r.work_item_id=$3 AND b.sha256=$4))
- OR ($6<>'' AND EXISTS (SELECT 1 FROM issue_archive_sections r JOIN attachments b ON b.organization_id=r.organization_id AND b.id=r.attachment_id WHERE r.organization_id=$1 AND r.project_id=$2 AND r.work_item_id=$3 AND r.section_id=$6 AND b.sha256=a.sha256 AND r.archive_revision=$7 AND r.archive_revision=(SELECT MAX(archive_revision) FROM issue_archive_sections WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3))))
+ OR ($6<>'' AND EXISTS (SELECT 1 FROM issue_archive_sections r JOIN attachments b ON b.organization_id=r.organization_id AND b.id=r.attachment_id WHERE r.organization_id=$1 AND r.project_id=$2 AND r.work_item_id=$3 AND r.section_id=$6 AND b.sha256=a.sha256 AND r.archive_revision=$7 AND r.kind<>'' AND (r.kind<>'conversation_messages' OR EXISTS (SELECT 1 FROM conversations c WHERE c.organization_id=r.organization_id AND c.project_id=r.project_id AND c.id=r.subject_id AND c.work_item_id=r.work_item_id AND c.visibility='shared' AND c.deleted_at IS NULL)))))
  ORDER BY created_at DESC,id LIMIT 1`, s.organization, q.ProjectID, q.WorkItemID, q.Digest, q.Binding, q.Section, q.Revision))
 	if err != nil {
 		return attachment.ArchiveReference{}, mapError(ctx, err)

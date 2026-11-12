@@ -90,6 +90,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	blocked := []string(nil)
 	projectAccess := "all"
 	cfg := startupConfig(connection)
+	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	cfg.now = func() time.Time { return clock }
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	plans := capacityHostedPlans()
@@ -109,7 +110,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, organization := range []tracker.OrganizationID{"org_startup", "org_other"} {
-		seedStartupOrganization(t, store.postgres, organization)
+		binding := *cfg.Hosted
+		binding.OrganizationID, binding.WorkOSOrganizationID = string(organization), "provider_"+string(organization)
+		seedStartupOrganization(t, store.postgres, organization, &binding)
 		prepared, err := eventstore.NewContent(cfg.RunDetails).PrepareProjectPolicy(t.Context(), organization, descriptor)
 		if err != nil {
 			t.Fatal(err)
@@ -178,8 +181,8 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if service.database.reader != nil || service.database.db != nil {
-		t.Fatal("fixture must be PostgreSQL only")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("fixture requires the PostgreSQL repository")
 	}
 	service.config.Hosted.SharedEntry.verifier.Now = cfg.now
 	repository := service.config.TenantRepository
@@ -2147,6 +2150,7 @@ func TestPostgresMutationReferencesWithoutLegacyDatabase(t *testing.T) {
 	blocked := []string(nil)
 	projectAccess := "all"
 	cfg := startupConfig(connection)
+	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	cfg.now = func() time.Time { return clock }
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	plans := capacityHostedPlans()
@@ -2166,7 +2170,9 @@ func TestPostgresMutationReferencesWithoutLegacyDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, organization := range []tracker.OrganizationID{"org_startup", "org_other"} {
-		seedStartupOrganization(t, store.postgres, organization)
+		binding := *cfg.Hosted
+		binding.OrganizationID, binding.WorkOSOrganizationID = string(organization), "provider_"+string(organization)
+		seedStartupOrganization(t, store.postgres, organization, &binding)
 		prepared, err := eventstore.NewContent(cfg.RunDetails).PrepareProjectPolicy(t.Context(), organization, descriptor)
 		if err != nil {
 			t.Fatal(err)
@@ -2235,8 +2241,8 @@ func TestPostgresMutationReferencesWithoutLegacyDatabase(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if service.database.reader != nil || service.database.db != nil {
-		t.Fatal("fixture must be PostgreSQL only")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("fixture requires the PostgreSQL repository")
 	}
 	service.config.Hosted.SharedEntry.verifier.Now = cfg.now
 	requestFor := func(target *Service, user, path string, body any) *httptest.ResponseRecorder {

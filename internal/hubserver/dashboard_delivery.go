@@ -3,21 +3,20 @@ package hubserver
 import (
 	"container/list"
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type dashboardCredentialWriter struct{ header http.Header }
@@ -57,26 +56,27 @@ type dashboardFrame struct {
 }
 
 type dashboardSubscription struct {
-	request       *http.Request
-	claims        any
-	scope         nativeScope
-	params        url.Values
-	workspace     string
-	item          string
-	board         bool
-	initial       bool
-	sequence      int64
-	grantVersion  string
-	epoch         uint64
-	authorization uint64
-	more          bool
-	terminal      bool
-	frames        chan dashboardFrame
-	done          chan struct{}
-	abort         func()
-	closed        atomic.Bool
-	closeOnce     sync.Once
-	element       *list.Element
+	request      *http.Request
+	claims       any
+	scope        nativeScope
+	params       url.Values
+	workspace    string
+	item         string
+	board        bool
+	initial      bool
+	sequence     int64
+	grantVersion string
+	epoch        uint64
+	access       viewstore.BoardDeliveryAccess
+	authAt       time.Time
+	more         bool
+	terminal     bool
+	frames       chan dashboardFrame
+	done         chan struct{}
+	abort        func()
+	closed       atomic.Bool
+	closeOnce    sync.Once
+	element      *list.Element
 }
 
 func (s *dashboardSubscription) close() {
@@ -114,25 +114,36 @@ func (s *dashboardSubscription) reset(sequence int64) {
 	}
 }
 
+type dashboardProjectKey struct {
+	organization tracker.OrganizationID
+	project      tracker.ProjectID
+}
+
+func (s *dashboardSubscription) projectKey() dashboardProjectKey {
+	return dashboardProjectKey{s.scope.organization, s.scope.project}
+}
+
+type dashboardProjectState struct {
+	head   viewstore.BoardSequence
+	live   bool
+	access map[*dashboardSubscription]viewstore.BoardDeliveryAccess
+	err    error
+}
+
 type dashboardDelivery struct {
-	service        *Service
-	config         dashboardDeliveryConfig
-	mu             sync.Mutex
-	subs           list.List
-	tenants        map[tracker.OrganizationID]int
-	closed         bool
-	wake           chan struct{}
-	cancel         context.CancelFunc
-	done           chan struct{}
-	epoch          uint64
-	remaining      int
-	version        int64
-	authorization  uint64
-	watermarks     map[string]int64
-	head           int64
-	authAt         time.Time
-	boardCache     map[string]dashboardFrame
-	boardSummaries map[string]*tracker.NativeWorkSummary
+	service   *Service
+	config    dashboardDeliveryConfig
+	mu        sync.Mutex
+	subs      list.List
+	tenants   map[tracker.OrganizationID]int
+	projects  map[dashboardProjectKey]map[*dashboardSubscription]struct{}
+	closed    bool
+	wake      chan struct{}
+	cancel    context.CancelFunc
+	done      chan struct{}
+	epoch     uint64
+	remaining int
+	states    map[dashboardProjectKey]dashboardProjectState
 }
 
 func newDashboardDelivery(s *Service) *dashboardDelivery {
@@ -154,7 +165,11 @@ func newDashboardDelivery(s *Service) *dashboardDelivery {
 			cfg.budget = override.budget
 		}
 	}
-	return &dashboardDelivery{service: s, config: cfg, tenants: make(map[tracker.OrganizationID]int), wake: make(chan struct{}, 1), done: make(chan struct{}), boardCache: make(map[string]dashboardFrame), boardSummaries: make(map[string]*tracker.NativeWorkSummary), watermarks: make(map[string]int64)}
+	return &dashboardDelivery{
+		service: s, config: cfg, tenants: make(map[tracker.OrganizationID]int),
+		projects: make(map[dashboardProjectKey]map[*dashboardSubscription]struct{}),
+		states:   make(map[dashboardProjectKey]dashboardProjectState), wake: make(chan struct{}, 1), done: make(chan struct{}),
+	}
 }
 
 func (d *dashboardDelivery) start() {
@@ -186,6 +201,11 @@ func (d *dashboardDelivery) add(sub *dashboardSubscription) bool {
 	sub.done = make(chan struct{})
 	sub.more = true
 	sub.element = d.subs.PushBack(sub)
+	key := sub.projectKey()
+	if d.projects[key] == nil {
+		d.projects[key] = make(map[*dashboardSubscription]struct{})
+	}
+	d.projects[key][sub] = struct{}{}
 	d.tenants[sub.scope.organization]++
 	select {
 	case d.wake <- struct{}{}:
@@ -201,6 +221,11 @@ func (d *dashboardDelivery) remove(sub *dashboardSubscription) {
 	if sub.element != nil {
 		d.subs.Remove(sub.element)
 		sub.element = nil
+		key := sub.projectKey()
+		delete(d.projects[key], sub)
+		if len(d.projects[key]) == 0 {
+			delete(d.projects, key)
+		}
 		d.tenants[sub.scope.organization]--
 		if d.tenants[sub.scope.organization] == 0 {
 			delete(d.tenants, sub.scope.organization)
@@ -210,38 +235,59 @@ func (d *dashboardDelivery) remove(sub *dashboardSubscription) {
 
 func (d *dashboardDelivery) changed() {
 	d.epoch++
-	clear(d.watermarks)
-	clear(d.boardCache)
-	clear(d.boardSummaries)
+	d.states = make(map[dashboardProjectKey]dashboardProjectState)
 	d.mu.Lock()
 	d.remaining = d.subs.Len()
 	d.mu.Unlock()
 }
 
-func (d *dashboardDelivery) recover(ctx context.Context, conn nativeQueryer) error {
-	if d.service.config.TenantRepository != nil {
-		d.authorization++
-		d.changed()
-		return nil
+func (d *dashboardDelivery) projectState(ctx context.Context, key dashboardProjectKey, now time.Time) dashboardProjectState {
+	if state, ok := d.states[key]; ok {
+		return state
 	}
-	var version, head int64
-	if err := conn.QueryRowContext(ctx, "SELECT sequence FROM dashboard_delivery_authorization").Scan(&version); err != nil {
-		return fmt.Errorf("read dashboard authorization watermark: %w", err)
+	d.mu.Lock()
+	members := d.projects[key]
+	subs := make([]*dashboardSubscription, 0, len(members))
+	subjects := make([]viewstore.BoardDeliverySubject, 0, len(members))
+	for sub := range members {
+		authority := d.service.accessAuthority(sub.scope, false)
+		subs = append(subs, sub)
+		subjects = append(subjects, viewstore.BoardDeliverySubject{
+			CredentialID: authority.CredentialID, CredentialHash: authority.Hash, UserID: authority.UserID,
+			MembershipID: authority.MembershipID, SessionHash: authority.SessionHash,
+		})
 	}
-	if err := conn.QueryRowContext(ctx, "SELECT COALESCE(MAX(sequence),0) FROM native_board_deltas").Scan(&head); err != nil {
-		return fmt.Errorf("read dashboard delivery head: %w", err)
+	d.mu.Unlock()
+	if len(subjects) == 0 {
+		return dashboardProjectState{}
 	}
-	now := d.service.config.now()
-	authorizationChanged := version != d.version || !now.Before(d.authAt)
-	if authorizationChanged || head != d.head {
-		if authorizationChanged {
-			d.authorization++
-			d.authAt = now.Add(20 * time.Second)
-		}
-		d.version, d.head = version, head
-		d.changed()
+	state := dashboardProjectState{}
+	repository := d.service.config.TenantRepository
+	if repository == nil {
+		state.err = workItemStorageUnavailable()
+	} else {
+		state.err = repository.ReadTenant(ctx, key.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			reader, ok := r.(viewstore.BoardDeliveryReader)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			current, err := reader.BoardDeliveryState(ctx, key.project, subjects, now)
+			if err != nil {
+				return err
+			}
+			if len(current.Access) != len(subs) {
+				return viewstore.ErrInvalidView
+			}
+			state.head, state.live = current.Head, current.ProjectLive
+			state.access = make(map[*dashboardSubscription]viewstore.BoardDeliveryAccess, len(subs))
+			for i, sub := range subs {
+				state.access[sub] = current.Access[i]
+			}
+			return nil
+		})
 	}
-	return nil
+	d.states[key] = state
+	return state
 }
 
 func (d *dashboardDelivery) run(ctx context.Context) {
@@ -307,15 +353,7 @@ func (d *dashboardDelivery) run(ctx context.Context) {
 			recoverTick = true
 		}
 		if recoverTick {
-			readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-			err := d.recover(readCtx, d.service.database.reader)
-			cancel()
-			if err != nil {
-				if ctx.Err() == nil {
-					d.service.config.Logger.ErrorContext(ctx, "recover dashboard delivery", "error", err)
-				}
-				continue
-			}
+			d.changed()
 		}
 
 		d.deliver(ctx)
@@ -356,28 +394,27 @@ func (d *dashboardDelivery) deliver(ctx context.Context) {
 			continue
 		}
 		readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-		if d.service.config.TenantRepository == nil && !sub.more && sub.authorization == d.authorization {
-			key := string(sub.scope.organization) + "/" + string(sub.scope.project)
-			head, ok := d.watermarks[key]
-			if !ok {
-				var err error
-				head, _, err = readDashboardWatermark(readCtx, d.service.database.reader, sub.scope)
-				if err != nil {
-					cancel()
-					sub.reset(sub.sequence)
-					continue
+		now := d.service.config.now()
+		state := d.projectState(readCtx, sub.projectKey(), now)
+		access, observed := state.access[sub]
+		if state.err == nil && observed && !sub.more && !sub.initial && state.live &&
+			sub.sequence == state.head.Sequence && sub.sequence >= state.head.ReplayFloor &&
+			access.Live && access == sub.access && (access.ExpiresAt.IsZero() || now.Before(access.ExpiresAt)) &&
+			now.Before(sub.authAt) {
+			sub.epoch = d.epoch
+			cancel()
+			continue
+		}
+		more, err := false, state.err
+		if err == nil {
+			more, err = d.service.dashboardPage(readCtx, d, sub)
+			if err == nil && observed {
+				if !now.Before(sub.authAt) || access != sub.access {
+					sub.authAt = now.Add(20 * time.Second)
 				}
-				if len(d.watermarks) < 512 {
-					d.watermarks[key] = head
-				}
-			}
-			if sub.sequence == head {
-				sub.epoch = d.epoch
-				cancel()
-				continue
+				sub.access = access
 			}
 		}
-		more, err := d.service.dashboardPage(readCtx, d, sub)
 		cancel()
 		if err != nil {
 			if ctx.Err() == nil && !errors.Is(err, context.Canceled) {
@@ -386,7 +423,7 @@ func (d *dashboardDelivery) deliver(ctx context.Context) {
 			sub.reset(sub.sequence)
 			more = false
 		}
-		sub.epoch, sub.more, sub.authorization = d.epoch, more, d.authorization
+		sub.epoch, sub.more = d.epoch, more
 		if more {
 			d.mu.Lock()
 			d.remaining = max(d.remaining, d.subs.Len())
@@ -469,266 +506,11 @@ func (s *Service) dashboardPage(ctx context.Context, d *dashboardDelivery, sub *
 	}
 	scope := sub.scope
 	scope.credential = credential
-	if s.config.TenantRepository != nil {
-		if sub.board {
-			return s.dashboardBoardRecordPage(ctx, d, sub, scope)
-		}
-		return s.dashboardProjectRecordPage(ctx, d, sub, scope)
-	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	if err := s.requireHostedProject(ctx, tx, scope, false); err != nil {
-		return false, err
-	}
-	if err := requireDashboardProject(ctx, tx, scope); err != nil {
-		return false, err
-	}
-	if sub.item != "" {
-		visible, err := dashboardItemVisible(ctx, tx, scope, sub.item)
-		if err != nil {
-			return false, err
-		}
-		if !visible {
-			return false, nativeNotFound()
-		}
-	}
-	if sub.workspace != "" {
-		if s.workspaces == nil {
-			return false, nativeNotFound()
-		}
-		if _, err := readDashboardWorkspace(ctx, tx, scope, sub.workspace); err != nil {
-			return false, err
-		}
+	if s.config.TenantRepository == nil {
+		return false, workItemStorageUnavailable()
 	}
 	if sub.board {
-		return s.dashboardBoardPage(ctx, tx, d, sub, scope)
+		return s.dashboardBoardRecordPage(ctx, d, sub, scope)
 	}
-	page, err := readDashboardChanges(ctx, tx, scope, sub.sequence, d.config.pageSize)
-	if err != nil {
-		return false, err
-	}
-	if page.Gap {
-		sub.reset(page.Sequence)
-		return false, nil
-	}
-	for _, change := range page.Changes {
-		frame, visible, err := s.dashboardChangeFrame(ctx, tx, scope, sub, change)
-		if err != nil {
-			return false, err
-		}
-		if !visible {
-			frame = dashboardFrame{sequence: change.Sequence, event: "checkpoint", data: "{}"}
-		}
-		if !sub.enqueue(frame) {
-			return false, nil
-		}
-		sub.sequence = change.Sequence
-	}
-	if sub.initial && len(page.Changes) == 0 {
-		sub.enqueue(dashboardFrame{sequence: sub.sequence, event: "checkpoint", data: "{}"})
-	}
-	sub.initial = false
-	return page.NextSequence < page.Sequence, nil
-}
-
-func (s *Service) dashboardBoardPage(ctx context.Context, tx *sql.Tx, d *dashboardDelivery, sub *dashboardSubscription, scope nativeScope) (bool, error) {
-	page, err := readDashboardChanges(ctx, tx, scope, sub.sequence, d.config.pageSize)
-	if err != nil {
-		return false, err
-	}
-	head := page.Sequence
-	grants, err := nativeBoardGrants(ctx, tx, scope)
-	if err != nil {
-		return false, err
-	}
-	grant := nativeBoardGrantVersion(grants)
-	if !sub.initial && sub.sequence == head && sub.grantVersion == grant {
-		return false, nil
-	}
-	summaryKey := fmt.Sprintf("%s/%s/%s/%s/%s/%d/%s", scope.organization, scope.project, appSubject(scope.credential), scope.credential.HostedRole, grant, head, sub.params.Encode())
-	key := fmt.Sprintf("%s/%d/%d", summaryKey, sub.sequence, page.NextSequence)
-	frame, ok := d.boardCache[key]
-	if !ok {
-		board, err := readNativeBoardFrameThrough(ctx, tx, scope, sub.sequence, page.NextSequence)
-		if err != nil {
-			return false, err
-		}
-		board.Work = d.boardSummaries[summaryKey]
-		if board.Work == nil {
-			board.Work, err = readNativeBoardSummary(ctx, tx, scope, sub.params, s.config.now())
-			if err != nil {
-				return false, err
-			}
-			if len(d.boardSummaries) < d.config.tenantLimit {
-				d.boardSummaries[summaryKey] = board.Work
-			}
-		}
-		for i := range board.Deltas {
-			if board.Deltas[i].Current != nil {
-				board.Deltas[i].Current.Issue = s.nativeIssueResponse(board.Deltas[i].Current.Issue)
-			}
-		}
-		raw, err := json.Marshal(board)
-		if err != nil {
-			return false, err
-		}
-		frame = dashboardFrame{sequence: board.Sequence, event: "activity", data: string(raw)}
-		if len(d.boardCache) < d.config.tenantLimit {
-			d.boardCache[key] = frame
-		}
-	}
-	sub.enqueue(frame)
-	sub.sequence, sub.initial, sub.grantVersion = frame.sequence, false, grant
-	return !page.Gap && frame.sequence < head, nil
-}
-
-func (s *Service) dashboardChangeFrame(ctx context.Context, q nativeQueryer, scope nativeScope, sub *dashboardSubscription, change dashboardChange) (dashboardFrame, bool, error) {
-	frame := dashboardFrame{sequence: change.Sequence, event: change.Topic, data: "{}"}
-	item := ""
-	switch change.Topic {
-	case "work_item":
-		item = change.EntityID
-	case "activity":
-		item = change.RelatedID
-	case "human_action":
-		item = change.RelatedID
-		if item == "" {
-			item = change.EntityID
-		}
-	case "board":
-		if scope.credential.HostedRole == "reporter" {
-			return frame, false, nil
-		}
-	}
-	if item != "" {
-		visible, err := dashboardItemVisible(ctx, q, scope, item)
-		if err != nil || !visible {
-			return frame, false, err
-		}
-	}
-	if sub.item != "" && item != sub.item && change.Topic != "workspace" && change.Topic != "action_run" {
-		return frame, false, nil
-	}
-	if sub.workspace != "" && change.Topic != "workspace" && change.Topic != "action_run" {
-		return frame, false, nil
-	}
-	switch change.Topic {
-	case "workspace":
-		if s.workspaces == nil || sub.workspace != "" && sub.workspace != change.EntityID || sub.item != "" && sub.item != change.RelatedID {
-			return frame, false, nil
-		}
-		record, err := readDashboardWorkspace(ctx, q, scope, change.EntityID)
-		if isNativeNotFound(err) || errors.Is(err, sql.ErrNoRows) {
-			return frame, false, nil
-		}
-		if err != nil {
-			return frame, false, err
-		}
-		frame.event = workspacesession.EventType(change.Status)
-		resource := s.workspaces.presentWorkspace(ctx, q, scope, record)
-		resource.State, resource.Revision = change.Status, change.EntityRevision
-		raw, err := json.Marshal(struct {
-			workspacesession.Session
-			ChangeSequence int64 `json:"change_sequence"`
-		}{resource, change.Sequence})
-		frame.data = string(raw)
-		return frame, true, err
-	case "action_run":
-		if s.workspaces == nil || sub.workspace != "" && sub.workspace != change.RelatedID {
-			return frame, false, nil
-		}
-		workspace, err := readDashboardWorkspace(ctx, q, scope, change.RelatedID)
-		if isNativeNotFound(err) || errors.Is(err, sql.ErrNoRows) {
-			return frame, false, nil
-		}
-		if err != nil {
-			return frame, false, err
-		}
-		if sub.item != "" && sub.item != workspace.SubjectWorkItemID {
-			return frame, false, nil
-		}
-		run, err := readProjectActionRunByID(ctx, q, change.EntityID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return frame, false, nil
-		}
-		if err != nil {
-			return frame, false, err
-		}
-		if run.OrganizationID != scope.organization || run.ProjectID != scope.project {
-			return frame, false, nil
-		}
-		resource := run.resource()
-		resource.Status, resource.Revision = change.Status, change.EntityRevision
-		raw, err := json.Marshal(resource)
-		frame.event, frame.data = "action_run."+change.Status, string(raw)
-		return frame, true, err
-	case "health":
-		if scope.credential.HostedRole == "reporter" {
-			return frame, false, nil
-		}
-		frame.event = "health.findings"
-	case "activity":
-		frame.data = strconv.FormatInt(change.Sequence, 10)
-		return frame, true, nil
-	}
-	raw, err := json.Marshal(change)
-	frame.data = string(raw)
-	return frame, true, err
-}
-
-func requireDashboardProject(ctx context.Context, q nativeQueryer, scope nativeScope) error {
-	if err := authorizeNativeProject(ctx, q, scope); err != nil {
-		return err
-	}
-	var active bool
-	if err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=? AND id=? AND deleted_at IS NULL)", scope.organization, scope.project).Scan(&active); err != nil {
-		return fmt.Errorf("read dashboard project: %w", err)
-	}
-	if !active {
-		return nativeNotFound()
-	}
-	return nil
-}
-
-func dashboardItemVisible(ctx context.Context, q nativeQueryer, scope nativeScope, id string) (bool, error) {
-	var raw string
-	err := q.QueryRowContext(ctx, "SELECT actor_json FROM issues WHERE organization_id=? AND project_id=? AND native_id=?", scope.organization, scope.project, id).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read dashboard item visibility: %w", err)
-	}
-	if scope.credential.HostedRole != "reporter" {
-		return true, nil
-	}
-	var actor tracker.Actor
-	if err := json.Unmarshal([]byte(raw), &actor); err != nil {
-		return false, fmt.Errorf("decode dashboard item actor: %w", err)
-	}
-	return scope.reporterOwns(actor), nil
-}
-
-func readDashboardWorkspace(ctx context.Context, q nativeQueryer, scope nativeScope, id string) (workspaceRecord, error) {
-	if err := workspacesession.ValidateID(id); err != nil {
-		return workspaceRecord{}, nativeNotFound()
-	}
-	record, err := readWorkspaceRow(ctx, q, scope, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return workspaceRecord{}, nativeNotFound()
-	}
-	if err != nil {
-		return workspaceRecord{}, err
-	}
-	visible, err := dashboardItemVisible(ctx, q, scope, record.SubjectWorkItemID)
-	if err != nil {
-		return workspaceRecord{}, err
-	}
-	if !visible {
-		return workspaceRecord{}, nativeNotFound()
-	}
-	return record, nil
+	return s.dashboardProjectRecordPage(ctx, d, sub, scope)
 }

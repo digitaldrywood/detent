@@ -16,12 +16,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -38,7 +39,7 @@ type workItemArchive struct {
 }
 
 func workItemStorageUnavailable() error {
-	return &nativeError{Code: "not_ready", Message: "This work item operation requires storage that is not available", status: http.StatusServiceUnavailable, publicMessage: true}
+	return fromFeatureError(hubapi.WorkItemStorageUnavailable())
 }
 
 func (s *Service) readWorkItemRecord(ctx context.Context, scope nativeScope, id string) (corestore.WorkItem, eventstore.CollaborationVersion, error) {
@@ -66,10 +67,7 @@ func (s *Service) readWorkItemRecord(ctx context.Context, scope nativeScope, id 
 }
 
 func stringValue(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
+	return hubapi.StringValue(value)
 }
 
 func (s *Service) hydrateWorkItemRecord(ctx context.Context, row corestore.WorkItem, version eventstore.CollaborationVersion) (tracker.NativeIssue, error) {
@@ -95,7 +93,8 @@ func (s *Service) hydrateCanonicalWorkItemRecord(ctx context.Context, row corest
 	if err != nil {
 		return issue, err
 	}
-	if json.Unmarshal(raw, &issue) != nil || issue.OrganizationID != row.OrganizationID || issue.ProjectID != row.ProjectID || issue.WorkItemID != row.NativeID || int64(issue.Revision) != row.Revision || int64(issue.Number) != row.Number || issue.Title != row.Title || issue.Archived != row.Archived || issue.State != stringValue(row.WorkflowStateName) || issue.Actor.Kind != stringValue(row.ActorKind) || issue.Actor.PrincipalID != stringValue(row.ActorPrincipalID) {
+	issue, err = eventstore.DecodeCollaborationIssue(version, raw)
+	if err != nil || issue.OrganizationID != row.OrganizationID || issue.ProjectID != row.ProjectID || issue.WorkItemID != row.NativeID || int64(issue.Revision) != row.Revision || int64(issue.Number) != row.Number || issue.Title != row.Title || issue.Archived != row.Archived || issue.State != stringValue(row.WorkflowStateName) || issue.Actor.Kind != stringValue(row.ActorKind) || issue.Actor.PrincipalID != stringValue(row.ActorPrincipalID) {
 		return issue, artifact.ErrIntegrity
 	}
 	issue.ChangeSequence = 0
@@ -181,7 +180,9 @@ type workItemRecordPlan struct {
 	relationshipOperate     string
 	issue                   tracker.NativeIssue
 	previousContent         string
+	previousFieldBytes      int64
 	linkedSource            *eventstore.LinkedSource
+	linkedComments          []linkedIssueCommentPlan
 	comment                 tracker.NativeComment
 	verificationComment     *attachmentEvidencePublication
 	verificationAttachments []string
@@ -319,9 +320,13 @@ func (s *Service) loadWorkItemPlan(ctx context.Context, scope nativeScope, item,
 	if plan.commentRow.ID != "" {
 		plan.comment, err = s.hydrateCommentRecord(ctx, plan.commentRow, version)
 		plan.previousContent = plan.comment.Body
+		plan.previousFieldBytes = int64(len(plan.comment.Body))
 	} else if plan.current.ID != 0 {
 		plan.issue, err = s.hydrateWorkItemRecord(ctx, plan.current, version)
 		plan.previousContent = plan.issue.Title + "\n" + plan.issue.Body
+		if err == nil {
+			plan.previousFieldBytes, err = issueCollaborationFieldBytes(plan.issue)
+		}
 	}
 	return plan, err
 }
@@ -376,6 +381,14 @@ func validateWorkItemRecordCreateInput(ctx context.Context, scope nativeScope, p
 		return err
 	}
 	state := request.State
+	if state == "Triage" && request.GitHubIssueURL == "" && scope.credential.HostedRole != "reporter" {
+		for _, configured := range project.States {
+			if configured.Name == "Backlog" && (!configured.OperatorOnly || scope.credential.Scope != apiScopeWorker) {
+				return nativePublicInvalid("Triage is reserved for linked GitHub issue intake; use Backlog for drafts")
+			}
+		}
+		return nativePublicInvalid("Triage is reserved for linked GitHub issue intake")
+	}
 	if request.GitHubIssueURL != "" && (scope.integrationRepository == "" || request.State == "") {
 		state = "Triage"
 	}
@@ -442,7 +455,11 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		if plan.issue.ReportContext != nil {
 			plan.issue.ReportContext = plan.issue.ReportContext.Normalized()
 		}
-		plan.issue.ExternalReferences = nativeSourceReferences("", "", "", 0, "", "", plan.issue.Provenance)
+		importedURL := ""
+		if plan.issue.Provenance != nil && plan.issue.Provenance.Provider == "github" {
+			importedURL = githubMigrationSourceURL(plan.issue.Body)
+		}
+		plan.issue.ExternalReferences = nativeSourceReferences("", "", "", 0, "", importedURL, plan.issue.Provenance)
 		if plan.linkedSource != nil {
 			plan.issue.LinkedSource = &tracker.LinkedIssueSource{URL: plan.linkedSource.URL, Status: "pending"}
 			plan.issue.ExternalReferences = append(plan.issue.ExternalReferences, tracker.GitHubIssueSourceReference(plan.linkedSource.URL, plan.linkedSource.URL))
@@ -731,7 +748,23 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 	return raw, nil
 }
 
+type preparedWorkItemRecordMutation struct {
+	plan        workItemRecordPlan
+	browserPath string
+	write       func(tenantstore.Writer) error
+}
+
+func (s *Service) prepareWorkItemRecordMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, commentID string) (preparedWorkItemRecordMutation, json.RawMessage, error) {
+	var prepared preparedWorkItemRecordMutation
+	raw, err := s.runWorkItemRecordMutation(ctx, scope, options, command, input, commentID, nil, &prepared)
+	return prepared, raw, err
+}
+
 func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, commentID string, link *conversationLinkMutation) (json.RawMessage, error) {
+	return s.runWorkItemRecordMutation(ctx, scope, options, command, input, commentID, link, nil)
+}
+
+func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, commentID string, link *conversationLinkMutation, prepared *preparedWorkItemRecordMutation) (json.RawMessage, error) {
 	if s.config.AccessRepository == nil {
 		return nil, workItemStorageUnavailable()
 	}
@@ -746,6 +779,25 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		origin, machine := issueorigin.Parse(request.Body)
 		workerReport := defect && machine && origin.Kind == "worker" && request.State == "Backlog"
 		if (!comment && !editComment && !edit && !workerReport && (!defect || !nativeProgressActor(scope) || scope.progressOrigin == nil)) || link != nil {
+			if defect && link == nil && s.config.TenantRepository != nil {
+				if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+						return err
+					}
+					project, err := r.ProjectRecord(ctx, scope.project)
+					if err != nil {
+						return err
+					}
+					for _, state := range project.States {
+						if state.Name == request.State && state.OperatorOnly {
+							return validateNativeIssueState(scope, tracker.NativeProject{Profile: project.Core.Profile, States: project.States}, request.State, false)
+						}
+					}
+					return nil
+				}); err != nil {
+					return nil, err
+				}
+			}
 			return nil, workItemStorageUnavailable()
 		}
 		if _, err := s.validateRunnerLeaseTenant(ctx, scope, command.LeaseID, command.FencingToken); err != nil {
@@ -757,6 +809,10 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
+	mutationAudit, err := s.prepareWorkItemMutationAudit(ctx, scope, options)
+	if err != nil {
+		return nil, err
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -852,6 +908,18 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				}
 			}
 		}
+		var scheduledOccurrence bool
+		if request, ok := plannedInput.(tracker.CreateIssue); ok && !plan.existing && request.GitHubIssueURL != "" {
+			plan, machineSearch, scheduledOccurrence, err = s.prepareLinkedScheduledDuplicate(ctx, scope, plan, request)
+			if err != nil {
+				return nil, err
+			}
+			machineReused = machineReused || scheduledOccurrence
+		}
+		plan, err = s.prepareLinkedIssueCreation(ctx, scope, plan)
+		if err != nil {
+			return nil, err
+		}
 		var policyRevision policystore.Revision
 		var policyFound bool
 		if plan.requiresIssueContract() && !plan.existing {
@@ -887,7 +955,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				}
 			}
 		}
-		attachmentIDs, err := s.prepareWorkItemAttachmentReferences(ctx, scope, plan)
+		attachmentReferences, err := s.prepareWorkItemAttachmentReferences(ctx, scope, plan)
 		if err != nil {
 			return nil, err
 		}
@@ -920,6 +988,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		if challengeResponse != nil {
 			value = challengeResponse
 		}
+		var browserPath string
 		if issue, ok := value.(tracker.NativeIssue); ok {
 			if !scope.reporterOwns(issue.Actor) {
 				return nil, nativeNotFound()
@@ -936,6 +1005,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				issue.WebURL = ""
 				issue.OmittedFields = append(issue.OmittedFields, "web_url")
 			}
+			browserPath = issue.WebURL
 			value = s.nativeIssueResponse(issue)
 		}
 		raw, err := json.Marshal(value)
@@ -949,6 +1019,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		}
 		var version eventstore.CollaborationVersion
 		var event eventstore.Event
+		var growth workItemGrowth
 		var fields workItemRecordFields
 		var searchDocument searchstore.Document
 		var searchRevision int64
@@ -983,6 +1054,12 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				return nil, err
 			}
 			data := tracker.CollaborationData{Revision: tracker.Revision(revision), Fields: plan.fields}
+			if request, ok := input.(workItemArchive); ok {
+				data.Operation = "restore"
+				if request.Archived {
+					data.Operation = "archive"
+				}
+			}
 			if request, ok := input.(tracker.VerifyFix); ok {
 				if plan.issue.Verification != nil {
 					data.Verification = plan.issue.Verification.State
@@ -1009,13 +1086,12 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			if err != nil {
 				return nil, err
 			}
+			growth, err = workItemMutationGrowth(plan, valueRaw, eventRaw, duplicateLinks)
+			if err != nil {
+				return nil, err
+			}
 		}
-		authority, err := s.beginProjectRecordAuthority(ctx, scope)
-		if err != nil {
-			return nil, err
-		}
-
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		write := func(w tenantstore.Writer) error {
 			if scope.integrationRepository != "" || scope.scheduledRepair != nil {
 				if err := w.LockAccessOrganization(ctx); err != nil {
 					return err
@@ -1105,11 +1181,14 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			}
 			if duplicateSearch != nil && duplicateSearch.available {
 				if err := lockWorkItemDuplicateSource(ctx, w, scope.project, duplicateSearch.sequence); err != nil {
+					if errors.Is(err, corestore.ErrRevisionConflict) {
+						return corestore.ErrSerializationFailure
+					}
 					return err
 				}
 			} else if confirmation != nil {
 				if err := lockWorkItemDuplicateSource(ctx, w, scope.project, confirmation.challenge.SourceSequence); err != nil {
-					if errors.Is(err, searchstore.ErrIndexPending) {
+					if errors.Is(err, searchstore.ErrIndexPending) || errors.Is(err, corestore.ErrRevisionConflict) {
 						return nativeConflict(0)
 					}
 					return err
@@ -1123,6 +1202,15 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				}
 				if current.Revision != int64(candidate.revision) || current.Archived {
 					return nativeConflict(tracker.Revision(current.Revision))
+				}
+				if scheduledOccurrence && plan.comment.ID != "" {
+					_, err := w.CommentBySource(ctx, scope.project, current.NativeID, "github:"+plan.comment.Provenance.ExternalID)
+					if err == nil {
+						return corestore.ErrSerializationFailure
+					}
+					if !errors.Is(err, corestore.ErrNotFound) {
+						return err
+					}
 				}
 			}
 			if options.Feature != "" && !options.Completion {
@@ -1260,29 +1348,13 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 						return err
 					}
 				}
-				if plan.comment.ID != "" && (scope.credential.Scope == apiScopeWorker || len(attachmentIDs) > 0) {
-					limit, err := s.attachmentQuotaLimit(ctx, w)
-					if err != nil {
+				if plan.comment.ID != "" && (scope.credential.Scope == apiScopeWorker || len(attachmentReferences.current) > 0) {
+					if _, err := s.attachmentQuotaLimit(ctx, w); err != nil {
 						return err
 					}
-					data, err := json.Marshal(tracker.CollaborationData{Revision: plan.comment.Revision, CommentID: plan.comment.ID})
-					if err != nil {
-						return err
-					}
-					actor, err := json.Marshal(scope.actor())
-					if err != nil {
-						return err
-					}
-					usage, err := w.AdjustCollaborationBytes(ctx, int64(len(plan.comment.Body)+len(valueRaw)+len(data)+len(actor)), limit)
-					if errors.Is(err, corestore.ErrNotFound) {
-						return attachmentAccountingUnavailable()
-					}
-					if err != nil {
-						return err
-					}
-					if !usage.Allowed {
-						return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
-					}
+				}
+				if err := s.applyWorkItemGrowth(ctx, w, scope.organization, "work-item/"+scope.credential.ID+"/"+options.OperationID+"/"+command.IdempotencyKey, growth, options.Completion); err != nil {
+					return err
 				}
 				if plan.relationship != nil {
 					if err := w.SetRelationship(ctx, *plan.relationship, plan.relationshipOperate, plan.issue.UpdatedAt); err != nil {
@@ -1328,8 +1400,24 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
 					return err
 				}
+				if plan.comment.ID == "" {
+					if err := w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: version.WorkItemID, Revision: version.Revision, VersionSHA256: version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(plan.issue.Body)}); err != nil {
+						return err
+					}
+				}
 				if _, err := w.AppendEvent(ctx, event); err != nil {
 					return err
+				}
+				for _, imported := range plan.linkedComments {
+					if _, err := w.CreateComment(ctx, imported.row); err != nil {
+						return err
+					}
+					if _, err := w.CreateCollaborationVersion(ctx, imported.version); err != nil {
+						return err
+					}
+					if _, err := w.AppendEvent(ctx, imported.event); err != nil {
+						return err
+					}
 				}
 				if machinePriority != nil {
 					if err := machinePriority.write(ctx, w); err != nil {
@@ -1365,10 +1453,8 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				if plan.comment.ID == "" {
 					attachmentItem = plan.issue.WorkItemID
 				}
-				for _, id := range attachmentIDs {
-					if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.project, AttachmentID: id, WorkItemID: attachmentItem, CommentID: plan.comment.ID}); err != nil {
-						return err
-					}
+				if err := w.ReplaceAttachmentReferences(ctx, scope.project, attachmentItem, plan.comment.ID, attachmentReferences.previous, attachmentReferences.current); err != nil {
+					return err
 				}
 			}
 			if link != nil {
@@ -1379,9 +1465,23 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			if err := s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK); err != nil {
 				return err
 			}
+			if mutationAudit != nil {
+				if _, err := w.RecordAccessAudit(ctx, *mutationAudit); err != nil {
+					return err
+				}
+			}
 			_, err = w.PutReceipt(ctx, receipt)
 			return err
-		})
+		}
+		if prepared != nil {
+			*prepared = preparedWorkItemRecordMutation{plan: plan, browserPath: browserPath, write: write}
+			return raw, nil
+		}
+		authority, err := s.beginProjectRecordAuthority(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, write)
 		err = errors.Join(err, releaseWorkItemAuthority(authority))
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) || duplicateSearch != nil && duplicateSearch.available && errors.Is(err, searchstore.ErrIndexPending) {
 			continue
@@ -1401,6 +1501,204 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		s.signalNativeDispatch(scope)
 		return raw, nil
 	}
+}
+
+func (s *Service) prepareLinkedScheduledDuplicate(ctx context.Context, scope nativeScope, plan workItemRecordPlan, request tracker.CreateIssue) (workItemRecordPlan, *workItemDuplicateSearch, bool, error) {
+	verified := scope.scheduledRepair
+	if scope.integrationRepository == "" || verified == nil || verified.importURL != request.GitHubIssueURL || verified.importReason != "" || verified.policyID == "" || request.Title != "" || request.Body != "" || request.Priority != nil {
+		return plan, nil, false, nil
+	}
+	if !slices.ContainsFunc(plan.project.States, func(state tracker.NativeState) bool {
+		return state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly
+	}) {
+		return plan, nil, false, nil
+	}
+	preview := tracker.NativeIssue{Body: verified.importBody, IssueContract: &issuecontract.State{}}
+	if err := s.applyScheduledRepairRecord(ctx, scope, &preview); err != nil {
+		return plan, nil, false, err
+	}
+	if len(preview.IssueContract.ConfirmedSections) == 0 {
+		return plan, nil, false, nil
+	}
+	search, err := s.prepareWorkItemDuplicates(ctx, scope, tracker.CreateIssue{Body: verified.importBody}, true)
+	if err != nil || len(search.matches) == 0 {
+		return plan, search, false, err
+	}
+	candidate := search.matches[0]
+	matched, err := s.loadWorkItemPlan(ctx, scope, string(candidate.WorkItemID), "", tracker.CreateComment{})
+	if err != nil {
+		return plan, search, false, err
+	}
+	if !sameWorkItemProjectPlan(plan.project, matched.project) {
+		return plan, search, false, nativeConflict(0)
+	}
+	if matched.issue.Revision != candidate.revision || matched.issue.Archived {
+		return plan, search, false, nativeConflict(matched.issue.Revision)
+	}
+	if matched.issue.Terminal {
+		matched.existing = true
+		return matched, search, true, nil
+	}
+	externalID := "scheduled:" + verified.evidence.OccurrenceKey
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := r.CommentBySource(ctx, scope.project, matched.current.NativeID, "github:"+externalID)
+		return err
+	})
+	if err == nil {
+		matched.existing = true
+		return matched, search, true, nil
+	}
+	if !errors.Is(err, corestore.ErrNotFound) {
+		return plan, search, false, projectRecordError(err)
+	}
+	now := s.config.now().UTC().Truncate(time.Microsecond)
+	body := fmt.Sprintf("Verified CI report: %s\nRun: %s\nJob: %s\nTested commit: %s\n", verified.importURL, verified.evidence.RunURL, verified.evidence.JobURL, verified.evidence.HeadSHA) + verified.evidence.Stamp()
+	comment := tracker.CreateComment{Body: body, Provenance: &tracker.Provenance{Provider: "github", ExternalID: externalID, AuthorID: "github-actions[bot]", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
+	matched, err = s.planWorkItemRecord(ctx, scope, matched, comment)
+	return matched, search, true, err
+}
+
+func (s *Service) mutateCompatibilityDependency(ctx context.Context, scope nativeScope, source corestore.WorkItem, request operatortool.WorkArguments, command tracker.Mutation) (json.RawMessage, error) {
+	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	scope.action = operatortool.SetDependency
+	operation := operatortool.SetDependency + " " + string(scope.organization) + "/" + string(scope.project) + "/" + request.Identifier
+	hash, err := nativeCommandHash(request)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return nil, err
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	previous, found, err := s.workItemRecordReceipt(ctx, scope, operation, command.IdempotencyKey, hash)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		return content.Receipt(ctx, previous)
+	}
+	if request.RelationshipType != "" && request.RelationshipType != "dependency" {
+		return nil, nativePublicInvalid("Related links require native issue authority")
+	}
+	if request.Operation != "add" && request.Operation != "remove" {
+		return nil, nativePublicInvalid("Dependency operation must be add or remove")
+	}
+	related := tracker.NativeWorkItemID(request.Related)
+	if related == source.NativeID {
+		return nil, nativePublicInvalid("dependency must name another item")
+	}
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.WorkItem(ctx, scope.project, related)
+		if err != nil {
+			return err
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+			return corestore.ErrNotFound
+		}
+		return nil
+	}); err != nil {
+		return nil, projectRecordError(err)
+	}
+
+	raw, err := json.Marshal(mutationResponse{WorkItemID: tracker.WorkItemID(source.ID), Kind: operatortool.SetDependency, Status: "applied"})
+	if err != nil {
+		return nil, err
+	}
+	now := s.config.now().UTC()
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{
+		OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: source.NativeID,
+		ID: newNativeID("evt"), Type: "dependency.changed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now,
+		Data: tracker.CollaborationData{RelatedWorkItemID: related, Operation: request.Operation},
+	})
+	if err != nil {
+		return nil, err
+	}
+	event, err := content.PrepareEvent(ctx, scope.organization, eventRaw)
+	if err != nil {
+		return nil, err
+	}
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{
+		OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation,
+		CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano(),
+	}, raw)
+	if err != nil {
+		return nil, err
+	}
+	replay := false
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockRelationshipGraph(ctx); err != nil {
+			return err
+		}
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
+			return err
+		}
+		project, err := w.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil || project.Profile != "github_compatible" {
+			return corestore.ErrNotFound
+		}
+		current, err := w.WorkItem(ctx, scope.project, source.NativeID)
+		if err != nil {
+			return err
+		}
+		if current.ID != source.ID || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+			return corestore.ErrNotFound
+		}
+		previous, err = w.Receipt(ctx, scope.credential.ID, operation, command.IdempotencyKey)
+		if err == nil {
+			if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= previous.ResponseReplayUntilNs {
+				return receiptstore.ErrExpired
+			}
+			if previous.RequestHash != hash {
+				return nativeConflict(0)
+			}
+			replay = true
+			return s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK)
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		target, err := w.WorkItem(ctx, scope.project, related)
+		if err != nil {
+			return err
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(target.ActorPrincipalID)}) {
+			return corestore.ErrNotFound
+		}
+		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
+			return err
+		}
+		relationship := corestore.Relationship{
+			OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: source.NativeID,
+			RelatedProjectID: scope.project, RelatedWorkItemID: target.NativeID, Type: "dependency", CompatibilityEdge: true,
+		}
+		if err := w.SetRelationship(ctx, relationship, request.Operation, now); err != nil {
+			return err
+		}
+		if _, err := w.AppendEvent(ctx, event); err != nil {
+			return err
+		}
+		if err := s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK); err != nil {
+			return err
+		}
+		_, err = w.PutReceipt(ctx, receipt)
+		return err
+	})
+	if err != nil {
+		return nil, projectRecordError(err)
+	}
+	if replay {
+		return content.Receipt(ctx, previous)
+	}
+	s.signalNativeDispatch(scope)
+	return raw, nil
 }
 
 func (s *Service) workItemRecordReceipt(ctx context.Context, scope nativeScope, operation, key, hash string) (eventstore.Receipt, bool, error) {
@@ -1473,6 +1771,44 @@ func (s *Service) authorizeWorkItemRecordScope(ctx context.Context, reader acces
 	return nil
 }
 
+func workItemMutationGrowth(plan workItemRecordPlan, valueRaw, eventRaw []byte, duplicates []workItemDuplicateLink) (workItemGrowth, error) {
+	growth := workItemGrowth{historyRecords: 2, events: 1}
+	eventBytes, err := collaborationEventChargeBytes(eventRaw)
+	if err != nil {
+		return growth, err
+	}
+	growth.collaborationBytes = int64(len(valueRaw)) + eventBytes
+	if !plan.create {
+		growth.collaborationBytes -= plan.previousFieldBytes
+	}
+	if plan.comment.ID != "" {
+		growth.collaborationBytes += int64(len(plan.comment.Body))
+	} else {
+		fieldBytes, err := issueCollaborationFieldBytes(plan.issue)
+		if err != nil {
+			return growth, err
+		}
+		growth.collaborationBytes += fieldBytes
+		if openWorkItemState(plan.project, plan.issue.Archived, plan.issue.State) {
+			growth.openIssues++
+		}
+		if !plan.create && openWorkItemState(plan.project, plan.current.Archived, stringValue(plan.current.WorkflowStateName)) {
+			growth.openIssues--
+		}
+	}
+	for _, imported := range plan.linkedComments {
+		growth.collaborationBytes += imported.bytes
+		growth.historyRecords += 2
+		growth.events++
+	}
+	for _, duplicate := range duplicates {
+		growth.collaborationBytes += duplicate.bytes
+		growth.historyRecords += 2
+		growth.events++
+	}
+	return growth, nil
+}
+
 func writeWorkItemRecord(ctx context.Context, w tenantstore.Writer, plan workItemRecordPlan, fields workItemRecordFields) error {
 	if plan.comment.ID != "" {
 		current, err := w.LockWorkItem(ctx, plan.current.ProjectID, plan.current.NativeID)
@@ -1493,6 +1829,11 @@ func writeWorkItemRecord(ctx context.Context, w tenantstore.Writer, plan workIte
 		}
 		row := plan.commentRow
 		c := plan.comment
+		if !c.UpdatedAt.IsZero() {
+			row.SourceRevision = int64(c.Revision)
+			row.SourceScheduled = strings.Contains(c.Body, "detent-checks")
+			row.SourceObservedAt = new(c.UpdatedAt.UTC().Truncate(time.Microsecond))
+		}
 		row.OrganizationID, row.ProjectID, row.WorkItemID, row.ID = c.OrganizationID, c.ProjectID, c.WorkItemID, c.ID
 		row.Sequence, row.BodyObjectKey, row.ActorKind, row.ActorPrincipalID = c.Sequence, fields.Body, c.Actor.Kind, c.Actor.PrincipalID
 		row.Deleted = c.Deleted
@@ -1516,6 +1857,11 @@ func writeWorkItemRecord(ctx context.Context, w tenantstore.Writer, plan workIte
 	}
 	issue := plan.issue
 	row := plan.current
+	if !issue.UpdatedAt.IsZero() {
+		row.SourceRevision = int64(issue.Revision)
+		row.SourceScheduled = strings.Contains(issue.Body, "detent-checks")
+		row.SourceObservedAt = new(issue.UpdatedAt.UTC().Truncate(time.Microsecond))
+	}
 	var previousFacts claimstore.WorkItemFacts
 	previousWasDispatchable := !plan.create && dispatchableProjectState(plan.project, stringValue(plan.current.WorkflowStateName))
 	if previousWasDispatchable {
@@ -1642,10 +1988,12 @@ func writeClaimFactsAndQueue(ctx context.Context, w tenantstore.Writer, plan wor
 	}
 	entry.OrganizationID, entry.ProjectID, entry.WorkItemID = issue.OrganizationID, issue.ProjectID, issue.WorkItemID
 	entry.Scope, entry.State, entry.UpdatedAt = scope, issue.State, issue.UpdatedAt
-	entry.Priority = nil
-	if issue.Priority != nil {
-		priority := int64(*issue.Priority)
-		entry.Priority = &priority
+	if issue.Profile != "github_compatible" {
+		entry.Priority = nil
+		if issue.Priority != nil {
+			priority := int64(*issue.Priority)
+			entry.Priority = &priority
+		}
 	}
 	return w.PutQueueEntry(ctx, entry)
 }

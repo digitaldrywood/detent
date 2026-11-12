@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -521,6 +524,17 @@ func TestLocalGitReworkPreservesIncorporatedSource(t *testing.T) {
 }
 
 func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
+	if address := os.Getenv("DETENT_WORKSPACE_STALLED_SIGNER"); address != "" {
+		connection, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer connection.Close()
+		if _, err := io.Copy(io.Discard, connection); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
@@ -650,13 +664,61 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 				runGit(t, source, "config", "gpg.program", filepath.Join(home, "unavailable-gpg"))
 			}
 			pinentry := filepath.Join(home, "pinentry-called")
+			var signerReady net.Listener
 			if test.gpg != "" {
-				configureGPGCommitFixture(t, source, test.gpg, pinentry)
+				signerReady = configureGPGCommitFixture(t, source, test.gpg, pinentry)
 			}
 			if test.gpgsign != "" {
 				runGit(t, source, "config", "commit.gpgsign", test.gpgsign)
 			}
-			backend, err = NewBackend(KindLocalGit, LocalGitOptions{Root: filepath.Dir(info.Path), SourceRoot: source, AutoBranch: true, CommitIdentity: CommitIdentity{Name: "Enrolled runner", Email: "machine_fixture@runners.detent.invalid"}})
+			options := LocalGitOptions{Root: filepath.Dir(info.Path), SourceRoot: source, AutoBranch: true, CommitIdentity: CommitIdentity{Name: "Enrolled runner", Email: "machine_fixture@runners.detent.invalid"}}
+			if signerReady == nil {
+				backend, err = NewBackend(KindLocalGit, options)
+			} else {
+				release := testenv.WaitContext(t, t.Context())
+				if deadline, ok := release.Deadline(); ok {
+					if err := signerReady.(*net.TCPListener).SetDeadline(deadline); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				done := make(chan struct{})
+				var connection net.Conn
+				t.Cleanup(func() {
+					cancel()
+					_ = signerReady.Close()
+					if connection != nil {
+						_ = connection.Close()
+					}
+					<-done
+				})
+				go func() {
+					backend, err = NewBackendContext(ctx, KindLocalGit, options)
+					_ = signerReady.Close()
+					close(done)
+				}()
+				var readyErr error
+				connection, readyErr = signerReady.Accept()
+				if readyErr != nil {
+					t.Fatalf("signer did not reach readiness: %v", readyErr)
+				}
+				if deadline, ok := release.Deadline(); ok {
+					if err := connection.SetReadDeadline(deadline); err != nil {
+						t.Fatal(err)
+					}
+				}
+				cancel()
+				select {
+				case <-done:
+				case <-release.Done():
+					_ = connection.Close()
+					<-done
+					t.Fatal("constructor did not return after caller cancellation")
+				}
+				if n, readErr := connection.Read(make([]byte, 1)); n != 0 || readErr != io.EOF {
+					t.Fatalf("cancelled signer did not exit: bytes=%d error=%v", n, readErr)
+				}
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -855,7 +917,7 @@ func assertRunnerCommitPolicy(t *testing.T, path, head, identity string, signed 
 	}
 }
 
-func configureGPGCommitFixture(t *testing.T, source, mode, pinentry string) {
+func configureGPGCommitFixture(t *testing.T, source, mode, pinentry string) net.Listener {
 	t.Helper()
 	program, err := exec.LookPath("gpg")
 	if err != nil {
@@ -891,8 +953,15 @@ func configureGPGCommitFixture(t *testing.T, source, mode, pinentry string) {
 			t.Errorf("stop isolated signing agent: %v: %s", err, output)
 		}
 	}
+	var signerReady net.Listener
 	if mode == "stalled" {
-		if err := os.WriteFile(signer, []byte("#!/bin/sh\nexec sleep 60\n"), 0o700); err != nil {
+		signerReady, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = signerReady.Close() })
+		script := "#!/bin/sh\nGOCOVERDIR=" + shellQuote(t.TempDir()) + " DETENT_WORKSPACE_STALLED_SIGNER=" + shellQuote(signerReady.Addr().String()) + " exec " + shellQuote(os.Args[0]) + " -test.run='^TestLocalGitNativeWorkDisablesTrackedHooks$'\n"
+		if err := os.WriteFile(signer, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -920,6 +989,7 @@ func configureGPGCommitFixture(t *testing.T, source, mode, pinentry string) {
 		key = "unavailable@example.com"
 	}
 	runGit(t, source, "config", "user.signingkey", key)
+	return signerReady
 }
 
 func TestLocalGitReworkPreparation(t *testing.T) {

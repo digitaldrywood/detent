@@ -248,6 +248,9 @@ func TestSessionTerminalCloseEndsTheShell(t *testing.T) {
 
 	f := startSession(t, withTerminal)
 	openTerminal(t, f, "conn:1")
+	f.send(t, terminalFrame(t, workspacesession.TypeTerminalInput, "conn:1",
+		workspacesession.TerminalInput{Data: "trap 'exit 129' HUP; printf 'terminal-%s\\n' ready\n"}))
+	awaitTerminalOutput(t, f, "terminal-ready")
 
 	// A close is what a person's own close carries and what the hub's sweep
 	// sends once a parked stream has gone unresumed for the window. Neither is
@@ -259,10 +262,8 @@ func TestSessionTerminalCloseEndsTheShell(t *testing.T) {
 	if !closed {
 		t.Fatal("a closed terminal never gave its stream back")
 	}
-	// A shell killed by a hangup has no exit code of its own; the signal is
-	// what says how it ended.
-	if exit.Code == 0 && exit.Signal == "" {
-		t.Fatalf("exit = %+v, want a signal or a non-zero code for a hung-up shell", exit)
+	if exit.Code != 129 || exit.Signal != "" {
+		t.Fatalf("exit = %+v, want the established shell hangup trap to exit 129", exit)
 	}
 }
 

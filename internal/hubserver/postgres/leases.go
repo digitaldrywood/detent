@@ -42,7 +42,7 @@ func (s *session) RegisterMachine(ctx context.Context, machine leasestore.Machin
 	if err := s.checkOrganization(machine.OrganizationID); err != nil {
 		return err
 	}
-	return mapError(ctx, s.queries.RegisterLeaseMachine(ctx, pgquery.RegisterLeaseMachineParams(machine)))
+	return mapError(ctx, s.queries.RegisterLeaseMachine(ctx, pgquery.RegisterLeaseMachineParams{OrganizationID: machine.OrganizationID, ID: machine.ID, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, SpriteName: machine.SpriteName}))
 }
 
 func (s *session) HeartbeatMachine(ctx context.Context, machine leasestore.Machine, at time.Time) error {
@@ -55,13 +55,13 @@ func (s *session) HeartbeatMachine(ctx context.Context, machine leasestore.Machi
 
 func (s *session) Machine(ctx context.Context, id string) (leasestore.Machine, error) {
 	var machine leasestore.Machine
-	err := s.db.QueryRow(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version,sprite_name FROM machines WHERE organization_id=$1 AND id=$2`, s.organization, id).Scan(&machine.OrganizationID, &machine.ID, &machine.Hostname, &machine.DisplayName, &machine.Capacity, &machine.Version, &machine.SpriteName)
+	err := s.db.QueryRow(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version,sprite_name,sprite_woken_at,sprite_wake_failed_at FROM machines WHERE organization_id=$1 AND id=$2`, s.organization, id).Scan(&machine.OrganizationID, &machine.ID, &machine.Hostname, &machine.DisplayName, &machine.Capacity, &machine.Version, &machine.SpriteName, &machine.SpriteWokenAt, &machine.SpriteWakeFailedAt)
 	return machine, mapError(ctx, err)
 }
 
 func (s *session) LockMachine(ctx context.Context, id string) (leasestore.Machine, error) {
 	var machine leasestore.Machine
-	err := s.db.QueryRow(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version,sprite_name FROM machines WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, id).Scan(&machine.OrganizationID, &machine.ID, &machine.Hostname, &machine.DisplayName, &machine.Capacity, &machine.Version, &machine.SpriteName)
+	err := s.db.QueryRow(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version,sprite_name,sprite_woken_at,sprite_wake_failed_at FROM machines WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, id).Scan(&machine.OrganizationID, &machine.ID, &machine.Hostname, &machine.DisplayName, &machine.Capacity, &machine.Version, &machine.SpriteName, &machine.SpriteWokenAt, &machine.SpriteWakeFailedAt)
 	return machine, mapError(ctx, err)
 }
 
@@ -74,7 +74,7 @@ func (s *session) LeaseBySession(ctx context.Context, sessionID string) (leasest
 	if strings.TrimSpace(sessionID) == "" {
 		return leasestore.Lease{}, tracker.ErrInvalidClaimRequest
 	}
-	statement := `SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason
+	statement := `SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason,project_id,runner_id
  FROM leases WHERE organization_id=$1 AND session_id=$2`
 	if !s.readOnly {
 		statement += ` FOR UPDATE`
@@ -82,7 +82,7 @@ func (s *session) LeaseBySession(ctx context.Context, sessionID string) (leasest
 	var row leasestore.Lease
 	err := s.db.QueryRow(ctx, statement, s.organization, sessionID).Scan(
 		&row.OrganizationID, &row.LeaseID, &row.FencingToken, &row.IssueID, &row.MachineID, &row.SessionID,
-		&row.WorkItemRevision, &row.LandingCapacity, &row.AcquiredAt, &row.RenewedAt, &row.ExpiresAt, &row.ReleasedAt, &row.ReleaseReason,
+		&row.WorkItemRevision, &row.LandingCapacity, &row.AcquiredAt, &row.RenewedAt, &row.ExpiresAt, &row.ReleasedAt, &row.ReleaseReason, &row.ProjectID, &row.RunnerID,
 	)
 	if err != nil {
 		return leasestore.Lease{}, mapError(ctx, err)
@@ -94,7 +94,11 @@ func (s *session) ActiveLeaseForIssue(ctx context.Context, issueID int64) (lease
 	if issueID <= 0 {
 		return leasestore.Lease{}, tracker.ErrInvalidWorkItemID
 	}
-	row, err := s.queries.GetActiveIssueLease(ctx, pgquery.GetActiveIssueLeaseParams{OrganizationID: s.organization, IssueID: issueID})
+	var clock *time.Time
+	if s.leaseClock != nil {
+		clock = new(s.leaseClock().UTC())
+	}
+	row, err := s.queries.GetActiveIssueLease(ctx, pgquery.GetActiveIssueLeaseParams{OrganizationID: s.organization, IssueID: issueID, LeaseClock: clock})
 	return leasestore.Lease(row), mapError(ctx, err)
 }
 
@@ -112,6 +116,12 @@ func attemptFromPG(row pgquery.NativeAttempt) leasestore.Attempt {
 		PayloadObjectKey: row.PayloadObjectKey, CheckpointObjectKey: row.CheckpointObjectKey,
 		ArtifactsObjectKey: row.ArtifactsObjectKey, CleanupAcknowledgedAt: row.CleanupAcknowledgedAt,
 		StartedAt: row.StartedAt.Add(time.Duration(row.StartedAtSubmicroNs)), UpdatedAt: row.UpdatedAt, RuntimeHeartbeatAt: row.RuntimeHeartbeatAt,
+	}
+	if row.WorkerCleanupRequired.Valid {
+		result.WorkerCleanupRequired = new(row.WorkerCleanupRequired.Bool)
+	}
+	if row.CheckpointPreservesSource.Valid {
+		result.CheckpointPreservesSource = new(row.CheckpointPreservesSource.Bool)
 	}
 	if row.LocalAttemptID.Valid {
 		result.LocalAttemptID = row.LocalAttemptID.Int64
@@ -148,6 +158,17 @@ func (s *session) LatestAttempt(ctx context.Context, issueID int64) (leasestore.
 	return attemptFromPG(row), mapError(ctx, err)
 }
 
+func (s *session) LeaseLossCandidate(ctx context.Context, issueID int64, includeReleased bool) (leasestore.Attempt, error) {
+	var clock *time.Time
+	if s.leaseClock != nil {
+		clock = new(s.leaseClock().UTC())
+	}
+	row, err := s.queries.GetLeaseLossCandidate(ctx, pgquery.GetLeaseLossCandidateParams{
+		OrganizationID: s.organization, IssueID: issueID, IncludeReleased: includeReleased, LeaseClock: clock,
+	})
+	return attemptFromPG(row), mapError(ctx, err)
+}
+
 func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
 	page := leasestore.AttemptPage{Items: []leasestore.Attempt{}}
 	if issueID <= 0 {
@@ -156,7 +177,7 @@ func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasest
 	if err := checkPage(limit); err != nil {
 		return page, err
 	}
-	if cursor != (leasestore.AttemptCursor{}) && (cursor.IssueID != issueID || cursor.Oldest && (cursor.AfterFence < 0 || cursor.BeforeFence != 0) || !cursor.Oldest && (cursor.BeforeFence <= 0 || cursor.AfterFence != 0)) {
+	if cursor != (leasestore.AttemptCursor{}) && (cursor.IssueID != issueID || cursor.ThroughFence < 0 || cursor.Oldest && (cursor.AfterFence < 0 || cursor.BeforeFence != 0 || cursor.ThroughFence != 0 && cursor.AfterFence > cursor.ThroughFence) || !cursor.Oldest && (cursor.BeforeFence <= 0 || cursor.AfterFence != 0 || cursor.ThroughFence != 0)) {
 		return page, corestore.ErrInvalidCursor
 	}
 	if cursor.Oldest {
@@ -164,6 +185,7 @@ func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasest
 			OrganizationID: s.organization,
 			IssueID:        issueID,
 			AfterFence:     cursor.AfterFence,
+			ThroughFence:   cursor.ThroughFence,
 			PageLimit:      int32(limit + 1),
 		})
 		if err != nil {
@@ -171,7 +193,7 @@ func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasest
 		}
 		if len(rows) > limit {
 			rows = rows[:limit]
-			page.Next = leasestore.AttemptCursor{IssueID: issueID, AfterFence: rows[len(rows)-1].FencingToken, Oldest: true}
+			page.Next = leasestore.AttemptCursor{IssueID: issueID, AfterFence: rows[len(rows)-1].FencingToken, ThroughFence: cursor.ThroughFence, Oldest: true}
 		}
 		page.Items = make([]leasestore.Attempt, len(rows))
 		for i, row := range rows {
@@ -197,6 +219,24 @@ func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasest
 		page.Items[i] = attemptFromPG(row)
 	}
 	return page, nil
+}
+
+func (s *session) SourceCheckpointAttempt(ctx context.Context, issueID int64) (leasestore.Attempt, error) {
+	if issueID <= 0 {
+		return leasestore.Attempt{}, tracker.ErrInvalidWorkItemID
+	}
+	rows, err := s.db.Query(ctx, `SELECT organization_id,id,project_id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,updated_at,started_at_submicro_ns,runner_tokens_recorded,cleanup_acknowledged_at,runtime_heartbeat_at,runtime_summary_sequence,claim_disposition,local_attempt_id,local_attempt_id_recorded,checkpoint_preserves_source,worker_cleanup_required,usage_pending_sequence,usage_projected_sequence
+FROM native_attempts WHERE organization_id=$1 AND issue_id=$2
+AND checkpoint_object_key IS NOT NULL AND checkpoint_preserves_source IS DISTINCT FROM FALSE
+ORDER BY fencing_token DESC LIMIT 1`, s.organization, issueID)
+	if err != nil {
+		return leasestore.Attempt{}, mapError(ctx, err)
+	}
+	row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[pgquery.NativeAttempt])
+	if err != nil {
+		return leasestore.Attempt{}, mapError(ctx, err)
+	}
+	return attemptFromPG(row), nil
 }
 
 func (s *session) CheckpointAttemptPage(ctx context.Context, issueID int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
@@ -243,6 +283,15 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 	if request.IssueID <= 0 || request.ExpectedRevision <= 0 || strings.TrimSpace(request.LeaseID) == "" || strings.TrimSpace(request.MachineID) == "" || strings.TrimSpace(request.SessionID) == "" || request.TTL < time.Microsecond || request.LandingCapacity < 0 {
 		return leasestore.Lease{}, tracker.ErrInvalidClaimRequest
 	}
+	if request.RunnerID != "" {
+		identity, err := s.runnerIdentityRow(ctx, `runner_id=$2`, request.RunnerID)
+		if err != nil {
+			return leasestore.Lease{}, err
+		}
+		if string(identity.MachineID) != request.MachineID || identity.RemovedAt != nil {
+			return leasestore.Lease{}, corestore.ErrNotFound
+		}
+	}
 	issue, err := s.queries.LockClaimIssue(ctx, pgquery.LockClaimIssueParams{OrganizationID: s.organization, ID: request.IssueID})
 	if err != nil {
 		return leasestore.Lease{}, mapError(ctx, err)
@@ -258,6 +307,9 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 	}
 	if found && current.ExpiresAt.After(now) {
 		if current.MachineID == request.MachineID && current.SessionID == request.SessionID {
+			if request.RunnerID != "" && current.RunnerID != nil && *current.RunnerID != request.RunnerID {
+				return leasestore.Lease{}, tracker.ErrLeaseConflict
+			}
 			if request.LandingCapacity > current.LandingCapacity {
 				current, err = s.queries.UpdateLeaseLandingCapacity(ctx, pgquery.UpdateLeaseLandingCapacityParams{OrganizationID: s.organization, LeaseID: current.LeaseID, FencingToken: current.FencingToken, LandingCapacity: request.LandingCapacity})
 				if err != nil {
@@ -272,7 +324,18 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 		return leasestore.Lease{}, corestore.ErrRevisionConflict
 	}
 	if found {
-		if _, err := s.expire(ctx, current, now); err != nil {
+		if _, err := s.expire(ctx, current, now, request.PreviousAttemptCancellation); err != nil {
+			return leasestore.Lease{}, err
+		}
+	} else if cancellation := request.PreviousAttemptCancellation; cancellation != nil {
+		previous, err := s.queries.GetLease(ctx, pgquery.GetLeaseParams{OrganizationID: s.organization, LeaseID: cancellation.Attempt.Fence.LeaseID})
+		if err != nil {
+			return leasestore.Lease{}, mapError(ctx, err)
+		}
+		if previous.IssueID != request.IssueID || previous.ReleasedAt == nil {
+			return leasestore.Lease{}, corestore.ErrSerializationFailure
+		}
+		if err := s.settleLostAttempt(ctx, leasestore.Lease(previous), cancellation); err != nil {
 			return leasestore.Lease{}, err
 		}
 	}
@@ -280,11 +343,19 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 		OrganizationID: s.organization, LeaseID: request.LeaseID, IssueID: request.IssueID,
 		MachineID: request.MachineID, SessionID: request.SessionID, WorkItemRevision: issue.Revision,
 		LandingCapacity: request.LandingCapacity, Now: now, ExpiresAt: now.Add(request.TTL),
+		ProjectID: new(issue.ProjectID), RunnerID: request.RunnerID,
 	})
 	if err != nil {
 		return leasestore.Lease{}, mapError(ctx, err)
 	}
-	return leasestore.Lease(row), s.heartbeat(ctx, row.MachineID, now)
+	return leasestore.Lease{
+		OrganizationID: row.OrganizationID, LeaseID: row.LeaseID, FencingToken: row.FencingToken,
+		IssueID: row.IssueID, MachineID: row.MachineID, SessionID: row.SessionID,
+		WorkItemRevision: row.WorkItemRevision, LandingCapacity: row.LandingCapacity,
+		AcquiredAt: row.AcquiredAt, RenewedAt: row.RenewedAt, ExpiresAt: row.ExpiresAt,
+		ReleasedAt: row.ReleasedAt, ReleaseReason: row.ReleaseReason,
+		ProjectID: row.LeaseProjectID, RunnerID: row.RunnerID,
+	}, s.heartbeat(ctx, row.MachineID, now)
 }
 
 func (s *session) AdvanceLeaseWorkItemRevision(ctx context.Context, fence leasestore.Fence, issueID, previous, next int64) error {
@@ -337,7 +408,37 @@ func (s *session) Release(ctx context.Context, fence leasestore.Fence, reason st
 }
 
 func (s *session) Expire(ctx context.Context, fence leasestore.Fence) (leasestore.Lease, error) {
-	return s.mutateLease(ctx, fence, "expire", 0, 0, "expired")
+	return s.ExpireWithCancellation(ctx, fence, nil)
+}
+
+func (s *session) ExpireWithCancellation(ctx context.Context, fence leasestore.Fence, cancellation *leasestore.AttemptCancellation) (leasestore.Lease, error) {
+	if strings.TrimSpace(fence.LeaseID) == "" || fence.FencingToken <= 0 {
+		return leasestore.Lease{}, tracker.ErrInvalidLeaseRequest
+	}
+	row, err := s.queries.LockLeaseExpiryScope(ctx, pgquery.LockLeaseExpiryScopeParams{
+		OrganizationID: s.organization, LeaseID: fence.LeaseID, FencingToken: fence.FencingToken,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return leasestore.Lease{}, tracker.ErrStaleFencingToken
+	}
+	if err != nil {
+		return leasestore.Lease{}, mapError(ctx, err)
+	}
+	if err := s.settleLostAttempt(ctx, leasestore.Lease(row), cancellation); err != nil {
+		return leasestore.Lease{}, err
+	}
+	expired, err := s.mutateLease(ctx, fence, "expire", 0, 0, "expired")
+	if !errors.Is(err, tracker.ErrStaleFencingToken) {
+		return expired, err
+	}
+	pending, readErr := s.LeaseLossCandidate(ctx, row.IssueID, false)
+	if readErr != nil && !errors.Is(readErr, corestore.ErrNotFound) {
+		return leasestore.Lease{}, readErr
+	}
+	if pending.LeaseID == fence.LeaseID && pending.FencingToken == fence.FencingToken {
+		return leasestore.Lease{}, corestore.ErrSerializationFailure
+	}
+	return leasestore.Lease{}, err
 }
 
 func (s *session) mutateLease(ctx context.Context, fence leasestore.Fence, operation string, ttl time.Duration, landingCapacity int64, reason string) (leasestore.Lease, error) {
@@ -368,36 +469,27 @@ func (s *session) mutateLease(ctx context.Context, fence leasestore.Fence, opera
 		WorkItemRevision: row.WorkItemRevision, LandingCapacity: row.LandingCapacity,
 		AcquiredAt: row.AcquiredAt, RenewedAt: row.RenewedAt, ExpiresAt: row.ExpiresAt,
 		ReleasedAt: row.ReleasedAt, ReleaseReason: row.ReleaseReason,
+		ProjectID: row.LeaseProjectID, RunnerID: row.RunnerID,
 	}, nil
 }
 
-func (s *session) expire(ctx context.Context, row pgquery.Lease, now time.Time) (leasestore.Lease, error) {
+func (s *session) expire(ctx context.Context, row pgquery.Lease, now time.Time, cancellation *leasestore.AttemptCancellation) (leasestore.Lease, error) {
+	if err := s.settleLostAttempt(ctx, leasestore.Lease(row), cancellation); err != nil {
+		return leasestore.Lease{}, err
+	}
 	row, err := s.queries.ExpireLease(ctx, pgquery.ExpireLeaseParams{
 		OrganizationID: s.organization, LeaseID: row.LeaseID, FencingToken: row.FencingToken, Now: now,
 	})
-	if err != nil {
-		return leasestore.Lease{}, leaseMutationError(ctx, err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return leasestore.Lease{}, corestore.ErrSerializationFailure
 	}
-	return leasestore.Lease(row), s.cancelAttempt(ctx, row, now)
-}
-
-func (s *session) cancelAttempt(ctx context.Context, row pgquery.Lease, now time.Time) error {
-	return mapError(ctx, s.queries.CancelLeaseAttempt(ctx, pgquery.CancelLeaseAttemptParams{
-		OrganizationID: s.organization, LeaseID: row.LeaseID, FencingToken: row.FencingToken, UpdatedAt: now,
-	}))
+	return leasestore.Lease(row), mapError(ctx, err)
 }
 
 func (s *session) heartbeat(ctx context.Context, machine string, now time.Time) error {
 	return mapError(ctx, s.queries.HeartbeatLeaseMachine(ctx, pgquery.HeartbeatLeaseMachineParams{
 		OrganizationID: s.organization, ID: machine, LastHeartbeatAt: now,
 	}))
-}
-
-func leaseMutationError(ctx context.Context, err error) error {
-	if errors.Is(err, pgx.ErrNoRows) {
-		return tracker.ErrStaleFencingToken
-	}
-	return mapError(ctx, err)
 }
 
 func (s *session) RegisterOwnedMachine(ctx context.Context, machine leasestore.Machine, token string) error {
@@ -551,4 +643,14 @@ func (s *session) LeaseMutationPolicies(ctx context.Context, project tracker.Pro
 		return policystore.LeasePolicy{}, nil, corestore.ErrNotFound
 	}
 	return pinned, policies, nil
+}
+
+func (s *session) UpdateMachineSpriteWake(ctx context.Context, wake leasestore.SpriteWake) error {
+	if wake.MachineID == "" || wake.RunnerID == "" || wake.Name == "" || wake.ObservedAt.IsZero() || wake.WokenAt != nil && wake.WokenAt.After(wake.ObservedAt) || wake.FailedAt != nil && wake.FailedAt.After(wake.ObservedAt) {
+		return corestore.ErrInvalidPage
+	}
+	result, err := s.db.Exec(ctx, `UPDATE machines m SET sprite_wake_failed_at=$5,sprite_woken_at=COALESCE($6,sprite_woken_at),updated_at=GREATEST(updated_at,$7)
+WHERE m.organization_id=$1 AND m.id=$2 AND m.sprite_name=$3 AND m.hostname=$3
+AND EXISTS (SELECT 1 FROM runner_identities r WHERE r.organization_id=m.organization_id AND r.runner_id=$4 AND r.machine_id=m.id AND r.removed_at IS NULL)`, s.organization, wake.MachineID, wake.Name, wake.RunnerID, wake.FailedAt, wake.WokenAt, wake.ObservedAt)
+	return updateOwned(ctx, result, err)
 }

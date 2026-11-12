@@ -62,7 +62,7 @@ func (q *Queries) ReleaseDeliveryFacts(ctx context.Context, arg ReleaseDeliveryF
 }
 
 const releaseSourceReviews = `-- name: ReleaseSourceReviews :many
-SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, review_kind, review_landing, review_session_known, review_session_id, review_session_machine FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND version_id=$3 AND kind='review' ORDER BY sequence DESC LIMIT 32
+SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, review_kind, review_landing, review_session_known, review_session_id, review_session_machine, project_id, quality_at FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND version_id=$3 AND kind='review' ORDER BY sequence DESC LIMIT 32
 `
 
 type ReleaseSourceReviewsParams struct {
@@ -101,6 +101,8 @@ func (q *Queries) ReleaseSourceReviews(ctx context.Context, arg ReleaseSourceRev
 			&i.ReviewSessionKnown,
 			&i.ReviewSessionID,
 			&i.ReviewSessionMachine,
+			&i.ProjectID,
+			&i.QualityAt,
 		); err != nil {
 			return nil, err
 		}

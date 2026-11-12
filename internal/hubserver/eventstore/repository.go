@@ -54,6 +54,10 @@ type Event struct {
 	Report               *reportstore.EventProjection
 }
 
+type ProjectEventPageReader interface {
+	ProjectEvents(context.Context, tracker.ProjectID, int64, int) ([]Event, error)
+}
+
 type HistoryReader interface {
 	HistoryEvents(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 	HistoryEventsBefore(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
@@ -66,6 +70,9 @@ type ProjectChange struct {
 }
 
 type CollaborationVersion struct {
+	SourceKnown         bool
+	SourceScheduled     bool
+	SourceObservedAt    time.Time
 	OrganizationID      tracker.OrganizationID
 	ProjectID           tracker.ProjectID
 	WorkItemID          tracker.NativeWorkItemID
@@ -133,6 +140,8 @@ type Link struct {
 }
 
 type Version struct {
+	FrozenLanding         *VersionLanding `json:"-"`
+	LandingHistoryKnown   bool            `json:"-"`
 	OrganizationID        tracker.OrganizationID
 	ID                    string
 	ChangeID              string
@@ -198,6 +207,7 @@ type ReleaseDelivery struct {
 }
 
 type PolicyLanding struct {
+	Native         *VersionLanding
 	ChangeID       string
 	PullRequestURL string
 	Actor          string
@@ -258,6 +268,7 @@ type LinkedSource struct {
 type Receipt = receiptstore.Record
 
 type Reader interface {
+	RunEvent(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Event, error)
 	LatestEventRecordedAt(context.Context) (*time.Time, error)
 	HistoryReader
 	PRPublication(context.Context, string) (NativePRPublication, error)
@@ -277,6 +288,7 @@ type Reader interface {
 	CollaborationVersion(context.Context, string, int64) (CollaborationVersion, error)
 	Change(context.Context, string) (Change, error)
 	LatestChange(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Change, error)
+	WorkItemPullRequestVersion(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (PullRequestVersion, error)
 	ProjectPolicyLanding(context.Context, tracker.ProjectID, string, string, string) (PolicyLanding, error)
 	Changes(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int) ([]Change, error)
 	Versions(context.Context, string, int64, int) ([]Version, error)
@@ -300,6 +312,8 @@ type Writer interface {
 	CreateChange(context.Context, Change) (Change, error)
 	UpdateChange(context.Context, Change) (Change, error)
 	CreateVersion(context.Context, Version) (Version, error)
+	RecordVersionLanding(context.Context, VersionLanding) error
+	ConfirmVersionUnlanded(context.Context, string, string, string) error
 	AppendEvidence(context.Context, Evidence) (Evidence, error)
 	CreateLinkedSource(context.Context, LinkedSource) (LinkedSource, error)
 	UpdateLinkedSource(context.Context, LinkedSource) (LinkedSource, error)
@@ -310,10 +324,29 @@ type Repository interface {
 	WriteRecords(context.Context, tracker.OrganizationID, corestore.Workload, func(Writer) error) error
 }
 
+type PullRequestVersion struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+	ChangeID       string
+	VersionID      string
+	Number         int64
+	HeadSHA        string
+	Repository     string
+	PolicyID       string
+	AttemptID      string
+	External       tracker.ChangeExternalReference
+}
+
 type ChangeRecoveryReader interface {
 	ChangeSummaryEvidence(context.Context, string, string, int64, []string) ([]Evidence, bool, error)
+	RecoveryChangeEvidence(context.Context, string, string, int64, []string) ([]Evidence, bool, error)
 	ChangePublicationCheckpoints(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, tracker.NativeChangeReference) ([]Event, error)
 	ChangePublicationProvenance(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, tracker.NativeRunData) (bool, error)
+}
+
+type ChangeGateEvidenceReader interface {
+	CurrentVersionGateEvidence(context.Context, string, string, int64) ([]Evidence, error)
 }
 
 type ChangeReviewEvidenceReader interface {
@@ -349,4 +382,181 @@ type SchedulerDecisionReader interface {
 	SchedulerDecisions(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (SchedulerDecisionRows, error)
 	SchedulerDecision(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Event, error)
 	LatestClaimedSchedulerDecision(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Event, error)
+}
+
+type RunEventBatchReader interface {
+	LatestRunEvents(context.Context, tracker.ProjectID, []string) ([]Event, error)
+}
+
+type AnalyticsSchedulerCursor struct {
+	At time.Time `json:"at"`
+	ID string    `json:"id"`
+}
+
+type AnalyticsSchedulerQuery struct {
+	ProjectID tracker.ProjectID
+	Principal string
+	From      time.Time
+	To        time.Time
+	Outcome   string
+	After     AnalyticsSchedulerCursor
+	Limit     int
+}
+
+type AnalyticsSchedulerPage struct {
+	Events   []Event
+	Prior    map[string]Event
+	Examined int
+	Next     AnalyticsSchedulerCursor
+	Partial  bool
+}
+
+type AnalyticsSchedulerReader interface {
+	ReadAnalyticsSchedulerPage(context.Context, AnalyticsSchedulerQuery) (AnalyticsSchedulerPage, error)
+}
+
+type VersionLanding struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	WorkItemID           tracker.NativeWorkItemID
+	ChangeID             string
+	VersionID            string
+	At                   time.Time
+	HeadSHA              string
+	MergeSHA             string
+	BaseRef              string
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	PayloadFormatVersion int16
+}
+
+type VersionLandingReader interface {
+	VersionLanding(context.Context, string, string) (VersionLanding, error)
+}
+
+func VersionLandingFromChange(row Change) (VersionLanding, error) {
+	if row.OrganizationID == "" || row.ProjectID == "" || row.WorkItemID == "" || row.ID == "" || row.LandedVersionID == nil || *row.LandedVersionID == "" || row.LandedAt == nil || row.LandedAt.IsZero() || row.LandedHeadSHA == nil || *row.LandedHeadSHA == "" || row.LandedMergeSHA == nil || *row.LandedMergeSHA == "" || row.LandedBaseRef == nil || *row.LandedBaseRef == "" {
+		return VersionLanding{}, ErrInvalidRecord
+	}
+	return VersionLanding{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, ChangeID: row.ID, VersionID: *row.LandedVersionID, At: *row.LandedAt, HeadSHA: *row.LandedHeadSHA, MergeSHA: *row.LandedMergeSHA, BaseRef: *row.LandedBaseRef, PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256, PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes, PayloadFormatVersion: 1}, nil
+}
+
+type AnalyticsResidenceQuery struct {
+	ProjectID           tracker.ProjectID
+	Principal           string
+	From, To            time.Time
+	Limit               int
+	Live                bool
+	IssuesAfter         tracker.NativeWorkItemID
+	EventsAfterItem     tracker.NativeWorkItemID
+	EventsAfterSequence int64
+}
+
+type AnalyticsResidenceIssue struct {
+	WorkItemID   tracker.NativeWorkItemID
+	CreatedAt    time.Time
+	InitialState string
+}
+
+type AnalyticsResidencePage struct {
+	States                 []tracker.NativeState
+	Issues                 []AnalyticsResidenceIssue
+	Events                 []Event
+	IssuesAfter            tracker.NativeWorkItemID
+	EventsAfterItem        tracker.NativeWorkItemID
+	EventsAfterSequence    int64
+	IssuesMore, EventsMore bool
+}
+
+type AnalyticsResidenceReader interface {
+	ReadAnalyticsResidencePage(context.Context, AnalyticsResidenceQuery) (AnalyticsResidencePage, error)
+}
+
+type AnalyticsLandingCursor struct {
+	At                  time.Time
+	ChangeID, VersionID string
+}
+type AnalyticsLandingQuery struct {
+	ProjectID       tracker.ProjectID
+	Principal       string
+	From, To        time.Time
+	Limit           int
+	AllVersions     bool
+	After           AnalyticsLandingCursor
+	ReopenedItems   []tracker.NativeWorkItemID
+	EscapedVersions []string
+}
+type AnalyticsLandingPage struct {
+	Items                   []VersionLanding
+	Next                    AnalyticsLandingCursor
+	Partial, HistoryUnknown bool
+}
+type AnalyticsLandingReader interface {
+	ReadAnalyticsLandingPage(context.Context, AnalyticsLandingQuery) (AnalyticsLandingPage, error)
+}
+
+type AnalyticsWorkflowCursor struct {
+	At       time.Time
+	Sequence int64
+	ID       string
+}
+type AnalyticsWorkflowQuery struct {
+	ProjectID tracker.ProjectID
+	Principal string
+	From, To  time.Time
+	Limit     int
+	After     AnalyticsWorkflowCursor
+}
+type AnalyticsWorkflowRow struct {
+	Event      Event
+	ToTerminal bool
+}
+type AnalyticsWorkflowPage struct {
+	Items   []AnalyticsWorkflowRow
+	Next    AnalyticsWorkflowCursor
+	Partial bool
+}
+type AnalyticsWorkflowReader interface {
+	ReadAnalyticsWorkflowPage(context.Context, AnalyticsWorkflowQuery) (AnalyticsWorkflowPage, error)
+}
+
+type AnalyticsEvidenceCursor struct {
+	At                           time.Time
+	Sequence                     int64
+	ChangeID                     string
+	VersionAfter, VersionThrough int64
+}
+type AnalyticsEvidenceQuery struct {
+	ProjectID tracker.ProjectID
+	Principal string
+	From, To  time.Time
+	Limit     int
+	After     AnalyticsEvidenceCursor
+}
+type AnalyticsEvidenceRow struct {
+	WorkItemID tracker.NativeWorkItemID
+	Evidence   Evidence
+	Escape     *reportstore.EscapeProjection
+}
+type AnalyticsEvidencePage struct {
+	Items   []AnalyticsEvidenceRow
+	Next    AnalyticsEvidenceCursor
+	Partial bool
+}
+type AnalyticsEvidenceReader interface {
+	ReadAnalyticsEvidencePage(context.Context, AnalyticsEvidenceQuery) (AnalyticsEvidencePage, error)
+}
+
+type QualityEscapeReader interface {
+	QualityEscapeOccurrence(context.Context, string, string, string) (Evidence, error)
+}
+
+type ScheduledSourceReader interface {
+	ScheduledSources(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) ([]CollaborationVersion, bool, error)
+}
+
+type AttemptEventPageReader interface {
+	AttemptEvents(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int64, int) ([]Event, error)
 }

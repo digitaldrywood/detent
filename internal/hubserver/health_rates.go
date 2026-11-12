@@ -1,11 +1,13 @@
 package hubserver
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 )
 
@@ -542,4 +544,171 @@ func healthThroughputFinding(now time.Time, p healthRateProject, b healthRateBas
 	f := newHealthFinding("throughput_collapse", "flow", "project", p.ID, "Landings fell below a quarter of the same weekday-hour windows last week.", "The project operator inspects ready work and landing progress.", []string{p.ID}, healthEvidence{Counts: map[string]int{"landings_1h": short, "landings_6h": long, "last_week_1h": priorShort, "last_week_6h": priorLong, "ready_work": p.Candidates}})
 	f.Severity = "watch"
 	return f, p.Candidates > 0 && priorShort > 0 && float64(short) < healthThroughputFraction*float64(priorShort) && float64(long) < healthThroughputFraction*float64(priorLong)
+}
+
+const healthQuantilePageSize = 64
+
+type healthQuantileChunk struct {
+	values [healthQuantilePageSize]float64
+	count  int
+	next   *healthQuantileChunk
+}
+
+type healthQuantileRun struct {
+	first, last *healthQuantileChunk
+	next        *healthQuantileRun
+}
+
+type healthQuantileCursor struct {
+	chunk *healthQuantileChunk
+	index int
+}
+
+func (cursor *healthQuantileCursor) take() float64 {
+	value := cursor.chunk.values[cursor.index]
+	cursor.index++
+	if cursor.index == cursor.chunk.count {
+		cursor.chunk, cursor.index = cursor.chunk.next, 0
+	}
+	return value
+}
+
+type healthQuantileRank struct {
+	low, high           int
+	fraction            float64
+	lowValue, highValue float64
+}
+
+type healthQuantileFold struct {
+	first, last             *healthQuantileRun
+	left, right             healthQuantileCursor
+	output                  *healthQuantileRun
+	scan                    healthQuantileCursor
+	runs, count, rank       int
+	median, p90             healthQuantileRank
+	started, scanning, done bool
+}
+
+func (fold *healthQuantileFold) add(samples []float64) error {
+	if fold.started || len(samples) > healthQuantilePageSize {
+		return corestore.ErrInvalidPage
+	}
+	if len(samples) == 0 {
+		return nil
+	}
+	values := slices.Clone(samples)
+	slices.Sort(values)
+	chunk := &healthQuantileChunk{count: len(values)}
+	copy(chunk.values[:], values)
+	fold.push(&healthQuantileRun{first: chunk, last: chunk})
+	fold.count += len(values)
+	return nil
+}
+
+func (fold *healthQuantileFold) push(run *healthQuantileRun) {
+	if fold.last == nil {
+		fold.first = run
+	} else {
+		fold.last.next = run
+	}
+	fold.last = run
+	fold.runs++
+}
+
+func (fold *healthQuantileFold) pop() *healthQuantileRun {
+	run := fold.first
+	fold.first = run.next
+	run.next = nil
+	if fold.first == nil {
+		fold.last = nil
+	}
+	fold.runs--
+	return run
+}
+
+func (fold *healthQuantileFold) advance(budget int) (int, bool) {
+	if fold.done || budget <= 0 {
+		return 0, fold.done
+	}
+	if !fold.started {
+		fold.started = true
+		if fold.count == 0 {
+			fold.done = true
+			return 0, true
+		}
+		for _, target := range []struct {
+			rank *healthQuantileRank
+			q    float64
+		}{{&fold.median, healthMedianQuantile}, {&fold.p90, healthBaselineQuantile}} {
+			index := target.q * float64(fold.count-1)
+			target.rank.low = int(index)
+			target.rank.high = min(target.rank.low+1, fold.count-1)
+			target.rank.fraction = index - float64(target.rank.low)
+		}
+	}
+	used := 0
+	for used < budget {
+		if fold.scanning {
+			value := fold.scan.take()
+			for _, rank := range []*healthQuantileRank{&fold.median, &fold.p90} {
+				if fold.rank == rank.low {
+					rank.lowValue = value
+				}
+				if fold.rank == rank.high {
+					rank.highValue = value
+				}
+			}
+			fold.rank++
+			used++
+			if fold.rank > fold.p90.high {
+				fold.done = true
+				return used, true
+			}
+			continue
+		}
+		if fold.output == nil {
+			if fold.runs == 1 {
+				fold.scan = healthQuantileCursor{chunk: fold.first.first}
+				fold.scanning = true
+				continue
+			}
+			fold.left = healthQuantileCursor{chunk: fold.pop().first}
+			fold.right = healthQuantileCursor{chunk: fold.pop().first}
+			fold.output = &healthQuantileRun{}
+		}
+		if fold.left.chunk == nil && fold.right.chunk == nil {
+			fold.push(fold.output)
+			fold.output = nil
+			continue
+		}
+		var value float64
+		if fold.right.chunk == nil || fold.left.chunk != nil && cmp.Compare(fold.left.chunk.values[fold.left.index], fold.right.chunk.values[fold.right.index]) <= 0 {
+			value = fold.left.take()
+		} else {
+			value = fold.right.take()
+		}
+		if fold.output.last == nil || fold.output.last.count == healthQuantilePageSize {
+			chunk := &healthQuantileChunk{}
+			if fold.output.last == nil {
+				fold.output.first = chunk
+			} else {
+				fold.output.last.next = chunk
+			}
+			fold.output.last = chunk
+		}
+		fold.output.last.values[fold.output.last.count] = value
+		fold.output.last.count++
+		used++
+	}
+	return used, false
+}
+
+func (fold *healthQuantileFold) values() (float64, float64, bool) {
+	if !fold.done {
+		return 0, 0, false
+	}
+	value := func(rank healthQuantileRank) float64 {
+		return rank.lowValue + (rank.highValue-rank.lowValue)*rank.fraction
+	}
+	return value(fold.median), value(fold.p90), true
 }

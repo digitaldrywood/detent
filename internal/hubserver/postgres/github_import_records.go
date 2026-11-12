@@ -40,9 +40,16 @@ func (s *session) CreateGitHubImportRecord(ctx context.Context, record projectst
 	if record.Payload.OrganizationID != s.organization || record.SourceKey == "" || record.Kind == "" {
 		return eventstore.ErrInvalidRecord
 	}
+	if record.Kind == "dependency" && record.DependencyID == "" && record.ProvenanceExternalID == "" {
+		return eventstore.ErrInvalidRecord
+	}
 	ref := record.Payload
 	if err := validRecordPayload(s.organization, ref.PayloadObjectKey, ref.PayloadSHA256, ref.PayloadBytes, ref.PayloadContentBytes); err != nil {
 		return err
 	}
 	return mapError(ctx, s.queries.CreateGitHubImportRecord(ctx, pgquery.CreateGitHubImportRecordParams{OrganizationID: s.organization, ProjectID: record.ProjectID, ImportID: record.ImportID, SourceKey: record.SourceKey, Kind: record.Kind, CurrentDependency: record.CurrentDependency, DependencyID: record.DependencyID, ProvenanceExternalID: record.ProvenanceExternalID, PayloadObjectKey: ref.PayloadObjectKey, PayloadSHA256: ref.PayloadSHA256, PayloadBytes: ref.PayloadBytes, PayloadContentBytes: ref.PayloadContentBytes}))
+}
+
+func (s *session) ResetCurrentGitHubImportDependencies(ctx context.Context, project tracker.ProjectID, id string) error {
+	return mapError(ctx, s.queries.ResetCurrentGitHubImportDependencies(ctx, pgquery.ResetCurrentGitHubImportDependenciesParams{OrganizationID: s.organization, ProjectID: project, ImportID: id}))
 }

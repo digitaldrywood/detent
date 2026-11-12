@@ -36,7 +36,12 @@ func (o *Orchestrator) reconcileTarget(ctx context.Context, state *State, reques
 		return
 	}
 
-	o.applyTargetedReconcile(ctx, state, request.target, result, now)
+	if err := o.applyTargetedReconcile(ctx, state, request.target, result, now); err != nil {
+		message := "targeted lane observation failed: " + err.Error()
+		markRefreshError(state, message, now)
+		recordStateEvent(state, telemetry.ActivityEvent{At: now, Event: "targeted_reconcile_failed", Message: message})
+		return
+	}
 	clearRefreshError(state)
 	o.markRefreshSucceeded(state, now)
 	recordStateEvent(state, telemetry.ActivityEvent{
@@ -53,15 +58,21 @@ func (o *Orchestrator) applyTargetedReconcile(
 	target connector.ReconcileTarget,
 	result connector.ReconcileResult,
 	now time.Time,
-) {
+) error {
 	if !result.Found || strings.TrimSpace(result.Issue.ID) == "" {
 		state.BoardIssues = removeTargetedIssue(state.BoardIssues, target, result.Issue)
 		state.Pipeline = removeTargetedIssue(state.Pipeline, target, result.Issue)
 		state.epicTransitionWatch = removeTargetedIssue(state.epicTransitionWatch, target, result.Issue)
-		return
+		return nil
 	}
 
 	issue := mergeTargetedIssue(state, result.Issue, now)
+	if _, canonical := o.connector.(connector.CurrentLaneEntryReader); canonical && result.Issue.StageUpdatedAt == nil {
+		issue.StageUpdatedAt, issue.StageUpdatedActor = nil, result.Issue.StageUpdatedActor
+	}
+	if _, _, err := o.observeLane(ctx, state, issue, now); err != nil {
+		return fmt.Errorf("observe targeted lane: %w", err)
+	}
 	visibleStates := append(append([]string(nil), o.cfg.ActiveStates...), o.cfg.ObservedStates...)
 	state.BoardIssues = reconcileTargetedIssueSlice(state.BoardIssues, issue, stateIn(issue.State, visibleStates))
 	state.Pipeline = reconcileTargetedIssueSlice(state.Pipeline, issue, stateIn(issue.State, autoPromoteFetchStates(o.cfg.AutoPromote)))
@@ -76,10 +87,7 @@ func (o *Orchestrator) applyTargetedReconcile(
 		clearBlockedStatusIssue(state, issue)
 	}
 
-	if _, _, err := o.observeLane(ctx, state, issue, now); err != nil && o.logger != nil {
-		o.logger.Warn("targeted lane observation failed", "issue_id", issue.ID, "error", err)
-	}
-
+	return nil
 }
 
 func mergeTargetedIssue(state *State, refreshed connector.Issue, now time.Time) connector.Issue {

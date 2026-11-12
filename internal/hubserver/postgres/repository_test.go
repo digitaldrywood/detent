@@ -85,6 +85,7 @@ func seedRepository(t *testing.T, repository corestore.Repository, organization 
 				if created.ID <= 0 || created.CreatedAt.IsZero() || created.UpdatedAt.IsZero() || created.NativeCreatedAt.IsZero() || created.NativeUpdatedAt.IsZero() {
 					t.Error("work item generated metadata is missing")
 				}
+				item.ArchiveRestoreKnown = true
 				item.LastActivityAt = created.LastActivityAt
 				item.ID, item.Revision = created.ID, 1
 				item.CreatedAt, item.UpdatedAt, item.NativeCreatedAt, item.NativeUpdatedAt = created.CreatedAt, created.UpdatedAt, created.NativeCreatedAt, created.NativeUpdatedAt
@@ -128,6 +129,18 @@ func TestInsertsNeverWriteConstantUniqueKeys(t *testing.T) {
 					}
 					if project.OrganizationID != organization || project.Name != suffix || project.WorkflowObjectKey == nil || *project.WorkflowObjectKey != "example/workflow" {
 						t.Fatalf("project fields = %+v", project)
+					}
+					matched, err := r.WorkItemByProvenance(t.Context(), project.ID, "example", "external")
+					if err != nil || matched.OrganizationID != organization || matched.ProjectID != project.ID || matched.NativeID != tracker.NativeWorkItemID("wi_"+suffix+"_1") {
+						t.Fatalf("provenance lookup lost earliest identity or tenant/project scope: %+v error=%v", matched, err)
+					}
+					for _, missing := range []struct {
+						project            tracker.ProjectID
+						provider, external string
+					}{{project.ID, "other", "external"}, {project.ID, "example", "missing"}, {"prj_missing", "example", "external"}} {
+						if _, err := r.WorkItemByProvenance(t.Context(), missing.project, missing.provider, missing.external); !errors.Is(err, corestore.ErrNotFound) {
+							t.Fatalf("unmatched provenance escaped exact scope: %+v error=%v", missing, err)
+						}
 					}
 					page, err := r.WorkItemPage(t.Context(), project.ID, corestore.Cursor{}, 2)
 					if err != nil {

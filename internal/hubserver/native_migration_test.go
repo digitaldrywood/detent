@@ -1,12 +1,15 @@
 package hubserver
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
+	"io/fs"
 	"os"
-	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,295 +18,369 @@ import (
 
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "runtime-migration")
-	issue := f.create(t, "retained history")
-	path := f.base + "/work-items/" + string(issue.WorkItemID)
-	var before tracker.Page[tracker.CollaborationEvent]
-	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &before)
-	data, err := migrationFiles.ReadFile("migrations/00059_native_runtime_evidence.sql")
+	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
 	if err != nil {
 		t.Fatal(err)
 	}
-	columns, err := f.service.database.reader.QueryContext(t.Context(), `PRAGMA table_info(collaboration_events)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer columns.Close()
-	extras := []string{}
-	for columns.Next() {
-		var cid, notNull, primary int
-		var name, kind string
-		var defaultValue any
-		if err := columns.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primary); err != nil {
-			t.Fatal(err)
-		}
-		if strings.HasPrefix(name, "change_") || strings.HasPrefix(name, "publication_") {
-			extras = append(extras, name+" "+kind)
-		}
-	}
-	if err := columns.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if len(extras) > 0 {
-		data = []byte(strings.ReplaceAll(string(data), "recorded_at TEXT NOT NULL,", "recorded_at TEXT NOT NULL,\n"+strings.Join(extras, ",\n")+","))
-	}
-
-	projection, err := migrationFiles.ReadFile("migrations/20261023234600_scheduler_projections.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	facts, err := migrationFiles.ReadFile("migrations/20261025220000_admission_claim_facts.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	analytics, err := migrationFiles.ReadFile("migrations/20261025230900_analytics_event_columns.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadata, err := migrationFiles.ReadFile("migrations/20261025233000_conversation_query_columns.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	maintenance, err := migrationFiles.ReadFile("migrations/20261026041522_maintenance_without_ddl.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	archiveProjection, err := migrationFiles.ReadFile("migrations/20261026003000_archive_facts.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	healthProjection, err := migrationFiles.ReadFile("migrations/20261026090910_health_typed_fields.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	healthTransitionIndex, err := migrationFiles.ReadFile("migrations/20261027230218_health_transition_recovery_index.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reportAttempts, err := migrationFiles.ReadFile("migrations/20261028075830_report_attempt_columns.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	migrations := fstest.MapFS{
-		"20261028075830_report_attempt_columns.sql":           &fstest.MapFile{Data: reportAttempts},
-		"20261027230218_health_transition_recovery_index.sql": &fstest.MapFile{Data: healthTransitionIndex},
-		"20261026003000_archive_facts.sql":                    &fstest.MapFile{Data: archiveProjection},
-		"20261025220000_admission_claim_facts.sql":            &fstest.MapFile{Data: facts},
-		"20261026090910_health_typed_fields.sql":              &fstest.MapFile{Data: healthProjection},
-		"20261026041522_maintenance_without_ddl.sql":          &fstest.MapFile{Data: maintenance},
-		"00059_native_runtime_evidence.sql":                   &fstest.MapFile{Data: data},
-		"20261023234600_scheduler_projections.sql":            &fstest.MapFile{Data: projection},
-		"20261025230900_analytics_event_columns.sql":          &fstest.MapFile{Data: analytics},
-		"20261025233000_conversation_query_columns.sql":       &fstest.MapFile{Data: metadata},
-	}
-	for _, name := range []string{
-		"20261028195844_conversation_payload_references.sql",
-		"20261028195951_collaboration_event_payload_references.sql",
-		"20261028233138_analytics_attempt_object_references.sql",
-		"20261029031758_analytics_attempt_pending_scope.sql",
-		"20261029061743_conversation_stored_text_bytes.sql",
-		"20261030023425_storage_conversion_fair_cursors.sql",
-		"20261030211617_conversation_archive_reference_indexes.sql",
-	} {
-		data, err := migrationFiles.ReadFile("migrations/" + name)
+	historical := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
+		roles, err := os.ReadFile("postgres/roles.sql")
 		if err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, string(roles)); err != nil {
+			return err
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
+			return err
+		}
+		provider, err := startupMigrationProvider(db)
+		if err != nil {
+			return err
+		}
+		_, err = provider.UpTo(ctx, 20261107212205)
+		return err
+	})
+	t.Cleanup(func() {
+		deadline, _ := t.Deadline()
+		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+		defer cancel()
+		if err := historical.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	admin := historical.Database(t)
+	objects := &memoryRunDetails{}
+	content := eventstore.NewContent(objects)
+	stamp := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	expected := map[tracker.OrganizationID][]tracker.CollaborationEvent{}
+	for _, organization := range []tracker.OrganizationID{"org_history_first", "org_history_second"} {
+		for _, statement := range []string{
+			`INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`,
+			`INSERT INTO projects(organization_id,id,name,profile,created_at) VALUES($1,'prj_history','Example history','native',$2)`,
+			`INSERT INTO issues(organization_id,id,native_id,project_id,number,title,created_at,updated_at) VALUES($1,41,'wi_history','prj_history',1,'Retained history',$2,$2)`,
+			`INSERT INTO machines(organization_id,id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES($1,'machine_history','example',1,'example',$2,$2,$2)`,
+		} {
+			if _, err := admin.ExecContext(t.Context(), statement, organization, stamp); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var fence int64
+		if err := admin.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at) VALUES($1,'lease_history',41,'machine_history','session_history',1,$2,$2,$2::timestamptz+interval '1 hour') RETURNING fencing_token`, organization, stamp).Scan(&fence); err != nil {
 			t.Fatal(err)
 		}
-		migrations[name] = &fstest.MapFile{Data: data}
-	}
-	const versionTable = "runtime_migration_test_version"
-	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(versionTable), goose.WithSlog(discardLogger()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := provider.GetVersions(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025220000,1),(20261025230900,1),(20261025233000,1),(20261026003000,1),(20261026041522,1),(20261026090910,1),(20261027230218,1),(20261028075830,1),(20261028195844,1),(20261028195951,1),(20261028233138,1),(20261029031758,1),(20261029061743,1),(20261030023425,1),(20261030211617,1)"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP VIEW native_transition_facts;
-DROP INDEX IF EXISTS collaboration_events_usage_drain;
-DROP INDEX IF EXISTS collaboration_events_change_unknown;
-DROP INDEX IF EXISTS collaboration_events_change_conversion;
-DROP INDEX collaboration_events_comment_actor;
-DROP INDEX collaboration_events_terminal_transition;
-DROP INDEX collaboration_events_page_unknown;
-DROP INDEX collaboration_events_transition_unknown;
-DROP INDEX daily_summary_rework_window;
-ALTER TABLE collaboration_events DROP COLUMN edited_body;
-ALTER TABLE collaboration_events DROP COLUMN edited_title;
-ALTER TABLE collaboration_events DROP COLUMN run_present;
-ALTER TABLE collaboration_events DROP COLUMN reason;
-ALTER TABLE collaboration_events DROP COLUMN to_state;
-ALTER TABLE collaboration_events DROP COLUMN from_state;
-ALTER TABLE collaboration_events DROP COLUMN event_revision;
-ALTER TABLE collaboration_events DROP COLUMN actor_principal_id;
-ALTER TABLE collaboration_events DROP COLUMN actor_kind;
-ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
-`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.DownTo(t.Context(), 58); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Up(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	pageMigration, err := migrationFiles.ReadFile("migrations/20261025223000_issue_page_facts.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pageSQL := string(pageMigration)
-	eventStart := strings.Index(pageSQL, "ALTER TABLE collaboration_events")
-	eventEnd := strings.Index(pageSQL, "ALTER TABLE native_board_items")
-	if _, err := f.service.database.db.ExecContext(t.Context(), pageSQL[eventStart:eventEnd]); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE VIEW native_transition_facts AS SELECT id,organization_id,project_id,work_item_id,sequence,recorded_at,from_state,to_state FROM collaboration_events WHERE type='workflow.transitioned'`); err != nil {
-		t.Fatal(err)
-	}
-
-	var after tracker.Page[tracker.CollaborationEvent]
-	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
-	if len(after.Items) != 1 || len(before.Items) != 1 || after.Items[0].ID != before.Items[0].ID || after.Items[0].Actor != before.Items[0].Actor || after.Items[0].RecordedAt != before.Items[0].RecordedAt {
-		t.Fatalf("migration changed retained history: %#v -> %#v", before, after)
-	}
-	for _, statement := range []string{"UPDATE collaboration_events SET type='issue.edited' WHERE id=?", "DELETE FROM collaboration_events WHERE id=?"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement, before.Items[0].ID); err == nil {
-			t.Fatal("migration lost append-only history enforcement")
+		run := tracker.NativeRunData{AttemptID: "attempt_history", RunID: "run_history", LeaseID: "lease_history", FencingToken: tracker.FencingToken(fence), Sequence: 1, Runtime: &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: stamp}}
+		observed := run
+		observed.Sequence = 2
+		observed.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: stamp.Add(time.Second)}
+		values := []tracker.CollaborationEvent{
+			{ID: "history_created", Type: "issue.created", Data: tracker.CollaborationData{Revision: 1}},
+			{ID: "history_claimed", Type: "scheduler.decision", Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "claimed"}}},
+			{ID: "history_started", Type: "run.started", Data: tracker.CollaborationData{Run: &run}},
+			{ID: "history_observed", Type: "run.observed", Data: tracker.CollaborationData{Run: &observed}},
 		}
+		for index := range values {
+			value := &values[index]
+			value.OrganizationID, value.ProjectID, value.AggregateID = organization, "prj_history", "wi_history"
+			value.AggregateType, value.SchemaVersion, value.AggregateSequence = "issue", 1, int64(index+1)
+			value.RecordedAt, value.Actor = stamp.Add(time.Duration(index)*time.Second), tracker.Actor{Kind: "human", PrincipalID: "example-owner"}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, err := content.PrepareEvent(t.Context(), organization, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,run_id,attempt_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,event_revision) VALUES($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, organization, event.ProjectID, event.WorkItemID, event.ID, event.Sequence, event.Type, event.ActorKind, event.ActorPrincipalID, event.RunID, event.AttemptID, event.RecordedAt, event.PayloadObjectKey, event.PayloadSHA256, event.PayloadBytes, event.PayloadContentBytes, event.EventRevision); err != nil {
+				t.Fatal(err)
+			}
+			if value.Type == "run.started" {
+				rawAttempt, err := json.Marshal(observed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				payload, err := objects.StoreDetail(t.Context(), string(organization), rawAttempt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) VALUES($1,'run_history',41)`, organization); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at) VALUES($1,'attempt_history',41,'lease_history',$2,'run_history',2,'running',1,0,$3,$4,$4)`, organization, fence, payload.Key, stamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,id,native_id,project_id,number,title) VALUES($1,42,'wi_retained','prj_history',2,'Retained identity')`, organization); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `DELETE FROM issues WHERE organization_id=$1 AND id=42`, organization); err != nil {
+			t.Fatal(err)
+		}
+		expected[organization] = values
 	}
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	worker := f.worker(t, "runtime-worker")
-	lease := claimNativeAttempt(t, f, worker, "migration-machine", "migration-session", issue.WorkItemID)
-	started := nativeStartedEvent(lease)
-	started.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: f.service.config.now()}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, started), http.StatusOK)
-	observed := started
-	observed.Type, observed.IdempotencyKey, observed.Data.Sequence = "run.observed", "migration-observed", 2
-	runtime := *started.Data.Runtime
-	runtime.Phase = "validation"
-	observed.Data.Runtime = &runtime
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, observed), http.StatusOK)
-	restoreLegacyCollaborationPayloads(t, f.service, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
-	if _, err := provider.DownTo(t.Context(), 58); err == nil {
-		t.Fatal("rollback discarded native runtime evidence")
+	admin.SetMaxOpenConns(1)
+	if _, err := admin.ExecContext(t.Context(), "SET ROLE detent_migration_v2"); err != nil {
+		t.Fatal(err)
 	}
-	var version int64
-	version, _, err = provider.GetVersions(t.Context())
-	if err != nil || version != 59 {
+	provider, err := startupMigrationProvider(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.UpTo(t.Context(), 20261107212206); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), "RESET ROLE"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET runtime_heartbeat_at=$1,runtime_summary_sequence=2`, stamp.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), "SET ROLE detent_migration_v2"); err != nil {
+		t.Fatal(err)
+	}
+	const guardedFile = "20261107060339_retain_work_item_identities.sql"
+	guarded, err := fs.ReadFile(migrations, guardedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ledger = "retained_history_rollback_proof"
+	rollback, err := goose.NewProvider(goose.DialectPostgres, admin, postgres.RoleMigrations(fstest.MapFS{guardedFile: &fstest.MapFile{Data: guarded}}), goose.WithDisableGlobalRegistry(true), goose.WithTableName(ledger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := rollback.GetVersions(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), "INSERT INTO "+ledger+"(version_id,is_applied) VALUES(20261107060339,true)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rollback.DownTo(t.Context(), 0); err == nil || !strings.Contains(err.Error(), "retained work item history prevents downgrade") {
+		t.Fatalf("rollback did not protect retained history: %v", err)
+	}
+	version, _, err := rollback.GetVersions(t.Context())
+	if err != nil || version != 20261107060339 {
 		t.Fatalf("failed rollback changed schema: %d %v", version, err)
 	}
-	if _, err := provider.Up(t.Context()); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "DROP TABLE "+ledger); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE INDEX daily_summary_rework_window ON collaboration_events(organization_id,project_id,work_item_id,analytics_recorded_ns,to_state) WHERE type='workflow.transitioned'`); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "RESET ROLE"); err != nil {
 		t.Fatal(err)
 	}
-	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
-	if len(after.Items) != 4 || after.Items[0].ID != before.Items[0].ID || after.Items[1].Type != "scheduler.decision" || after.Items[2].Type != "run.started" || after.Items[3].Type != "run.observed" {
-		t.Fatalf("failed rollback changed evidence: %#v", after)
+	var retained int
+	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM work_item_identities i LEFT JOIN issues live USING(organization_id,id) WHERE i.organization_id IN ('org_history_first','org_history_second') AND i.id=42 AND live.id IS NULL`).Scan(&retained); err != nil || retained != 2 {
+		t.Fatalf("failed rollback changed retained identities: %d %v", retained, err)
 	}
-	t.Run("activity backfill", func(t *testing.T) {
-		f := newPullRequestFixture(t, true)
-		worker := f.worker(t, "activity-migration-worker")
-		lease := claimNativeAttempt(t, f.nativeFixture, worker, "activity-machine", "activity-session", f.issue.WorkItemID)
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
-		version := tracker.ChangeVersion{ID: "activity-external-version", ChangeID: f.change.ID, Number: 1, CreatedAt: f.now, ChangeVersionInput: tracker.ChangeVersionInput{External: &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: pullRequestTestURL}}}
-		versionRaw, err := marshalNative(version)
+	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts WHERE runtime_summary_sequence=2 AND runtime_heartbeat_at=$1`, stamp.Add(time.Second)).Scan(&retained); err != nil || retained != 2 {
+		t.Fatalf("failed rollback changed runtime evidence: %d %v", retained, err)
+	}
+	var schemaVersion int64
+	if err := admin.QueryRowContext(t.Context(), `SELECT max(version_id) FROM goose_db_version WHERE is_applied`).Scan(&schemaVersion); err != nil || schemaVersion != 20261107212206 {
+		t.Fatalf("failed rollback changed migration head: %d %v", schemaVersion, err)
+	}
+	migration := startupConnection(t, admin, "detent_migration_v2", "")
+	config := postgres.Config{Connection: startupConnection(t, admin, "detent_runtime_v2", ""), Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
+	if err := postgres.Migrate(t.Context(), migration, migrations); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		store, err := openPostgresDatabase(t.Context(), config)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,?,?)", version.ID, version.ChangeID, version.Number, versionRaw); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_linked_activity"); err != nil {
-			t.Fatal(err)
-		}
-		for _, body := range []string{"Comment", "## Codex Workpad"} {
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: body}, Body: body}), http.StatusOK)
-		}
-		const file = "20261005174814_native_issue_activity.sql"
-		data, err := migrationFiles.ReadFile("migrations/" + file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		const ledger = "activity_migration_test_version"
-		provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, fstest.MapFS{file: &fstest.MapFile{Data: data}}, goose.WithDisableGlobalRegistry(true), goose.WithTableName(ledger), goose.WithSlog(discardLogger()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, _, err := provider.GetVersions(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+ledger+" (version_id,is_applied) VALUES (20261005174814,1)"); err != nil {
-			t.Fatal(err)
-		}
-		for index, test := range []struct{ name, query string }{
-			{"updated_at fallback", ""},
-			{"issue edit", "UPDATE issues SET native_updated_at = :at WHERE native_id = :issue"},
-			{"comment", "UPDATE native_comments SET updated_at = :at WHERE work_item_id = :issue AND body = 'Comment'"},
-			{"Workpad", "UPDATE native_comments SET updated_at = :at WHERE work_item_id = :issue AND body = '## Codex Workpad'"},
-			{"run start", "UPDATE native_attempts SET started_at = :at WHERE work_item_id = :issue"},
-			{"run finish", "UPDATE native_attempts SET updated_at = :at, status = 'succeeded' WHERE work_item_id = :issue"},
-			{"history", "INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at) SELECT 'activity-history', organization_id, project_id, native_id, (SELECT max(sequence) + 1 FROM collaboration_events WHERE work_item_id = :issue), 'run.finished', 1, actor_json, '{}', :at FROM issues WHERE native_id = :issue"},
-			{"legacy event", "INSERT INTO work_events (issue_id, fencing_token, kind, payload_json, occurred_at, recorded_at) SELECT id, 1, 'activity-event', '{}', :at, :at FROM issues WHERE native_id = :issue"},
-			{"change version", "INSERT INTO change_versions (id, change_id, number, record_json) VALUES ('activity-version', :change, 2, json_object('created_at', :at))"},
-			{"change review", "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (:change, :version, 'review', json_object('created_at', :at))"},
-			{"change check", "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (:change, :version, 'check', json_object('received_at', :at, 'completed_at', '2020-01-01T00:00:00Z'))"},
-			{"change discussion", "INSERT INTO change_evidence (change_id, kind, record_json) VALUES (:change, 'discussion', json_object('created_at', :at))"},
-			{"change landing", "UPDATE change_requests SET record_json = json_set(record_json, '$.updated_at', :at) WHERE id = :change"},
-			{"linked PR", "UPDATE pull_requests SET updated_at = :at WHERE repository_id = :repository"},
-			{"external PR", "UPDATE pull_requests SET issue_id = NULL, synchronized_at = :at WHERE repository_id = :repository"},
-		} {
-			t.Run(test.name, func(t *testing.T) {
-				if _, err := provider.DownTo(t.Context(), 0); err != nil {
-					t.Fatal(err)
+		func() {
+			defer func() {
+				if err := store.Close(); err != nil {
+					t.Error(err)
 				}
-				stamp := f.now.Add(time.Duration(index) * time.Nanosecond)
-				if test.query != "" {
-					var args []any
-					for _, arg := range []sql.NamedArg{
-						sql.Named("at", formatHubTime(stamp)),
-						sql.Named("issue", f.issue.WorkItemID),
-						sql.Named("change", f.change.ID),
-						sql.Named("version", version.ID),
-						sql.Named("repository", f.repositoryID),
-					} {
-						if strings.Contains(test.query, ":"+arg.Name) {
-							args = append(args, arg)
+			}()
+			for organization, want := range expected {
+				if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					events, err := reader.Events(t.Context(), "prj_history", "wi_history", 0, 10)
+					if err != nil {
+						return err
+					}
+					if len(events) != len(want) {
+						return fmt.Errorf("history length=%d want=%d", len(events), len(want))
+					}
+					for index, event := range events {
+						value, err := content.Event(t.Context(), event)
+						if err != nil {
+							return err
+						}
+						if !reflect.DeepEqual(value, want[index]) {
+							return fmt.Errorf("migration changed retained event %s: %+v", event.ID, value)
 						}
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), test.query, args...); err != nil {
-						t.Fatal(err)
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				for _, statement := range []string{"UPDATE collaboration_events SET type='issue.edited' WHERE organization_id=$1 AND id='history_created'", "DELETE FROM collaboration_events WHERE organization_id=$1 AND id='history_created'"} {
+					if _, err := admin.ExecContext(t.Context(), statement, organization); err == nil {
+						t.Fatal("migration lost append-only history enforcement")
 					}
 				}
-				var updated string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT native_updated_at FROM issues WHERE native_id = ?", f.issue.WorkItemID).Scan(&updated); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := provider.Up(t.Context()); err != nil {
-					t.Fatal(err)
-				}
-				issue := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
-				if !issue.LastActivityAt.Equal(stamp) || formatHubTime(issue.UpdatedAt) != updated {
-					t.Fatalf("backfill activity = %s, updated = %s; want %s, %s", issue.LastActivityAt, issue.UpdatedAt, stamp, updated)
-				}
-				var missing, violations int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE last_activity_at IS NULL OR last_activity_at = ''").Scan(&missing); err != nil {
-					t.Fatal(err)
-				}
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM pragma_foreign_key_check").Scan(&violations); err != nil {
-					t.Fatal(err)
-				}
-				if missing != 0 || violations != 0 {
-					t.Fatalf("backfill left %d missing timestamps, %d foreign key violations", missing, violations)
+			}
+		}()
+	}
+	t.Run("activity backfill", func(t *testing.T) {
+		names := []string{"updated_at fallback", "issue edit", "comment", "Workpad", "run start", "run finish", "history", "legacy event", "change version", "change review", "change check", "change discussion", "change landing", "linked PR", "external PR"}
+		for index, name := range names {
+			t.Run(name, func(t *testing.T) {
+				repository, _ := coreImportPostgresWithAdmin(t, 3)
+				for _, organization := range []tracker.OrganizationID{"org_activity_first", "org_activity_second"} {
+					project := tracker.ProjectID("prj_activity")
+					seedHistoricalImportTarget(t, repository, organization, project, "native")
+					fixture := coreWorkItemNeutralFixture(t, organization, project, false)
+					coreFixtureAddTables(t, fixture, "projects", "native_attempts", "work_events", "change_issue_links", "change_requests", "change_versions", "change_evidence", "pull_requests")
+					fixture.add("projects", map[string]any{"id": project, "organization_id": organization, "name": "Example activity", "profile": "native", "repository_id": 1, "created_at": "2026-10-01T00:00:00Z"})
+					base := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+					at := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC).Add(time.Duration(index) * time.Microsecond)
+					stamp := at.Format(time.RFC3339Nano)
+					nativeUpdated := base
+					item := tracker.NativeWorkItemID("wi_core_import")
+					fixture.add("change_issue_links", map[string]any{"change_id": "activity-change", "organization_id": organization, "project_id": project, "work_item_id": item})
+					fixture.add("change_requests", map[string]any{"id": "activity-change", "organization_id": organization, "project_id": project, "work_item_id": item, "record_json": `{"updated_at":"2026-10-01T00:00:00Z"}`})
+					fixture.add("change_versions", map[string]any{"id": "activity-version", "change_id": "activity-change", "number": 1, "record_json": `{"created_at":"2026-10-01T00:00:00Z","external":{"provider":"github","id":"1","url":"https://github.com/example-org/example-project/pull/1"}}`})
+					switch name {
+					case "updated_at fallback":
+						fixture.set("issues", map[string]string{"id": "41"}, map[string]any{"updated_at": stamp})
+					case "issue edit":
+						fixture.set("issues", map[string]string{"id": "41"}, map[string]any{"native_updated_at": stamp})
+						value := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: item, Number: 1, Revision: 2, Profile: "native"}, Title: "Updated title", Body: coreImportBody(), State: "Todo", Labels: []string{"needs-review"}, Assignees: []string{"example-assignee"}, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: base.Add(-24 * time.Hour), UpdatedAt: at, LastActivityAt: at}
+						raw, err := json.Marshal(value)
+						if err != nil {
+							t.Fatal(err)
+						}
+						fixture.set("collaboration_versions", map[string]string{"record_id": string(item), "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
+						nativeUpdated = at
+					case "comment", "Workpad":
+						body := "Example comment"
+						if name == "Workpad" {
+							body = "## Codex Workpad"
+						}
+						fixture.set("native_comments", map[string]string{"id": "comment_core_import"}, map[string]any{"updated_at": stamp, "body": body})
+						value := tracker.NativeComment{OrganizationID: organization, ProjectID: project, WorkItemID: item, ID: "comment_core_import", Revision: 1, Sequence: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-commenter"}, Body: body, CreatedAt: base.Add(-24 * time.Hour), UpdatedAt: at}
+						raw, err := json.Marshal(value)
+						if err != nil {
+							t.Fatal(err)
+						}
+						fixture.set("collaboration_versions", map[string]string{"record_id": "comment_core_import", "revision": "1"}, map[string]any{"record_json": string(raw)})
+					case "run start", "run finish":
+						started, updated := "2026-10-01T00:00:00Z", "2026-10-01T00:00:00Z"
+						if name == "run start" {
+							started = stamp
+						} else {
+							updated = stamp
+						}
+						fixture.add("native_attempts", map[string]any{"id": "activity-attempt", "organization_id": organization, "project_id": project, "work_item_id": item, "lease_id": "activity-lease", "fencing_token": 1, "run_id": "activity-run", "sequence": 1, "status": "succeeded", "data_json": "{}", "started_at": started, "updated_at": updated})
+					case "history":
+						actor, err := json.Marshal(tracker.Actor{Kind: "human", PrincipalID: "example-owner"})
+						if err != nil {
+							t.Fatal(err)
+						}
+						fixture.add("collaboration_events", map[string]any{"id": "activity-history", "organization_id": organization, "project_id": project, "work_item_id": item, "sequence": 3, "type": "run.finished", "schema_version": 1, "actor_json": string(actor), "data_json": "{}", "recorded_at": stamp})
+						fixture.set("issues", map[string]string{"id": "41"}, map[string]any{"event_sequence": 3})
+					case "legacy event":
+						fixture.add("work_events", map[string]any{"id": 1, "issue_id": 41, "kind": "activity-event", "payload_json": "{}", "occurred_at": stamp, "recorded_at": stamp})
+					case "change version":
+						fixture.set("change_versions", map[string]string{"id": "activity-version"}, map[string]any{"record_json": `{"created_at":"` + stamp + `"}`})
+					case "change review", "change check", "change discussion":
+						kind := "review"
+						payload := `{"created_at":"` + stamp + `"}`
+						if name == "change check" {
+							kind = "check"
+							payload = `{"received_at":"` + stamp + `","completed_at":"2020-01-01T00:00:00Z"}`
+						}
+						if name == "change discussion" {
+							kind = "discussion"
+						}
+						fixture.add("change_evidence", map[string]any{"sequence": 1, "change_id": "activity-change", "version_id": "activity-version", "kind": kind, "record_json": payload})
+					case "change landing":
+						fixture.set("change_requests", map[string]string{"id": "activity-change"}, map[string]any{"record_json": `{"updated_at":"` + stamp + `"}`})
+					case "linked PR", "external PR":
+						var issue any = int64(41)
+						if name == "external PR" {
+							issue = nil
+						}
+						updated, synchronized := stamp, "2026-10-01T00:00:00Z"
+						if name == "external PR" {
+							updated, synchronized = synchronized, stamp
+						}
+						fixture.add("pull_requests", map[string]any{"id": 1, "repository_id": 1, "issue_id": issue, "github_node_id": "PR_activity", "github_number": 1, "title": "Example PR", "url": "https://github.com/example-org/example-project/pull/1", "github_state": "open", "head_ref": "change/example", "head_sha": strings.Repeat("a", 40), "base_ref": "develop", "source_version": "source-v1", "source_updated_at": updated, "synchronized_at": synchronized, "created_at": "2026-10-01T00:00:00Z", "updated_at": updated})
+					}
+					objects := &memoryRunDetails{}
+					source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: organization, ProjectID: project, Objects: objects}
+					for range 2 {
+						if count, err := ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
+							t.Fatalf("activity source import rows=%d error=%v", count, err)
+						}
+					}
+					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+						current, err := reader.WorkItem(t.Context(), project, item)
+						if err != nil {
+							return err
+						}
+						if !current.LastActivityAt.Equal(at) || !current.NativeUpdatedAt.Equal(nativeUpdated) {
+							return fmt.Errorf("backfill activity=%s native_updated=%s want=%s/%s", current.LastActivityAt, current.NativeUpdatedAt, at, nativeUpdated)
+						}
+						other, err := reader.WorkItem(t.Context(), project, "wi_core_import_second")
+						if err != nil {
+							return err
+						}
+						if !other.LastActivityAt.Equal(base) {
+							return fmt.Errorf("backfill changed unrelated activity=%s", other.LastActivityAt)
+						}
+						receipt, err := reader.Receipt(t.Context(), "production-import", "core-work-item-source", "41")
+						if err != nil {
+							return err
+						}
+						raw, err := eventstore.NewContent(objects).Receipt(t.Context(), receipt)
+						if err != nil {
+							return err
+						}
+						var decoded struct{ ActivityRows []coreHistoricalActivityRow }
+						if err := json.Unmarshal(raw, &decoded); err != nil {
+							return err
+						}
+						found := false
+						for _, row := range decoded.ActivityRows {
+							for _, timestamp := range row.Timestamps {
+								if timestamp == stamp {
+									found = true
+								}
+							}
+							for _, cell := range row.Row.Values {
+								if !cell.Null && bytes.Contains(cell.Data, []byte(stamp)) {
+									found = true
+								}
+							}
+						}
+						if !found {
+							return errors.New("original activity timestamp bytes are missing")
+						}
+
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
 				}
 			})
 		}
@@ -311,305 +388,424 @@ ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
 }
 
 func TestHubMigrationPreservesExistingData(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
-	for _, test := range []struct {
-		name           string
-		version        int64
-		hostedSessions string
-		viewed         bool
-		onboarding     bool
-		crlf           bool
-	}{
-		{"selected operator keys", 55, "1", true, true, false},
-		{"current selected operator keys", 67, "1", true, true, false},
-		{"artifacts", 16, "0", false, false, false},
-		{"hosted identity", 17, "1", false, false, false},
-		{"viewed files version 18", 18, "1", true, false, false},
-		{"onboarding version 18", 18, "1", false, true, false},
-		{"both tables version 18", 18, "1", true, true, false},
-		{"both tables CRLF version 18", 18, "1", true, true, true},
-		{"repaired onboarding version 19", 19, "1", true, true, false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			path := filepath.Join(t.TempDir(), "hub.db")
-			db, err := sql.Open("sqlite", path)
-			if err != nil {
-				t.Fatal(err)
+	admin := postgresStartupTemplate.Database(t)
+	config := postgres.Config{Connection: startupConnection(t, admin, "detent_runtime_v2", ""), Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
+	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := &memoryRunDetails{}
+	const rawProgress = `{"policy_approved":true}`
+	const updated = "2026-10-01T00:00:00Z"
+	for _, organization := range []tracker.OrganizationID{"org_aggregate_first", "org_aggregate_second"} {
+		fixture := coreFixtureFromBundle(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
+		coreFixtureAddTables(t, fixture, "project_onboarding")
+		suffix := strings.TrimPrefix(string(organization), "org_aggregate_")
+		project := tracker.ProjectID("prj_aggregate_" + suffix)
+		fixture.add("project_onboarding", map[string]any{"organization_id": organization, "project_id": project, "revision": 7, "progress_json": rawProgress, "updated_at": updated})
+		fixture.add("api_tokens", map[string]any{"id": "legacy-key", "name": "Original selected key", "scope": "operator", "token_hash": apikey.HashToken("legacy-key-" + string(organization)), "token_fingerprint": "legacy-fingerprint", "native_only": 1, "operator_key_scope": "project", "operator_project_access": "selected", "key_kind": "service", "created_at": updated, "updated_at": updated})
+		fixture.add("token_grants", map[string]any{"token_id": "legacy-key", "organization_id": organization, "project_id": project})
+		identity := `{"subject":"reviewer","organization_id":"provider_` + string(organization) + `","session_id":"original-session","created_at":"2026-10-01T00:00:00Z","expires_at":"2027-01-01T00:00:00Z"}`
+		fixture.add("hosted_sessions", map[string]any{"token_hash": "existing-session", "email": "reviewer@example.test", "identity_json": identity, "identity_subject": "reviewer", "created_at": updated, "expires_at": "2027-01-01T00:00:00Z"})
+		source := TenantCoreImportSource{BundlePath: fixture.write(), OrganizationID: organization, Catalog: catalog, Objects: objects}
+		for range 2 {
+			result, err := ImportTenantCoreCopy(t.Context(), config, source)
+			if err != nil || !result.CoreImportComplete || result.WorkItems != 1 || result.ExecutionRows != 3 {
+				t.Fatalf("historical tenant import=%+v error=%v", result, err)
 			}
-			t.Cleanup(func() {
-				if err := db.Close(); err != nil {
+		}
+	}
+	for range 2 {
+		store, err := openPostgresDatabase(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		func() {
+			defer func() {
+				if err := store.Close(); err != nil {
 					t.Error(err)
 				}
-			})
-			if _, err := db.ExecContext(t.Context(), fmt.Sprintf("PRAGMA application_id = %d", hubApplicationID)); err != nil {
-				t.Fatal(err)
-			}
-			files, err := migrationFiles.ReadDir("migrations")
-			if err != nil {
-				t.Fatal(err)
-			}
-			migrations := fstest.MapFS{}
-			for _, file := range files {
-				if test.version == 19 && file.Name() == "00019_project_onboarding.sql" {
-					data, err := migrationFiles.ReadFile("migrations/" + file.Name())
+			}()
+			for _, organization := range []tracker.OrganizationID{"org_aggregate_first", "org_aggregate_second"} {
+				suffix := strings.TrimPrefix(string(organization), "org_aggregate_")
+				project := tracker.ProjectID("prj_aggregate_" + suffix)
+				if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					credential, err := reader.CredentialByHash(t.Context(), apikey.HashToken("legacy-key-"+string(organization)))
+					if err != nil || credential.ID != "legacy-key" || credential.ProjectAccess != "selected" {
+						return fmt.Errorf("legacy selected key=%+v error=%v", credential, err)
+					}
+					grant, err := reader.AccessTokenGrant(t.Context(), credential.ID, project)
+					if err != nil || grant.ProjectID != project {
+						return fmt.Errorf("legacy key grant=%+v error=%v", grant, err)
+					}
+					progress, err := reader.ProjectOnboardingProgress(t.Context(), project)
+					if err != nil || progress.Revision != 7 || progress.UpdatedAt != updated {
+						return fmt.Errorf("historical onboarding progress=%+v error=%v", progress, err)
+					}
+					receipt, err := reader.Receipt(t.Context(), "production-import", "core-onboarding", string(project))
 					if err != nil {
-						t.Fatal(err)
+						return err
 					}
-					migrations[file.Name()] = &fstest.MapFile{Data: data}
-					continue
-				}
-				if file.Name() >= "00018_" && file.Name() != "00018_change_viewed_files.sql" && test.version < 55 {
-					continue
-				}
-				if file.Name() == "00018_change_viewed_files.sql" && !test.viewed {
-					continue
-				}
-				data, err := migrationFiles.ReadFile("migrations/" + file.Name())
-				if err != nil {
-					t.Fatal(err)
-				}
-				migrations[file.Name()] = &fstest.MapFile{Data: data}
-			}
-			if test.onboarding && test.version == 18 {
-				data, err := os.ReadFile("testdata/migrations/00018_project_onboarding.sql")
-				if err != nil {
-					t.Fatal(err)
-				}
-				data = []byte(strings.ReplaceAll(string(data), "\r\n", "\n"))
-				if test.crlf {
-					data = []byte(strings.ReplaceAll(string(data), "\n", "\r\n"))
-				}
-				if test.viewed {
-					up, _, _ := strings.Cut(string(data), "-- +goose Down")
-					up = strings.TrimPrefix(up, "-- +goose Up")
-					viewed := migrations["00018_change_viewed_files.sql"]
-					viewed.Data = append(viewed.Data, []byte(up)...)
-				} else {
-					migrations["00018_project_onboarding.sql"] = &fstest.MapFile{Data: data}
-				}
-			}
-			provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()), goose.WithGoMigrations(hubGoMigrations()...))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := provider.UpTo(t.Context(), 7); err != nil {
-				t.Fatal(err)
-			}
-			_, issueID := seedProjection(t, db)
-			if _, err := provider.UpTo(t.Context(), test.version); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO api_tokens(id,name,scope,token_hash,token_fingerprint,created_at,updated_at,native_only) VALUES ('legacy-key','legacy key','operator','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','legacy-fingerprint','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1)`); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO token_grants(token_id,organization_id,project_id) SELECT 'legacy-key',organization_id,project_id FROM issues WHERE id=?`, issueID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json)
-				SELECT 'existing-change', organization_id, project_id, native_id, '{"current_version_id":"existing-version"}' FROM issues WHERE id = ?`, issueID); err != nil {
-				t.Fatal(err)
-			}
-			firstVersion, err := json.Marshal(tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "preserved"}, Policy: hubTestPolicy()})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions (id, change_id, number, record_json) VALUES ('existing-version', 'existing-change', 1, ?)`, string(firstVersion)); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_requests (id,organization_id,project_id,work_item_id,record_json)
-SELECT 'second-change',organization_id,project_id,native_id,'{"current_version_id":"second-version"}' FROM issues WHERE id=?`, issueID); err != nil {
-				t.Fatal(err)
-			}
-			secondVersion, err := json.Marshal(tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "second-head"}, Policy: hubTestPolicy()})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES('second-version','second-change',1,?)`, string(secondVersion)); err != nil {
-				t.Fatal(err)
-			}
-			if test.version >= 17 {
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO hosted_sessions (token_hash, email, identity_json, expires_at, created_at) VALUES ('existing-session', 'reviewer@example.test', '{}', ?, ?)`, testTimestamp, testTimestamp); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.viewed {
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO change_viewed_files (version_id, principal_id, manifest_sha256, file_sha256, viewed) VALUES ('existing-version', 'reviewer', ?, ?, 1)`, strings.Repeat("a", 64), strings.Repeat("b", 64)); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.onboarding {
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO project_onboarding (organization_id, project_id, revision, progress_json, updated_at) SELECT organization_id, project_id, 7, '{"policy_approved":true}', ? FROM issues WHERE id = ?`, testTimestamp, issueID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := runMigrations(t.Context(), db, discardLogger()); err != nil {
-				t.Fatal(err)
-			}
-			var unknown int
-			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL AND claim_head_sha IS NULL`).Scan(&unknown); err != nil || unknown != 2 {
-				t.Fatalf("startup claim projections=%d unknown: %v", unknown, err)
-			}
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			cfg := Config{DatabasePath: path}
-			service := openTestService(t, cfg)
-			if err := service.database.populateClaimFacts(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-
-			if !test.viewed {
-				if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO change_viewed_files (version_id, principal_id, manifest_sha256, file_sha256, viewed) VALUES ('existing-version', 'reviewer', ?, ?, 1)`, strings.Repeat("a", 64), strings.Repeat("b", 64)); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if !test.onboarding {
-				if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO project_onboarding (organization_id, project_id, revision, progress_json, updated_at) SELECT organization_id, project_id, 7, '{"policy_approved":true}', ? FROM issues WHERE id = ?`, testTimestamp, issueID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := service.Close(); err != nil {
-				t.Fatal(err)
-			}
-			service = openTestService(t, cfg)
-			for _, check := range []struct{ name, query, want string }{
-				{"legacy key access", "SELECT operator_project_access FROM api_tokens WHERE id='legacy-key'", "selected"},
-				{"legacy key grants", "SELECT count(*) FROM token_grants g JOIN issues i ON i.organization_id=g.organization_id AND i.project_id=g.project_id WHERE g.token_id='legacy-key'", "1"},
-				{"schema version", "SELECT max(version_id) FROM hub_schema_version WHERE is_applied = 1", strconv.FormatInt(supportedSchemaVersion(t), 10)},
-				{"onboarding migration", "SELECT count(*) FROM hub_schema_version WHERE version_id = 19 AND is_applied = 1", "1"},
-				{"allowance migration", "SELECT count(*) FROM hub_schema_version WHERE version_id = 20 AND is_applied = 1", "1"},
-				{"allowance records", "SELECT count(*) FROM hosted_plan_assignments", "0"},
-				{"onboarding progress", "SELECT progress_json FROM project_onboarding", `{"policy_approved":true}`},
-				{"onboarding revision", "SELECT revision FROM project_onboarding", "7"},
-				{"onboarding timestamp", "SELECT updated_at FROM project_onboarding", testTimestamp},
-				{"identity migration", "SELECT count(*) FROM hub_schema_version WHERE version_id = 17 AND is_applied = 1", "1"},
-				{"version 18 recorded once", "SELECT count(*) FROM hub_schema_version WHERE version_id = 18 AND is_applied = 1", "1"},
-				{"existing code version", "SELECT record_json FROM change_versions WHERE id = 'existing-version'", string(firstVersion)},
-				{"first claim version", "SELECT claim_version_id||':'||claim_head_sha FROM change_requests WHERE id='existing-change'", "existing-version:preserved"},
-				{"second claim version", "SELECT claim_version_id||':'||claim_head_sha FROM change_requests WHERE id='second-change'", "second-version:second-head"},
-				{"viewed state", "SELECT viewed FROM change_viewed_files WHERE version_id = 'existing-version' AND principal_id = 'reviewer'", "1"},
-				{"hosted sessions", "SELECT count(*) FROM hosted_sessions WHERE token_hash = 'existing-session' AND email = 'reviewer@example.test'", test.hostedSessions},
-				{"foreign keys", "SELECT count(*) FROM pragma_foreign_key_check", "0"},
-				{"foreign key enforcement", "PRAGMA foreign_keys", "1"},
-				{"integrity", "PRAGMA integrity_check", "ok"},
-			} {
-				t.Run(check.name, func(t *testing.T) {
-					var got string
-					if err := service.database.db.QueryRowContext(t.Context(), check.query).Scan(&got); err != nil {
-						t.Fatal(err)
+					raw, err := eventstore.NewContent(objects).Receipt(t.Context(), receipt)
+					if err != nil {
+						return err
 					}
-					if got != check.want {
-						t.Fatalf("got %q, want %q", got, check.want)
+					var original struct {
+						ProgressJSON string
+						Revision     int64
+						UpdatedAt    string
 					}
-				})
+					if err := json.Unmarshal(raw, &original); err != nil {
+						return err
+					}
+					if original.ProgressJSON != rawProgress || original.Revision != 7 || original.UpdatedAt != updated {
+						return fmt.Errorf("onboarding approval source changed: %+v", original)
+					}
+					if _, err := reader.ProjectPolicy(t.Context(), project); !errors.Is(err, corestore.ErrNotFound) {
+						return fmt.Errorf("historical flag became current approval: %v", err)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				var sessions, allowances int
+				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_sessions WHERE organization_id=$1 AND token_hash='existing-session' AND email='reviewer@example.test'`, organization).Scan(&sessions); err != nil || sessions != 1 {
+					t.Fatalf("historical hosted session=%d error=%v", sessions, err)
+				}
+				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_plan_assignments WHERE organization_id=$1`, organization).Scan(&allowances); err != nil || allowances != 0 {
+					t.Fatalf("migration manufactured allowances=%d error=%v", allowances, err)
+				}
 			}
-		})
+		}()
+	}
+	failedOrg := tracker.OrganizationID("org_aggregate_incomplete")
+	failed := coreFixtureFromBundle(t, coreTenantAggregateSourceCopy(t, failedOrg, false), failedOrg)
+	coreFixtureAddTables(t, failed, "project_onboarding")
+	failed.add("project_onboarding", map[string]any{"organization_id": failedOrg, "project_id": "prj_aggregate_incomplete", "revision": 7, "progress_json": "{", "updated_at": updated})
+	result, err := ImportTenantCoreCopy(t.Context(), config, TenantCoreImportSource{BundlePath: failed.write(), OrganizationID: failedOrg, Catalog: catalog, Objects: objects})
+	if err == nil || result.CoreImportComplete {
+		t.Fatalf("unaccounted onboarding source marked complete: %+v error=%v", result, err)
 	}
 }
 
 func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "hub.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), fmt.Sprintf("PRAGMA application_id = %d", hubApplicationID)); err != nil {
-		t.Fatal(err)
-	}
-	files, err := migrationFiles.ReadDir("migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	migrations := fstest.MapFS{}
-	for _, file := range files {
-		if file.Name() >= "00008_" {
-			continue
-		}
-		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
+	admin := postgresStartupTemplate.Database(t)
+	config := postgres.Config{Connection: startupConnection(t, admin, "detent_runtime_v2", ""), Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
+	open := func() *database {
+		store, err := openPostgresDatabase(t.Context(), config)
 		if err != nil {
 			t.Fatal(err)
 		}
-		migrations[file.Name()] = &fstest.MapFile{Data: data}
+		t.Cleanup(func() {
+			if err := store.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		return store
 	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Up(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	repositoryID, issueID := seedProjection(t, db)
-	for _, statement := range []string{
-		`INSERT INTO machines (id, hostname, capacity, version, last_heartbeat_at, registered_at, updated_at) VALUES ('legacy-machine', 'host', 1, 'test', '2026-09-01T12:00:00Z', '2026-09-01T12:00:00Z', '2026-09-01T12:00:00Z')`,
-		fmt.Sprintf(`INSERT INTO leases (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, created_at, updated_at) VALUES ('legacy-lease', %d, 'legacy-machine', 'legacy-session', '2026-09-01T12:10:00Z', '2026-09-01T12:00:00Z', '2026-09-01T12:00:00Z', '2026-09-01T12:00:00Z', '2026-09-01T12:00:00Z')`, issueID),
-		fmt.Sprintf(`INSERT INTO work_events (issue_id, fencing_token, kind, payload_json, occurred_at, recorded_at) VALUES (%d, 1, 'legacy-event', '{"reference":"preserved"}', '2026-09-01T12:00:00Z', '2026-09-01T12:00:00Z')`, issueID),
-	} {
-		if _, err := db.ExecContext(t.Context(), statement); err != nil {
+	store := open()
+	objects := &memoryRunDetails{}
+	for _, organization := range []tracker.OrganizationID{"org_legacy_first", "org_legacy_second"} {
+		project := tracker.ProjectID("prj_legacy")
+		seedHistoricalImportTarget(t, store.postgres, organization, project, "github_compatible")
+		fixture := coreHistoricalV7Fixture(t, organization)
+		fixture.add("workflow_states", map[string]any{"id": 2, "repository_id": 1, "source_name": "Done", "detent_state": "Done", "terminal": 1, "created_at": "2026-09-01T12:00:00Z", "updated_at": "2026-09-01T12:00:00Z"})
+		fixture.set("issues", map[string]string{"id": "41"}, map[string]any{"workflow_state_id": 2, "github_state": "open"})
+		fixture.set("issues", map[string]string{"id": "43"}, map[string]any{"workflow_state_id": nil, "github_state": "closed"})
+
+		if _, present := fixture.tables["issues"].Columns["native_id"]; present {
+			t.Fatal("pre-native fixture already contains manufactured native identity")
+		}
+		path := fixture.write()
+		source := CoreWorkItemImportSource{BundlePath: path, OrganizationID: organization, ProjectID: project, Objects: objects}
+		if err := postgres.ReadNeutralImportBundle(t.Context(), path, organization, func(bundle *postgres.VerifiedNeutralImport) error {
+			for _, id := range []int64{41, 43} {
+				source.IdentityMappings = append(source.IdentityMappings, CoreWorkItemIdentityMapping{SourceSHA256: bundle.Identity().SourceSHA256, OrganizationID: organization, SourceIssueID: id, SourceRepositoryID: 1, SourceRepositoryNodeID: "R_original", SourceGitHubNodeID: "I_original_" + strconv.FormatInt(id, 10), TargetProjectID: project, TargetWorkItemID: tracker.NativeWorkItemID("wi_original_" + strconv.FormatInt(id, 10))})
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if count, err := ImportCoreWorkItems(t.Context(), store.postgres, source); err != nil || count != 2 {
+				t.Fatalf("verified pre-native import=%d error=%v", count, err)
+			}
+		}
+		changed := source
+		changed.IdentityMappings = append([]CoreWorkItemIdentityMapping(nil), source.IdentityMappings...)
+		changed.IdentityMappings[0].TargetWorkItemID = "wi_changed"
+		if _, err := ImportCoreWorkItems(t.Context(), store.postgres, changed); !errors.Is(err, mutation.ErrConflict) && !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("changed mapping was accepted: %v", err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		store = open()
+		if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			record, err := reader.ProjectRecord(t.Context(), project)
+			if err != nil || record.Core.Profile != "github_compatible" || record.Settings.Repository != "example-org/example-project" {
+				return fmt.Errorf("repository/profile identity changed: %+v error=%v", record, err)
+			}
+			for index, id := range []int64{41, 43} {
+				itemID := tracker.NativeWorkItemID("wi_original_" + strconv.FormatInt(id, 10))
+				item, err := reader.WorkItem(t.Context(), project, itemID)
+				if err != nil {
+					return err
+				}
+				if item.ID != id || item.NativeID != itemID || item.Number != int64(index+1) || item.ProvenanceProvider == nil || *item.ProvenanceProvider != "github" || item.ProvenanceExternalID == nil || *item.ProvenanceExternalID != "I_original_"+strconv.FormatInt(id, 10) {
+					return fmt.Errorf("original GitHub/numeric identity changed: %+v", item)
+				}
+				if item.BodyObjectKey == nil {
+					return errors.New("imported current body reference is missing")
+				}
+				objects.mu.Lock()
+				encodedBody := append([]byte(nil), objects.data[*item.BodyObjectKey]...)
+				objects.mu.Unlock()
+				var body string
+				if err := json.Unmarshal(encodedBody, &body); err != nil {
+					return err
+				}
+				if body != "Original body\r\n"+strconv.FormatInt(id, 10) {
+					return fmt.Errorf("imported current body changed: %q", body)
+				}
+				version, err := reader.CollaborationVersion(t.Context(), string(itemID), 1)
+				if err != nil {
+					return err
+				}
+				originalVersion, err := eventstore.NewContent(objects).CollaborationVersion(t.Context(), version)
+				if err != nil {
+					return err
+				}
+				var snapshot tracker.NativeIssue
+				if err := json.Unmarshal(originalVersion, &snapshot); err != nil {
+					return err
+				}
+				if snapshot.WorkItemID != itemID || snapshot.Body != body || snapshot.Revision != 1 || snapshot.Provenance == nil || snapshot.Provenance.ExternalID != "I_original_"+strconv.FormatInt(id, 10) {
+					return fmt.Errorf("historical native version changed: %+v", snapshot)
+				}
+
+				expectedState, expectedTerminal := "Done", true
+				if id == 43 {
+					expectedState, expectedTerminal = "", false
+				}
+				storedState := ""
+				if item.WorkflowStateName != nil {
+					storedState = *item.WorkflowStateName
+				}
+				if (item.WorkflowStateName == nil) != (expectedState == "") || storedState != expectedState || snapshot.State != expectedState || snapshot.Terminal != expectedTerminal {
+					return fmt.Errorf("historical workflow authority changed: item=%+v snapshot=%+v", item, snapshot)
+				}
+				lease, err := reader.Lease(t.Context(), "legacy-lease-"+strconv.FormatInt(id, 10))
+				if err != nil || lease.IssueID != id || lease.FencingToken != int64(index+1) {
+					return fmt.Errorf("historical lease fence changed: %+v error=%v", lease, err)
+				}
+				receipt, err := reader.Receipt(t.Context(), "production-import", "core-work-item-source", strconv.FormatInt(id, 10))
+				if err != nil {
+					return err
+				}
+				raw, err := eventstore.NewContent(objects).Receipt(t.Context(), receipt)
+				if err != nil {
+					return err
+				}
+				var original struct {
+					Mapping CoreWorkItemIdentityMapping
+					Rows    []coreHistoricalActivityRow
+				}
+				if err := json.Unmarshal(raw, &original); err != nil {
+					return err
+				}
+				if original.Mapping != source.IdentityMappings[index] {
+					return fmt.Errorf("mapping changed across reopen: %+v", original.Mapping)
+				}
+			}
+			if _, err := reader.WorkItem(t.Context(), project, "wi_changed"); !errors.Is(err, corestore.ErrNotFound) {
+				return fmt.Errorf("rejected mapping created identity: %v", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,id,native_id,project_id,number,title) VALUES($1,9999,'wi_invalid','prj_missing',1,'Invalid reference')`, organization); err == nil {
+			t.Fatal("PostgreSQL foreign key enforcement was lost")
+		} else {
+			var state interface{ SQLState() string }
+			if !errors.As(err, &state) || state.SQLState() != "23503" {
+				t.Fatalf("foreign key refusal=%v", err)
+			}
+		}
+		var issue, fence, compressed, contentBytes int64
+		var key, digest string
+		if err := admin.QueryRowContext(t.Context(), `SELECT issue_id,fencing_token,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM core_work_events WHERE organization_id=$1 AND source_id=7`, organization).Scan(&issue, &fence, &key, &digest, &compressed, &contentBytes); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := objects.ReadDetail(t.Context(), string(organization), eventstore.Reference(key, digest, compressed, contentBytes))
+		if err != nil || issue != 41 || fence != 1 || string(raw) != `{"reference":"preserved"}` {
+			t.Fatalf("historical work event changed: issue=%d fence=%d body=%q error=%v", issue, fence, raw, err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET native_id='changed' WHERE organization_id=$1 AND project_id=$2 AND native_id='wi_original_41'`, organization, project); err == nil {
+			t.Fatal("native identity was mutable")
+		}
+		metadata, err := objects.StoreDetail(t.Context(), string(organization), []byte(`{"status":"historical"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, control := range []struct {
+			name     string
+			metadata bool
+		}{{name: "metadata only", metadata: true}, {name: "unchanged title/body replay"}} {
+			if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+				current, err := writer.WorkItem(t.Context(), project, "wi_original_41")
+				if err != nil {
+					return err
+				}
+				before := current.LastActivityAt
+				if control.metadata {
+					current.ReportContextObjectKey = &metadata.Key
+				}
+				after, err := writer.UpdateWorkItem(t.Context(), current)
+				if err != nil {
+					return err
+				}
+				if !after.LastActivityAt.Equal(before) {
+					return fmt.Errorf("%s advanced activity: %s -> %s", control.name, before, after.LastActivityAt)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var databaseNow time.Time
+		if err := admin.QueryRowContext(t.Context(), "SELECT clock_timestamp()").Scan(&databaseNow); err != nil {
+			t.Fatal(err)
+		}
+		injected := databaseNow.Add(-time.Hour).UTC().Truncate(time.Microsecond)
+		for _, control := range []struct {
+			name        string
+			clock, want time.Time
+		}{{name: "injected clock precedes database", clock: injected, want: injected}, {name: "older edit retains high water", clock: injected.Add(-time.Minute), want: injected}} {
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			config.LeaseClock = func() time.Time { return control.clock }
+			store = open()
+			if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+				current, err := writer.WorkItem(t.Context(), project, "wi_original_41")
+				if err != nil {
+					return err
+				}
+				current.Title = control.name
+				after, err := writer.UpdateWorkItem(t.Context(), current)
+				if err != nil {
+					return err
+				}
+				if !after.LastActivityAt.Equal(control.want) {
+					return fmt.Errorf("%s activity=%s want=%s", control.name, after.LastActivityAt, control.want)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		config.LeaseClock = nil
+		store = open()
+		editedBody, err := json.Marshal("Imported edit")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := objects.StoreDetail(t.Context(), string(organization), editedBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var edited corestore.WorkItem
+		if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			current, err := writer.WorkItem(t.Context(), project, "wi_original_41")
+			if err != nil {
+				return err
+			}
+			current.BodyObjectKey = &ref.Key
+			edited, err = writer.UpdateWorkItem(t.Context(), current)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		sourceStamp := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+		if !edited.LastActivityAt.Equal(edited.NativeUpdatedAt) || !edited.LastActivityAt.After(sourceStamp) {
+			t.Fatalf("import edit activity=%s native updated=%s", edited.LastActivityAt, edited.NativeUpdatedAt)
+		}
+		if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			receipt, err := reader.Receipt(t.Context(), "production-import", "core-work-item-source", "41")
+			if err != nil {
+				return err
+			}
+			raw, err := eventstore.NewContent(objects).Receipt(t.Context(), receipt)
+			if err != nil {
+				return err
+			}
+			var original struct {
+				SourceRows []coreHistoricalSourceReference
+			}
+			if err := json.Unmarshal(raw, &original); err != nil {
+				return err
+			}
+			for _, source := range original.SourceRows {
+				if source.Table != "issues" {
+					continue
+				}
+				rowReceipt, err := reader.Receipt(t.Context(), "production-import", "core-work-item-source-row", source.CommandKey)
+				if err != nil {
+					return err
+				}
+				rawRow, err := eventstore.NewContent(objects).Receipt(t.Context(), rowReceipt)
+				if err != nil {
+					return err
+				}
+				var row postgres.NeutralImportRow
+				if err := json.Unmarshal(rawRow, &row); err != nil {
+					return err
+				}
+				var updated, body string
+				if err := row.Decode(map[string]any{"updated_at": &updated, "body": &body}); err != nil {
+					return err
+				}
+				if updated != "2026-09-01T12:00:00Z" || body != "Original body\r\n41" {
+					return fmt.Errorf("native edit rewrote source clock/body: %s/%q", updated, body)
+				}
+				return nil
+			}
+
+			return errors.New("original issue bytes are missing")
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		store = open()
+		if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			current, err := reader.WorkItem(t.Context(), project, "wi_original_41")
+			if err != nil {
+				return err
+			}
+			if current.NativeID != "wi_original_41" {
+				return errors.New("restart changed native identity")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			if _, err := writer.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_native", Name: "Coexisting native", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+				return err
+			}
+			_, err := writer.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: "prj_native", NativeID: "wi_native", Number: 1, Title: "Native work"})
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	service := openTestService(t, Config{DatabasePath: path})
-	var nativeID, organizationID, projectID string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT native_id, organization_id, project_id FROM issues WHERE id = ?", issueID).Scan(&nativeID, &organizationID, &projectID); err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct{ name, query, want string }{
-		{"repository", fmt.Sprintf("SELECT repository_id FROM issues WHERE id = %d", issueID), strconv.FormatInt(repositoryID, 10)},
-		{"GitHub identity", fmt.Sprintf("SELECT github_node_id FROM issues WHERE id = %d", issueID), "I_issue"},
-		{"number", fmt.Sprintf("SELECT number FROM issues WHERE id = %d", issueID), "1"},
-		{"compatibility profile", "SELECT profile FROM projects WHERE id = '" + projectID + "'", "github_compatible"},
-		{"lease", "SELECT issue_id FROM leases WHERE lease_id = 'legacy-lease'", strconv.FormatInt(issueID, 10)},
-		{"fencing", "SELECT fencing_token FROM leases WHERE lease_id = 'legacy-lease'", "1"},
-		{"history", "SELECT payload_json FROM work_events WHERE kind = 'legacy-event'", `{"reference":"preserved"}`},
-		{"foreign keys", "SELECT count(*) FROM pragma_foreign_key_check", "0"},
-		{"foreign key enforcement", "PRAGMA foreign_keys", "1"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var got string
-			if err := service.database.db.QueryRowContext(t.Context(), test.query).Scan(&got); err != nil {
-				t.Fatal(err)
-			}
-			if got != test.want {
-				t.Fatalf("got %q, want %q", got, test.want)
-			}
-		})
-	}
-	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_id = 'changed' WHERE id = ?", issueID); err == nil {
-		t.Fatal("native identity was mutable")
-	}
-	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_updated_at = ?, updated_at = ?, last_activity_at = ? WHERE id = ?", testTimestamp, testTimestamp, testTimestamp, issueID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = 'Imported edit' WHERE id = ?", issueID); err != nil {
-		t.Fatal(err)
-	}
-	var activity, updated, sourceUpdated string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT last_activity_at, native_updated_at, updated_at FROM issues WHERE id = ?", issueID).Scan(&activity, &updated, &sourceUpdated); err != nil {
-		t.Fatal(err)
-	}
-	if activity != updated || activity == testTimestamp || sourceUpdated != testTimestamp {
-		t.Fatalf("import edit activity = %s, native updated = %s, projection updated = %s", activity, updated, sourceUpdated)
-	}
-	if err := service.Close(); err != nil {
-		t.Fatal(err)
-	}
-	service = openTestService(t, Config{DatabasePath: path})
-	var restartedID string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE id = ?", issueID).Scan(&restartedID); err != nil {
-		t.Fatal(err)
-	}
-	if restartedID != nativeID {
-		t.Fatal("restart changed native identity")
-	}
-	fixture := newNativeFixture(t, service, "", "coexisting-native")
-	fixture.create(t, "native work")
 }

@@ -34,6 +34,9 @@ func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, pro
 		if err := s.authorizeCredentialMaintenanceWrite(ctx, w, tracker.OrganizationID(organization)); err != nil {
 			return err
 		}
+		if err := w.ScopeAccessCredentialToNative(ctx, id, s.config.now()); err != nil {
+			return err
+		}
 		return w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(organization), TokenID: id, ProjectID: tracker.ProjectID(project)})
 	})
 }

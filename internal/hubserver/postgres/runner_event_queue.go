@@ -52,6 +52,11 @@ func (q runEventQueue) Query(context.Context, string, ...any) (pgx.Rows, error) 
 }
 
 func (f *runnerEventSession) flushRunEvents(ctx context.Context) error {
+	trim := func(context.Context) error { return nil }
+	if f.ownsBoardDeltas && len(f.session.boardDeltas) != 0 {
+		f.boardDelivery = true
+		trim = f.session.queueBoardDeltas(f.pending)
+	}
 	if f.pending.Len() == 0 {
 		return nil
 	}
@@ -70,5 +75,8 @@ func (f *runnerEventSession) flushRunEvents(ctx context.Context) error {
 	for _, q := range batch.QueuedQueries {
 		observeStatement(ctx, started, q.SQL)
 	}
-	return mapError(ctx, err)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	return trim(ctx)
 }

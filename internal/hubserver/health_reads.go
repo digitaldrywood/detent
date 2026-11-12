@@ -84,7 +84,11 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	}
 	var records healthstore.Page
 	projected := true
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return page, workItemStorageUnavailable()
+	}
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(healthstore.Reader)
 		if !ok {
 			return workItemStorageUnavailable()

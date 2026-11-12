@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -8,6 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -124,6 +129,87 @@ func TestReleaseNotesPreferences(t *testing.T) {
 }
 
 func TestReleaseNotesMCP(t *testing.T) {
+	for _, transport := range []string{"stdio", "http"} {
+		for _, test := range []struct {
+			name   string
+			denied bool
+		}{
+			{"local admin", true},
+			{"local operator", true},
+			{"local worker", true},
+			{"personal entry", false},
+			{"service entry", true},
+		} {
+			t.Run(test.name+"/"+transport, func(t *testing.T) {
+				contexts := make(chan context.Context, 1)
+				var service *Service
+				var ctx context.Context
+				const route = "/api/v2/organizations/:organization/release-mcp-admission"
+				capture := func(c echo.Context) error {
+					contexts <- operatortool.BindConnection(c.Request().Context(), "release-admission", "test")
+					return c.NoContent(http.StatusOK)
+				}
+				switch test.name {
+				case "local admin", "local operator", "local worker":
+					f := newNativeFixture(t, nil, "", "Example project")
+					service = f.service
+					service.echo.POST(route, capture, service.operatorAuthority)
+					token := testHubAdminToken
+					if test.name == "local operator" {
+						token = f.token
+					}
+					if test.name == "local worker" {
+						token = f.worker(t, "release worker")
+					}
+					response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/release-mcp-admission", token, nil)
+					if test.name == "local worker" {
+						requireNativeStatus(t, response, http.StatusForbidden)
+						return
+					}
+					requireNativeStatus(t, response, http.StatusOK)
+					ctx = <-contexts
+				case "personal entry", "service entry":
+					f := newEntryKeyFixture(t)
+					user := f.user(t, "viewer")
+					service = f.service
+					service.echo.POST(route, capture, service.operatorAuthority)
+					key := apikey.KeyAuthority{ID: "release_entry", Kind: "personal", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "all"}}
+					if test.name == "service entry" {
+						key.Kind = "service"
+					}
+					response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: "/api/v2/organizations/org_security/release-mcp-admission", mutate: func(claims *cloudassert.Claims) {
+						claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "provider_org_security", "viewer"
+						if key.Kind == "service" {
+							claims.Subject, claims.Role = "service:"+key.ID, "admin"
+						}
+					}})
+					requireNativeStatus(t, response, http.StatusOK)
+					ctx = <-contexts
+				}
+				service.releaseNotes = testReleaseBuilds()
+				service.config.Version = "1.2.1"
+				send := hostedContextProtocol(t, service, ctx, transport)
+				raw := hostedContextData(t, send("tools/call", operatortool.ReleaseNotes, map[string]any{"limit": 1}), test.denied)
+				if test.denied {
+					return
+				}
+				var page releaseNotesPage
+				if err := json.Unmarshal(raw, &page); err != nil {
+					t.Fatal(err)
+				}
+				if page.HasUnread || len(page.Builds) != 1 || page.Builds[0].Version != "v1.2.1" || !page.Builds[0].Running || page.Builds[0].Unread || page.NextCursor == "" {
+					t.Fatalf("personal entry release baseline=%+v", page)
+				}
+				var older releaseNotesPage
+				if err := json.Unmarshal(hostedContextData(t, send("tools/call", operatortool.ReleaseNotes, map[string]any{"limit": 2, "cursor": page.NextCursor}), false), &older); err != nil {
+					t.Fatal(err)
+				}
+				if older.HasUnread || len(older.Builds) != 2 || older.Builds[0].Version != "v1.2.0-op.r.1.g123456789abc" || older.NextCursor != "" {
+					t.Fatalf("personal entry release pagination=%+v", older)
+				}
+			})
+		}
+	}
 	for _, deployment := range []string{"dedicated", "shared"} {
 		for _, transport := range []string{"stdio", "http"} {
 			t.Run(deployment+"/"+transport, func(t *testing.T) {

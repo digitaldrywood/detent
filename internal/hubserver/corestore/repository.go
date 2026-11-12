@@ -38,10 +38,12 @@ type Repository interface {
 }
 
 type Reader interface {
+	LookupDoctorProposalIdentity(context.Context, DoctorProposalIdentitySelection) (DoctorProposalIdentityResult, error)
 	ExportWorkItems(context.Context, WorkItemExportSelection, int64, int) ([]WorkItem, int64, error)
 	WorkItemHasActiveLease(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, time.Time) (bool, error)
 	NextWorkItemNumber(context.Context, tracker.ProjectID) (int64, error)
 	WorkItemBySource(context.Context, tracker.ProjectID, string) (WorkItem, error)
+	WorkItemByProvenance(context.Context, tracker.ProjectID, string, string) (WorkItem, error)
 	CommentBySource(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Comment, error)
 	SelectComments(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, bool, int) ([]Comment, error)
 	Project(context.Context, tracker.ProjectID) (Project, error)
@@ -56,6 +58,8 @@ type Reader interface {
 	WorkItemPage(context.Context, tracker.ProjectID, Cursor, int) (Page[WorkItem], error)
 	CommentPage(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, Cursor, int) (Page[Comment], error)
 	Relationships(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, RelationshipCursor, int) (RelationshipPage, error)
+	ProgressDependencies(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, WorkItemBlockerCursor, int) ([]ProgressDependency, error)
+	WorkItemBlockers(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, WorkItemBlockerCursor, int) ([]WorkItemBlocker, error)
 	LabelCatalog(context.Context, tracker.ProjectID, bool, string) ([]LabelCount, error)
 	LabelNames(context.Context, tracker.ProjectID, LabelCursor, int) (LabelPage, error)
 	WorkItemLabels(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, LabelCursor, int) (LabelPage, error)
@@ -66,7 +70,9 @@ type Reader interface {
 type Writer interface {
 	Reader
 	LockRelationshipGraph(context.Context) error
-	WorkItemBlockers(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, WorkItemBlockerCursor, int) ([]WorkItemBlocker, error)
+	CheckDependency(context.Context, Relationship) error
+	BindDoctorProposalIdentities(context.Context, DoctorProposalIdentityBinding) error
+	ValidateDoctorProposalIdentitySelection(context.Context, DoctorProposalIdentityResult) error
 	LockWorkItems(context.Context, []WorkItemReference) ([]WorkItem, error)
 	RemoveOwnedDependencies(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, []WorkItemReference) error
 	LockWorkItemProject(context.Context, tracker.ProjectID) error
@@ -132,7 +138,13 @@ type WorkItem struct {
 	DispatchRequestedAt    *time.Time
 	RecoveryRunnerID       string
 	RecoveryVersionID      string
-	DoctorIdentityRevision *int64 `json:"-"`
+	DoctorIdentityRevision *int64     `json:"-"`
+	TerminalEnteredAt      *time.Time `json:"-"`
+	ArchiveRestoredAt      *time.Time `json:"-"`
+	ArchiveRestoreKnown    bool       `json:"-"`
+	SourceRevision         int64      `json:"-"`
+	SourceScheduled        bool       `json:"-"`
+	SourceObservedAt       *time.Time `json:"-"`
 }
 
 type Comment struct {
@@ -154,6 +166,9 @@ type Comment struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	RecordID             int64
+	SourceRevision       int64      `json:"-"`
+	SourceScheduled      bool       `json:"-"`
+	SourceObservedAt     *time.Time `json:"-"`
 }
 
 type Cursor struct {
@@ -175,6 +190,8 @@ type Scan[T any] struct {
 	Next  ScanCursor
 }
 
+const MaxRelationshipPreparationPages = 100
+
 type Relationship struct {
 	OrganizationID    tracker.OrganizationID
 	ProjectID         tracker.ProjectID
@@ -182,6 +199,8 @@ type Relationship struct {
 	RelatedProjectID  tracker.ProjectID
 	RelatedWorkItemID tracker.NativeWorkItemID
 	Type              string
+	Provenance        string
+	CompatibilityEdge bool
 	Direction         string
 	CreatedAt         time.Time
 	Number            int
@@ -204,6 +223,12 @@ type WorkItemReference struct {
 type WorkItemBlockerCursor struct {
 	ProjectID tracker.ProjectID
 	IssueID   int64
+}
+
+type ProgressDependency struct {
+	WorkItemReference
+	IssueID   int64
+	CreatedAt time.Time
 }
 
 type WorkItemBlocker struct {
@@ -276,4 +301,35 @@ type DuplicateChallengeWriter interface {
 
 type SourceRecoveryWriter interface {
 	CompareAndSwapSourceRecovery(context.Context, WorkItem, string, string) error
+}
+
+type DoctorProposalIdentity struct {
+	Kind  string
+	Value string
+}
+
+type DoctorProposalIdentityBinding struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+	Revision       int64
+	VersionSHA256  string
+	Identities     []DoctorProposalIdentity
+}
+
+type DoctorProposalIdentitySelection struct {
+	Earliest  bool
+	ProjectID tracker.ProjectID
+	Identity  DoctorProposalIdentity
+	OpenOnly  bool
+}
+
+type DoctorProposalIdentityResult struct {
+	ProjectID      tracker.ProjectID
+	SourceSequence int64
+	WorkItemID     tracker.NativeWorkItemID
+	Number         int64
+	Revision       int64
+	VersionSHA256  string
+	Terminal       bool
 }

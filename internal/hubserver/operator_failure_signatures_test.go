@@ -2,8 +2,8 @@ package hubserver
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,6 +11,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -140,14 +143,7 @@ func TestGroupNativeFailureSignatures(t *testing.T) {
 
 func TestNativeFailureSignatureReads(t *testing.T) {
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	issue := f.create(t, "failure signatures")
-	worker := f.worker(t, "signatures")
-	lease := claimNativeAttempt(t, f, worker, "signature-machine", "signature-session", issue.WorkItemID)
-	start := nativeStartedEvent(lease)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start), http.StatusOK)
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}})
 	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}
 	for _, test := range []struct {
 		name, status, want, class string
@@ -178,29 +174,22 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 					t.Fatalf("source gate failure receipt rejected: %v", err)
 				}
 			}
-			raw, err := json.Marshal(test.data)
+			fixture := newNativeFixture(t, f.service, f.project.OrganizationID, test.name)
+			scope := analyticsTestScope(t, fixture)
+			issue := seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, "failure", 1, test.name, "Todo", now.Add(-time.Hour))
+			attemptID := "attempt-" + string(scope.project)
+			seedAnalyticsTestAttempt(t, hostedPostgresAdmin(t, f.service), f.service, scope, issue.WorkItemID, attemptID, test.status, now.Add(-3*time.Minute), now, test.data, test.malformedPhases)
+			if err := f.service.config.TenantRepository.(*postgres.Repository).ImportReportUsageFacts(t.Context(), []reportstore.UsageRecord{
+				{OrganizationID: scope.organization, UpdatedAt: now, UsageFact: reportstore.UsageFact{ProjectID: scope.project, WorkItemID: issue.WorkItemID, AttemptID: attemptID, Period: now.Add(-2 * time.Hour), Provider: "codex", Model: "test", Input: 100, CachedInput: 50, Output: 20, Cost: 0.5, Currency: "USD"}},
+				{OrganizationID: scope.organization, UpdatedAt: now, UsageFact: reportstore.UsageFact{ProjectID: scope.project, WorkItemID: issue.WorkItemID, AttemptID: attemptID, Period: now.Add(-2 * time.Hour), Provider: "codex", Model: "other", Input: 10, CachedInput: 10, Cost: 0.25, Currency: "USD"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			out, err := f.service.readNativeAnalyticsTenant(t.Context(), scope, operatortool.AnalyticsRequest{Limit: 10}, w)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,status=?,data_json=?,started_at=?,updated_at=? WHERE id=?", test.status, string(raw), formatHubTime(now.Add(-3*time.Minute)), formatHubTime(now), start.Data.AttemptID); err != nil {
-				t.Fatal(err)
-			}
-			if test.malformedPhases {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,data_json=json_set(data_json,'$.runtime.phases',?) WHERE id=?", "malformed", start.Data.AttemptID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT OR REPLACE INTO attempt_usage(attempt_id,organization_id,project_id,period,provider,model,input,cached_input,output,cost_estimate,updated_at) VALUES(?,?,?,?,?,?,100,50,20,0.5,?)`, start.Data.AttemptID, scope.organization, scope.project, formatHubTime(now.Add(-2*time.Hour)), "codex", "test", formatHubTime(now)); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT OR REPLACE INTO attempt_usage(attempt_id,organization_id,project_id,period,provider,model,input,cached_input,output,cost_estimate,updated_at) VALUES(?,?,?,?,?,?,10,10,0,0.25,?)`, start.Data.AttemptID, scope.organization, scope.project, formatHubTime(now.Add(-2*time.Hour)), "codex", "other", formatHubTime(now)); err != nil {
-				t.Fatal(err)
-			}
-			out, err := readNativeAnalytics(f.service.runDetailContext(t.Context()), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 10}, w)
-			if err != nil {
-				t.Fatal(err)
-			}
-			failures, partial, err := readNativeFailures(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(issue.WorkItemID), nil)
+			failures, partial, _, err := f.service.readNativeFailuresTenant(t.Context(), scope, issue.WorkItemID, operatortool.AnalyticsWindow{From: time.Time{}, To: time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)})
 			if err != nil || partial {
 				t.Fatalf("read failures: partial=%v err=%v", partial, err)
 			}
@@ -220,8 +209,8 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 			}
 			foreign := scope
 			foreign.project = "prj_foreign"
-			hidden, _, err := readNativeFailures(f.service.runDetailContext(t.Context()), f.service.database.db, foreign, "", &w)
-			if err != nil || len(hidden) != 0 {
+			hidden, _, _, err := f.service.readNativeFailuresTenant(t.Context(), foreign, "", w)
+			if !errors.Is(err, accessstore.ErrDenied) || len(hidden) != 0 {
 				t.Fatalf("scope leak: %#v %v", hidden, err)
 			}
 		})
@@ -229,18 +218,20 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 
 	t.Run("failure window boundaries", func(t *testing.T) {
 		for _, test := range []struct {
-			name    string
-			at      time.Time
-			landing bool
-			want    int
+			name     string
+			at       time.Time
+			landing  bool
+			want     int
+			recorded *time.Time
 		}{
-			{"attempt lower bound", w.From, false, 1},
-			{"attempt upper bound", w.To, false, 0},
-			{"attempt before window", w.From.Add(-time.Second), false, 0},
-			{"landing lower bound", w.From, true, 1},
-			{"landing upper bound", w.To, true, 0},
-			{"landing before window", w.From.Add(-time.Second), true, 0},
-			{"landing recorded after window", now, true, 1},
+			{"attempt lower bound", w.From, false, 1, nil},
+			{"attempt upper bound", w.To, false, 0, nil},
+			{"attempt before window", w.From.Add(-time.Second), false, 0, nil},
+			{"landing lower bound", w.From, true, 1, nil},
+			{"landing upper bound", w.To, true, 0, nil},
+			{"landing before window", w.From.Add(-time.Second), true, 0, nil},
+			{"landing recorded after window", now, true, 1, nil},
+			{"landing observed after recording", now, true, 1, new(w.From.Add(-time.Minute))},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				data := tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "count 1 failed"}}
@@ -249,48 +240,52 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 					data.Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "conflict", ObservedAt: test.at}}
 					updated = w.To.Add(time.Minute)
 				}
-				raw, err := json.Marshal(data)
-				if err != nil {
-					t.Fatal(err)
+				if test.recorded != nil {
+					updated = *test.recorded
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,status='failed',data_json=?,updated_at=? WHERE id=?", string(raw), formatHubTime(updated), start.Data.AttemptID); err != nil {
-					t.Fatal(err)
-				}
-				failures, partial, err := readNativeFailures(f.service.runDetailContext(t.Context()), f.service.database.db, scope, "", &w)
+				fixture := newNativeFixture(t, f.service, f.project.OrganizationID, test.name)
+				scope := analyticsTestScope(t, fixture)
+				issue := seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, "boundary", 1, test.name, "Todo", test.at.Add(-time.Hour))
+				seedAnalyticsTestAttempt(t, hostedPostgresAdmin(t, f.service), f.service, scope, issue.WorkItemID, "boundary-"+string(scope.project), "failed", minTime(test.at, updated).Add(-3*time.Minute), updated, data)
+				failures, partial, _, err := f.service.readNativeFailuresTenant(t.Context(), scope, "", w)
 				if err != nil || partial || len(failures) != test.want {
 					t.Fatalf("window failures=%#v partial=%v err=%v", failures, partial, err)
 				}
 			})
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,data_json='{}',updated_at=? WHERE id=?", formatHubTime(now), start.Data.AttemptID); err != nil {
-			t.Fatal(err)
-		}
+
 	})
 
 	for _, count := range []int{maxAnalyticsPopulation, maxAnalyticsPopulation + 1} {
 		t.Run(fmt.Sprintf("population %d", count), func(t *testing.T) {
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			fixture := newNativeFixture(t, f.service, f.project.OrganizationID, fmt.Sprintf("population %d", count))
+			scope := analyticsTestScope(t, fixture)
+			issue := seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, "population", 1, "population", "Todo", now.Add(-time.Hour))
+			db := hostedPostgresAdmin(t, f.service)
+			for index := range count {
+				seedAnalyticsTestAttempt(t, db, f.service, scope, issue.WorkItemID, fmt.Sprintf("%s-failure-%04d", scope.project, index), "failed", now.Add(-3*time.Minute), now, tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "count 1 failed"}})
+			}
+			ctx, paging, err := analyticsPagingContext(t.Context(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback()
-			if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET report_projection_version=1,report_failed_at=strftime('%Y-%m-%dT%H:%M:%f000000Z',updated_at),data_json=json_set(data_json,'$.terminal_failure',json('{"error":"count 1 failed"}')) WHERE id=?`, start.Data.AttemptID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
-INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at)
-SELECT 'lease_signature_'||i,l.issue_id,l.machine_id,'session_signature_'||i,l.expires_at,l.acquired_at,l.renewed_at,l.updated_at,l.created_at,l.updated_at
-FROM n CROSS JOIN leases l WHERE l.lease_id=?`, count-1, lease.ID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at,report_projection_version,report_failed_at)
-SELECT 'attempt_signature_'||l.fencing_token,a.organization_id,a.project_id,a.work_item_id,l.lease_id,l.fencing_token,'run_signature_'||l.fencing_token,1,'failed',a.data_json,a.started_at,a.updated_at,1,a.report_failed_at
-FROM native_attempts a CROSS JOIN leases l WHERE a.id=? AND l.lease_id LIKE 'lease_signature_%'`, start.Data.AttemptID); err != nil {
-				t.Fatal(err)
-			}
-			failures, partial, err := readNativeFailures(f.service.runDetailContext(t.Context()), tx, scope, string(issue.WorkItemID), &w)
+			failures, partial, _, err := f.service.readNativeFailuresTenant(ctx, scope, issue.WorkItemID, w)
 			if err != nil || partial != (count > maxAnalyticsPopulation) || len(failures) != maxAnalyticsPopulation {
 				t.Fatalf("population=%d partial=%v err=%v", len(failures), partial, err)
+			}
+			if count > maxAnalyticsPopulation {
+				token := paging.next["failures"]
+				if token == "" {
+					t.Fatal("missing failure continuation")
+				}
+				tailCtx, _, err := analyticsPagingContext(t.Context(), token)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tail, tailPartial, _, err := f.service.readNativeFailuresTenant(tailCtx, scope, issue.WorkItemID, w)
+				if err != nil || len(tail) != 1 || !tailPartial || tail[0].attemptID != fmt.Sprintf("%s-failure-0000", scope.project) {
+					t.Fatalf("failure tail=%+v partial=%v error=%v", tail, tailPartial, err)
+				}
 			}
 			latest := latestNativeFailureSignature(failures, partial)
 			if latest == nil || latest.Count != maxAnalyticsPopulation || latest.Partial != partial {

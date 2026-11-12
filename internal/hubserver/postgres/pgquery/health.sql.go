@@ -238,6 +238,191 @@ func (q *Queries) HealthLastTick(ctx context.Context, organizationID tracker.Org
 	return last_tick_at, err
 }
 
+const healthSourceConversationQuestions = `-- name: HealthSourceConversationQuestions :many
+WITH selected AS MATERIALIZED (
+ SELECT conversation_id,id,attempt_id,status,created_at,expires_at FROM conversation_questions
+ WHERE organization_id=$1 AND conversation_id=$2 AND id>$3::text AND status IN ('pending','sending','sent','unknown')
+ ORDER BY id LIMIT $4
+)
+SELECT q.conversation_id,q.id,q.attempt_id,q.status,q.created_at,q.expires_at,c.project_id,c.work_item_id,c.status AS conversation_status,c.deleted_at AS conversation_deleted_at,c.archived AS conversation_archived
+FROM selected q JOIN conversations c ON c.organization_id=$1 AND c.id=q.conversation_id
+ORDER BY q.id
+`
+
+type HealthSourceConversationQuestionsParams struct {
+	OrganizationID  tracker.OrganizationID
+	ConversationID  string
+	AfterQuestionID string
+	Limit           int32
+}
+
+type HealthSourceConversationQuestionsRow struct {
+	ConversationID        string
+	ID                    string
+	AttemptID             string
+	Status                string
+	CreatedAt             time.Time
+	ExpiresAt             *time.Time
+	ProjectID             tracker.ProjectID
+	WorkItemID            *string
+	ConversationStatus    string
+	ConversationDeletedAt *time.Time
+	ConversationArchived  bool
+}
+
+func (q *Queries) HealthSourceConversationQuestions(ctx context.Context, arg HealthSourceConversationQuestionsParams) ([]HealthSourceConversationQuestionsRow, error) {
+	rows, err := q.db.Query(ctx, healthSourceConversationQuestions,
+		arg.OrganizationID,
+		arg.ConversationID,
+		arg.AfterQuestionID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []HealthSourceConversationQuestionsRow{}
+	for rows.Next() {
+		var i HealthSourceConversationQuestionsRow
+		if err := rows.Scan(
+			&i.ConversationID,
+			&i.ID,
+			&i.AttemptID,
+			&i.Status,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.ProjectID,
+			&i.WorkItemID,
+			&i.ConversationStatus,
+			&i.ConversationDeletedAt,
+			&i.ConversationArchived,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const healthSourceItems = `-- name: HealthSourceItems :many
+SELECT i.id,i.project_id,i.native_id FROM issues i
+JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
+WHERE i.organization_id=$1 AND i.project_id=$2 AND i.workflow_state_name=$3 AND NOT i.archived AND NOT w.terminal AND i.id>$4::bigint
+ORDER BY i.id LIMIT $5
+`
+
+type HealthSourceItemsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	StateName      *string
+	AfterID        int64
+	Limit          int32
+}
+
+type HealthSourceItemsRow struct {
+	ID        int64
+	ProjectID tracker.ProjectID
+	NativeID  tracker.NativeWorkItemID
+}
+
+func (q *Queries) HealthSourceItems(ctx context.Context, arg HealthSourceItemsParams) ([]HealthSourceItemsRow, error) {
+	rows, err := q.db.Query(ctx, healthSourceItems,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.StateName,
+		arg.AfterID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []HealthSourceItemsRow{}
+	for rows.Next() {
+		var i HealthSourceItemsRow
+		if err := rows.Scan(&i.ID, &i.ProjectID, &i.NativeID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const healthSourceQuestions = `-- name: HealthSourceQuestions :many
+WITH selected AS MATERIALIZED (
+ SELECT conversation_id,id,attempt_id,status,created_at,expires_at FROM conversation_questions
+ WHERE organization_id=$1 AND status IN ('pending','sending','sent','unknown') AND (conversation_id,id)>($2::text,$3::text)
+ ORDER BY conversation_id,id LIMIT $4
+)
+SELECT q.conversation_id,q.id,q.attempt_id,q.status,q.created_at,q.expires_at,c.project_id,c.work_item_id,c.status AS conversation_status,c.deleted_at AS conversation_deleted_at,c.archived AS conversation_archived
+FROM selected q JOIN conversations c ON c.organization_id=$1 AND c.id=q.conversation_id
+ORDER BY q.conversation_id,q.id
+`
+
+type HealthSourceQuestionsParams struct {
+	OrganizationID      tracker.OrganizationID
+	AfterConversationID string
+	AfterQuestionID     string
+	Limit               int32
+}
+
+type HealthSourceQuestionsRow struct {
+	ConversationID        string
+	ID                    string
+	AttemptID             string
+	Status                string
+	CreatedAt             time.Time
+	ExpiresAt             *time.Time
+	ProjectID             tracker.ProjectID
+	WorkItemID            *string
+	ConversationStatus    string
+	ConversationDeletedAt *time.Time
+	ConversationArchived  bool
+}
+
+func (q *Queries) HealthSourceQuestions(ctx context.Context, arg HealthSourceQuestionsParams) ([]HealthSourceQuestionsRow, error) {
+	rows, err := q.db.Query(ctx, healthSourceQuestions,
+		arg.OrganizationID,
+		arg.AfterConversationID,
+		arg.AfterQuestionID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []HealthSourceQuestionsRow{}
+	for rows.Next() {
+		var i HealthSourceQuestionsRow
+		if err := rows.Scan(
+			&i.ConversationID,
+			&i.ID,
+			&i.AttemptID,
+			&i.Status,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.ProjectID,
+			&i.WorkItemID,
+			&i.ConversationStatus,
+			&i.ConversationDeletedAt,
+			&i.ConversationArchived,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const healthSummaryFindings = `-- name: HealthSummaryFindings :many
 SELECT organization_id, id, sequence, fingerprint, signal, class, subject_kind, subject_id, opened_at, last_seen_at, resolved_at, severity, summary, next_action, evidence_object_key, evidence_sha256, evidence_bytes, evidence_content_bytes, email_unavailable, slack_unavailable_at, slack_status_code, page_event_ids, page_attempt_ids, page_work_item_ids, page_signatures, page_reason, page_count_keys, page_count_values, page_value_keys, page_value_values, page_queue_keys, page_queue_depths, page_queue_short, page_queue_long, page_queue_baseline, page_productivity_from, page_productivity_to, page_failure_stage, page_last_report_at, page_last_run_url, page_last_green_at, page_cadence_seconds, page_window_seconds, page_generation, page_checkpoint, page_source_at, page_projected_at, page_examined_at, revision FROM health_findings WHERE organization_id=$1 AND resolved_at IS NULL AND severity='attention'
 ORDER BY opened_at,id LIMIT $2

@@ -142,8 +142,8 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if service.database.postgres == nil || service.database.db != nil || service.database.reader != nil {
-		t.Fatal("worker workflow fixture must use PostgreSQL without legacy handles")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 	projectGetPath := strings.Replace(nativeBase, ":organization", string(organization.ID), 1)
 	projectGetPath = strings.Replace(projectGetPath, ":project", string(project.ID), 1)

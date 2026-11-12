@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -122,13 +123,104 @@ func TestProjectRecordsKeepTenantRevisionsAndClaims(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	at := claim.AcquiredAt
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		exec := func(query string, args ...any) {
+			t.Helper()
+			if _, err := admin.ExecContext(ctx, query, args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		exec(`INSERT INTO api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES($1,'retained-runner-token','retained-runner',$2,'retained','worker',TRUE,$3,$3)`, org, strings.Repeat("a", 64), at)
+		exec(`INSERT INTO runner_enrollments(organization_id,id,token_hash,scope,operations,created_at,expires_at,created_by) VALUES($1,'retained-enrollment',$2,'projects',ARRAY['claim'],$3,$4,'retained-runner-token')`, org, strings.Repeat("b", 64), at, at.Add(time.Hour))
+		exec(`INSERT INTO runner_identities(organization_id,runner_id,machine_id,token_id,enrollment_id,scope,operations,capacity_limit,reported_capacity,created_at,expires_at,last_heartbeat_at) VALUES($1,'retained-runner','machine','retained-runner-token','retained-enrollment','projects',ARRAY['claim'],1,1,$2,$3,$2)`, org, at, at.Add(time.Hour))
+		exec(`INSERT INTO runner_repositories(organization_id,runner_id,owner,name,private,listed_at) VALUES($1,'retained-runner','example-org','example-project',FALSE,$2)`, org, at)
+		for _, project := range []tracker.ProjectID{"shared", "another"} {
+			exec(`UPDATE project_settings SET repository='example-org/example-project',checkout_repository='example-org/example-project' WHERE organization_id=$1 AND project_id=$2`, org, project)
+			exec(`INSERT INTO runner_enrollment_projects(organization_id,enrollment_id,project_id) VALUES($1,'retained-enrollment',$2)`, org, project)
+			exec(`INSERT INTO project_secrets(organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES($1,$2,'fly_sprites_token','example-org',$3,$4,$5,1,$6)`, org, project, []byte(string(org)+"/"+string(project)), []byte{2}, []byte{3}, at)
+		}
+	}
+	type retirementResources struct {
+		Projects     map[tracker.ProjectID]projectstore.Record
+		Secrets      map[tracker.ProjectID]accessstore.Secret
+		Enrollment   runnerstore.Enrollment
+		Runner       runnerstore.Identity
+		Repositories []runnerstore.Repository
+	}
+	readResources := func(org tracker.OrganizationID, retired bool) retirementResources {
+		t.Helper()
+		got := retirementResources{Projects: make(map[tracker.ProjectID]projectstore.Record), Secrets: make(map[tracker.ProjectID]accessstore.Secret)}
+		if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+			for _, project := range []tracker.ProjectID{"shared", "another"} {
+				record, err := r.ProjectRecord(ctx, project)
+				if retired && project == "shared" {
+					if !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("retired project still visible: %v", err)
+					}
+					if _, err := r.AccessSecret(ctx, project, "fly_sprites_token"); !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("retired project retained secret: %v", err)
+					}
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				got.Projects[project] = record
+				secret, err := r.AccessSecret(ctx, project, "fly_sprites_token")
+				if err != nil {
+					return err
+				}
+				got.Secrets[project] = secret
+			}
+			var err error
+			got.Enrollment, err = r.RunnerEnrollment(ctx, "retained-enrollment")
+			if err != nil {
+				return err
+			}
+			got.Runner, err = r.RunnerIdentity(ctx, "retained-runner")
+			if err != nil {
+				return err
+			}
+			got.Repositories, err = r.RunnerRepositories(ctx, "retained-runner", 100)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Repositories) != 1 || got.Repositories[0].Owner != "example-org" || got.Repositories[0].Name != "example-project" {
+			t.Fatal("shared repository fixture is missing")
+		}
+		for _, project := range got.Projects {
+			if project.Settings.Repository != "example-org/example-project" || project.Settings.CheckoutRepository != "example-org/example-project" {
+				t.Fatal("project no longer references the retained shared repository")
+			}
+		}
+
+		return got
+	}
+	beforeFirst, beforeSecond := readResources("org_first", false), readResources("org_second", false)
+
 	err = repository.WriteTenant(ctx, "org_second", corestore.Serving, func(w tenantstore.Writer) error { return w.RetireProject(ctx, "shared", 1, claim.AcquiredAt) })
 	if !errors.Is(err, projectstore.ErrActiveWork) {
 		t.Fatalf("delete claimed project=%v", err)
 	}
+	if got := readResources("org_second", false); !reflect.DeepEqual(got, beforeSecond) {
+		t.Fatal("refused retirement changed project resources")
+	}
+
 	if err := repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error { return w.RetireProject(ctx, "shared", 2, claim.AcquiredAt) }); err != nil {
 		t.Fatal(err)
 	}
+	delete(beforeFirst.Projects, "shared")
+	delete(beforeFirst.Secrets, "shared")
+	beforeFirst.Enrollment.ProjectIDs = []tracker.ProjectID{"another"}
+	if got := readResources("org_first", true); !reflect.DeepEqual(got, beforeFirst) {
+		t.Fatal("retirement changed sibling project or shared runner resources")
+	}
+	if got := readResources("org_second", false); !reflect.DeepEqual(got, beforeSecond) {
+		t.Fatal("retirement changed another tenant's project resources")
+	}
+
 	if err := repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 		_, err := r.ProjectRecord(ctx, "shared")
 		if !errors.Is(err, corestore.ErrNotFound) {
@@ -177,30 +269,33 @@ func TestProjectAccessPageFiltersSelectedAndBlockedProjectsBeforeLimit(t *testin
 	admin := template.Database(t)
 	repository, _ := repositoryFor(t, admin, smallPool())
 	ctx := t.Context()
-	seedTenantAccess(t, repository, "org_first")
 	ids := []tracker.ProjectID{"project_a", "project_b", "project_c"}
-	if err := repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
-		for _, id := range ids {
-			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: "org_first", ID: id, Name: string(id), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo"}}}); err != nil {
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedTenantAccess(t, repository, organization)
+		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, id := range ids {
+				if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: string(id), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo"}}}); err != nil {
+					return err
+				}
+				if err := w.InitializeProjectAccess(ctx, id, "first"); err != nil {
+					return err
+				}
+			}
+			now := historyAt()
+			if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: organization, ID: "selected_key", Name: "Selected key", Hash: "selected_hash", Scope: "operator", NativeOnly: true, UserID: "first", MembershipID: "membership_first", KeyScope: "read", ProjectAccess: "selected", Kind: "personal", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
-			if err := w.InitializeProjectAccess(ctx, id, "first"); err != nil {
-				return err
+			for _, id := range ids[1:] {
+				if err := w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: organization, TokenID: "selected_key", ProjectID: id}); err != nil {
+					return err
+				}
 			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
 		}
-		now := historyAt()
-		if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: "org_first", ID: "selected_key", Name: "Selected key", Hash: "selected_hash", Scope: "operator", NativeOnly: true, UserID: "first", MembershipID: "membership_first", KeyScope: "read", ProjectAccess: "selected", Kind: "personal", CreatedAt: now, UpdatedAt: now}); err != nil {
-			return err
-		}
-		for _, id := range ids[1:] {
-			if err := w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: "org_first", TokenID: "selected_key", ProjectID: id}); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
 	}
+
 	selected := accessstore.ProjectAccessFilter{UserID: "first", PrincipalID: "first", CredentialID: "selected_key", ProjectAccess: "selected", RequireCredentialGrant: true, Limit: 1}
 	var selectedFirst, selectedNext []accessstore.ProjectAccess
 	if err := repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
@@ -254,6 +349,93 @@ func TestProjectAccessPageFiltersSelectedAndBlockedProjectsBeforeLimit(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(organization)+"/array membership", func(t *testing.T) {
+			for _, test := range []struct {
+				name                    string
+				projects, blocked, want []tracker.ProjectID
+			}{
+				{name: "two selected projects", projects: []tracker.ProjectID{"project_b", "project_c"}, want: []tracker.ProjectID{"project_b", "project_c"}},
+				{name: "nil restriction retains credential grants", want: []tracker.ProjectID{"project_b", "project_c"}},
+				{name: "empty restriction retains credential grants", projects: []tracker.ProjectID{}, want: []tracker.ProjectID{"project_b", "project_c"}},
+				{name: "nil exclusions", projects: []tracker.ProjectID{"project_b", "project_c"}, want: []tracker.ProjectID{"project_b", "project_c"}},
+				{name: "empty exclusions", projects: []tracker.ProjectID{"project_b", "project_c"}, blocked: []tracker.ProjectID{}, want: []tracker.ProjectID{"project_b", "project_c"}},
+				{name: "exclusion with unrelated project", blocked: []tracker.ProjectID{"project_c", "outside"}, want: []tracker.ProjectID{"project_b"}},
+				{name: "complete exclusions", blocked: []tracker.ProjectID{"project_b", "project_c"}},
+				{name: "duplicates retain membership semantics", projects: []tracker.ProjectID{"project_b", "project_b"}, want: []tracker.ProjectID{"project_b"}},
+				{name: "quoted input cannot escape scope", projects: []tracker.ProjectID{"project_b') OR 1=1 --"}},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					query := selected
+					query.After = ""
+					query.Limit = 10
+					query.Projects = test.projects
+					query.BlockedProjects = test.blocked
+					var got []tracker.ProjectID
+					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+						rows, err := r.(accessstore.ProjectAccessPageReader).ProjectAccessPage(t.Context(), query)
+						for _, row := range rows {
+							got = append(got, row.ProjectID)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(got, test.want) {
+						t.Fatalf("project membership=%v want=%v", got, test.want)
+					}
+				})
+			}
+		})
+	}
+
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(organization)+"/selected service credential", func(t *testing.T) {
+			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				for _, id := range []string{"service_selected", "service_empty"} {
+					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: id, Hash: "hash_" + id, Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: historyAt(), UpdatedAt: historyAt()}); err != nil {
+						return err
+					}
+				}
+				for _, project := range []tracker.ProjectID{"project_b", "project_c"} {
+					if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "service_selected", ProjectID: project}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, test := range []struct {
+				name, credential string
+				requireGrant     bool
+				after            tracker.ProjectID
+				want             []tracker.ProjectID
+			}{
+				{name: "selected first page excludes ungranted prefix", credential: "service_selected", requireGrant: true, want: []tracker.ProjectID{"project_b", "project_c"}},
+				{name: "selected continuation", credential: "service_selected", requireGrant: true, after: "project_b", want: []tracker.ProjectID{"project_c"}},
+				{name: "selected without grants", credential: "service_empty", requireGrant: true},
+				{name: "bootstrap without required grants", credential: "service_empty", want: []tracker.ProjectID{"project_a", "project_b"}},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					var got []tracker.ProjectID
+					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+						rows, err := r.(accessstore.ProjectAccessPageReader).ProjectAccessPage(t.Context(), accessstore.ProjectAccessFilter{KeyKind: "service", CredentialID: test.credential, ProjectAccess: "selected", RequireCredentialGrant: test.requireGrant, After: test.after, Limit: 1})
+						for _, row := range rows {
+							got = append(got, row.ProjectID)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(got, test.want) {
+						t.Fatalf("service project page=%v want=%v", got, test.want)
+					}
+				})
+			}
+		})
+	}
+
 }
 
 func TestProjectRecordMutationRollsBackRelationships(t *testing.T) {

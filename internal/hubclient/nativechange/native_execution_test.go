@@ -2006,3 +2006,49 @@ func (h *expiredLeaseHost) RenewExecution(ctx context.Context, lease tracker.Nat
 	}
 	return err
 }
+
+func TestNativeCompletionDuplicateKeepsOtherObservationFields(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name           string
+		change         func(*tracker.NativeRuntimeObservation)
+		missingCurrent bool
+		want           bool
+	}{
+		{name: "only receipt timestamps differ", want: true},
+		{name: "different phase", change: func(o *tracker.NativeRuntimeObservation) { o.Phase = "implementation" }},
+		{name: "different acceptance", change: func(o *tracker.NativeRuntimeObservation) { o.Completion.AcceptanceRecorded = true }},
+		{name: "new validation", change: func(o *tracker.NativeRuntimeObservation) { o.Validation = &gate.CommandResult{ExitCode: 1} }},
+		{name: "new recovery", change: func(o *tracker.NativeRuntimeObservation) {
+			o.Recovery = &tracker.NativeRecoveryDecision{Action: "retry"}
+		}},
+		{name: "new repair dependency", change: func(o *tracker.NativeRuntimeObservation) {
+			o.RepairDependencies = []tracker.NativeWorkItemID{"wi_prerequisite"}
+		}},
+		{name: "new worker launch", change: func(o *tracker.NativeRuntimeObservation) { o.WorkerLaunch = &tracker.NativeWorkerLaunch{PID: 1} }},
+		{name: "new attempt identity", change: func(o *tracker.NativeRuntimeObservation) { o.LocalAttemptID = 1 }},
+		{name: "new generation", change: func(o *tracker.NativeRuntimeObservation) { o.Generation = 1 }},
+		{name: "new runtime identity", change: func(o *tracker.NativeRuntimeObservation) { o.Identity.BackendID = "different" }},
+		{name: "new phase evidence", change: func(o *tracker.NativeRuntimeObservation) { o.Phases = []tracker.NativePhase{{}} }},
+		{name: "changed phase drops", change: func(o *tracker.NativeRuntimeObservation) { o.PhasesDropped = 1 }},
+		{name: "changed pipeline drops", change: func(o *tracker.NativeRuntimeObservation) { o.PipelineDropped = 1 }},
+		{name: "missing completion", change: func(o *tracker.NativeRuntimeObservation) { o.Completion = nil }},
+		{name: "missing committed runtime", missingCurrent: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+			current := &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: at, Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: false, ObservedAt: at}}
+			observation := tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: at.Add(time.Second), Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: false, ObservedAt: at.Add(time.Second)}}
+			if test.change != nil {
+				test.change(&observation)
+			}
+			if test.missingCurrent {
+				current = nil
+			}
+			if duplicate := nativeCompletionObservationDuplicate(observation, current); duplicate != test.want {
+				t.Fatalf("duplicate=%t want=%t", duplicate, test.want)
+			}
+		})
+	}
+}

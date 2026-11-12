@@ -2,12 +2,17 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -21,7 +26,21 @@ import (
 
 func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	original, pool := repositoryFor(t, admin, smallPool())
+	if err := original.Close(); err != nil {
+		t.Fatal(err)
+	}
+	probe := &boardRetentionQueries{}
+	runtimePool := tracedFeaturePool(t, pool, probe)
+	repository, err := postgres.NewRepository(t.Context(), runtimePool, smallPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	objects := newHistoryObjects()
 	content := viewstore.NewContent(objects)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
@@ -96,6 +115,7 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		var initialHead viewstore.BoardSequence
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			page, err := r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: "prj_example", Limit: 1})
 			if err != nil {
@@ -161,10 +181,25 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if len(deltas) != 2 || deltas[0].Previous != nil || deltas[0].Current == nil || deltas[1].Sequence != 2 {
+			if len(deltas) != 3*len(records) {
 				t.Fatalf("board deltas=%+v", deltas)
 			}
-			return nil
+			for i, record := range records {
+				notice, action, card := deltas[3*i], deltas[3*i+1], deltas[3*i+2]
+				if notice.Topic != "work_item" || notice.Sequence != int64(3*i+1) || notice.EntityID != string(record.WorkItemID) ||
+					notice.EntityRevision == nil || *notice.EntityRevision != record.SourceRevision || notice.Previous != nil || notice.Current != nil ||
+					card.Topic != "card" || card.Sequence != notice.Sequence+2 || card.WorkItemID != record.WorkItemID || card.Previous != nil || card.Current == nil {
+					t.Fatalf("source notice and card do not share the same ordered project stream: notice=%+v card=%+v", notice, card)
+				}
+				if action.Topic != "human_action" || action.Sequence != notice.Sequence+1 || action.WorkItemID != "" || action.EntityID != string(record.WorkItemID) || action.EntityRevision == nil || *action.EntityRevision != record.SourceRevision || action.Kind != "upsert" || action.Status != "" || action.RelatedID != string(record.WorkItemID) || action.Previous != nil || action.Current != nil {
+					t.Fatalf("creation human action notice changed: %+v", action)
+				}
+			}
+			initialHead, err = r.BoardSequence(t.Context(), "prj_example")
+			if err == nil && initialHead.Sequence != deltas[len(deltas)-1].Sequence {
+				t.Fatalf("committed head=%+v deltas=%+v", initialHead, deltas)
+			}
+			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -205,7 +240,7 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			sequence, err := r.BoardSequence(t.Context(), "prj_example")
-			if err == nil && sequence.Sequence != 2 {
+			if err == nil && sequence != initialHead {
 				t.Fatalf("unchanged refresh emitted deltas: %+v", sequence)
 			}
 			return err
@@ -239,6 +274,23 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		var updatedHead viewstore.BoardSequence
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			updatedHead, err = r.BoardSequence(t.Context(), "prj_example")
+			if err != nil {
+				return err
+			}
+			notices, err := r.BoardDeltas(t.Context(), "prj_example", initialHead.Sequence, 2)
+			if err == nil && (updatedHead.Sequence != initialHead.Sequence+1 || len(notices) != 1 ||
+				notices[0].Topic != "work_item" || notices[0].EntityID != "wi_example_0" ||
+				notices[0].EntityRevision == nil || *notices[0].EntityRevision != 2) {
+				t.Fatalf("source-only title/owner update did not emit one current revision: head=%+v notices=%+v", updatedHead, notices)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
 		rollback := errors.New("rollback projection")
 		err = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "prj_example", WorkItemID: "wi_example_1", ExpectedRevision: 1}); err != nil {
@@ -254,7 +306,7 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if sequence.Sequence != 2 {
+			if sequence != updatedHead {
 				t.Fatalf("rollback retained delta: %+v", sequence)
 			}
 			_, err = r.BoardItem(t.Context(), "prj_example", "wi_example_1")
@@ -300,6 +352,300 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 		}
 
 	}
+	t.Run("retention work stays bounded per project flush", func(t *testing.T) {
+		organizations := []tracker.OrganizationID{"org_first", "org_second"}
+		projects := []tracker.ProjectID{"prj_retention_a", "prj_retention_b", "prj_retention_boundary"}
+		type retained struct{ count, min, max, tail, head, floor int64 }
+		read := func(org tracker.OrganizationID, project tracker.ProjectID) retained {
+			t.Helper()
+			var value retained
+			if err := admin.QueryRowContext(t.Context(), `SELECT count(*),coalesce(min(d.sequence),0),coalesce(max(d.sequence),0),count(*) FILTER(WHERE d.sequence>s.sequence-2048),s.sequence,s.replay_floor FROM native_board_sequences s LEFT JOIN native_board_deltas d USING(organization_id,project_id) WHERE s.organization_id=$1 AND s.project_id=$2 GROUP BY s.sequence,s.replay_floor`, org, project).Scan(&value.count, &value.min, &value.max, &value.tail, &value.head, &value.floor); err != nil {
+				t.Fatal(err)
+			}
+			return value
+		}
+		for _, org := range organizations {
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				for _, project := range projects {
+					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: string(project), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for i, project := range projects {
+				head, floor := int64(3000), int64(7)
+				if i == 2 {
+					head, floor = 2048, 0
+				}
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=excluded.sequence,replay_floor=excluded.replay_floor`, org, project, head, floor); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_board_deltas(organization_id,project_id,sequence,work_item_id,topic,entity_id,kind) SELECT $1,$2,n,'','activity','retained_'||n,'upsert' FROM generate_series(1,$3::bigint)n`, org, project, head); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		for orgIndex, org := range organizations {
+			untouched := map[tracker.ProjectID]retained{}
+			for _, project := range projects {
+				untouched[project] = read(organizations[1-orgIndex], project)
+			}
+			var unrelated viewstore.BoardSequence
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				unrelated, err = r.BoardSequence(t.Context(), "prj_example")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			probe.reset()
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				for _, project := range projects[:2] {
+					for i := range 40 {
+						if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: project, NativeID: tracker.NativeWorkItemID(fmt.Sprintf("%s_item_%d", project, i)), Number: int64(i + 1), Title: "Example retained item", WorkflowStateName: new("Todo")}); err != nil {
+							return err
+						}
+						if project == projects[0] && i == 19 {
+							first := policyTestRevision(org, project, "retention_first", now)
+							second := policyTestRevision(org, project, "retention_second", now.Add(time.Second))
+							if err := w.ApproveProjectPolicy(t.Context(), first, ""); err != nil {
+								return err
+							}
+							if err := w.ApproveProjectPolicy(t.Context(), second, first.PolicyID); err != nil {
+								return err
+							}
+						}
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			selector, point, deletes := probe.snapshot()
+			probe.stop()
+			if deletes != 64 {
+				t.Fatalf("per-project cleanup exceeded32 rows: deletes=%d want64 for2 projects", deletes)
+			}
+			for i, project := range projects[:2] {
+				expected := retained{count: 3048, min: 33, max: 3080, tail: 2048, head: 3080, floor: 32}
+				if i == 0 {
+					expected.count++
+					expected.max++
+					expected.head++
+					expected.floor = 3041
+				}
+				if got := read(org, project); got != expected {
+					t.Fatalf("retention tenant=%s project=%s got=%+v want=%+v", org, project, got, expected)
+				}
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					head, err := r.BoardSequence(t.Context(), project)
+					if err != nil {
+						return err
+					}
+					if head.Sequence != expected.head || head.ReplayFloor != expected.floor {
+						t.Fatalf("retention public watermark=%+v want=%+v", head, expected)
+					}
+					tail, err := r.BoardDeltas(t.Context(), project, head.ReplayFloor, 1)
+					if err != nil {
+						return err
+					}
+					if len(tail) != 1 || tail[0].Sequence != head.ReplayFloor+1 {
+						t.Fatalf("inclusive floor replay=%+v head=%+v", tail, head)
+					}
+					if i == 0 {
+						reset, err := r.BoardDeltas(t.Context(), project, 3040, 1)
+						if err != nil {
+							return err
+						}
+						if len(reset) != 1 || reset[0].Sequence != 3041 || reset[0].Topic != "board" || reset[0].Kind != "invalidate" || reset[0].EntityID != string(project) || reset[0].Previous != nil || reset[0].Current != nil {
+							t.Fatalf("last policy invalidation lost: %+v", reset)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := read(org, projects[2]); got != (retained{count: 2048, min: 1, max: 2048, tail: 2048, head: 2048, floor: 0}) {
+				t.Fatalf("untouched boundary project changed: %+v", got)
+			}
+			for _, project := range projects {
+				if got := read(organizations[1-orgIndex], project); got != untouched[project] {
+					t.Fatalf("retention crossed tenant: project=%s got=%+v want=%+v", project, got, untouched[project])
+				}
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				got, err := r.BoardSequence(t.Context(), "prj_example")
+				if err == nil && got != unrelated {
+					t.Fatalf("retention changed unrelated project: got=%+v want=%+v", got, unrelated)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			beforeRollback := read(org, projects[1])
+			rollbackTrim := errors.New("rollback retention")
+			err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+				next, err := w.TrimBoardDeltas(t.Context(), projects[0])
+				if err != nil {
+					return err
+				}
+				if next != projects[1] {
+					t.Fatalf("rollback trim project=%s want=%s", next, projects[1])
+				}
+				return rollbackTrim
+			})
+			if !errors.Is(err, rollbackTrim) || read(org, projects[1]) != beforeRollback {
+				t.Fatalf("retention rollback changed rows or replay floor: error=%v before=%+v after=%+v", err, beforeRollback, read(org, projects[1]))
+			}
+			if orgIndex == 0 {
+				if selector.sql == "" || point.sql == "" {
+					t.Fatal("retention statements were not observed")
+				}
+				for _, query := range []struct {
+					name  string
+					value boardRetentionQuery
+				}{{"selector", selector}, {"point", point}} {
+					for _, mode := range []string{"force_generic_plan", "force_custom_plan"} {
+						func() {
+							tx, err := runtimePool.Begin(t.Context())
+							if err != nil {
+								t.Fatal(err)
+							}
+							defer tx.Rollback(t.Context())
+							if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
+								t.Fatal(err)
+							}
+							var tenantRole bool
+							if err := tx.QueryRow(t.Context(), `SELECT pg_has_role(current_user,'detent_runtime_v2','USAGE') AND NOT pg_has_role(current_user,'detent_platform_v2','USAGE') AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) AND current_setting('detent.organization_id')=$1`, string(org)).Scan(&tenantRole); err != nil || !tenantRole {
+								t.Fatalf("retention plan lacks scoped runtime role: %v", err)
+							}
+							if _, err := tx.Exec(t.Context(), "SET LOCAL plan_cache_mode="+mode); err != nil {
+								t.Fatal(err)
+							}
+							values := append([]any(nil), query.value.args...)
+							values[0], values[1] = fmt.Sprint(values[0]), fmt.Sprint(values[1])
+							if query.name == "point" {
+								var location pgtype.TID
+								if err := tx.QueryRow(t.Context(), `SELECT ctid FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2 AND sequence=33`, values[0], values[1]).Scan(&location); err != nil {
+									t.Fatal(err)
+								}
+								value, err := location.Value()
+								if err != nil {
+									t.Fatal(err)
+								}
+								values[2], values[3] = value, int64(33)
+							}
+							statement := pgx.Identifier{"board_trim_" + query.name + "_" + mode}.Sanitize()
+							if _, err := tx.Exec(t.Context(), "PREPARE "+statement+" AS "+query.value.sql); err != nil {
+								t.Fatal(err)
+							}
+							placeholders := make([]string, len(values))
+							for i := range placeholders {
+								placeholders[i] = fmt.Sprintf("$%d", i+1)
+							}
+							args := append([]any{pgx.QueryExecModeSimpleProtocol}, values...)
+							var raw []byte
+							if err := tx.QueryRow(t.Context(), "EXPLAIN(ANALYZE,BUFFERS,FORMAT JSON) EXECUTE "+statement+"("+strings.Join(placeholders, ",")+")", args...).Scan(&raw); err != nil {
+								t.Fatal(err)
+							}
+							type node struct {
+								Type      string  `json:"Node Type"`
+								Relation  string  `json:"Relation Name"`
+								Index     string  `json:"Index Name"`
+								Condition string  `json:"Index Cond"`
+								Rows      float64 `json:"Actual Rows"`
+								Removed   float64 `json:"Rows Removed by Filter"`
+								Loops     float64 `json:"Actual Loops"`
+								Plans     []node
+							}
+							var plans []struct{ Plan node }
+							if err := json.Unmarshal(raw, &plans); err != nil {
+								t.Fatal(err)
+							}
+							if len(plans) != 1 {
+								t.Fatalf("retention plans=%s", raw)
+							}
+							found := false
+							var inspect func(node)
+							inspect = func(plan node) {
+								if plan.Relation == "native_board_deltas" && plan.Type != "ModifyTable" {
+									bound := float64(32)
+									if query.name == "point" {
+										bound = 1
+									}
+									if (plan.Rows+plan.Removed)*plan.Loops > bound {
+										t.Errorf("retention %s exceeded physical row bound: %+v", query.name, plan)
+									}
+									if query.name == "selector" && plan.Index == "native_board_deltas_pkey" && strings.Contains(plan.Condition, "sequence") && strings.Contains(plan.Condition, "project_id") && strings.Contains(plan.Condition, "organization_id") {
+										found = true
+									}
+									if query.name == "point" && plan.Type == "Tid Scan" && plan.Rows == 1 {
+										found = true
+									}
+								}
+								for _, child := range plan.Plans {
+									inspect(child)
+								}
+							}
+							inspect(plans[0].Plan)
+							if !found {
+								t.Errorf("retention %s missing bounded %s plan: %s", query.name, mode, raw)
+							}
+							if _, err := tx.Exec(t.Context(), "DEALLOCATE "+statement); err != nil {
+								t.Fatal(err)
+							}
+							if err := tx.Rollback(t.Context()); err != nil {
+								t.Fatal(err)
+							}
+						}()
+					}
+				}
+				if got := read(org, projects[1]); got != (retained{count: 3048, min: 33, max: 3080, tail: 2048, head: 3080, floor: 32}) {
+					t.Fatalf("plan probe committed a deletion: %+v", got)
+				}
+			}
+			cursor := tracker.ProjectID("prj_retention_")
+			for i, project := range projects {
+				if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+					next, err := w.TrimBoardDeltas(t.Context(), cursor)
+					if err == nil && next != project {
+						t.Fatalf("retention continuation=%s want=%s", next, project)
+					}
+					cursor = next
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if i < 2 {
+					expected := retained{count: 3016, min: 65, max: 3080, tail: 2048, head: 3080, floor: 64}
+					if i == 0 {
+						expected.count++
+						expected.max++
+						expected.head++
+						expected.floor = 3041
+					}
+					if got := read(org, project); got != expected {
+						t.Fatalf("maintenance continuation=%+v want=%+v", got, expected)
+					}
+				} else if got := read(org, project); got != (retained{count: 2048, min: 1, max: 2048, tail: 2048, head: 2048, floor: 0}) {
+					t.Fatalf("head2048 was trimmed: %+v", got)
+				}
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: projects[2], NativeID: "boundary_item", Number: 1, Title: "Boundary item", WorkflowStateName: new("Todo")})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if got := read(org, projects[2]); got != (retained{count: 2048, min: 3, max: 2050, tail: 2048, head: 2050, floor: 2}) {
+				t.Fatalf("inclusive head-2048 boundary changed: %+v", got)
+			}
+		}
+	})
 	t.Run("access revisions follow committed grants without crossing tenants", func(t *testing.T) {
 		read := func(org tracker.OrganizationID, user string) [3]int64 {
 			t.Helper()
@@ -418,3 +764,46 @@ func TestConcurrentProjectGrantsDoNotDeadlockRevisionUpdates(t *testing.T) {
 		t.Fatalf("concurrent grants were not both committed: %v", err)
 	}
 }
+
+type boardRetentionQuery struct {
+	sql  string
+	args []any
+}
+
+type boardRetentionQueries struct {
+	mu              sync.Mutex
+	active          bool
+	selector, point boardRetentionQuery
+	deletes         int
+}
+
+func (p *boardRetentionQueries) reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active = true
+	p.selector, p.point = boardRetentionQuery{}, boardRetentionQuery{}
+	p.deletes = 0
+}
+func (p *boardRetentionQueries) stop() { p.mu.Lock(); defer p.mu.Unlock(); p.active = false }
+func (p *boardRetentionQueries) snapshot() (boardRetentionQuery, boardRetentionQuery, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.selector, p.point, p.deletes
+}
+func (p *boardRetentionQueries) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.active || !strings.Contains(data.SQL, "native_board_deltas") {
+		return ctx
+	}
+	query := boardRetentionQuery{sql: data.SQL, args: append([]any(nil), data.Args...)}
+	if strings.HasPrefix(data.SQL, "SELECT ") {
+		p.selector = query
+	}
+	if strings.HasPrefix(data.SQL, "DELETE ") {
+		p.point = query
+		p.deletes++
+	}
+	return ctx
+}
+func (p *boardRetentionQueries) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}

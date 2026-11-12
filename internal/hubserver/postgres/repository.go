@@ -25,11 +25,13 @@ type PoolConfig struct {
 }
 
 type Repository struct {
-	leaseClock func() time.Time
-	pool       *pgxpool.Pool
-	runtime    *Runtime
-	serving    chan struct{}
-	background chan struct{}
+	leaseClock     func() time.Time
+	pool           *pgxpool.Pool
+	runtime        *Runtime
+	serving        chan struct{}
+	background     chan struct{}
+	boardCommitMu  sync.RWMutex
+	boardCommitted func()
 }
 
 var ErrPoolConfig = errors.New("PostgreSQL pool requires positive serving and background budgets plus one reserved health connection within its connection limit")
@@ -37,7 +39,10 @@ var ErrWorkload = errors.New("unknown PostgreSQL workload")
 
 var _ corestore.Repository = (*Repository)(nil)
 
-func NewRepository(ctx context.Context, pool *pgxpool.Pool, config PoolConfig) (*Repository, error) {
+func NewRepository(ctx context.Context, pool *pgxpool.Pool, config PoolConfig, leaseClock ...func() time.Time) (*Repository, error) {
+	if len(leaseClock) > 1 {
+		return nil, ErrPoolConfig
+	}
 	if pool == nil || config.MaxConnections < 3 || config.ServingConnections < 1 || config.BackgroundConnections < 1 || config.ServingConnections >= config.MaxConnections || config.BackgroundConnections > config.MaxConnections-config.ServingConnections || config.BackgroundConnections > config.MaxConnections-2 || int(pool.Config().MaxConns) != config.MaxConnections {
 		return nil, ErrPoolConfig
 	}
@@ -46,7 +51,26 @@ func NewRepository(ctx context.Context, pool *pgxpool.Pool, config PoolConfig) (
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
-	return &Repository{pool: pool, runtime: runtime, serving: make(chan struct{}, serving), background: make(chan struct{}, config.BackgroundConnections)}, nil
+	var clock func() time.Time
+	if len(leaseClock) == 1 {
+		clock = leaseClock[0]
+	}
+	return &Repository{leaseClock: clock, pool: pool, runtime: runtime, serving: make(chan struct{}, serving), background: make(chan struct{}, config.BackgroundConnections)}, nil
+}
+
+func (r *Repository) SetBoardCommitNotifier(notify func()) {
+	r.boardCommitMu.Lock()
+	r.boardCommitted = notify
+	r.boardCommitMu.Unlock()
+}
+
+func (r *Repository) notifyBoardCommit() {
+	r.boardCommitMu.RLock()
+	notify := r.boardCommitted
+	r.boardCommitMu.RUnlock()
+	if notify != nil {
+		notify()
+	}
 }
 
 func (r *Repository) Close() error {
@@ -129,10 +153,11 @@ func (r *Repository) transactionIsolation(ctx context.Context, organization trac
 		}
 	}()
 	finishCallback := transactionSpan(ctx, "pg_callback")
+	db := timedQueries{DBTX: tx}
+	owner := &session{organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly, leaseClock: r.leaseClock, flushesBoardDeltas: !readOnly}
 	err = func() error {
 		defer finishCallback()
-		db := timedQueries{DBTX: tx}
-		return run(&session{organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly, leaseClock: r.leaseClock})
+		return run(owner)
 	}()
 	if err != nil {
 		return mapError(ctx, err)
@@ -140,11 +165,20 @@ func (r *Repository) transactionIsolation(ctx context.Context, organization trac
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	hasDelivery := len(owner.boardDeltas) != 0
+	if !readOnly {
+		if err := owner.flushBoardDeltas(ctx); err != nil {
+			return err
+		}
+	}
 	finishCommit := transactionSpan(ctx, "pg_commit")
 	started := time.Now()
 	err = tx.Commit(ctx)
 	observeStatement(ctx, started, "COMMIT")
 	finishCommit()
+	if err == nil && hasDelivery {
+		r.notifyBoardCommit()
+	}
 	return mapError(ctx, err)
 }
 
@@ -174,6 +208,12 @@ type projectAccessKey struct {
 }
 
 type session struct {
+	boardDeltas             []boardAppend
+	flushesBoardDeltas      bool
+	archiveAccountingLocked bool
+	archiveBillingPresent   bool
+	archiveCounterLocked    bool
+
 	leaseClock         func() time.Time
 	searchDeadline     time.Time
 	searchAdmitted     bool

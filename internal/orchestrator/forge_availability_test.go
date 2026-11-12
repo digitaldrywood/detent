@@ -776,10 +776,6 @@ func TestCredentialWaitSurvivesOverlappingFailures(t *testing.T) {
 }
 
 func TestCredentialCanaryDurableRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name           string

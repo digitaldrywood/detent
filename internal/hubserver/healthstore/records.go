@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -62,3 +63,24 @@ type PageMaintainer interface {
 }
 
 var ErrPagePending = errors.New("health page projection pending")
+
+type QuestionSource struct {
+	ProjectID                                                 tracker.ProjectID
+	WorkItemID                                                tracker.NativeWorkItemID
+	ConversationID, ID, AttemptID, Status, ConversationStatus string
+	CreatedAt                                                 time.Time
+	ExpiresAt                                                 *time.Time
+	ConversationDeleted, ConversationArchived                 bool
+}
+
+type ItemSource struct {
+	corestore.WorkItemReference
+	ID int64
+}
+
+type SourceReader interface {
+	HealthSourceBaselines(context.Context, tracker.ProjectID) ([]Baseline, error)
+	HealthSourceItems(context.Context, tracker.ProjectID, string, int64, int) ([]ItemSource, error)
+	HealthSourceQuestions(context.Context, string, string, int) ([]QuestionSource, error)
+	HealthSourceConversationQuestions(context.Context, string, string, int) ([]QuestionSource, error)
+}

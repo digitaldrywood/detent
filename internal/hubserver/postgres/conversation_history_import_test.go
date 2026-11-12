@@ -7,9 +7,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	conversationmodel "github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -32,6 +35,18 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 	tables := []string{"conversations", "conversation_messages", "conversation_questions", "conversation_commands", "conversation_events", "conversation_starts", "conversation_audience_events", "conversation_turn_batches", "conversation_tool_revisions", "message_references", "conversation_attachments", "conversation_attachment_blobs", "attachments"}
 	copies := map[tracker.OrganizationID]string{}
 	now := "2026-11-01T18:00:00.123456Z"
+	parsedNow, err := time.Parse(time.RFC3339Nano, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedExecution := func(organization tracker.OrganizationID) conversationmodel.Execution {
+		return conversationmodel.Execution{Status: conversationmodel.ExecutionRunning, Owner: conversationmodel.Owner{AttemptID: "historical-attempt-" + string(organization), RunID: "historical-run-" + string(organization), LeaseID: "historical-lease-" + string(organization), FencingToken: 23, RunnerID: "historical-runner-" + string(organization), MachineID: "historical-machine-" + string(organization), ThreadID: "historical-thread", TurnID: "historical-turn"}, Resume: conversationmodel.ResumeTranscript, Capabilities: conversationmodel.Capabilities{Steer: true, Answer: true}, Error: "historical provider failure", UpdatedAt: parsedNow}
+	}
+	preferences := conversationmodel.Preferences{Model: "HistoricalModel", ReasoningEffort: "high", Access: "read-only"}
+	preferencesJSON, err := json.Marshal(preferences)
+	if err != nil {
+		t.Fatal(err)
+	}
 	objects := &countingHistoryObjects{base: newHistoryObjects(), storedPayloads: make(map[string]int)}
 	archiveReferences := make(map[tracker.OrganizationID]attachment.ArchiveReference)
 	archivePayloads := make(map[tracker.OrganizationID]string)
@@ -51,7 +66,16 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 			messageID := "message_" + string(organization) + suffix
 			artifactRef := "artifact_" + string(organization) + suffix
 			blob := append([]byte("conversation attachment "+string(organization)+suffix), 0, 255, 128)
-			copy.add(t, "conversations", map[string]any{"id": conversationID, "organization_id": organization, "project_id": "prj_shared", "owner_principal_id": "first", "origin": "user", "title": "Example conversation", "visibility": "private", "status": "active", "execution_json": "{}", "created_at": now, "updated_at": now})
+			execution := expectedExecution(organization)
+			executionJSON, err := json.Marshal(execution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := map[string]any{"id": conversationID, "organization_id": organization, "project_id": "prj_shared", "owner_principal_id": "first", "origin": "user", "title": "Example conversation", "visibility": "private", "status": "active", "execution_json": "{}", "created_at": now, "updated_at": now}
+			if suffix == "" {
+				row["execution_json"], row["execution_status"], row["execution_lease_id"], row["execution_settled"], row["preferences_json"] = string(executionJSON), string(execution.Status), execution.Owner.LeaseID, 0, string(preferencesJSON)
+			}
+			copy.add(t, "conversations", row)
 			copy.add(t, "conversation_messages", map[string]any{"id": messageID, "conversation_id": conversationID, "seq": 1, "role": "user", "kind": "text", "text": "Example message", "data_json": "{}", "delivery": "saved", "actor_json": "{}", "created_at": now, "updated_at": now, "content_attachment_id": archiveID})
 			copy.add(t, "conversation_attachments", map[string]any{"id": "attachment_" + string(organization) + suffix, "conversation_id": conversationID, "principal_id": "first", "name": "example.txt", "mime": "text/plain", "size": len(blob), "artifact_ref": artifactRef, "created_at": now})
 			copy.add(t, "conversation_attachment_blobs", map[string]any{"artifact_ref": artifactRef, "content": blob})
@@ -80,8 +104,8 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 				t.Fatalf("imported rows=%d want 8", result.Rows)
 			}
 		}
-		if objects.stores-storesBefore != 8 || objects.reads-readsBefore != 10 || objects.storedPayloads[archivePayloads[organization]] != 1 {
-			t.Fatalf("archive import store/read calls = %d/%d, original payload stores=%d; want 8/10 including source-manifest verification and two attachment objects and the existing archive stored once", objects.stores-storesBefore, objects.reads-readsBefore, objects.storedPayloads[archivePayloads[organization]])
+		if objects.stores-storesBefore != 12 || objects.reads-readsBefore != 14 || objects.storedPayloads[archivePayloads[organization]] != 1 {
+			t.Fatalf("archive import store/read calls = %d/%d, original payload stores=%d; want 12/14 including six source pages, one source manifest, three pin verifications, two attachment objects and the existing archive stored once", objects.stores-storesBefore, objects.reads-readsBefore, objects.storedPayloads[archivePayloads[organization]])
 		}
 		if err := repository.Close(); err != nil {
 			t.Fatal(err)
@@ -118,6 +142,9 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 			if conversation.OrganizationID != organization || conversation.ProjectID != "prj_shared" || conversation.OwnerPrincipalID != "first" || conversation.MessageCount != 1 {
 				t.Fatalf("imported conversation=%+v", conversation)
 			}
+			if !reflect.DeepEqual(conversation.Execution, expectedExecution(organization)) || conversation.Preferences != preferences {
+				t.Fatalf("historical typed authority changed: %+v", conversation)
+			}
 			message, err := reader.Message(t.Context(), conversationID, messageID)
 			if err != nil {
 				return err
@@ -142,6 +169,15 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 			return nil
 		}); err != nil {
 			t.Fatal(err)
+		}
+		for _, suffix := range []string{"", "_second"} {
+			var known bool
+			if err := admin.QueryRowContext(t.Context(), `SELECT execution_attempt_id IS NOT NULL AND preference_model IS NOT NULL FROM conversations WHERE organization_id=$1 AND id=$2`, organization, conversationID+suffix).Scan(&known); err != nil {
+				t.Fatal(err)
+			}
+			if known != (suffix == "") {
+				t.Fatalf("historical known-field preservation for %s: %v", suffix, known)
+			}
 		}
 		for _, suffix := range []string{"", "_second"} {
 			var contentID string

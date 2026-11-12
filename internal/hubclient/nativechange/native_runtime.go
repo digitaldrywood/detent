@@ -63,6 +63,9 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
+	if e.data.Outcome != "" && nativeCompletionObservationDuplicate(observation, e.data.Runtime) {
+		return nil
+	}
 	if observation.Activity != nil {
 		profile := *observation.Activity
 		profile.StartEarlier(e.usageStartedAt)
@@ -201,4 +204,16 @@ func (e *nativeExecution) RecordPipelineTiming(timing gate.PipelineTiming) {
 	}
 	e.data.Runtime = &observation
 	e.runtimeDirty = true
+}
+
+func nativeCompletionObservationDuplicate(observation tracker.NativeRuntimeObservation, current *tracker.NativeRuntimeObservation) bool {
+	if observation.Completion == nil || current == nil || current.Completion == nil {
+		return false
+	}
+	completion := *observation.Completion
+	completion.ObservedAt = time.Time{}
+	observation.Completion = &completion
+	observation.HeartbeatAt = time.Time{}
+	expected := tracker.NativeRuntimeObservation{Phase: current.Phase, Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: current.Completion.AcceptanceRecorded}}
+	return reflect.DeepEqual(observation, expected)
 }

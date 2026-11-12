@@ -9,9 +9,10 @@ import (
 )
 
 type ClaimStatePage struct {
-	State      runnerauth.ClaimState
-	Candidates []runnerauth.ReleasedExecution
-	Next       string
+	State        runnerauth.ClaimState
+	Candidates   []runnerauth.ReleasedExecution
+	Unclassified []runnerauth.ReleasedExecution
+	Next         string
 }
 
 type ClaimStateReader interface {

@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeIssuePickerProjection(t *testing.T) {
@@ -14,12 +16,11 @@ func TestNativeIssuePickerProjection(t *testing.T) {
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	issues := seedArchiveIssues(t, f.service, scope, 120, "Todo")
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title = 'Picker needle' WHERE native_id = ?", issues[7].WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = 1 WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", issues[7].WorkItemID); err != nil {
-		t.Fatal(err)
-	}
+	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issues[7].WorkItemID), f.token, tracker.UpdateIssue{
+		Mutation: tracker.Mutation{IdempotencyKey: "picker-title-priority"}, ExpectedRevision: issues[7].Revision,
+		Title: new("Picker needle"), Priority: tracker.SetPriority(new(1)),
+	})
+	requireNativeStatus(t, response, http.StatusOK)
 
 	read := func(t *testing.T, query string) (int, nativeIssuePickerPage, []byte) {
 		t.Helper()

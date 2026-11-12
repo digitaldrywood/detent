@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -24,6 +25,7 @@ import (
 )
 
 type tenantAttemptSnapshot struct {
+	artifactsPayload  *attachment.ArchiveReference
 	checkpointPayload *attachment.ArchiveReference
 	recoverPayload    bool
 	payload           *attachment.ArchiveReference
@@ -276,13 +278,17 @@ func (s *Service) readNativeAttemptCheckpointTenant(ctx context.Context, snapsho
 			raw, err = owner.ReadCanonicalDetail(ctx, string(attempt.OrganizationID), string(snapshot.event.ProjectID), *attempt.CheckpointObjectKey)
 		}
 		if err != nil {
-			return nil, errors.Join(artifact.ErrIntegrity, err)
+			return nil, nativeAttemptArchiveReadError(snapshot.checkpointPayload, err)
 		}
-		var retained checkpointPayload
-		if json.Unmarshal(raw, &retained) != nil || retained.Checkpoint == nil {
-			return nil, artifact.ErrIntegrity
+		checkpoint, err = decodeAttemptCheckpoint(ctx, attempt, raw, func(ctx context.Context, detail *runDetailReference) ([]byte, error) {
+			return s.readAttemptCheckpointDetail(ctx, snapshot, detail)
+		})
+		if err != nil {
+			return nil, nativeAttemptArchiveReadError(snapshot.checkpointPayload, err)
 		}
-		checkpoint = retained.Checkpoint
+		if attempt.CheckpointPreservesSource != nil && *attempt.CheckpointPreservesSource != checkpoint.PreservesSource() {
+			return nil, nativeAttemptArchiveReadError(snapshot.checkpointPayload, artifact.ErrIntegrity)
+		}
 	}
 	return checkpoint, nil
 }
@@ -331,6 +337,16 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 		result.Unavailable = slices.DeleteFunc(result.Unavailable, func(value string) bool { return value == "evidence" })
 	}
 	result.ArtifactIDs = run.ArtifactIDs
+	if snapshot.artifactsPayload != nil {
+		ref := *snapshot.artifactsPayload
+		raw, err := s.runDetailStore().ReadDetail(ctx, string(attempt.OrganizationID), ref)
+		if err != nil {
+			return tracker.NativeAttempt{}, nativeAttemptArchiveReadError(&ref, err)
+		}
+		if int64(len(raw)) != ref.UncompressedSize || json.Unmarshal(raw, &result.ArtifactIDs) != nil {
+			return tracker.NativeAttempt{}, nativeAttemptArchiveReadError(&ref, artifact.ErrIntegrity)
+		}
+	}
 	result.CleanupAcknowledgedAt = attempt.CleanupAcknowledgedAt
 	if lease.ReleasedAt != nil {
 		released := *lease.ReleasedAt
@@ -444,7 +460,28 @@ func readTenantAttemptPayload(ctx context.Context, r tenantstore.Reader, snapsho
 	if err := readTenantAttemptRunPayload(ctx, r, snapshot); err != nil {
 		return err
 	}
-	return readTenantAttemptCheckpointPayload(ctx, r, snapshot)
+	if err := readTenantAttemptCheckpointPayload(ctx, r, snapshot); err != nil {
+		return err
+	}
+	if snapshot.attempt.ArtifactsObjectKey == nil {
+		return nil
+	}
+	reader, ok := r.(attemptArchiveReader)
+	if !ok {
+		return nativeRunEventStorageUnavailable()
+	}
+	object, err := reader.ArchiveObjectByKey(ctx, *snapshot.attempt.ArtifactsObjectKey)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return artifact.ErrIntegrity
+	}
+	if err != nil {
+		return err
+	}
+	if object.OrganizationID != snapshot.attempt.OrganizationID || object.Reference.Key != *snapshot.attempt.ArtifactsObjectKey || object.Reference.Validate(string(snapshot.attempt.OrganizationID)) != nil {
+		return artifact.ErrIntegrity
+	}
+	snapshot.artifactsPayload = &object.Reference
+	return nil
 }
 
 func readTenantAttemptCheckpointPayload(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
@@ -534,11 +571,215 @@ func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot tenan
 		raw, err = s.runDetailStore().ReadDetail(ctx, string(snapshot.attempt.OrganizationID), *snapshot.payload)
 	}
 	if err != nil {
-		return tracker.NativeRunData{}, errors.Join(artifact.ErrIntegrity, err)
+		return tracker.NativeRunData{}, nativeAttemptArchiveReadError(snapshot.payload, err)
 	}
 	var run tracker.NativeRunData
 	if snapshot.payload != nil && int64(len(raw)) != snapshot.payload.UncompressedSize || json.Unmarshal(raw, &run) != nil {
-		return run, artifact.ErrIntegrity
+		return run, nativeAttemptArchiveReadError(snapshot.payload, artifact.ErrIntegrity)
 	}
 	return run, nil
+}
+
+func nativeAttemptArchiveReadError(ref *attachment.ArchiveReference, err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var availability string
+	switch {
+	case errors.Is(err, artifact.ErrIntegrity), errors.Is(err, attachment.ErrInvalid):
+		availability = "invalid"
+	case errors.Is(err, artifact.ErrStorage):
+		availability = "unavailable"
+	default:
+		return errors.Join(artifact.ErrIntegrity, err)
+	}
+	descriptor := &tracker.ArchiveDescriptor{Availability: availability, SectionIDs: []string{}}
+	if ref != nil {
+		descriptor.SHA256 = ref.SHA256
+	}
+	return errors.Join(artifact.ErrIntegrity, err, &nativeArchiveError{Archive: descriptor})
+}
+
+func decodeAttemptCheckpoint(ctx context.Context, attempt leasestore.Attempt, raw []byte, resolve func(context.Context, *runDetailReference) ([]byte, error)) (*tracker.NativeCheckpoint, error) {
+	var wrapper checkpointPayload
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, errors.Join(artifact.ErrIntegrity, err)
+	}
+	if wrapper.Checkpoint != nil {
+		return wrapper.Checkpoint, nil
+	}
+	var stored storedRunCheckpoint
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return nil, errors.Join(artifact.ErrIntegrity, err)
+	}
+	if stored.Detail == nil {
+		if stored.NativeCheckpoint == nil || stored.Resume == "" || stored.WorktreeState == "" {
+			return nil, artifact.ErrIntegrity
+		}
+		return stored.NativeCheckpoint, nil
+	}
+	detail := stored.Detail
+	if detail.Organization != string(attempt.OrganizationID) || detail.AttachmentID == "" || detail.Entry == "" {
+		return nil, artifact.ErrIntegrity
+	}
+	if detail.ObjectKey != "" && (!strings.HasPrefix(detail.ObjectKey, "orgs/"+detail.Organization+"/") || detail.AttachmentID != "att_"+artifact.Digest([]byte(detail.Organization + "\n" + detail.ObjectKey))[:32]) {
+		return nil, artifact.ErrIntegrity
+	}
+	resolved, err := resolve(ctx, detail)
+	if err != nil {
+		return nil, err
+	}
+	var run tracker.NativeRunData
+	if detail.ObjectKey != "" {
+		err = json.Unmarshal(resolved, &run)
+	} else {
+		var entries map[string]tracker.NativeRunData
+		err = json.Unmarshal(resolved, &entries)
+		run = entries[detail.Entry]
+	}
+	if err != nil || runDetailEntry(run) != detail.Entry || run.AttemptID != attempt.ID || string(run.LeaseID) != attempt.LeaseID || int64(run.FencingToken) != attempt.FencingToken || run.RunID != attempt.RunID || run.Sequence < 1 || run.Sequence > attempt.Sequence || run.Handoff == nil {
+		return nil, errors.Join(artifact.ErrIntegrity, err)
+	}
+	return run.Handoff, nil
+}
+
+func (s *Service) readAttemptCheckpointDetail(ctx context.Context, snapshot tenantAttemptSnapshot, detail *runDetailReference) ([]byte, error) {
+	attempt := snapshot.attempt
+	var ref attachment.ArchiveReference
+	err := s.config.TenantRepository.ReadTenant(ctx, attempt.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
+		if detail.ObjectKey != "" {
+			owner, ok := r.(attemptArchiveReader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			object, err := owner.ArchiveObjectByKey(ctx, detail.ObjectKey)
+			if err != nil {
+				return err
+			}
+			if object.OrganizationID != attempt.OrganizationID || object.Reference.Key != detail.ObjectKey {
+				return artifact.ErrIntegrity
+			}
+			ref = object.Reference
+		} else {
+			row, err := r.Attachment(ctx, snapshot.event.ProjectID, detail.AttachmentID)
+			if err != nil {
+				return err
+			}
+			if row.OrganizationID != attempt.OrganizationID || row.Metadata.ProjectID != string(snapshot.event.ProjectID) || row.Metadata.ID != detail.AttachmentID || row.Metadata.DeletedAt != nil || row.ObjectDeletedAt != nil {
+				return artifact.ErrIntegrity
+			}
+			ref = attachment.ArchiveReference{Key: row.ObjectKey, SHA256: row.Metadata.SHA256, CompressedSize: row.Metadata.Size, UncompressedSize: row.UncompressedSize, Codec: row.Codec, SchemaVersion: int(row.SchemaVersion), Kind: row.Kind, Retention: row.Retention, BindingID: row.StorageBindingID, CustomerOwned: row.CustomerOwned}
+		}
+		if ref.Validate(string(attempt.OrganizationID)) != nil || ref.BindingID != "" || ref.CustomerOwned || ref.SchemaVersion != 1 {
+			return artifact.ErrIntegrity
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.runDetailStore().ReadDetail(ctx, string(attempt.OrganizationID), ref)
+}
+
+func (s *Service) populateCheckpointSource(ctx context.Context, organization tracker.OrganizationID, after string) (string, error) {
+	var page leasestore.CheckpointSourcePage
+	var snapshot tenantAttemptSnapshot
+	var cleanupErr, checkpointErr error
+	var cleanupNeeded, checkpointNeeded bool
+	var runnerID string
+	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+		reader, ok := r.(leasestore.CheckpointSourceReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		page, err = reader.UnclassifiedCheckpointSource(ctx, after, corestore.MaxPageSize)
+		if err != nil || page.Candidate == nil {
+			return err
+		}
+		snapshot.attempt, err = r.Attempt(ctx, page.Candidate.AttemptID)
+		if err != nil {
+			return err
+		}
+		cleanupNeeded = snapshot.attempt.WorkerCleanupRequired == nil || snapshot.attempt.RuntimeSummarySequence != snapshot.attempt.Sequence
+		checkpointNeeded = snapshot.attempt.CheckpointObjectKey != nil && snapshot.attempt.CheckpointPreservesSource == nil
+		if !cleanupNeeded && !checkpointNeeded {
+			return corestore.ErrRevisionConflict
+		}
+		snapshot.event = eventstore.Event{OrganizationID: organization, ProjectID: page.Candidate.ProjectID, WorkItemID: page.Candidate.WorkItemID}
+		if cleanupNeeded {
+			snapshot.lease, cleanupErr = r.Lease(ctx, snapshot.attempt.LeaseID)
+			if cleanupErr == nil {
+				runner, runnerErr := r.RunnerForLease(ctx, snapshot.lease.LeaseID)
+				cleanupErr = runnerErr
+				runnerID = runner.RunnerID
+			}
+			if cleanupErr == nil {
+				snapshot.event, cleanupErr = r.LatestRunEvent(ctx, page.Candidate.ProjectID, snapshot.attempt.ID)
+			}
+			if cleanupErr == nil && (snapshot.event.WorkItemID != page.Candidate.WorkItemID || snapshot.lease.IssueID != snapshot.attempt.IssueID || snapshot.lease.FencingToken != snapshot.attempt.FencingToken) {
+				cleanupErr = artifact.ErrIntegrity
+			}
+			if cleanupErr == nil {
+				cleanupErr = readTenantAttemptRunPayload(ctx, r, &snapshot)
+			}
+		}
+		if checkpointNeeded {
+			if cleanupErr != nil {
+				snapshot.event = eventstore.Event{OrganizationID: organization, ProjectID: page.Candidate.ProjectID, WorkItemID: page.Candidate.WorkItemID}
+			}
+			checkpointErr = readTenantAttemptCheckpointPayload(ctx, r, &snapshot)
+		}
+		return nil
+	})
+	if err != nil || page.Candidate == nil {
+		return page.Next, err
+	}
+	var cleanup *bool
+	var heartbeat *time.Time
+	if cleanupNeeded && cleanupErr == nil {
+		var run tracker.NativeRunData
+		run, cleanupErr = s.readNativeAttemptRunTenant(ctx, snapshot)
+		if cleanupErr == nil && (!nativeAttemptRunMatches(snapshot, run) || run.RunnerID != runnerID || string(run.MachineID) != snapshot.lease.MachineID) {
+			cleanupErr = artifact.ErrIntegrity
+		}
+		if cleanupErr == nil {
+			cleanup = new(nativeRunCleanupRequired(run))
+			if run.Runtime != nil {
+				value := run.Runtime.HeartbeatAt
+				heartbeat = &value
+			}
+		}
+	}
+	var checkpoint *bool
+	if checkpointNeeded && checkpointErr == nil {
+		decoded, decodeErr := s.readNativeAttemptCheckpointTenant(ctx, snapshot)
+		checkpointErr = decodeErr
+		if checkpointErr == nil {
+			if decoded == nil {
+				checkpointErr = artifact.ErrIntegrity
+			} else {
+				checkpoint = new(decoded.PreservesSource())
+			}
+		}
+	}
+	if cleanup == nil && checkpoint == nil {
+		return page.Next, errors.Join(cleanupErr, checkpointErr)
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		if cleanup != nil {
+			if err := w.SetAttemptRuntimeHeartbeat(ctx, snapshot.attempt.ID, snapshot.attempt.Sequence, heartbeat, *cleanup); err != nil {
+				return err
+			}
+		}
+		if checkpoint != nil {
+			owner, ok := w.(leasestore.CheckpointSourceWriter)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			return owner.SetCheckpointSource(ctx, leasestore.CheckpointSourceFact{AttemptID: snapshot.attempt.ID, IssueID: snapshot.attempt.IssueID, Sequence: snapshot.attempt.Sequence, CheckpointObjectKey: *snapshot.attempt.CheckpointObjectKey, PreservesSource: *checkpoint})
+		}
+		return nil
+	})
+	return page.Next, errors.Join(err, cleanupErr, checkpointErr)
 }

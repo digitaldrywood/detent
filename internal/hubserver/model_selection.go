@@ -2,10 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"net/http"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -29,42 +26,34 @@ func readCloudModelSelection(ctx context.Context, query nativeQueryer, scope nat
 }
 
 func (s *Service) getCloudModelSelection(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		scope := nativeRequestScope(c)
-		if s.config.AccessRepository == nil {
-			return s.nativeAPIError(c, nativeNotFound())
-		}
-		if err := s.accessRead(c.Request().Context(), scope.organization, func(r tenantstore.Reader) error {
-			return s.authorizeAccessScope(c.Request().Context(), r, scope, false)
-		}); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if scope.project == "" {
-			value, err := s.readOrganizationModels(c.Request().Context(), scope.organization)
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			return c.JSON(http.StatusOK, value)
-		}
+	scope := nativeRequestScope(c)
+	if s.config.TenantRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
 	}
-	if s.config.TenantRepository != nil && nativeRequestScope(c).project != "" {
-		record, err := s.readProjectRecord(c.Request().Context(), nativeRequestScope(c))
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		value, err := s.projectRecordModel(c.Request().Context(), record)
+	if s.config.AccessRepository == nil {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	if err := s.accessRead(c.Request().Context(), scope.organization, func(r tenantstore.Reader) error {
+		return s.authorizeAccessScope(c.Request().Context(), r, scope, false)
+	}); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if scope.project == "" {
+		value, err := s.readOrganizationModels(c.Request().Context(), scope.organization)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		return c.JSON(http.StatusOK, value)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	result, err := readCloudModelSelection(ctx, s.database.reader, nativeRequestScope(c))
+	record, err := s.readProjectRecord(c.Request().Context(), scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, result)
+	value, err := s.projectRecordModel(c.Request().Context(), record)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, value)
 }
 
 func (s *Service) organizationModelSelectionScope(c echo.Context) (nativeScope, error) {
@@ -105,18 +94,8 @@ func (s *Service) updateCloudModelSelection(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
-	return s.nativeMutation(c, request.Mutation, request, updateCloudModelSelectionOperation(request))
-}
-
-func updateCloudModelSelectionOperation(request cloudModelSelectionRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
-	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
-		value, err := projectsettings.UpdateModelSelection(ctx, tx, scope.organization, scope.project, projectsettings.ModelSelectionChange{ExpectedRevision: request.ExpectedRevision, Selection: request.Selection})
-		if errors.Is(err, projectsettings.ErrConflict) {
-			return nil, nativeConflict(value.Revision)
-		}
-		if errors.Is(err, projectsettings.ErrInvalid) {
-			return nil, &nativeError{Code: "invalid_request", Message: err.Error(), status: http.StatusUnprocessableEntity, publicMessage: true}
-		}
-		return value, err
+	if s.config.TenantRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
 	}
+	return s.nativeMutation(c, request.Mutation, request, nil)
 }

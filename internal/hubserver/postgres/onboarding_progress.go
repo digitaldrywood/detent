@@ -2,12 +2,17 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -67,22 +72,127 @@ func (r *Repository) ImportOnboardingProgress(ctx context.Context, organization 
 			return projectstore.ErrInvalidOnboardingProgress
 		}
 		if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-			if _, err := s.db.Exec(ctx, `INSERT INTO project_onboarding(organization_id,project_id,revision,repository,doctor,provider,artifacts,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(organization_id,project_id) DO NOTHING`, organization, record.ProjectID, progress.Revision, progress.Repository, progress.Doctor, progress.Provider, progress.Artifacts, progress.UpdatedAt); err != nil {
-				return mapError(ctx, err)
-			}
-			current, err := s.ProjectOnboardingProgress(ctx, record.ProjectID)
-			if err != nil {
-				return err
-			}
-			if current != progress {
-				return corestore.ErrRevisionConflict
-			}
-			return nil
+			return s.importOnboardingProgress(ctx, record)
 		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *session) importOnboardingProgress(ctx context.Context, record OnboardingProgressImport) error {
+	progress := record.Progress
+	if _, err := s.db.Exec(ctx, `INSERT INTO project_onboarding(organization_id,project_id,revision,repository,doctor,provider,artifacts,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(organization_id,project_id) DO NOTHING`, s.organization, record.ProjectID, progress.Revision, progress.Repository, progress.Doctor, progress.Provider, progress.Artifacts, progress.UpdatedAt); err != nil {
+		return mapError(ctx, err)
+	}
+	current, err := s.ProjectOnboardingProgress(ctx, record.ProjectID)
+	if err != nil {
+		return err
+	}
+	if current != progress {
+		return corestore.ErrRevisionConflict
+	}
+	return nil
+}
+
+func (r *Repository) ImportCoreOnboardingProgress(ctx context.Context, source CoreProjectImportSource) (int64, error) {
+	if source.CopyPath != "" || source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {
+		return 0, ErrNeutralImport
+	}
+	var count int64
+	err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
+		if _, present := bundle.Schema()["project_onboarding"]; !present {
+			return nil
+		}
+		if err := validateNeutralCoreSourceSchema(bundle, "project_onboarding"); err != nil {
+			return err
+		}
+		if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
+			return err
+		}
+		var after []string
+		for {
+			rows, err := bundle.Page(ctx, "project_onboarding", after, 100)
+			if err != nil {
+				return err
+			}
+			if len(rows) == 0 {
+				return nil
+			}
+			for _, row := range rows {
+				var organization tracker.OrganizationID
+				var record OnboardingProgressImport
+				var revision int64
+				var raw, updated string
+				if err := row.Decode(map[string]any{"organization_id": &organization, "project_id": &record.ProjectID, "revision": &revision, "progress_json": &raw, "updated_at": &updated}); err != nil {
+					return err
+				}
+				after = []string{string(organization), string(record.ProjectID)}
+				if organization != source.OrganizationID {
+					continue
+				}
+				if record.ProjectID == "" || revision <= 0 || !json.Valid([]byte(raw)) {
+					return projectstore.ErrInvalidOnboardingProgress
+				}
+				var decoded struct {
+					onboarding.Progress
+					Revision json.RawMessage `json:"revision"`
+				}
+				if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+					return err
+				}
+				record.Progress = decoded.Progress
+				if encoded := strings.TrimSpace(string(decoded.Revision)); encoded != "" && encoded != "null" {
+					if strings.HasPrefix(encoded, "\"") {
+						var value string
+						if err := json.Unmarshal(decoded.Revision, &value); err != nil {
+							return err
+						}
+						encoded = value
+					}
+					supplied, err := strconv.ParseInt(encoded, 10, 64)
+					if err != nil || supplied != 0 && supplied != revision {
+						return corestore.ErrRevisionConflict
+					}
+				}
+				if record.Progress.Revision != 0 && int64(record.Progress.Revision) != revision || record.Progress.UpdatedAt != "" && record.Progress.UpdatedAt != updated {
+					return corestore.ErrRevisionConflict
+				}
+				record.Progress.Revision, record.Progress.UpdatedAt = tracker.Revision(revision), updated
+				if record.Progress.Validate() != nil {
+					return projectstore.ErrInvalidOnboardingProgress
+				}
+				if _, err := time.Parse(time.RFC3339Nano, updated); err != nil {
+					return projectstore.ErrInvalidOnboardingProgress
+				}
+				payload, err := json.Marshal(struct {
+					SourceSHA256 string
+					ProjectID    tracker.ProjectID
+					Revision     int64
+					UpdatedAt    string
+					ProgressJSON string
+				}{bundle.Identity().SourceSHA256, record.ProjectID, revision, updated, raw})
+				if err != nil {
+					return err
+				}
+				receipt, err := eventstore.NewContent(source.Objects).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: organization, ActorID: "production-import", Operation: "core-onboarding", CommandKey: string(record.ProjectID), RequestHash: artifact.Digest(payload)}, payload)
+				if err != nil {
+					return err
+				}
+				if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+					if err := s.importOnboardingProgress(ctx, record); err != nil {
+						return err
+					}
+					_, err := s.PutReceipt(ctx, receipt)
+					return err
+				}); err != nil {
+					return err
+				}
+				count++
+			}
+		}
+	})
+	return count, err
 }
 
 func (s *session) ProjectLatestAttemptStatus(ctx context.Context, project tracker.ProjectID) (string, error) {

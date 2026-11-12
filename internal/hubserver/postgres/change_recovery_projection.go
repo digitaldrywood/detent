@@ -69,13 +69,6 @@ func (r *Repository) PrepareChangeRecoveryProjections(ctx context.Context, organ
 		if int64(value.SchemaVersion) != row.SchemaVersion {
 			return nil, eventstore.ErrInvalidRecord
 		}
-		if value.Data.Run == nil {
-			if row.RunID != "" || row.AttemptID != "" {
-				return nil, eventstore.ErrInvalidRecord
-			}
-		} else if value.Data.Run.RunID != row.RunID || value.Data.Run.AttemptID != row.AttemptID {
-			return nil, eventstore.ErrInvalidRecord
-		}
 		batch.pushes = append(batch.pushes, eventstore.ProjectChangePush(row, value))
 	}
 	return batch, nil

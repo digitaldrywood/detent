@@ -3,33 +3,21 @@ package auth_test
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"net/url"
-	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
-func TestMagicLinkSessionLifecyclePersists(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
+func TestMagicLinkSessionLifecycle(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "detent.db")
-	backend := openAuthStore(t, dbPath)
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Fatalf("Close() cleanup error = %v", err)
-		}
-	})
+	backend := &memoryAuthStore{}
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	sender := &recordingSender{}
 	service := newAuthService(t, backend, sender, func() time.Time { return now })
@@ -58,7 +46,7 @@ func TestMagicLinkSessionLifecyclePersists(t *testing.T) {
 	if rawToken == "" || link.Query().Get("next") != "/fleet?scope=all" {
 		t.Fatalf("magic link = %q, want token and preserved next", message.URL)
 	}
-	assertTokenHashedAtRest(t, dbPath, rawToken)
+	assertOnlyTokenHashStored(t, backend, rawToken)
 
 	sessionToken, session, err := service.ConsumeLink(ctx, rawToken)
 	if err != nil {
@@ -74,13 +62,9 @@ func TestMagicLinkSessionLifecyclePersists(t *testing.T) {
 		t.Fatalf("Authenticate() error = %v", err)
 	}
 
-	if err := backend.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	backend = openAuthStore(t, dbPath)
 	service = newAuthService(t, backend, nil, func() time.Time { return now })
 	if got, err := service.Authenticate(ctx, sessionToken); err != nil || got.Email != "operator@example.com" {
-		t.Fatalf("Authenticate(after reopen) = %#v, %v", got, err)
+		t.Fatalf("Authenticate(new service) = %#v, %v", got, err)
 	}
 	now = now.Add(2 * time.Hour)
 	if _, err := service.Authenticate(ctx, sessionToken); !errors.Is(err, auth.ErrInvalidSession) {
@@ -88,21 +72,11 @@ func TestMagicLinkSessionLifecyclePersists(t *testing.T) {
 	}
 }
 
-func TestSessionServicePersistsAcrossRestartAndExpires(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
+func TestSessionServiceAuthenticatesStoredSessionAndExpires(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "detent.db")
-	backend := openAuthStore(t, dbPath)
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Fatalf("Close() cleanup error = %v", err)
-		}
-	})
+	backend := &memoryAuthStore{}
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	newService := func() *auth.Service {
 		service, err := auth.NewSessionService(auth.SessionConfig{
@@ -122,13 +96,9 @@ func TestSessionServicePersistsAcrossRestartAndExpires(t *testing.T) {
 	if token == "" || session.Email != "operator@example.com" || !session.ExpiresAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("CreateSession() = %q, %#v", token, session)
 	}
-	if err := backend.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	backend = openAuthStore(t, dbPath)
 	service = newService()
 	if got, err := service.Authenticate(ctx, token); err != nil || got.Email != session.Email {
-		t.Fatalf("Authenticate(after restart) = %#v, %v", got, err)
+		t.Fatalf("Authenticate(new service) = %#v, %v", got, err)
 	}
 	now = now.Add(time.Hour)
 	if _, err := service.Authenticate(ctx, token); !errors.Is(err, auth.ErrInvalidSession) {
@@ -191,47 +161,6 @@ func TestHostedIdentitySessionPreservesProviderLifetime(t *testing.T) {
 	}
 }
 
-func TestLocalStoreRejectsHostedSessions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-	backend := openAuthStore(t, filepath.Join(t.TempDir(), "detent.db"))
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	now := time.Now().UTC()
-	for _, tt := range []struct {
-		name     string
-		identity *auth.HostedIdentity
-		wantErr  bool
-	}{
-		{name: "local"},
-		{name: "hosted customer", identity: &auth.HostedIdentity{Subject: "user_customer", OrganizationID: "org_customer"}, wantErr: true},
-		{name: "hosted support", identity: &auth.HostedIdentity{Subject: "user_customer", OrganizationID: "org_customer", SupportActor: "support@example.com"}, wantErr: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			sum := sha256.Sum256([]byte(tt.name))
-			tokenHash := hex.EncodeToString(sum[:])
-			err := backend.CreateWebSession(t.Context(), auth.SessionRecord{TokenHash: tokenHash, Email: "operator@example.com", CreatedAt: now, ExpiresAt: now.Add(time.Hour), Identity: tt.identity})
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("CreateWebSession() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			session, readErr := backend.WebSession(t.Context(), tokenHash, now)
-			if tt.wantErr {
-				if !errors.Is(err, auth.ErrInvalidSession) || !errors.Is(readErr, auth.ErrInvalidSession) {
-					t.Fatalf("hosted identity persisted as local session: create=%v read=%v", err, readErr)
-				}
-			} else if readErr != nil || session.Identity != nil {
-				t.Fatalf("local session = %#v, error = %v", session, readErr)
-			}
-		})
-	}
-}
-
 type recordingSessionStore struct {
 	stubStore
 	record auth.SessionRecord
@@ -243,19 +172,10 @@ func (s *recordingSessionStore) CreateWebSession(_ context.Context, record auth.
 }
 
 func TestMagicLinkExpirationAndAllowlist(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()
-	backend := openAuthStore(t, filepath.Join(t.TempDir(), "detent.db"))
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Fatalf("Close() cleanup error = %v", err)
-		}
-	})
+	backend := &memoryAuthStore{}
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	service := newAuthService(t, backend, nil, func() time.Time { return now })
 
@@ -364,16 +284,58 @@ func (stubStore) WebSession(context.Context, string, time.Time) (auth.Session, e
 	return auth.Session{}, nil
 }
 
-func openAuthStore(t *testing.T, path string) store.Store {
-	t.Helper()
-	backend, err := store.Open(context.Background(), store.Config{Backend: store.BackendSQLite, Path: path})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	return backend
+type memoryAuthStore struct {
+	mu       sync.Mutex
+	links    map[string]auth.MagicLink
+	sessions map[string]auth.SessionRecord
 }
 
-func newAuthService(t *testing.T, backend store.Store, sender auth.Sender, now func() time.Time) *auth.Service {
+func (s *memoryAuthStore) CreateMagicLink(_ context.Context, link auth.MagicLink) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.links == nil {
+		s.links = make(map[string]auth.MagicLink)
+	}
+	s.links[link.TokenHash] = link
+	return nil
+}
+
+func (s *memoryAuthStore) ConsumeMagicLink(_ context.Context, consumption auth.MagicLinkConsumption) (auth.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	link, ok := s.links[consumption.TokenHash]
+	if !ok || !link.ExpiresAt.After(consumption.Now) {
+		return auth.Session{}, auth.ErrInvalidLink
+	}
+	delete(s.links, consumption.TokenHash)
+	if s.sessions == nil {
+		s.sessions = make(map[string]auth.SessionRecord)
+	}
+	s.sessions[consumption.SessionHash] = auth.SessionRecord{TokenHash: consumption.SessionHash, Email: link.Email, ExpiresAt: consumption.SessionExpiresAt, CreatedAt: consumption.Now}
+	return auth.Session{Email: link.Email, ExpiresAt: consumption.SessionExpiresAt}, nil
+}
+
+func (s *memoryAuthStore) CreateWebSession(_ context.Context, record auth.SessionRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessions == nil {
+		s.sessions = make(map[string]auth.SessionRecord)
+	}
+	s.sessions[record.TokenHash] = record
+	return nil
+}
+
+func (s *memoryAuthStore) WebSession(_ context.Context, hash string, now time.Time) (auth.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.sessions[hash]
+	if !ok || !record.ExpiresAt.After(now) {
+		return auth.Session{}, auth.ErrInvalidSession
+	}
+	return auth.Session{Email: record.Email, ExpiresAt: record.ExpiresAt, Identity: record.Identity}, nil
+}
+
+func newAuthService(t *testing.T, backend auth.Store, sender auth.Sender, now func() time.Time) *auth.Service {
 	t.Helper()
 	service, err := auth.NewService(auth.Config{
 		AllowedEmails: []string{"operator@example.com"},
@@ -387,22 +349,14 @@ func newAuthService(t *testing.T, backend store.Store, sender auth.Sender, now f
 	return service
 }
 
-func assertTokenHashedAtRest(t *testing.T, path string, rawToken string) {
+func assertOnlyTokenHashStored(t *testing.T, backend *memoryAuthStore, rawToken string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
-	}
-	var stored string
-	if err := db.QueryRowContext(t.Context(), "SELECT token_hash FROM auth_magic_links ORDER BY id DESC LIMIT 1").Scan(&stored); err != nil {
-		t.Fatalf("query token hash error = %v", err)
-	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
 	sum := sha256.Sum256([]byte(rawToken))
 	want := hex.EncodeToString(sum[:])
-	if stored != want || stored == rawToken {
-		t.Fatalf("stored token = %q, want SHA-256 %q", stored, want)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("db.Close() error = %v", err)
+	link, ok := backend.links[want]
+	if !ok || len(backend.links) != 1 || link.TokenHash != want || link.TokenHash == rawToken {
+		t.Fatalf("stored magic links = %#v, want one keyed by SHA-256 %q", backend.links, want)
 	}
 }

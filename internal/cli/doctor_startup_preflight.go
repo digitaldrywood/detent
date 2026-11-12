@@ -19,7 +19,7 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 		opts.read = opts.readStartup
 	} else if opts.read == nil {
 		opts.read = func(path string) (globalconfig.Config, error) {
-			return readLocalConfigurationSource(ctx, path)
+			return readRunnerConfiguration(path)
 		}
 	}
 	opts = doctorOptions(opts)

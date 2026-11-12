@@ -1,15 +1,10 @@
 package hubserver
 
 import (
-	"context"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
-
-func reportsQualityInputs(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) (analyticsQualityInputs, error) {
-	return loadAnalyticsQualityInputs(ctx, q, scope, w)
-}
 
 func qualityInputsInWindow(in analyticsQualityInputs, w operatortool.AnalyticsWindow) analyticsQualityInputs {
 	out := analyticsQualityInputs{}

@@ -13,7 +13,7 @@ import (
 )
 
 const commentBySource = `-- name: CommentBySource :one
-SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND source_key=$4
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id, source_revision, source_scheduled, source_observed_at FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND source_key=$4
 `
 
 type CommentBySourceParams struct {
@@ -50,12 +50,15 @@ func (q *Queries) CommentBySource(ctx context.Context, arg CommentBySourceParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.RecordID,
+		&i.SourceRevision,
+		&i.SourceScheduled,
+		&i.SourceObservedAt,
 	)
 	return i, err
 }
 
 const lockWorkItem = `-- name: LockWorkItem :one
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision, terminal_entered_at, archive_restored_at, archive_restore_known, source_revision, source_scheduled, source_observed_at FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE
 `
 
 type LockWorkItemParams struct {
@@ -98,6 +101,12 @@ func (q *Queries) LockWorkItem(ctx context.Context, arg LockWorkItemParams) (Iss
 		&i.RecoveryRunnerID,
 		&i.RecoveryVersionID,
 		&i.DoctorIdentityRevision,
+		&i.TerminalEnteredAt,
+		&i.ArchiveRestoredAt,
+		&i.ArchiveRestoreKnown,
+		&i.SourceRevision,
+		&i.SourceScheduled,
+		&i.SourceObservedAt,
 	)
 	return i, err
 }
@@ -135,7 +144,7 @@ func (q *Queries) NextWorkItemNumber(ctx context.Context, arg NextWorkItemNumber
 }
 
 const selectCommentsNewest = `-- name: SelectCommentsNewest :many
-SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence<$4::bigint
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id, source_revision, source_scheduled, source_observed_at FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence<$4::bigint
 ORDER BY sequence DESC LIMIT $5
 `
 
@@ -181,6 +190,9 @@ func (q *Queries) SelectCommentsNewest(ctx context.Context, arg SelectCommentsNe
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.RecordID,
+			&i.SourceRevision,
+			&i.SourceScheduled,
+			&i.SourceObservedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -193,7 +205,7 @@ func (q *Queries) SelectCommentsNewest(ctx context.Context, arg SelectCommentsNe
 }
 
 const selectCommentsOldest = `-- name: SelectCommentsOldest :many
-SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence>$4::bigint
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id, source_revision, source_scheduled, source_observed_at FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence>$4::bigint
 ORDER BY sequence LIMIT $5
 `
 
@@ -239,6 +251,9 @@ func (q *Queries) SelectCommentsOldest(ctx context.Context, arg SelectCommentsOl
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.RecordID,
+			&i.SourceRevision,
+			&i.SourceScheduled,
+			&i.SourceObservedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -250,8 +265,69 @@ func (q *Queries) SelectCommentsOldest(ctx context.Context, arg SelectCommentsOl
 	return items, nil
 }
 
+const workItemByProvenance = `-- name: WorkItemByProvenance :one
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision, terminal_entered_at, archive_restored_at, archive_restore_known, source_revision, source_scheduled, source_observed_at FROM issues WHERE organization_id=$1 AND project_id=$2 AND provenance_provider=$3 AND provenance_external_id=$4
+ORDER BY number,id LIMIT 1
+`
+
+type WorkItemByProvenanceParams struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	ProvenanceProvider   *string
+	ProvenanceExternalID *string
+}
+
+func (q *Queries) WorkItemByProvenance(ctx context.Context, arg WorkItemByProvenanceParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, workItemByProvenance,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.ProvenanceProvider,
+		arg.ProvenanceExternalID,
+	)
+	var i Issue
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ID,
+		&i.NativeID,
+		&i.ProjectID,
+		&i.Number,
+		&i.Revision,
+		&i.EventSequence,
+		&i.NativeSourceKey,
+		&i.Title,
+		&i.BodyObjectKey,
+		&i.IssueContractObjectKey,
+		&i.ReportContextObjectKey,
+		&i.ActorKind,
+		&i.ActorPrincipalID,
+		&i.ProvenanceProvider,
+		&i.ProvenanceExternalID,
+		&i.Archived,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.NativeCreatedAt,
+		&i.NativeUpdatedAt,
+		&i.WorkflowStateName,
+		&i.LastActivityAt,
+		&i.IssueType,
+		&i.Priority,
+		&i.DispatchGeneration,
+		&i.DispatchRequestedAt,
+		&i.RecoveryRunnerID,
+		&i.RecoveryVersionID,
+		&i.DoctorIdentityRevision,
+		&i.TerminalEnteredAt,
+		&i.ArchiveRestoredAt,
+		&i.ArchiveRestoreKnown,
+		&i.SourceRevision,
+		&i.SourceScheduled,
+		&i.SourceObservedAt,
+	)
+	return i, err
+}
+
 const workItemBySource = `-- name: WorkItemBySource :one
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_source_key=$3
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision, terminal_entered_at, archive_restored_at, archive_restore_known, source_revision, source_scheduled, source_observed_at FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_source_key=$3
 `
 
 type WorkItemBySourceParams struct {
@@ -294,6 +370,12 @@ func (q *Queries) WorkItemBySource(ctx context.Context, arg WorkItemBySourcePara
 		&i.RecoveryRunnerID,
 		&i.RecoveryVersionID,
 		&i.DoctorIdentityRevision,
+		&i.TerminalEnteredAt,
+		&i.ArchiveRestoredAt,
+		&i.ArchiveRestoreKnown,
+		&i.SourceRevision,
+		&i.SourceScheduled,
+		&i.SourceObservedAt,
 	)
 	return i, err
 }

@@ -1,18 +1,34 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -224,22 +240,38 @@ func TestBuildUsageReportEmpty(t *testing.T) {
 // to them.
 func TestNativeRunEventRecordsUsage(t *testing.T) {
 	t.Parallel()
+	rewriteHistory := func(t *testing.T, service *Service, query string, args ...any) (sql.Result, error) {
+		t.Helper()
+		tx, err := usagePostgresAdmin(t, service).BeginTx(t.Context(), nil)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(t.Context(), "SET LOCAL session_replication_role=replica"); err != nil {
+			return nil, err
+		}
+		result, err := tx.ExecContext(t.Context(), query, args...)
+		if err != nil {
+			return nil, err
+		}
+		return result, tx.Commit()
+	}
 	prices := usageTestPrices()
-	f := newNativeFixture(t, openTestService(t, Config{DatabasePath: t.TempDir() + "/hub.db", Usage: &prices}), "", "usage")
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	issue := f.create(t, "work")
-	worker := f.worker(t, "worker")
-	lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	claimed := claimedAttemptDiffFixture(t, false, Config{Usage: &prices, Clock: clock.Now})
+	f, issue, worker, lease := claimed.nativeFixture, claimed.issue, claimed.worker, claimed.lease
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	start := nativeStartedEvent(lease)
+	start.Data.AttemptID, start.Data.RunID = claimed.attempt, claimed.run
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
 
+	clock.Advance(time.Second)
 	checkpoint := start
 	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", "checkpoint", 2
 	checkpoint.Data.Handoff = nativeTestCheckpoint()
 	checkpoint.Data.Handoff.HeadSHA = strings.Repeat("a", 40)
 	checkpoint.Data.Handoff.WorkspaceDigest = strings.Repeat("b", 64)
-	checkpoint.Data.Steps = []tracker.NativeStepReceipt{{Step: "agent_turn", PolicyID: start.Data.PolicyID, ReviewState: strings.Repeat("a", 64), Source: *checkpoint.Data.Handoff, CompletedAt: time.Now().UTC(), CompletionBody: "Completed source"}}
+	checkpoint.Data.Steps = []tracker.NativeStepReceipt{{Step: "agent_turn", PolicyID: start.Data.PolicyID, ReviewState: strings.Repeat("a", 64), Source: *checkpoint.Data.Handoff, CompletedAt: clock.Now(), CompletionBody: "Completed source"}}
 	checkpoint.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "gpt-6-astra", Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25, Currency: "USD"}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
 	var running tracker.NativeRuntimeEvidence
@@ -255,22 +287,38 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	}
 	read := func() []row {
 		t.Helper()
-		result, err := f.service.database.db.QueryContext(t.Context(),
-			"SELECT provider, model, sum(input), sum(cached_input), sum(output), sum(cost_estimate), max(currency) FROM attempt_usage WHERE attempt_id = ? GROUP BY provider, model ORDER BY provider, model", start.Data.AttemptID)
-		if err != nil {
+		var facts []reportstore.UsageFact
+		scope := analyticsTestScope(t, f)
+		window := usageWindow{From: f.service.config.now().Add(-time.Hour), To: f.service.config.now().Add(time.Hour)}
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			facts, err = reader.(reportstore.UsageReader).ReadReportUsage(t.Context(), reportstore.OverviewQuery{Projects: []tracker.ProjectID{scope.project}, From: window.From, Split: window.From, To: window.To, Limit: maxAnalyticsPopulation})
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = result.Close() }()
-		var rows []row
-		for result.Next() {
-			var got row
-			if err := result.Scan(&got.provider, &got.model, &got.input, &got.cached, &got.output, &got.cost, &got.currency); err != nil {
-				t.Fatal(err)
+		grouped := map[string]row{}
+		for _, fact := range facts {
+			if fact.AttemptID != start.Data.AttemptID {
+				continue
 			}
-			rows = append(rows, got)
+			key := fact.Provider + "\n" + fact.Model
+			value := grouped[key]
+			value.provider, value.model, value.currency = fact.Provider, fact.Model, fact.Currency
+			value.input += fact.Input
+			value.cached += fact.CachedInput
+			value.output += fact.Output
+			value.cost += fact.Cost
+			grouped[key] = value
 		}
-		if err := result.Err(); err != nil {
-			t.Fatal(err)
+		keys := make([]string, 0, len(grouped))
+		for key := range grouped {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		rows := make([]row, 0, len(keys))
+		for _, key := range keys {
+			rows = append(rows, grouped[key])
 		}
 		return rows
 	}
@@ -280,6 +328,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	}
 
 	// The finish carries the attempt's running total, which replaces the row.
+	clock.Advance(time.Second)
 	finish := checkpoint
 	finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 3, "succeeded"
 	finish.Data.Handoff = nil
@@ -314,19 +363,408 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	if stored[1].input != 3000 || stored[1].cost != 0.75 {
 		t.Fatalf("replaced row = %+v, want the running total, not a sum", stored[1])
 	}
-	drainTestAnalytics(t, f.service)
 	window := usageWindow{From: f.service.config.now().Add(-time.Hour), To: f.service.config.now().Add(time.Hour)}
-	raw, err := readUsageRows(t.Context(), f.service.database.reader, string(f.project.OrganizationID), window, []string{string(f.project.ID)}, maxAnalyticsPopulation)
+	reportRows, err := f.service.usageRows(t.Context(), window, []string{string(f.project.ID)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	projected, err := readUsageRows(t.Context(), analyticsRollupReader{f.service.database.reader}, string(f.project.OrganizationID), window, []string{string(f.project.ID)}, maxAnalyticsPopulation)
-	if err != nil {
-		t.Fatal(err)
+	if len(reportRows) != 2 {
+		t.Fatalf("finished usage not projected: %+v", reportRows)
 	}
-	if len(projected) != 2 || !reflect.DeepEqual(raw, projected) {
-		t.Fatalf("finished usage not projected: raw=%+v projected=%+v", raw, projected)
+	for _, want := range stored {
+		found := false
+		for _, got := range reportRows {
+			if got.Provider == want.provider && got.Model == want.model && got.Input == want.input && got.CachedInput == want.cached && got.Output == want.output && got.Cost == want.cost {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("finished usage not projected: stored=%+v report=%+v", stored, reportRows)
+		}
 	}
+
+	t.Run("bounded historical catchup preserves receipt prices and source replay", func(t *testing.T) {
+		base := time.Now().UTC().Truncate(time.Hour).Add(30*time.Minute + 1234*time.Nanosecond)
+		clock := &leaseTestClock{value: base}
+		initial := UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{"legacy-model": {Input: 1000}}}
+		service := newClockedPostgresNativeService(t, Config{Clock: clock.Now, Usage: &initial})
+		for index, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+			t.Run(string(organization), func(t *testing.T) {
+				weight := int64(index + 1)
+				clock.Advance(base.Sub(clock.Now()))
+				service.config.Usage = &initial
+				fixture := newNativeFixture(t, service, organization, "usage-catchup")
+				claimed := claimAttemptDiffFixture(t, false, fixture)
+				start := nativeStartedEvent(claimed.lease)
+				start.Data.AttemptID, start.Data.RunID = claimed.attempt, claimed.run
+				start.OccurredAt = base.Add(-102 * time.Hour)
+				path := pendingEventPath(claimed)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, claimed.worker, start), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, fixture.base+"/leases/"+string(claimed.lease.ID)+"/renew", claimed.worker, tracker.NativeLeaseMutation{FencingToken: claimed.lease.FencingToken, TTLSeconds: 86400}), http.StatusOK)
+				admin := usagePostgresAdmin(t, service)
+				result, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT $1,$2,$3,$4::timestamptz-(102-n)*interval '1 hour','codex','legacy-model',10*$5,0,0,0.01*$5,'usd',$4 FROM generate_series(1,101)n`, organization, fixture.project.ID, claimed.attempt, base.Truncate(time.Hour), weight)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if count, err := result.RowsAffected(); err != nil || count != 101 {
+					t.Fatalf("legacy rows=%d error=%v", count, err)
+				}
+				legacyRun := start.Data
+				legacyRun.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "legacy-model", Input: 1010 * weight, CostEstimate: 1.01 * float64(weight), Currency: "USD"}}
+				scope := analyticsTestScope(t, fixture)
+				legacyValue := tracker.CollaborationEvent{ID: "legacy-zero-usage", OrganizationID: organization, ProjectID: fixture.project.ID, AggregateType: "issue", AggregateID: claimed.issue.WorkItemID, Type: "run.checkpointed", SchemaVersion: 1, RecordedAt: base.Add(-time.Hour), Actor: scope.actor(), Data: tracker.CollaborationData{Run: &legacyRun}}
+				raw, err := json.Marshal(legacyValue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacyEvent, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), organization, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+					_, err := w.AppendEvent(t.Context(), legacyEvent)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				result, err = rewriteHistory(t, service, `UPDATE collaboration_events SET project_sequence=0 WHERE organization_id=$1 AND project_id=$2 AND id='legacy-zero-usage'`, organization, fixture.project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if count, err := result.RowsAffected(); err != nil || count != 1 {
+					t.Fatalf("historical zero frontier rows=%d error=%v", count, err)
+				}
+				checkpoint := start
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", "legacy-current", 2
+				checkpoint.Data.Handoff = nativeTestCheckpoint()
+				checkpoint.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "legacy-model", Input: 2000 * weight}}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, claimed.worker, checkpoint), http.StatusOK)
+				result, err = rewriteHistory(t, service, `UPDATE collaboration_events e SET project_sequence=0 FROM report_event_facts f WHERE f.organization_id=e.organization_id AND f.event_id=e.id AND e.organization_id=$1 AND e.project_id=$2 AND e.attempt_id=$3 AND f.run_sequence=2`, organization, fixture.project.ID, claimed.attempt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if count, err := result.RowsAffected(); err != nil || count != 1 {
+					t.Fatalf("pending zero project sequence rows=%d error=%v", count, err)
+				}
+				firstHour := clock.Now().Truncate(time.Hour)
+				feature := service.UsageMaintenanceFeature()
+				selected := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
+				budget := hubmaintenance.Budget{Items: 1, Bytes: feature.Bytes}
+				sawAttemptSeek, projectWalk := false, false
+				step := func(feature hubmaintenance.Feature) {
+					t.Helper()
+					ctx := budget.Context(t.Context(), selected)
+					ctx = postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, query string) {
+						if strings.Contains(query, "RecordAttemptEvents") {
+							sawAttemptSeek = true
+						}
+						if strings.Contains(query, "RecordProjectEvents") || strings.Contains(query, "-- name: ListProjects") {
+							projectWalk = true
+						}
+					})
+					if err := feature.Step(ctx, selected, budget); err != nil {
+						t.Fatal(err)
+					}
+				}
+				step(feature)
+				var unknown int
+				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2 AND usage_input_total IS NULL`, organization, claimed.attempt).Scan(&unknown); err != nil || unknown != 1 {
+					t.Fatalf("first bounded prefix unknown=%d error=%v", unknown, err)
+				}
+				imported := reportstore.UsageRecord{OrganizationID: organization, UsageFact: reportstore.UsageFact{ProjectID: fixture.project.ID, WorkItemID: claimed.issue.WorkItemID, AttemptID: claimed.attempt, Period: base.Truncate(time.Hour).Add(-102 * time.Hour), Provider: "codex", Model: "legacy-model", Input: 7 * weight, Cost: 0.007 * float64(weight), Currency: "USD"}, UpdatedAt: base}
+				owner := service.config.TenantRepository.(interface {
+					ImportReportUsageFact(context.Context, reportstore.UsageRecord) error
+					VerifyReportUsageImport(context.Context, tracker.OrganizationID, string, string, int64) error
+				})
+				if err := owner.ImportReportUsageFact(t.Context(), imported); err != nil {
+					t.Fatal(err)
+				}
+				if err := owner.VerifyReportUsageImport(t.Context(), organization, claimed.attempt, strings.Repeat("c", 64), 102); err != nil {
+					t.Fatal(err)
+				}
+				changed := UsageConfig{Currency: "EUR", Prices: map[string]UsagePrice{"legacy-model": {Input: 2000}}}
+				service.config.Usage = &changed
+				clock.Advance(time.Hour)
+				checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "legacy-current-eur", 3
+				checkpoint.Data.Usage[0].Input = 3000 * weight
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, claimed.worker, checkpoint), http.StatusOK)
+				secondHour := clock.Now().Truncate(time.Hour)
+				latest := UsageConfig{Currency: "JPY", Prices: map[string]UsagePrice{"legacy-model": {Input: 9000}}}
+				service.config.Usage = &latest
+				if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					page, err := r.(reportstore.AnalyticsUsageReader).ReadAnalyticsUsagePage(t.Context(), reportstore.AnalyticsUsageQuery{ProjectID: fixture.project.ID, From: firstHour, To: secondHour.Add(time.Hour), Limit: 1000})
+					if err == nil && !page.Partial {
+						t.Fatal("empty current-window facts concealed pending usage")
+					}
+					if err != nil {
+						return err
+					}
+					hidden, err := r.(reportstore.AnalyticsUsageReader).ReadAnalyticsUsagePage(t.Context(), reportstore.AnalyticsUsageQuery{ProjectID: fixture.project.ID, Principal: "unrelated-principal", From: firstHour, To: secondHour.Add(time.Hour), Limit: 1000})
+					if err == nil && (len(hidden.Items) != 0 || hidden.Partial) {
+						t.Fatal("pending usage leaked into another principal cohort")
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				restarted := service.UsageMaintenanceFeature()
+				testenv.WaitUntil(t, t.Context(), func() error {
+					step(restarted)
+					var pending int64
+					if err := admin.QueryRowContext(t.Context(), `SELECT usage_pending_sequence FROM native_attempts WHERE organization_id=$1 AND id=$2`, organization, claimed.attempt).Scan(&pending); err != nil {
+						return err
+					}
+					if pending != 0 {
+						return fmt.Errorf("usage sequence %d is still pending", pending)
+					}
+					return nil
+				})
+				if !sawAttemptSeek || projectWalk {
+					t.Fatalf("usage seek observed=%t project walk=%t", sawAttemptSeek, projectWalk)
+				}
+				for _, expected := range []struct {
+					period   time.Time
+					currency string
+					input    int64
+					cost     float64
+				}{{firstHour, "USD", 983 * weight, 0.983 * float64(weight)}, {secondHour, "EUR", 1000 * weight, 2 * float64(weight)}} {
+					var input int64
+					var cost float64
+					if err := admin.QueryRowContext(t.Context(), `SELECT input,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2 AND period=$3 AND currency=$4 AND usage_origin='current'`, organization, claimed.attempt, expected.period, expected.currency).Scan(&input, &cost); err != nil {
+						t.Fatal(err)
+					}
+					if input != expected.input || math.Abs(cost-expected.cost) > 1e-9 {
+						t.Fatalf("receipt pricing %s=%d/%v want=%d/%v", expected.currency, input, cost, expected.input, expected.cost)
+					}
+				}
+				var latestEvent eventstore.Event
+				if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					latestEvent, err = r.LatestRunEvent(t.Context(), fixture.project.ID, claimed.attempt)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				payload, err := service.runDetailStore().ReadDetail(t.Context(), string(organization), eventstore.Reference(latestEvent.PayloadObjectKey, latestEvent.PayloadSHA256, latestEvent.PayloadBytes, latestEvent.PayloadContentBytes))
+				if err != nil || !strings.Contains(string(payload), "_hub_usage_v1") {
+					t.Fatalf("receipt pricing envelope missing: %v", err)
+				}
+				history := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/work-items/"+string(claimed.issue.WorkItemID)+"/history", testHubAdminToken, nil)
+				requireNativeStatus(t, history, http.StatusOK)
+				if !strings.Contains(history.Body.String(), "legacy-model") || strings.Contains(history.Body.String(), "_hub_usage_v1") {
+					t.Fatal("typed history exposed private receipt pricing or omitted actual run usage")
+				}
+				exported := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/work-items/export", testHubAdminToken, nil)
+				requireNativeStatus(t, exported, http.StatusOK)
+				if !strings.Contains(exported.Body.String(), string(claimed.issue.WorkItemID)) || strings.Contains(exported.Body.String(), "_hub_usage_v1") {
+					t.Fatal("work export exposed private receipt pricing or omitted the actual item")
+				}
+				for range 2 {
+					if err := owner.ImportReportUsageFact(t.Context(), imported); err != nil {
+						t.Fatal(err)
+					}
+					if err := owner.VerifyReportUsageImport(t.Context(), organization, claimed.attempt, strings.Repeat("c", 64), 102); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var input int64
+				var usd, eur float64
+				if err := admin.QueryRowContext(t.Context(), `SELECT sum(input),coalesce(sum(cost_estimate) FILTER(WHERE currency='USD'),0),coalesce(sum(cost_estimate) FILTER(WHERE currency='EUR'),0) FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2`, organization, claimed.attempt).Scan(&input, &usd, &eur); err != nil {
+					t.Fatal(err)
+				}
+				if input != 3000*weight || math.Abs(usd-2*float64(weight)) > 1e-9 || math.Abs(eur-2*float64(weight)) > 1e-9 {
+					t.Fatalf("historical/current totals=%d/%v/%v", input, usd, eur)
+				}
+				if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					complete, err := r.(reportstore.UsageCoverageReader).ReadReportUsageCoverage(t.Context(), reportstore.OverviewQuery{Projects: []tracker.ProjectID{fixture.project.ID}, From: base.Add(-200 * time.Hour), To: secondHour.Add(time.Hour), Limit: 1000})
+					if err == nil && !complete {
+						t.Fatal("complete source import and replay remained unavailable")
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	})
+
+	t.Run("pending attempts preserve source progress and repair event projections", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			complete bool
+		}{
+			{name: "non-run event", complete: true},
+			{name: "missing report fact", complete: true},
+			{name: "missing receipt prices"},
+			{name: "missing run sequence"},
+			{name: "conflicting report fact"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+				prices := UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{"example-model": {Input: 1000}}}
+				service := newClockedPostgresNativeService(t, Config{Clock: clock.Now, Usage: &prices})
+				for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+					t.Run(string(organization), func(t *testing.T) {
+						fixture := newNativeFixture(t, service, organization, "usage-progress")
+						claimed := claimAttemptDiffFixture(t, false, fixture)
+						path := pendingEventPath(claimed)
+						start := nativeStartedEvent(claimed.lease)
+						start.Data.AttemptID, start.Data.RunID = claimed.attempt, claimed.run
+						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, claimed.worker, start), http.StatusOK)
+						admin := usagePostgresAdmin(t, service)
+						writeOne := func(query string, args ...any) {
+							t.Helper()
+							result, err := admin.ExecContext(t.Context(), query, args...)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if count, err := result.RowsAffected(); err != nil || count != 1 {
+								t.Fatalf("scoped fixture rows=%d error=%v", count, err)
+							}
+						}
+						progress := func() (int64, int64) {
+							t.Helper()
+							var pending, input int64
+							if err := admin.QueryRowContext(t.Context(), `SELECT a.usage_pending_sequence,coalesce((SELECT sum(u.input) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.attempt_id=a.id AND u.usage_origin='current'),0) FROM native_attempts a WHERE a.organization_id=$1 AND a.id=$2`, organization, claimed.attempt).Scan(&pending, &input); err != nil {
+								t.Fatal(err)
+							}
+							return pending, input
+						}
+						writeOne(`INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) VALUES($1,$2,$3,$4,'codex','example-model',10,0,0,0.01,'USD',$4)`, organization, fixture.project.ID, claimed.attempt, clock.Now().Truncate(time.Hour).Add(-time.Hour))
+						clock.Advance(time.Second)
+						checkpoint := start
+						checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", "progress-checkpoint", 2
+						checkpoint.Data.Handoff = nativeTestCheckpoint()
+						checkpoint.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "example-model", Input: 100}}
+						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, claimed.worker, checkpoint), http.StatusOK)
+						var event eventstore.Event
+						if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+							var err error
+							event, err = r.LatestRunEvent(t.Context(), fixture.project.ID, claimed.attempt)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+						switch tc.name {
+						case "non-run event":
+							data := checkpoint.Data
+							data.Usage, data.Handoff = nil, nil
+							value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: organization, ProjectID: fixture.project.ID, AggregateType: "issue", AggregateID: claimed.issue.WorkItemID, Type: "attempt.noted", SchemaVersion: 1, Actor: analyticsTestScope(t, fixture).actor(), RecordedAt: clock.Now(), Data: tracker.CollaborationData{Run: &data}}
+							raw, err := json.Marshal(value)
+							if err != nil {
+								t.Fatal(err)
+							}
+							note, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), organization, raw)
+							if err != nil {
+								t.Fatal(err)
+							}
+							note.Report = nil
+							if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+								_, err := w.AppendEvent(t.Context(), note)
+								return err
+							}); err != nil {
+								t.Fatal(err)
+							}
+						case "missing report fact":
+							writeOne(`DELETE FROM report_event_facts WHERE organization_id=$1 AND event_id=$2`, organization, event.ID)
+						case "missing receipt prices":
+							value, err := eventstore.NewContent(service.runDetailStore()).Event(t.Context(), event)
+							if err != nil {
+								t.Fatal(err)
+							}
+							raw, err := json.Marshal(value)
+							if err != nil {
+								t.Fatal(err)
+							}
+							legacy, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), organization, raw)
+							if err != nil {
+								t.Fatal(err)
+							}
+							result, err := rewriteHistory(t, service, `UPDATE collaboration_events SET payload_object_key=$3,payload_sha256=$4,payload_bytes=$5,payload_content_bytes=$6 WHERE organization_id=$1 AND id=$2`, organization, event.ID, legacy.PayloadObjectKey, legacy.PayloadSHA256, legacy.PayloadBytes, legacy.PayloadContentBytes)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if count, err := result.RowsAffected(); err != nil || count != 1 {
+								t.Fatalf("historical receipt fixture rows=%d error=%v", count, err)
+							}
+						}
+						clock.Advance(time.Second)
+						finish := checkpoint
+						finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "progress-finish", 3, "succeeded"
+						finish.Data.Handoff = nil
+						finish.Data.Usage[0].Input = 200
+						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, claimed.worker, finish), http.StatusOK)
+						if tc.name == "missing run sequence" {
+							writeOne(`DELETE FROM report_event_facts WHERE organization_id=$1 AND event_id=$2`, organization, event.ID)
+							result, err := rewriteHistory(t, service, `DELETE FROM collaboration_events WHERE organization_id=$1 AND id=$2`, organization, event.ID)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if count, err := result.RowsAffected(); err != nil || count != 1 {
+								t.Fatalf("historical gap fixture rows=%d error=%v", count, err)
+							}
+						}
+						if tc.name == "conflicting report fact" {
+							writeOne(`UPDATE report_event_facts SET run_sequence=1 WHERE organization_id=$1 AND event_id=$2`, organization, event.ID)
+						}
+						writeOne(`DELETE FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2`, organization, claimed.attempt)
+						feature := service.UsageMaintenanceFeature()
+						selected := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
+						budget := hubmaintenance.Budget{Items: 1, Bytes: feature.Bytes}
+						for turn := range 6 {
+							err := feature.Step(budget.Context(t.Context(), selected), selected, budget)
+							if tc.name == "conflicting report fact" && turn%2 == 0 {
+								if !errors.Is(err, corestore.ErrRevisionConflict) {
+									t.Fatalf("turn %d: conflicting immutable projection error=%v", turn, err)
+								}
+							} else if err != nil {
+								t.Fatalf("turn %d: %v", turn, err)
+							}
+							if tc.name == "non-run event" && turn == 2 {
+								if pending, input := progress(); pending != 3 || input != 90 {
+									t.Fatalf("non-run event changed run progress or usage=%d/%d", pending, input)
+								}
+							}
+						}
+						var sourceInput int64
+						var sourceCost float64
+						var sourceComplete bool
+						if err := admin.QueryRowContext(t.Context(), `SELECT input,cost_estimate,complete FROM report_usage_current WHERE organization_id=$1 AND attempt_id=$2 AND model='example-model'`, organization, claimed.attempt).Scan(&sourceInput, &sourceCost, &sourceComplete); err != nil || sourceInput != 200 || math.Abs(sourceCost-0.2) > 1e-9 || !sourceComplete {
+							t.Fatalf("accepted source did not refresh=%d/%v/%t error=%v", sourceInput, sourceCost, sourceComplete, err)
+						}
+						pending, currentInput := progress()
+						if tc.complete && (pending != 0 || currentInput != 190) || !tc.complete && (pending == 0 || currentInput != 0) {
+							t.Fatalf("usage progress pending=%d input=%d complete=%t", pending, currentInput, tc.complete)
+						}
+						if tc.name == "missing report fact" {
+							var sequence int64
+							if err := admin.QueryRowContext(t.Context(), `SELECT run_sequence FROM report_event_facts WHERE organization_id=$1 AND event_id=$2`, organization, event.ID).Scan(&sequence); err != nil || sequence != 2 {
+								t.Fatalf("immutable event projection not repaired=%d error=%v", sequence, err)
+							}
+						}
+						if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+							query := reportstore.AnalyticsUsageQuery{ProjectID: fixture.project.ID, From: clock.Now().Add(-2 * time.Hour), To: clock.Now().Add(time.Hour), Limit: 100}
+							page, err := r.(reportstore.AnalyticsUsageReader).ReadAnalyticsUsagePage(t.Context(), query)
+							if err != nil {
+								return err
+							}
+							if page.Partial == tc.complete {
+								t.Fatalf("typed usage partial=%t complete=%t", page.Partial, tc.complete)
+							}
+							complete, err := r.(reportstore.UsageCoverageReader).ReadReportUsageCoverage(t.Context(), reportstore.OverviewQuery{Projects: []tracker.ProjectID{fixture.project.ID}, From: query.From, To: query.To, Limit: 100})
+							if err == nil && complete != tc.complete {
+								t.Fatalf("typed usage coverage=%t want=%t", complete, tc.complete)
+							}
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					})
+				}
+			})
+		}
+	})
+
 }
 
 func TestNativeRunEventRejectsInvalidUsage(t *testing.T) {
@@ -437,30 +875,17 @@ func TestHostedUsageReportAccess(t *testing.T) {
 		f.usage(t, "staff", browserHostedOrganizationBase+"/diagnostics", http.StatusForbidden)
 		f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=1y", http.StatusUnprocessableEntity)
 		now := f.service.config.now().UTC().Add(-time.Minute)
-		var item string
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 1", "org_browser_preview", f.project).Scan(&item); err != nil {
+		admin := hostedPostgresAdmin(t, f.service)
+		var item tracker.NativeWorkItemID
+		if err := admin.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE organization_id=$1 AND project_id=$2 ORDER BY id LIMIT 1", "org_browser_preview", f.project).Scan(&item); err != nil {
 			t.Fatal(err)
 		}
 		scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
 		for _, outcome := range []string{"ready", "skipped"} {
-			data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: outcome, Reason: "host_capacity", At: now}}
-			if err := appendLegacyNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", data, now); err != nil {
-				t.Fatal(err)
-			}
+			appendAnalyticsTestEvent(t, f.service, scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: outcome, Reason: "host_capacity", At: now}}, now)
 		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.landing',json(?)),updated_at=? WHERE id='attempt_browser_usage_0_0'`, fmt.Sprintf(`{"landed":false,"refusal_kind":"conflict","observed_at":%q}`, formatHubTime(now)), formatHubTime(now)); err != nil {
-			t.Fatal(err)
-		}
+		f.observeUsageRefusal(t, "attempt_browser_usage_0_0", now)
 		var report diagnosticsReport
-		rebuildTestAnalyticsRollups(t, f.service, scope)
 		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=24h", http.StatusOK), &report)
 		if report.Ready == nil || *report.Ready != 1 || report.Skipped == nil || *report.Skipped != 1 || len(report.SkipReasons) != 1 || report.SkipReasons[0].Reason != "host_capacity" {
 			t.Fatalf("recorded scheduler decisions missing: %+v", report)
@@ -469,10 +894,14 @@ func TestHostedUsageReportAccess(t *testing.T) {
 			t.Fatalf("recorded landing refusal missing: %+v", report)
 		}
 		t.Run("repeated refusal remains counted after retry storm classification", func(t *testing.T) {
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.landing',json(?)),updated_at=?`, fmt.Sprintf(`{"landed":false,"refusal_kind":"conflict","observed_at":%q}`, formatHubTime(now)), formatHubTime(now)); err != nil {
-				t.Fatal(err)
+			for day := range browserUsageDays {
+				for index := range browserUsageEntries {
+					if day != 0 || index != 0 {
+						f.observeUsageRefusal(t, fmt.Sprintf("attempt_browser_usage_%d_%d", day, index), now)
+					}
+				}
 			}
-			rebuildTestAnalyticsRollups(t, f.service, scope)
+
 			usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=24h", http.StatusOK), &report)
 			if len(report.Refused) != 1 || report.Refused[0].Count != browserUsageDays*len(browserUsageEntries) {
 				t.Fatalf("repeated refusal missing: %+v", report.Refused)
@@ -765,102 +1194,139 @@ func (f usageHostedFixture) seedUsage(t *testing.T) {
 	now := f.service.config.now().UTC()
 	prices := f.service.usagePrices()
 	machine := f.enrollUsageRunner(t)
+	admin := hostedPostgresAdmin(t, f.service)
+	org, project := tracker.OrganizationID("org_browser_preview"), tracker.ProjectID(f.project)
 	var issueRow int64
-	var nativeID string
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT id, native_id FROM issues WHERE organization_id = ? AND project_id = ? ORDER BY id LIMIT 1",
-		"org_browser_preview", f.project).Scan(&issueRow, &nativeID); err != nil {
+	var nativeID tracker.NativeWorkItemID
+	if err := admin.QueryRowContext(t.Context(), "SELECT id,native_id FROM issues WHERE organization_id=$1 AND project_id=$2 ORDER BY id LIMIT 1", org, project).Scan(&issueRow, &nativeID); err != nil {
 		t.Fatalf("the browser fixture has no issue to seed usage against: %v", err)
 	}
+	content := eventstore.NewContent(f.service.runDetailStore())
 	for day := range browserUsageDays {
 		stamp := now.AddDate(0, 0, -day)
 		for index, entry := range browserUsageEntries {
 			cost, _, found := prices.estimate(entry.Model, entry.Input, entry.Cached, entry.Output)
 			if !found {
-				t.Fatalf("the fixture price table does not price %s", entry.Model)
+				t.Fatalf("fixture price table does not price %s", entry.Model)
 			}
 			attemptID := fmt.Sprintf("attempt_browser_usage_%d_%d", day, index)
-			leaseID := fmt.Sprintf("lease_browser_usage_%d_%d", day, index)
+			leaseID := "lease_" + attemptID
 			started := stamp.Add(-browserUsageBusy)
-			lease, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases
- (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at)
- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				leaseID, issueRow, machine, "session_"+leaseID, formatHubTime(stamp), formatHubTime(started),
-				formatHubTime(stamp), formatHubTime(stamp), formatHubTime(started), formatHubTime(stamp))
-			if err != nil {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempt_runs(organization_id,run_id,issue_id)VALUES($1,$2,$3)`, org, "run_"+attemptID, issueRow); err != nil {
+				t.Fatal(err)
+			}
+			var fencing int64
+			if err := admin.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,expires_at,acquired_at,renewed_at,released_at)VALUES($1,$2,$3,$4,$5,1,$6::timestamptz+interval '1 hour',$7,$6,NULL)RETURNING fencing_token`, org, leaseID, issueRow, machine, "session_"+leaseID, stamp, started).Scan(&fencing); err != nil {
 				t.Fatalf("seed usage lease: %v", err)
 			}
-			fencing, err := lease.LastInsertId()
+			data := tracker.NativeRunData{RunID: "run_" + attemptID, AttemptID: attemptID, FencingToken: tracker.FencingToken(fencing), LeaseID: tracker.LeaseID(leaseID), MachineID: tracker.MachineID(machine), RunnerID: "runner_browser_preview", Sequence: 1, Outcome: "succeeded"}
+			raw, err := json.Marshal(data)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO lease_runners (lease_id, runner_id) VALUES (?, ?)", leaseID, "runner_browser_preview"); err != nil {
-				t.Fatalf("seed usage lease runner: %v", err)
-			}
-			data, err := json.Marshal(tracker.NativeRunData{RunID: "run_" + attemptID, AttemptID: attemptID, FencingToken: tracker.FencingToken(fencing), LeaseID: tracker.LeaseID(leaseID), MachineID: tracker.MachineID(machine), Outcome: "succeeded"})
+			ref, err := content.PreparePayload(t.Context(), org, raw)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts
- (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at)
- VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'succeeded', ?, ?, ?)`,
-				attemptID, "org_browser_preview", f.project, nativeID, leaseID, fencing, "run_"+attemptID,
-				string(data), formatHubTime(started), formatHubTime(stamp)); err != nil {
+			event, err := content.PrepareEvent(t.Context(), org, historyTestJSON(t, tracker.CollaborationEvent{ID: "event_" + attemptID, OrganizationID: org, ProjectID: project, AggregateID: nativeID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "runner_browser_preview"}, RecordedAt: stamp, Data: tracker.CollaborationData{Run: &data}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,started_at_submicro_ns,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,1,'succeeded',1,1,$8,$9,$10,$11)`, org, project, attemptID, issueRow, leaseID, fencing, data.RunID, ref.Key, started.Truncate(time.Microsecond), started.Nanosecond()%1000, stamp); err != nil {
 				t.Fatalf("seed usage attempt: %v", err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attempt_usage
- (attempt_id, organization_id, project_id, period, provider, model, input, cached_input, output, cost_estimate, currency, updated_at)
- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?)`,
-				attemptID, "org_browser_preview", f.project,
-				usagePeriod(stamp), entry.Provider, entry.Model,
-				entry.Input, entry.Cached, entry.Output, cost, formatHubTime(stamp)); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: stamp}); err != nil {
+					return err
+				}
+				if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: org, LeaseID: leaseID, RunnerID: "runner_browser_preview", AssignedAt: started}); err != nil {
+					return err
+				}
+				_, err := w.AppendEvent(t.Context(), event)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET released_at=$3 WHERE organization_id=$1 AND lease_id=$2`, org, leaseID, stamp); err != nil {
+				t.Fatalf("seed usage release: %v", err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'USD',$11)`, org, project, attemptID, stamp.UTC().Truncate(time.Hour), entry.Provider, entry.Model, entry.Input, entry.Cached, entry.Output, cost, stamp); err != nil {
 				t.Fatalf("seed usage: %v", err)
 			}
 		}
 	}
-	rebuildTestAnalyticsRollups(t, f.service, nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)})
 }
 
-// enrollUsageRunner registers one runner in the fixture's organization and
-// returns its machine id, which is what a lease names. The rows are written
-// directly: enrollment is an instance-admin operation the hosted boundary
-// does not expose, and no runner process joins this fixture.
 func (f usageHostedFixture) enrollUsageRunner(t *testing.T) string {
 	t.Helper()
-	now := formatHubTime(f.service.config.now().UTC())
-	later := formatHubTime(f.service.config.now().UTC().Add(time.Hour))
-	const (
-		machine    = "machine_browser_preview_runner"
-		token      = "tok_browser_preview_runner"
-		enrollment = "enr_browser_preview_runner"
-		identity   = "runner_browser_preview"
-	)
-	for _, statement := range []struct {
-		query string
-		args  []any
-	}{
-		{`INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, created_at, updated_at, expires_at, native_only) VALUES (?, ?, ?, ?, 'worker', ?, ?, ?, 1)`,
-			[]any{token, "Preview runner", strings.Repeat("a", 64), "preview", now, now, later}},
-		{`INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id) VALUES (?, ?, ?, 2, 'preview', ?, ?, ?, ?, ?)`,
-			[]any{machine, "preview-host", "Preview runner", now, now, now, "org_browser_preview", token}},
-		{`INSERT INTO runner_enrollments (id, organization_id, runner_id, machine_id, token_hash, operations_json, created_at, expires_at, created_by, redeemed_at) VALUES (?, ?, ?, ?, ?, '["claim"]', ?, ?, ?, ?)`,
-			[]any{enrollment, "org_browser_preview", identity, machine, strings.Repeat("b", 64), now, later, token, now}},
-		{`INSERT INTO runner_identities (id, organization_id, machine_id, token_id, enrollment_id, operations_json, created_at, display_name, capacity_limit, reported_capacity, os, architecture, last_heartbeat_at) VALUES (?, ?, ?, ?, ?, '["claim"]', ?, ?, 2, 2, 'linux', 'arm64', ?)`,
-			[]any{identity, "org_browser_preview", machine, token, enrollment, now, "Preview runner", now}},
-		// A second runner on the same machine ran none of the seeded
-		// attempts: the report must not repeat their usage for it.
-		{`INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, created_at, updated_at, expires_at, native_only) VALUES (?, ?, ?, ?, 'worker', ?, ?, ?, 1)`,
-			[]any{token + "_shared", "Shared runner", strings.Repeat("c", 64), "shared", now, now, later}},
-		{`INSERT INTO runner_enrollments (id, organization_id, runner_id, machine_id, token_hash, operations_json, created_at, expires_at, created_by, redeemed_at) VALUES (?, ?, ?, ?, ?, '["claim"]', ?, ?, ?, ?)`,
-			[]any{enrollment + "_shared", "org_browser_preview", identity + "_shared", machine, strings.Repeat("d", 64), now, later, token, now}},
-		{`INSERT INTO runner_identities (id, organization_id, machine_id, token_id, enrollment_id, operations_json, created_at, display_name, capacity_limit, reported_capacity, os, architecture, last_heartbeat_at) VALUES (?, ?, ?, ?, ?, '["claim"]', ?, ?, 2, 2, 'linux', 'arm64', ?)`,
-			[]any{identity + "_shared", "org_browser_preview", machine, token + "_shared", enrollment + "_shared", now, "Shared runner", now}},
-	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
-			t.Fatalf("seed the preview runner: %v", err)
+	now := f.service.config.now().UTC()
+	later := now.Add(time.Hour)
+	org := tracker.OrganizationID("org_browser_preview")
+	machine := tracker.MachineID("machine_browser_preview_runner")
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: string(machine), Hostname: "example-runner", DisplayName: "Preview runner", Capacity: 2, Version: "test"}); err != nil {
+			return err
 		}
+		for _, entity := range []struct{ id, name string }{{"runner_browser_preview", "Preview runner"}, {"runner_browser_preview_shared", "Shared runner"}} {
+			token := "token_" + entity.id
+			enrollment := "enrollment_" + entity.id
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: token, Name: entity.name, Hash: apikey.HashToken(string(org) + token), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now, ExpiresAt: &later}); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: enrollment, RunnerID: entity.id, MachineID: machine, TokenHash: apikey.HashToken(string(org) + enrollment), Scope: "organization", SharedMachine: true, Operations: []string{"claim"}, CreatedAt: now, ExpiresAt: later, CreatedBy: "test_hub_admin"}); err != nil {
+				return err
+			}
+			if err := w.RedeemRunnerEnrollment(t.Context(), enrollment, entity.id, machine, now); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: entity.id, MachineID: machine, TokenID: token, EnrollmentID: enrollment, Scope: "organization", Operations: []string{"claim"}, DisplayName: entity.name, CapacityLimit: 2, ReportedCapacity: 2, OS: "linux", Architecture: "arm64", CreatedAt: now, ExpiresAt: later, LastHeartbeatAt: now}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed the preview runner: %v", err)
 	}
-	return machine
+	return string(machine)
+}
+
+func (f usageHostedFixture) observeUsageRefusal(t *testing.T, attempt string, at time.Time) {
+	t.Helper()
+	org := tracker.OrganizationID("org_browser_preview")
+	project := tracker.ProjectID(f.project)
+	admin := hostedPostgresAdmin(t, f.service)
+	var item tracker.NativeWorkItemID
+	var run, lease, machine string
+	var sequence, fence int64
+	if err := admin.QueryRowContext(t.Context(), `SELECT i.native_id,a.run_id,a.lease_id,l.machine_id,a.sequence,a.fencing_token FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id WHERE a.organization_id=$1 AND a.project_id=$2 AND a.id=$3`, org, project, attempt).Scan(&item, &run, &lease, &machine, &sequence, &fence); err != nil {
+		t.Fatal(err)
+	}
+	data := tracker.NativeRunData{AttemptID: attempt, RunID: run, LeaseID: tracker.LeaseID(lease), MachineID: tracker.MachineID(machine), FencingToken: tracker.FencingToken(fence), Sequence: sequence + 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "conflict", ObservedAt: at}}}
+	content := eventstore.NewContent(f.service.runDetailStore())
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := content.PreparePayload(t.Context(), org, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := content.PrepareEvent(t.Context(), org, historyTestJSON(t, tracker.CollaborationEvent{ID: fmt.Sprintf("refusal_%s_%d", attempt, sequence+1), OrganizationID: org, ProjectID: project, AggregateID: item, Type: "run.observed", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "runner_browser_preview"}, RecordedAt: at, Data: tracker.CollaborationData{Run: &data}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET sequence=$4,payload_object_key=$5,updated_at=$6 WHERE organization_id=$1 AND project_id=$2 AND id=$3`, org, project, attempt, sequence+1, ref.Key, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: at}); err != nil {
+			return err
+		}
+		_, err := w.AppendEvent(t.Context(), event)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // compareUsageShape asserts that the Go payload carries exactly the golden's
@@ -978,11 +1444,11 @@ func TestUsageDelta(t *testing.T) {
 // filed under the hour it arrived, not the attempt's start.
 func TestRecordAttemptUsageAttributesIncrementsToTheirHour(t *testing.T) {
 	t.Parallel()
-	service := openTestService(t, Config{DatabasePath: t.TempDir() + "/hub.db"})
 	prices := usageTestPrices()
-	scope := nativeScope{organization: "org_usage", project: "prj_usage"}
 	evening := time.Date(2026, 9, 9, 23, 40, 0, 0, time.UTC)
 	morning := time.Date(2026, 9, 10, 0, 20, 0, 0, time.UTC)
+	clock := &leaseTestClock{value: evening.Add(-time.Minute)}
+	service := newClockedPostgresNativeService(t, Config{Usage: &prices, Clock: clock.Now})
 	reports := []struct {
 		at    time.Time
 		total tracker.NativeUsage
@@ -991,45 +1457,48 @@ func TestRecordAttemptUsageAttributesIncrementsToTheirHour(t *testing.T) {
 		{at: morning, total: tracker.NativeUsage{Provider: "codex", Model: "gpt-6-astra", Input: 3000, Output: 300, CostEstimate: 0.75, Currency: "USD"}},
 		{at: morning, total: tracker.NativeUsage{Provider: "codex", Model: "gpt-6-astra", Input: 3000, Output: 300, CostEstimate: 0.75, Currency: "USD"}},
 	}
-	for _, report := range reports {
-		tx, err := service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		event := tracker.NativeRunEvent{Type: "run.checkpointed", Data: tracker.NativeRunData{AttemptID: "attempt_midnight", Usage: []tracker.NativeUsage{report.total}}}
-		if err := recordAttemptUsage(t.Context(), tx, scope, event, prices, report.at); err != nil {
-			_ = tx.Rollback()
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want := map[string]int64{"2026-09-09T23:00:00Z": 1000, "2026-09-10T00:00:00Z": 2000}
-	rows, err := service.database.db.QueryContext(t.Context(), "SELECT period, input FROM attempt_usage WHERE attempt_id = ?", "attempt_midnight")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = rows.Close() }()
-	got := map[string]int64{}
-	for rows.Next() {
-		var period string
-		var input int64
-		if err := rows.Scan(&period, &input); err != nil {
-			t.Fatal(err)
-		}
-		got[period] = input
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != len(want) {
-		t.Fatalf("periods = %v, want %v", got, want)
-	}
-	for period, input := range want {
-		if got[period] != input {
-			t.Fatalf("periods = %v, want %v", got, want)
-		}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			clock.Advance(evening.Add(-time.Minute).Sub(clock.Now()))
+			f := claimAttemptDiffFixture(t, false, newNativeFixture(t, service, org, "usage-hour"))
+			f.start(t)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 3600}), http.StatusOK)
+			for i, report := range reports {
+				clock.Advance(report.at.Sub(clock.Now()))
+				event := nativeStartedEvent(f.lease)
+				event.Type, event.IdempotencyKey, event.OccurredAt = "run.checkpointed", fmt.Sprintf("usage-hour-%d", i), report.at
+				event.Data.AttemptID, event.Data.RunID, event.Data.Sequence = f.attempt, f.run, int64(i+2)
+				event.Data.Handoff = nativeTestCheckpoint()
+				event.Data.Usage = []tracker.NativeUsage{report.total}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, pendingEventPath(f), f.worker, event), http.StatusOK)
+			}
+			want := map[string]int64{"2026-09-09T23:00:00Z": 1000, "2026-09-10T00:00:00Z": 2000}
+			rows, err := usagePostgresAdmin(t, service).QueryContext(t.Context(), `SELECT period,input FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2`, org, f.attempt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			got := map[string]int64{}
+			for rows.Next() {
+				var period time.Time
+				var input int64
+				if err := rows.Scan(&period, &input); err != nil {
+					t.Fatal(err)
+				}
+				got[period.UTC().Format(usagePeriodLayout)] = input
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(want) {
+				t.Fatalf("periods=%v want=%v", got, want)
+			}
+			for period, input := range want {
+				if got[period] != input {
+					t.Fatalf("periods=%v want=%v", got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -1111,11 +1580,11 @@ func TestUsageBusySecondsClampsToWindow(t *testing.T) {
 // recorded in the old currency keeps its label and amount.
 func TestRecordAttemptUsageKeepsCurrenciesApart(t *testing.T) {
 	t.Parallel()
-	service := openTestService(t, Config{DatabasePath: t.TempDir() + "/hub.db"})
-	scope := nativeScope{organization: "org_usage", project: "prj_usage"}
 	at := time.Date(2026, 9, 10, 9, 10, 0, 0, time.UTC)
 	usd := usageTestPrices()
 	eur := UsageConfig{Currency: "EUR", Prices: map[string]UsagePrice{"gpt-6-astra": {Input: 10, CachedInput: 1, Output: 40}}}.normalized()
+	clock := &leaseTestClock{value: at.Add(-time.Minute)}
+	service := newClockedPostgresNativeService(t, Config{Usage: &usd, Clock: clock.Now})
 	reports := []struct {
 		prices UsageConfig
 		at     time.Time
@@ -1124,49 +1593,52 @@ func TestRecordAttemptUsageKeepsCurrenciesApart(t *testing.T) {
 		{prices: usd, at: at, input: 1_000_000},
 		{prices: eur, at: at.Add(20 * time.Minute), input: 3_000_000},
 	}
-	for _, report := range reports {
-		tx, err := service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		event := tracker.NativeRunEvent{Type: "run.checkpointed", Data: tracker.NativeRunData{AttemptID: "attempt_currency", Usage: []tracker.NativeUsage{
-			{Provider: "codex", Model: "gpt-6-astra", Input: report.input},
-		}}}
-		if err := recordAttemptUsage(t.Context(), tx, scope, event, report.prices, report.at); err != nil {
-			_ = tx.Rollback()
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want := map[string]struct {
-		input int64
-		cost  float64
-	}{"USD": {input: 1_000_000, cost: 10}, "EUR": {input: 2_000_000, cost: 20}}
-	rows, err := service.database.db.QueryContext(t.Context(), "SELECT currency, input, cost_estimate FROM attempt_usage WHERE attempt_id = ?", "attempt_currency")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = rows.Close() }()
-	seen := 0
-	for rows.Next() {
-		var currency string
-		var input int64
-		var cost float64
-		if err := rows.Scan(&currency, &input, &cost); err != nil {
-			t.Fatal(err)
-		}
-		expected, found := want[currency]
-		if !found || input != expected.input || cost-expected.cost > 1e-9 || expected.cost-cost > 1e-9 {
-			t.Fatalf("row %s = %d tokens at %v, want %+v", currency, input, cost, expected)
-		}
-		seen++
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if seen != len(want) {
-		t.Fatalf("rows = %d, want %d", seen, len(want))
+	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			clock.Advance(at.Add(-time.Minute).Sub(clock.Now()))
+			service.config.Usage = &usd
+			f := claimAttemptDiffFixture(t, false, newNativeFixture(t, service, org, "usage-currency"))
+			f.start(t)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 3600}), http.StatusOK)
+			for i, report := range reports {
+				clock.Advance(report.at.Sub(clock.Now()))
+				service.config.Usage = &report.prices
+				event := nativeStartedEvent(f.lease)
+				event.Type, event.IdempotencyKey, event.OccurredAt = "run.checkpointed", fmt.Sprintf("usage-currency-%d", i), report.at
+				event.Data.AttemptID, event.Data.RunID, event.Data.Sequence = f.attempt, f.run, int64(i+2)
+				event.Data.Handoff = nativeTestCheckpoint()
+				event.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "gpt-6-astra", Input: report.input}}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, pendingEventPath(f), f.worker, event), http.StatusOK)
+			}
+			want := map[string]struct {
+				input int64
+				cost  float64
+			}{"USD": {input: 1_000_000, cost: 10}, "EUR": {input: 2_000_000, cost: 20}}
+			rows, err := usagePostgresAdmin(t, service).QueryContext(t.Context(), `SELECT currency,input,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2`, org, f.attempt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			seen := 0
+			for rows.Next() {
+				var currency string
+				var input int64
+				var cost float64
+				if err := rows.Scan(&currency, &input, &cost); err != nil {
+					t.Fatal(err)
+				}
+				expected, found := want[currency]
+				if !found || input != expected.input || cost-expected.cost > 1e-9 || expected.cost-cost > 1e-9 {
+					t.Fatalf("row %s=%d tokens at %v want=%+v", currency, input, cost, expected)
+				}
+				seen++
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if seen != len(want) {
+				t.Fatalf("rows=%d want=%d", seen, len(want))
+			}
+		})
 	}
 }

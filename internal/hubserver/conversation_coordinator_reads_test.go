@@ -14,16 +14,24 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func coordinatorReadFixture(t *testing.T) (hostedSecurityFixture, hostedSecurityUser, conversationRecord) {
 	t.Helper()
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.now = func() time.Time { return now }
 		cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}
@@ -42,9 +50,17 @@ func coordinatorReadFixture(t *testing.T) (hostedSecurityFixture, hostedSecurity
 		} `json:"conversation"`
 	}
 	decodeHubResponse(t, response, &created)
-	operatorSQL(t, f, "UPDATE conversations SET visibility='shared' WHERE id=?", created.Conversation.ID)
+	coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+		row, err := w.Conversation(t.Context(), f.project, created.Conversation.ID)
+		if err != nil {
+			return err
+		}
+		row.Visibility = conversation.VisibilityShared
+		_, err = w.UpdateConversation(t.Context(), row, row.Revision)
+		return err
+	})
 	c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
-	record, err := c.readConversation(t.Context(), f.service.database.db, created.Conversation.ID)
+	record, err := c.service.readPublicationConversation(t.Context(), created.Conversation.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,9 +90,6 @@ func coordinatorViewerTools(t *testing.T, f hostedSecurityFixture, record conver
 }
 
 func TestCoordinatorScreenReads(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	for _, role := range []struct {
 		name, role string
 		runner     bool
@@ -87,9 +100,7 @@ func TestCoordinatorScreenReads(t *testing.T) {
 			f, _, record := coordinatorReadFixture(t)
 			user := f.user(t, "screen-viewer", role.role, "viewer@example.test", "read", "")
 			f.grant(t, user, false, role.runner)
-			seedHostedContextRunner(t, f, "attached", "v0.117.99", f.service.config.now(), false)
-			operatorSQL(t, f, "UPDATE api_tokens SET expires_at=? WHERE id='tok_attached'", formatHubTime(f.service.config.now().Add(time.Hour)))
-			operatorSQL(t, f, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES('tok_attached','org_security',?)", f.project)
+			coordinatorReadSeedRunner(t, f, "attached", f.project, false)
 			issueID := f.seedIssue(t, 1)
 			tools, ctx := coordinatorViewerTools(t, f, record, user)
 			catalog := tools.tools()
@@ -193,9 +204,6 @@ func TestCoordinatorScreenReads(t *testing.T) {
 }
 
 func TestCoordinatorScreenReadBoundaries(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	for _, test := range []struct {
 		name, args string
 		revoke     bool
@@ -208,7 +216,9 @@ func TestCoordinatorScreenReadBoundaries(t *testing.T) {
 			f, owner, record := coordinatorReadFixture(t)
 			tools, _ := coordinatorViewerTools(t, f, record, owner)
 			if test.revoke {
-				operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=?", owner.identity.Subject)
+				coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+					return w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, f.project)
+				})
 			}
 			for _, tool := range coordinatorScreenTools() {
 				result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool.Name, Arguments: json.RawMessage(test.args)})
@@ -221,9 +231,6 @@ func TestCoordinatorScreenReadBoundaries(t *testing.T) {
 }
 
 func TestCoordinatorWorkListRefusalNamesReason(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	f, owner, record := coordinatorReadFixture(t)
 	tools, _ := coordinatorViewerTools(t, f, record, owner)
 	for _, test := range []struct{ args, reason string }{
@@ -238,9 +245,6 @@ func TestCoordinatorWorkListRefusalNamesReason(t *testing.T) {
 }
 
 func TestCoordinatorReadAudience(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	f, owner, record := coordinatorReadFixture(t)
 	tools, _ := coordinatorViewerTools(t, f, record, owner)
 	result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "get_native_project", Arguments: json.RawMessage(`{}`)})
@@ -280,7 +284,14 @@ func TestCoordinatorReadAudience(t *testing.T) {
 			}
 		})
 	}
-	operatorSQL(t, f, "UPDATE hosted_project_grants SET can_write=0 WHERE user_id=?", owner.identity.Subject)
+	coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+		grant, err := w.AccessProjectGrant(t.Context(), owner.identity.Subject, f.project)
+		if err != nil {
+			return err
+		}
+		grant.CanWrite = false
+		return w.SetAccessProjectGrant(t.Context(), grant)
+	})
 	response := f.request(t, owner, http.MethodGet, f.base+"/conversations/"+record.ID, nil)
 	requireNativeStatus(t, response, http.StatusNotFound)
 	_, err = tools.execute(t.Context(), runner.AgentToolCall{Name: "get_native_project", Arguments: json.RawMessage(`{}`)})
@@ -290,9 +301,6 @@ func TestCoordinatorReadAudience(t *testing.T) {
 }
 
 func TestCoordinatorProjectRunners(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	for _, test := range []struct {
 		name         string
 		count        int
@@ -303,42 +311,54 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, owner, record := coordinatorReadFixture(t)
-			operatorSQL(t, f, `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT 'prj_other',organization_id,'foreign-project-sentinel',profile,states_json,created_at FROM projects WHERE id=?`, f.project)
+			coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+				original, err := w.ProjectRecord(t.Context(), f.project)
+				if err != nil {
+					return err
+				}
+				rank := int64(0)
+				if test.count > 0 {
+					rank = 2
+				}
+				_, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: "prj_other", Name: "foreign-project-sentinel", Profile: original.Core.Profile, SchedulingRank: rank}, States: original.States})
+				return err
+			})
 			ids := []string{"self-hosted-one", "self-hosted-two", "self-hosted-three"}
 			for _, id := range append(slices.Clone(ids[:test.count]), "unattached-sentinel") {
-				seedHostedContextRunner(t, f, id, "v0.117.99", f.service.config.now(), false)
-				operatorSQL(t, f, "UPDATE api_tokens SET expires_at=? WHERE id=?", formatHubTime(f.service.config.now().Add(time.Hour)), "tok_"+id)
-				project := string(f.project)
+				project := f.project
 				if id == "unattached-sentinel" {
 					project = "prj_other"
 				}
+				coordinatorReadSeedRunner(t, f, id, project, test.organization && id == ids[0])
+			}
 
-				operatorSQL(t, f, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES(?,'org_security',?)", "tok_"+id, project)
+			if test.count > 0 && !test.organization {
+				coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+					return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: "tok_" + ids[0], ProjectID: "prj_other"})
+				})
 			}
+
 			if test.count > 0 {
-				operatorSQL(t, f, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES(?,'org_security','prj_other')", "tok_"+ids[0])
-				operatorSQL(t, f, "UPDATE projects SET scheduling_rank=2 WHERE id='prj_other'")
-			}
-			if test.organization {
-				operatorSQL(t, f, "UPDATE runner_identities SET scope='organization' WHERE id=?", ids[0])
-				operatorSQL(t, f, "DELETE FROM token_grants WHERE token_id=?", "tok_"+ids[0])
-			}
-			if test.count > 0 {
-				problems, err := json.Marshal([]runnerauth.Problem{
+				problems := []runnerauth.Problem{
 					{Code: "keep_awake_failed", Message: "shared-host-problem"},
 					{ProjectID: string(f.project), Code: "backend_missing", Message: "current-project-problem"},
 					{ProjectID: "prj_other", Code: "settings_invalid", Message: "foreign-problem-sentinel", ErrorOutput: "foreign-error-sentinel", FixCommand: "foreign-command-sentinel"},
-				})
-				if err != nil {
-					t.Fatal(err)
 				}
-				operatorSQL(t, f, "UPDATE runner_identities SET problems_json=? WHERE id=?", string(problems), ids[0])
+				for i := range problems {
+					problems[i].FixHint = runnerauth.NewProblem(problems[i].Code).FixHint
+					problems[i].ReportedAt = f.service.config.now()
+					problems[i].FirstSeen = f.service.config.now()
+				}
+				coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error { return w.ReplaceRunnerProblems(t.Context(), ids[0], problems) })
 			}
+
 			if test.disabled {
-				operatorSQL(t, f, "UPDATE runner_identities SET state='disabled' WHERE id=?", ids[0])
+				coordinatorFixtureRouting(t, f.service, "org_security", ids[0], func(row *runnerstore.Identity) { row.State = "disabled" })
 			}
 			foreignMember := f.user(t, "foreign-member", "member", "foreign@example.test", "", "")
-			operatorSQL(t, f, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id) VALUES(?,'org_security','prj_other')", foreignMember.identity.Subject)
+			coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+				return w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_security", UserID: foreignMember.identity.Subject, ProjectID: "prj_other"})
+			})
 			tools, _ := coordinatorViewerTools(t, f, record, owner)
 			for _, read := range []string{"get_project_runners", "get_project_fleet"} {
 				result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: read, Arguments: json.RawMessage(`{}`)})
@@ -423,4 +443,39 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 			}
 		})
 	}
+}
+
+func coordinatorReadSeedRunner(t *testing.T, f hostedSecurityFixture, id string, project tracker.ProjectID, organization bool) {
+	t.Helper()
+	coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+		now := f.service.config.now()
+		expires := now.Add(time.Hour)
+		token := "tok_" + id
+		machine := "machine_" + id
+		enrollment := "enr_" + id
+		scope := "projects"
+		projects := []tracker.ProjectID{project}
+		if organization {
+			scope = "organization"
+			projects = nil
+		}
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: token, Name: token, Hash: apikey.HashToken(token), Fingerprint: id, Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			return err
+		}
+		if !organization {
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: token, ProjectID: project}); err != nil {
+				return err
+			}
+		}
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_security", ID: machine, Hostname: id, DisplayName: id, Capacity: 1, Version: "v0.117.99"}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_security", ID: enrollment, TokenHash: apikey.HashToken(enrollment), Scope: scope, Operations: []string{runnerauth.Claim}, ProjectIDs: projects, CreatedAt: now, ExpiresAt: expires, CreatedBy: token}); err != nil {
+			return err
+		}
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollment, id, tracker.MachineID(machine), now); err != nil {
+			return err
+		}
+		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_security", RunnerID: id, MachineID: tracker.MachineID(machine), TokenID: token, EnrollmentID: enrollment, Scope: scope, Operations: []string{runnerauth.Claim}, ProjectIDs: projects, CreatedAt: now, ExpiresAt: expires, DisplayName: id, CapacityLimit: 1, ReportedCapacity: 1, OS: "linux", Architecture: "arm64", LastHeartbeatAt: now})
+	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +24,10 @@ type CoreWorkItemImport struct {
 	Comments         []corestore.Comment
 	Versions         []eventstore.CollaborationVersion
 	Events           []eventstore.Event
+	LinkedSource     *eventstore.LinkedSource
 	Receipt          eventstore.Receipt
+	SourceReceipt    *eventstore.Receipt
+	SourceReceipts   []eventstore.Receipt
 	DoctorIdentities *DoctorProposalIdentityBinding `json:"-"`
 }
 
@@ -73,6 +77,11 @@ func (r *Repository) ImportCoreWorkItem(ctx context.Context, record CoreWorkItem
 	if item.Revision != maxImportedVersionRevision(record.Versions, string(item.NativeID)) {
 		return eventstore.ErrInvalidRecord
 	}
+	if linked := record.LinkedSource; linked != nil {
+		if linked.OrganizationID != item.OrganizationID || linked.ProjectID != item.ProjectID || linked.WorkItemID != item.NativeID || linked.URL == "" {
+			return corestore.ErrTenantMismatch
+		}
+	}
 	if binding := record.DoctorIdentities; binding != nil {
 		if binding.OrganizationID != item.OrganizationID || binding.ProjectID != item.ProjectID || binding.WorkItemID != item.NativeID || binding.Revision != item.Revision {
 			return corestore.ErrTenantMismatch
@@ -93,7 +102,19 @@ func (r *Repository) ImportCoreWorkItem(ctx context.Context, record CoreWorkItem
 			if previous.RequestHash != record.Receipt.RequestHash {
 				return mutation.ErrConflict
 			}
-			return s.repairImportedDoctorProposalIdentities(ctx, record)
+			if item.ArchiveRestoredAt != nil {
+				_, err := s.db.Exec(ctx, `UPDATE issues SET archive_restored_at=$5,archive_restore_known=true WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 AND revision=$4 AND NOT archive_restore_known AND (archive_restored_at IS NULL OR archive_restored_at=$5)`, item.OrganizationID, item.ProjectID, item.NativeID, item.Revision, item.ArchiveRestoredAt)
+				if err != nil {
+					return mapError(ctx, err)
+				}
+			}
+			if err := s.repairImportedLinkedSource(ctx, record); err != nil {
+				return err
+			}
+			if err := s.repairImportedDoctorProposalIdentities(ctx, record); err != nil {
+				return err
+			}
+			return s.bindImportedWorkItemSource(ctx, record)
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
@@ -106,12 +127,24 @@ func (r *Repository) ImportCoreWorkItem(ctx context.Context, record CoreWorkItem
 			if previous.RequestHash != record.Receipt.RequestHash {
 				return mutation.ErrConflict
 			}
-			return s.repairImportedDoctorProposalIdentities(ctx, record)
+			if item.ArchiveRestoredAt != nil {
+				_, err := s.db.Exec(ctx, `UPDATE issues SET archive_restored_at=$5,archive_restore_known=true WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 AND revision=$4 AND NOT archive_restore_known AND (archive_restored_at IS NULL OR archive_restored_at=$5)`, item.OrganizationID, item.ProjectID, item.NativeID, item.Revision, item.ArchiveRestoredAt)
+				if err != nil {
+					return mapError(ctx, err)
+				}
+			}
+			if err := s.repairImportedLinkedSource(ctx, record); err != nil {
+				return err
+			}
+			if err := s.repairImportedDoctorProposalIdentities(ctx, record); err != nil {
+				return err
+			}
+			return s.bindImportedWorkItemSource(ctx, record)
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if _, err := s.createWorkItem(ctx, item); err != nil {
+		if _, err := s.createWorkItem(ctx, item, false); err != nil {
 			return err
 		}
 		if err := s.SetWorkItemLabels(ctx, item.ProjectID, item.NativeID, record.Labels); err != nil {
@@ -140,14 +173,91 @@ func (r *Repository) ImportCoreWorkItem(ctx context.Context, record CoreWorkItem
 				return err
 			}
 		}
+		if record.LinkedSource != nil {
+			if _, err := s.CreateLinkedSource(ctx, *record.LinkedSource); err != nil {
+				return err
+			}
+		}
 		if record.DoctorIdentities != nil {
 			if err := s.BindDoctorProposalIdentities(ctx, *record.DoctorIdentities); err != nil {
 				return err
 			}
 		}
+		if err := s.bindImportedWorkItemSource(ctx, record); err != nil {
+			return err
+		}
 		_, err = s.PutReceipt(ctx, record.Receipt)
 		return err
 	})
+}
+
+func (s *session) bindImportedWorkItemSource(ctx context.Context, record CoreWorkItemImport) error {
+	if record.SourceReceipt == nil {
+		if len(record.SourceReceipts) != 0 {
+			return eventstore.ErrInvalidRecord
+		}
+		return nil
+	}
+	if len(record.SourceReceipts) > 2 {
+		return eventstore.ErrInvalidRecord
+	}
+	receipt := *record.SourceReceipt
+	item := record.Item
+	if receipt.OrganizationID != item.OrganizationID || receipt.ActorID != "production-import" || receipt.Operation != "core-work-item-source" || receipt.CommandKey != strconv.FormatInt(item.ID, 10) {
+		return corestore.ErrTenantMismatch
+	}
+	current, err := s.WorkItem(ctx, item.ProjectID, item.NativeID)
+	if err != nil {
+		return err
+	}
+	if current.ID != item.ID || current.NativeID != item.NativeID || current.ProjectID != item.ProjectID {
+		return corestore.ErrRevisionConflict
+	}
+	for _, source := range record.SourceReceipts {
+		if source.OrganizationID != item.OrganizationID || source.ActorID != "production-import" || source.Operation != "core-work-item-source-row" || source.CommandKey != strconv.FormatInt(item.ID, 10)+"/issues" && source.CommandKey != strconv.FormatInt(item.ID, 10)+"/repositories" {
+			return corestore.ErrTenantMismatch
+		}
+		if _, err := s.PutReceipt(ctx, source); err != nil {
+			return err
+		}
+	}
+	_, err = s.PutReceipt(ctx, receipt)
+	return err
+}
+
+func (s *session) repairImportedLinkedSource(ctx context.Context, record CoreWorkItemImport) error {
+	linked := record.LinkedSource
+	if linked == nil {
+		return nil
+	}
+	item, err := s.LockWorkItem(ctx, linked.ProjectID, linked.WorkItemID)
+	if err != nil {
+		return err
+	}
+	if item.ID != record.Item.ID {
+		return mutation.ErrConflict
+	}
+	current, err := s.LinkedSource(ctx, linked.ProjectID, linked.WorkItemID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		_, err = s.CreateLinkedSource(ctx, *linked)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if current.URL != linked.URL || current.TitleSupplied != linked.TitleSupplied || current.BodySupplied != linked.BodySupplied {
+		return mutation.ErrConflict
+	}
+	titleOwned, bodyOwned := current.TitleOwned || linked.TitleOwned, current.BodyOwned || linked.BodyOwned
+	if titleOwned == current.TitleOwned && bodyOwned == current.BodyOwned {
+		return nil
+	}
+	current.TitleOwned, current.BodyOwned = titleOwned, bodyOwned
+	if current.SnapshotSHA256 != "" {
+		current.ExpectedSnapshotSHA256 = new(current.SnapshotSHA256)
+	}
+	_, err = s.UpdateLinkedSource(ctx, current)
+	return err
 }
 
 func (r *Repository) ImportCoreDependency(ctx context.Context, record CoreDependencyImport) error {

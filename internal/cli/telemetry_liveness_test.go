@@ -2,16 +2,11 @@ package cli
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -21,17 +16,14 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
-	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tui"
-	"github.com/digitaldrywood/detent/internal/web"
 )
 
 func TestTelemetryPublicationSurvivesStalledSourceAfterRestart(t *testing.T) {
@@ -86,22 +78,6 @@ func TestTelemetryPublicationSurvivesStalledSourceAfterRestart(t *testing.T) {
 					if initial.Shutdown.Draining || initial.Shutdown.Status != "running" {
 						t.Fatalf("startup retained prior shutdown state: %#v", initial.Shutdown)
 					}
-					server := newTelemetryWebServer(t, snapshots, registry)
-					events := &telemetryEventRecorder{ResponseRecorder: httptest.NewRecorder()}
-					eventsDone := make(chan struct{})
-					go func() {
-						defer close(eventsDone)
-						server.Handler().ServeHTTP(events, httptest.NewRequestWithContext(ctx, http.MethodGet, "/events?view=board", nil))
-					}()
-					defer func() {
-						cancel()
-						<-eventsDone
-					}()
-					synctest.Wait()
-					frames := strings.Count(events.body(), "event: snapshot\n")
-					if events.status() != http.StatusOK || frames != 1 {
-						t.Fatalf("startup SSE status = %d, snapshot frames = %d", events.status(), frames)
-					}
 					model, err := tui.NewModel(ctx, snapshots)
 					if err != nil {
 						t.Fatal(err)
@@ -137,26 +113,6 @@ func TestTelemetryPublicationSurvivesStalledSourceAfterRestart(t *testing.T) {
 							if running.Tokens.Total != int64(index+1)*100 {
 								t.Fatalf("worker progress froze: %#v", running.Tokens)
 							}
-						}
-						healthResponse := httptest.NewRecorder()
-						server.Handler().ServeHTTP(healthResponse, httptest.NewRequestWithContext(ctx, http.MethodGet, "/health", nil))
-						var health struct {
-							GeneratedAt time.Time `json:"snapshot_generated_at"`
-							AgeSeconds  int64     `json:"snapshot_age_seconds"`
-						}
-						if err := json.Unmarshal(healthResponse.Body.Bytes(), &health); err != nil {
-							t.Fatal(err)
-						}
-						if !health.GeneratedAt.Equal(current.GeneratedAt) || health.AgeSeconds > 1 {
-							t.Fatalf("health freshness = %#v, snapshot generated at %v", health, current.GeneratedAt)
-						}
-						if got := strings.Count(events.body(), "event: snapshot\n"); got <= frames {
-							t.Fatalf("SSE froze at %d snapshot frames", got)
-						} else {
-							frames = got
-						}
-						if !strings.Contains(events.body(), "beta active worker") || !strings.Contains(events.body(), "gamma active worker") {
-							t.Fatal("SSE did not include current running workers")
 						}
 						if source == "lifetime_totals" && (current.LifetimeTotals.Available || !strings.Contains(current.LifetimeTotals.DegradedReason, "deadline")) {
 							t.Fatalf("lifetime totals = %#v, want unavailable with deadline diagnostic", current.LifetimeTotals)
@@ -418,20 +374,6 @@ func seedRestartTelemetry(t *testing.T, ctx context.Context, snapshots *hub.Hub[
 
 type stalledTelemetryTotals struct{}
 
-func newTelemetryWebServer(t *testing.T, snapshots *hub.Hub[telemetry.Snapshot], registry *project.Registry) *web.Server {
-	t.Helper()
-	server, err := web.NewServer(web.Config{
-		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
-		LookupEnv:           func(string) string { return "" },
-		SSEFragmentInterval: time.Millisecond,
-	}, web.Dependencies{Hub: snapshots, Registry: registry, Store: snapshotFixtureStore{}, Connector: fakehub.New(fakehub.Config{})})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
-	return server
-}
-
 func (stalledTelemetryTotals) LifetimeTotals(ctx context.Context) (store.LifetimeTotals, error) {
 	<-ctx.Done()
 	return store.LifetimeTotals{}, ctx.Err()
@@ -449,83 +391,4 @@ func (stalledTelemetryConnector) FetchCandidateIssues(ctx context.Context) ([]co
 func (stalledTelemetryConnector) FetchIssuesByStates(ctx context.Context, _ []string) ([]connector.Issue, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
-}
-
-type telemetryEventRecorder struct {
-	*httptest.ResponseRecorder
-	mu sync.Mutex
-}
-
-func (r *telemetryEventRecorder) Write(data []byte) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.ResponseRecorder.Write(data)
-}
-
-func (r *telemetryEventRecorder) WriteString(data string) (int, error) {
-	return r.Write([]byte(data))
-}
-
-func (r *telemetryEventRecorder) WriteHeader(status int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.ResponseRecorder.WriteHeader(status)
-}
-
-func (r *telemetryEventRecorder) Flush() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.ResponseRecorder.Flush()
-}
-
-func (r *telemetryEventRecorder) body() string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.Body.String()
-}
-
-func (r *telemetryEventRecorder) status() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.Code
-}
-
-type snapshotFixtureStore struct {
-	store.Store
-}
-
-func (snapshotFixtureStore) LocalProjectRank(context.Context, *projectsettings.RankChange) (projectsettings.Rank, error) {
-	return projectsettings.Rank{}, sql.ErrNoRows
-}
-
-func (snapshotFixtureStore) LifetimeTotals(context.Context) (store.LifetimeTotals, error) {
-	return store.LifetimeTotals{}, nil
-}
-
-func (snapshotFixtureStore) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
-	return nil, nil
-}
-
-func (snapshotFixtureStore) RuntimeEvidence(context.Context, store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error) {
-	return store.RuntimeEvidence{Backend: "memory", Healthy: true}, nil
-}
-
-func (snapshotFixtureStore) WorkflowMetricsReport(context.Context, store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
-	return store.WorkflowMetricsReport{}, nil
-}
-
-func (snapshotFixtureStore) CycleTimeReport(context.Context) (store.CycleTimeReport, error) {
-	return store.CycleTimeReport{}, nil
-}
-
-func (snapshotFixtureStore) BudgetCostEvents(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
-	return nil, nil
-}
-
-func (snapshotFixtureStore) EfficiencyReceipt(context.Context, string, string, string) (efficiency.Receipt, error) {
-	return efficiency.Receipt{}, sql.ErrNoRows
-}
-
-func (snapshotFixtureStore) ListEfficiencyReceipts(context.Context, efficiency.Query) ([]efficiency.Receipt, error) {
-	return nil, nil
 }

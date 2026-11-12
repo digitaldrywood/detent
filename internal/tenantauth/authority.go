@@ -112,7 +112,7 @@ func scanAuthority(row pgx.Row, input RequestIdentity, now time.Time) (Scope, er
 			scope.runner.ProjectIDs = append(scope.runner.ProjectIDs, tracker.ProjectID(project))
 		}
 		scope.renewal = input.RenewalRunner == scope.RunnerID() && input.RenewalOrganization == input.Organization
-	} else if !tenantFound || p.UserID != "" && (!active || !principalValid) {
+	} else if input.Local && (p.UserID != "" || p.MembershipID != "") || !input.Local && (!tenantFound || p.UserID != "" && (!active || !principalValid)) {
 		return Scope{}, ErrDenied
 	}
 	if err := scope.ValidAt(now); err != nil {

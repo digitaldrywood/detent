@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -37,29 +36,16 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 	} else if project == "" {
 		return scope, operatortool.ErrInvalidArguments
 	}
-	if e.service.config.TenantRepository != nil {
-		if e.service.config.AccessRepository == nil {
-			return scope, operatortool.ErrAccessDenied
-		}
-		if write {
-			return scope, e.service.recheckProjectRecordMutation(ctx, scope)
-		}
-		return scope, e.service.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return e.service.authorizeAccessScope(ctx, r, scope, false) })
+	if e.service.config.TenantRepository == nil {
+		return scope, workItemStorageUnavailable()
+	}
+	if e.service.config.AccessRepository == nil {
+		return scope, operatortool.ErrAccessDenied
 	}
 	if write {
-		if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin {
-			return scope, operatortool.ErrAccessDenied
-		}
-		tx, err := e.service.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		if err != nil {
-			return scope, err
-		}
-		defer tx.Rollback()
-		if e.service.recheckHostedMutation(ctx, tx, &scope) != nil {
-			return scope, operatortool.ErrAccessDenied
-		}
+		return scope, e.service.recheckProjectRecordMutation(ctx, scope)
 	}
-	return scope, nil
+	return scope, e.service.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return e.service.authorizeAccessScope(ctx, r, scope, false) })
 }
 
 func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
@@ -74,18 +60,14 @@ func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operato
 		return operatortool.Result{}, err
 	}
 	var selection cloudModelSelection
-	if e.service.config.TenantRepository != nil {
-		if scope.project == "" {
-			selection, err = e.service.readOrganizationModels(ctx, scope.organization)
-		} else {
-			record, readErr := e.service.readProjectRecord(ctx, scope)
-			if readErr != nil {
-				return operatortool.Result{}, projectToolError(readErr)
-			}
-			selection, err = e.service.projectRecordModel(ctx, record)
-		}
+	if scope.project == "" {
+		selection, err = e.service.readOrganizationModels(ctx, scope.organization)
 	} else {
-		selection, err = readCloudModelSelection(ctx, e.service.database.reader, scope)
+		record, readErr := e.service.readProjectRecord(ctx, scope)
+		if readErr != nil {
+			return operatortool.Result{}, projectToolError(readErr)
+		}
+		selection, err = e.service.projectRecordModel(ctx, record)
 	}
 	if err != nil {
 		return operatortool.Result{}, projectToolError(err)
@@ -119,18 +101,14 @@ func (e hubProjectExecutor) modelSelectionCommand(ctx context.Context, call oper
 		operation = http.MethodPut + " /api/v2/organizations/" + string(scope.organization) + "/model-selection"
 	}
 	if mode == projectCommandReplay {
-		if e.service.config.TenantRepository != nil {
-			hash, err := nativeCommandHash(request)
-			if err != nil {
-				return nil, err
-			}
-			raw, _, err := e.service.changeRecordReceipt(ctx, scope, operation, input.RequestID, hash)
-			return raw, err
+		hash, err := nativeCommandHash(request)
+		if err != nil {
+			return nil, err
 		}
-		raw, _, err := e.service.nativeCommandReplay(ctx, scope, operation, input.RequestID, request)
+		raw, _, err := e.service.changeRecordReceipt(ctx, scope, operation, input.RequestID, hash)
 		return raw, err
 	}
-	return e.service.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, updateCloudModelSelectionOperation(request))
+	return e.service.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, nil)
 }
 
 func (e hubProjectExecutor) modelSelectionCatalogAllowed(ctx context.Context, definition operatortool.Definition) bool {

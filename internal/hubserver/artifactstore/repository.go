@@ -6,10 +6,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type ArchiveObject struct {
+	CollaborationBytes int64
+
 	OrganizationID tracker.OrganizationID
 	ID             string
 	Reference      attachment.ArchiveReference
@@ -44,6 +47,7 @@ type ReadGrant struct {
 }
 
 type Reader interface {
+	HostedArtifactUsage(context.Context) (artifact.Usage, error)
 	ArtifactVersionAttemptMatches(context.Context, tracker.ProjectID, string, string) (bool, error)
 	ArtifactReadGrant(context.Context, tracker.ProjectID, string) (ReadGrant, error)
 	ArtifactService(context.Context, tracker.ProjectID, string) (artifact.Binding, error)
@@ -66,6 +70,8 @@ type Writer interface {
 	ConsumeArtifactUpload(context.Context, artifact.Reference, time.Time) error
 	PruneExpiredArtifactUploadAuthorizations(context.Context, int) (int64, error)
 	RegisterArchiveObject(context.Context, ArchiveObject) (ArchiveObject, error)
+	LockArchiveAccounting(context.Context) error
+	ChargeArchiveObject(context.Context, string, int64) (billingstore.UsageResult, error)
 	AddArchiveOwner(context.Context, ArchiveOwner) error
 	RemoveArchiveOwner(context.Context, ArchiveOwner) error
 }

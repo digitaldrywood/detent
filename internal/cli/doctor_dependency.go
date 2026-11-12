@@ -2,17 +2,14 @@ package cli
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
-	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 var (
@@ -59,7 +56,7 @@ type doctorDependencyDiagnostic struct {
 	References []string
 }
 
-func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconfig.Config, storePath string, deps doctorDeps) doctorCheck {
+func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
 	name := "Project " + id + " blocked recovery"
 	if !doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
 		return doctorCheck{
@@ -88,25 +85,7 @@ func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconf
 		}
 	}
 
-	var timelineStore doctorTelemetryStore
-	timelineDetail := ""
-	if strings.TrimSpace(storePath) != "" {
-		timelineStore, err = deps.openSQLiteReadOnly(ctx, storePath)
-		if err != nil {
-			timelineDetail = "durable recovery metadata unavailable: " + err.Error()
-		}
-	}
-
-	check := checkDoctorBlockedRecoveryLive(ctx, name, projectConnector, cfg, time.Now(), timelineStore)
-	if timelineDetail != "" {
-		check.Detail += "; " + timelineDetail
-	}
-	if timelineStore != nil {
-		if err := timelineStore.Close(); err != nil && check.Status != doctorFail {
-			check.Status = doctorWarn
-			check.Detail += "; recovery metadata store close failed: " + err.Error()
-		}
-	}
+	check := checkDoctorBlockedRecoveryLive(ctx, name, projectConnector, cfg)
 	if err := closeDoctorAutoPromoteConnector(projectConnector); err != nil && check.Status != doctorFail {
 		check.Status = doctorWarn
 		check.Detail = check.Detail + "; connector close failed: " + err.Error()
@@ -120,8 +99,6 @@ func checkDoctorBlockedRecoveryLive(
 	name string,
 	projectConnector doctorAutoPromoteConnector,
 	cfg workflowconfig.Config,
-	now time.Time,
-	timelineStore doctorTelemetryStore,
 ) doctorCheck {
 	recoveryConfig := orchestrator.BlockedRecoveryConfig{
 		Enabled:      cfg.Tracker.BlockedRecovery.Enabled,
@@ -171,7 +148,6 @@ func checkDoctorBlockedRecoveryLive(
 		candidates = append(candidates, doctorBlockedRecoveryCandidateDiagnosticFromIssue(issue, decision))
 	}
 	held := []doctorBlockedRecoveryCandidateDiagnostic{}
-	heldIssues := map[string]struct{}{}
 	for _, issue := range issues {
 		reason := orchestrator.BlockedRecoveryHumanHoldReason(issue, cfg.Agent.AutoPromote.OptoutLabel)
 		if reason == "" {
@@ -191,30 +167,10 @@ func checkDoctorBlockedRecoveryLive(
 			Remedy:              orchestrator.BlockedRecoveryOperatorRemedy(issue, reason),
 			NeedsHumanAttention: true,
 		})
-		heldIssues[doctorBlockedRecoveryIdentityKey(issue)] = struct{}{}
-	}
-
-	capacityIssues := map[string]struct{}{}
-	withoutRecovery := []doctorBlockedRecoveryCandidateDiagnostic{}
-	for _, issue := range issues {
-		if _, isHeld := heldIssues[doctorBlockedRecoveryIdentityKey(issue)]; isHeld {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(issue.State), "Blocked") ||
-			doctorBlockedIssueHasRecoveryPredicate(ctx, issue, recoveryConfig, timelineStore, capacityIssues) {
-			continue
-		}
-		withoutRecovery = append(withoutRecovery, doctorBlockedRecoveryCandidateDiagnostic{
-			IssueID:         strings.TrimSpace(issue.ID),
-			IssueIdentifier: strings.TrimSpace(issue.Identifier),
-			IssueURL:        strings.TrimSpace(issue.URL),
-			Reason:          "no_recovery_predicate",
-			Detail:          "Blocked issue has no dependency relation, human owner, or durable recovery predicate",
-		})
 	}
 
 	detail := fmt.Sprintf("scanned %d blocked-recovery source candidate(s)", len(issues))
-	if len(candidates) == 0 && len(held) == 0 && len(withoutRecovery) == 0 {
+	if len(candidates) == 0 && len(held) == 0 {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
@@ -231,19 +187,9 @@ func checkDoctorBlockedRecoveryLive(
 			strings.Join(doctorBlockedRecoveryIssueLabels(held), ", "),
 		)
 	}
-	if len(withoutRecovery) > 0 {
-		detail += fmt.Sprintf(
-			"; %d relation-less Blocked issue(s) have no recovery predicate: %s",
-			len(withoutRecovery),
-			strings.Join(doctorBlockedRecoveryIssueLabels(withoutRecovery), ", "),
-		)
-	}
 	hint := fmt.Sprintf("PR-condition matches are diagnostic only; runtime still requires the latest durable source-lane entry reason before recovery to %s. Machine outcomes retry through capped backoff.", targetState)
 	if len(held) > 0 {
 		hint += " Apply the remedy reported for each permanently-held recovery."
-	}
-	if len(withoutRecovery) > 0 {
-		hint += " Add a native dependency, structured human_action, or durable owner and recovery predicate before parking the issue in Blocked."
 	}
 	return doctorCheck{
 		Name:                      name,
@@ -252,108 +198,7 @@ func checkDoctorBlockedRecoveryLive(
 		Hint:                      hint,
 		BlockedRecoveryCandidates: candidates,
 		PermanentlyHeldRecoveries: held,
-		BlockedWithoutRecovery:    withoutRecovery,
 	}
-}
-
-func doctorBlockedRecoveryIdentityKey(issue connector.Issue) string {
-	return strings.ToLower(strings.TrimSpace(doctorFirstNonBlank(issue.ID, issue.Identifier, issue.URL)))
-}
-
-func doctorBlockedIssueHasRecoveryPredicate(
-	ctx context.Context,
-	issue connector.Issue,
-	cfg orchestrator.BlockedRecoveryConfig,
-	timelineStore doctorTelemetryStore,
-	capacityIssues map[string]struct{},
-) bool {
-	decision := orchestrator.EvaluateBlockedRecovery(issue)
-	if decision.Reason == orchestrator.BlockedRecoveryReasonHumanBlocker ||
-		decision.Reason == orchestrator.BlockedRecoveryReasonDependencyBlocker {
-		return true
-	}
-	if signal := issue.WorkpadSignal; signal != nil {
-		if strings.TrimSpace(signal.HumanAction) != "" {
-			return true
-		}
-		if signal.Invalid == nil && signal.Source == workpad.SourceStructured && len(signal.Blockers) > 0 {
-			return true
-		}
-		if cfg.Enabled &&
-			signal.Invalid == nil &&
-			signal.Source == workpad.SourceStructured &&
-			strings.EqualFold(strings.TrimSpace(signal.Status), workpad.StatusBlocked) &&
-			doctorBlockedRecoveryReasonAllowed(signal.ReasonCode, cfg.ReasonCodes) {
-			return true
-		}
-	}
-	if _, ok := capacityIssues[doctorIssueLabel(issue)]; ok {
-		return true
-	}
-	return doctorBlockedRecoveryTimelinePredicate(ctx, timelineStore, issue)
-}
-
-func doctorBlockedRecoveryReasonAllowed(reason string, allowed []string) bool {
-	normalize := func(value string) string {
-		value = strings.ToLower(strings.TrimSpace(value))
-		value = strings.NewReplacer("-", "_", " ", "_").Replace(value)
-		if value == "merge_conflicts" {
-			return "merge_conflict"
-		}
-		return value
-	}
-	reason = normalize(reason)
-	if reason == "" {
-		return false
-	}
-	if len(allowed) == 0 {
-		allowed = []string{"merge_conflict", "stale_base", "missing_current_head_ci"}
-	}
-	for _, candidate := range allowed {
-		if normalize(candidate) == reason {
-			return true
-		}
-	}
-	return false
-}
-
-func doctorBlockedRecoveryTimelinePredicate(
-	ctx context.Context,
-	timelineStore doctorTelemetryStore,
-	issue connector.Issue,
-) bool {
-	if timelineStore == nil {
-		return false
-	}
-	var phaseName string
-	var reason string
-	var enteredAtRaw string
-	var metadataJSON string
-	err := timelineStore.QueryRowContext(ctx, `
-SELECT phase_name, COALESCE(reason, ''), started_at, metadata_json
-FROM workflow_phase_events
-WHERE (issue_id = ? OR identifier = ? OR issue_url = ?)
-  AND phase_type = 'lane'
-  AND status = 'entered'
-ORDER BY started_at DESC, id DESC
-LIMIT 1`,
-		doctorBlockedRecoveryIdentity(issue.ID),
-		doctorBlockedRecoveryIdentity(issue.Identifier),
-		doctorBlockedRecoveryIdentity(issue.URL),
-	).Scan(&phaseName, &reason, &enteredAtRaw, &metadataJSON)
-	if err != nil {
-		return false
-	}
-	enteredAt, err := time.Parse(time.RFC3339Nano, enteredAtRaw)
-	if err != nil {
-		return false
-	}
-	return orchestrator.BlockedIssueHasCurrentRecoveryPredicate(issue, phaseName, reason, enteredAt, metadataJSON)
-}
-
-func doctorBlockedRecoveryIdentity(value string) sql.NullString {
-	value = strings.TrimSpace(value)
-	return sql.NullString{String: value, Valid: value != ""}
 }
 
 func doctorBlockedRecoveryIssueLabels(diagnostics []doctorBlockedRecoveryCandidateDiagnostic) []string {

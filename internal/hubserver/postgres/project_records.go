@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"reflect"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/readableurl"
@@ -241,7 +243,16 @@ func (s *session) UpdateProjectRecord(ctx context.Context, record projectstore.R
 	if err := s.replaceProjectStates(ctx, record.Core.ID, record.States); err != nil {
 		return projectstore.Record{}, err
 	}
-	return s.ProjectRecord(ctx, record.Core.ID)
+	updated, err := s.ProjectRecord(ctx, record.Core.ID)
+	if err != nil {
+		return projectstore.Record{}, err
+	}
+	if !reflect.DeepEqual(current.States, record.States) || current.Core.RequireDependencies != record.Core.RequireDependencies || current.Settings.Projection != record.Settings.Projection {
+		if err := s.recordBoardDelta(record.Core.ID, viewstore.BoardDelta{Topic: "lane", EntityID: string(record.Core.ID), EntityRevision: new(updated.Core.ContentSettingsRevision), Kind: "invalidate"}); err != nil {
+			return projectstore.Record{}, err
+		}
+	}
+	return updated, nil
 }
 
 func (s *session) RetireProject(ctx context.Context, id tracker.ProjectID, revision int64, now time.Time) error {
@@ -266,6 +277,13 @@ func (s *session) RetireProject(ctx context.Context, id tracker.ProjectID, revis
 	if active.Bool {
 		return projectstore.ErrActiveWork
 	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM project_secrets WHERE organization_id=$1 AND project_id=$2`, s.organization, id); err != nil {
+		return mapError(ctx, err)
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM runner_enrollment_projects WHERE organization_id=$1 AND project_id=$2`, s.organization, id); err != nil {
+		return mapError(ctx, err)
+	}
+
 	record.Settings.RepositoryEnabled = false
 	record.Settings.Intake = "disabled"
 	if _, err := s.UpdateProjectRecord(ctx, record); err != nil {

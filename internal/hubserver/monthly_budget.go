@@ -244,130 +244,11 @@ func recordMonthlyAdmission(ctx context.Context, tx *sql.Tx, id tracker.WorkItem
 	return err
 }
 
-func checkMonthlyLease(ctx context.Context, q nativeQueryer, record leaseRecord, now time.Time, selected ...tenantstore.Repository) error {
-	var scope nativeScope
-	var raw sql.NullString
-	var profile string
-	err := q.QueryRowContext(ctx, `SELECT i.organization_id,i.project_id,p.profile,b.exposure_json FROM leases l JOIN issues i ON i.id=l.issue_id JOIN projects p ON p.id=i.project_id LEFT JOIN monthly_budget_leases b ON b.lease_id=l.lease_id WHERE l.lease_id=? AND i.organization_id IS NOT NULL`, record.session.ID).Scan(&scope.organization, &scope.project, &profile, &raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+func monthlySpriteAllowed(ctx context.Context, _ nativeQueryer, scope nativeScope, now time.Time, selected ...tenantstore.Repository) (bool, error) {
+	if len(selected) == 0 || selected[0] == nil {
+		return false, ErrBillingBudgetUnavailable
 	}
-	if err != nil {
-		return err
-	}
-	if profile != "native" {
-		return nil
-	}
-	if len(selected) > 0 && selected[0] != nil {
-		organization, project, err := selectedBillingBudgetState(ctx, selected[0], scope)
-		if err != nil {
-			return err
-		}
-		if !organization.Policy.Enabled && !project.Policy.Enabled {
-			return nil
-		}
-		return ErrBillingBudgetUnavailable
-	}
-	var exposure budget.CostExposure
-	if raw.Valid {
-		if err := json.Unmarshal([]byte(raw.String), &exposure); err != nil {
-			return err
-		}
-	} else {
-		exposure, err = monthlyClaimExposure(ctx, q, scope, record.session.Machine.ID, false)
-		if err != nil {
-			orgScope := scope
-			orgScope.project = ""
-			orgPolicy, readErr := readMonthlyBudgetSettings(ctx, q, orgScope)
-			if readErr != nil {
-				return readErr
-			}
-			projectPolicy, readErr := readMonthlyBudgetSettings(ctx, q, scope)
-			if readErr != nil {
-				return readErr
-			}
-			if !orgPolicy.Policy.Enabled && !projectPolicy.Policy.Enabled {
-				return nil
-			}
-			return err
-		}
-	}
-	decision, err := checkMonthlyBudget(ctx, q, scope, exposure, true, now)
-	if err != nil {
-		return err
-	}
-	if !decision.Allowed {
-		return fmt.Errorf("%w: %s", tracker.ErrLeaseConflict, monthlyBudgetRefusal(decision))
-	}
-	return nil
-}
-
-func monthlySpriteAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, selected ...tenantstore.Repository) (bool, error) {
-	exposure := budget.CostExposure{SpriteInfrastructure: true}
-	decision, err := checkMonthlyBudget(ctx, q, scope, exposure, false, now, selected...)
-	if err != nil || decision.Allowed {
-		return decision.Allowed, err
-	}
-	decision, err = checkMonthlyBudget(ctx, q, scope, exposure, true, now, selected...)
-	if err != nil || !decision.Allowed {
-		return false, err
-	}
-	projects := []tracker.ProjectID{scope.project}
-	if scope.project == "" {
-		projects, err = liveOrganizationProjects(ctx, q, scope.organization)
-		if err != nil {
-			return false, err
-		}
-	}
-	for _, project := range projects {
-		projectScope := scope
-		projectScope.project = project
-		admitted, err := monthlyAdmittedCandidate(ctx, q, projectScope, now)
-		if err != nil || admitted {
-			return admitted, err
-		}
-	}
-	return false, nil
-}
-
-func liveOrganizationProjects(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID) ([]tracker.ProjectID, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id FROM projects WHERE organization_id=? AND deleted_at IS NULL ORDER BY id`, organization)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var projects []tracker.ProjectID
-	for rows.Next() {
-		var id tracker.ProjectID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		projects = append(projects, id)
-	}
-	return projects, rows.Err()
-}
-
-func monthlyAdmittedCandidate(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (bool, error) {
-	query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), AvailableAt: now, Limit: 100}
-	for {
-		ids, err := nativeCandidateIDs(ctx, q, query, nil, nil, nil, nil, nil, nil, nil)
-		if err != nil {
-			return false, err
-		}
-		for _, id := range ids {
-			admitted, err := monthlyIssueAdmitted(ctx, q, id)
-			if err != nil {
-				return false, err
-			}
-			if admitted {
-				return true, nil
-			}
-		}
-		if len(ids) < query.Limit {
-			return false, nil
-		}
-		query.After = ids[len(ids)-1]
-	}
+	return monthlySpriteAllowedPG(ctx, selected[0], scope, now)
 }
 
 func (s *Service) stopMonthlyBudgetTurns(ctx context.Context, organization tracker.OrganizationID) {
@@ -471,28 +352,29 @@ func checkMonthlyIssueBudget(ctx context.Context, q nativeQueryer, scope nativeS
 	return decision, nil
 }
 
-func monthlyBudgetRetainsRunner(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, selected ...tenantstore.Repository) (bool, error) {
+func monthlyBudgetRetainsRunner(ctx context.Context, _ nativeQueryer, scope nativeScope, machine tracker.MachineID, selected ...tenantstore.Repository) (bool, error) {
 	if len(selected) > 0 && selected[0] != nil {
-		organization, project, err := selectedBillingBudgetState(ctx, selected[0], scope)
-		if err != nil || !organization.Policy.Enabled && !project.Policy.Enabled {
-			return false, err
-		}
-		return false, ErrBillingBudgetUnavailable
+		var retained bool
+		err := selected[0].ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			enabled := false
+			for _, project := range []tracker.ProjectID{"", scope.project} {
+				row, err := r.BillingMonthlyPolicy(ctx, project)
+				if errors.Is(err, corestore.ErrNotFound) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				enabled = enabled || row.Policy.Enabled
+			}
+			if !enabled {
+				return nil
+			}
+			var err error
+			retained, err = r.BillingMonthlyRetainsMachine(ctx, scope.project, machine)
+			return err
+		})
+		return retained, err
 	}
-	orgScope := scope
-	orgScope.project = ""
-	orgPolicy, err := readMonthlyBudgetSettings(ctx, q, orgScope)
-	if err != nil {
-		return false, err
-	}
-	projectPolicy, err := readMonthlyBudgetSettings(ctx, q, scope)
-	if err != nil {
-		return false, err
-	}
-	if !orgPolicy.Policy.Enabled && !projectPolicy.Policy.Enabled {
-		return false, nil
-	}
-	var retained bool
-	err = q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM monthly_budget_admissions a JOIN issues i ON i.id=a.issue_id JOIN leases l ON l.issue_id=i.id WHERE i.organization_id=? AND i.project_id=? AND l.machine_id=? AND l.fencing_token=(SELECT max(latest.fencing_token) FROM leases latest WHERE latest.issue_id=i.id))`, scope.organization, scope.project, machine).Scan(&retained)
-	return retained, err
+	return false, ErrBillingBudgetUnavailable
 }

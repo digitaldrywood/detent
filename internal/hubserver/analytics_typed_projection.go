@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,10 +62,6 @@ var analyticsProjectionFields = []struct{ column, key string }{
 	{"scheduler_outcome", "outcome"}, {"scheduler_source", "source"}, {"scheduler_reason", "reason"},
 	{"analytics_to_state", "to_state"},
 }
-
-const analyticsSampleUpsert = `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,started_at,updated_at,attempt_id,period,sample_id,sample_at,sample_ns,sample_start_ns,sample_from_ns,skip_source,skip_reason,last_at,last_ns,issue_id,native_id,title,created_at,workflow_state_id,lease_id,status,provider,model,input,cached_input,output,currency,acquired_at,released_at,expires_at,failed_at,scheduler_outcome,scheduler_source,scheduler_reason,analytics_to_state,attempt_role,projection_version,failed_day,recorded_day) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,julianday(?),julianday(?)) ON CONFLICT DO UPDATE SET hour=excluded.hour,value=excluded.value,data_json=excluded.data_json,work_item_id=excluded.work_item_id,sequence=excluded.sequence,type=excluded.type,recorded_at=excluded.recorded_at,started_at=excluded.started_at,updated_at=excluded.updated_at,attempt_id=excluded.attempt_id,period=excluded.period,sample_id=excluded.sample_id,sample_at=excluded.sample_at,sample_ns=excluded.sample_ns,sample_start_ns=excluded.sample_start_ns,sample_from_ns=excluded.sample_from_ns,skip_source=excluded.skip_source,skip_reason=excluded.skip_reason,last_at=excluded.last_at,last_ns=excluded.last_ns,issue_id=excluded.issue_id,native_id=excluded.native_id,title=excluded.title,created_at=excluded.created_at,workflow_state_id=excluded.workflow_state_id,lease_id=excluded.lease_id,status=excluded.status,provider=excluded.provider,model=excluded.model,input=excluded.input,cached_input=excluded.cached_input,output=excluded.output,currency=excluded.currency,acquired_at=excluded.acquired_at,released_at=excluded.released_at,expires_at=excluded.expires_at,failed_at=excluded.failed_at,scheduler_outcome=excluded.scheduler_outcome,scheduler_source=excluded.scheduler_source,scheduler_reason=excluded.scheduler_reason,analytics_to_state=excluded.analytics_to_state,attempt_role=excluded.attempt_role,projection_version=excluded.projection_version,failed_day=excluded.failed_day,recorded_day=excluded.recorded_day`
-
-const analyticsProjectionBackfill = `UPDATE analytics_hourly_rollups SET work_item_id=?,sequence=?,type=?,recorded_at=?,started_at=?,updated_at=?,attempt_id=?,period=?,sample_id=?,sample_at=?,sample_ns=?,sample_start_ns=?,sample_from_ns=?,skip_source=?,skip_reason=?,last_at=?,last_ns=?,issue_id=?,native_id=?,title=?,created_at=?,workflow_state_id=?,lease_id=?,status=?,provider=?,model=?,input=?,cached_input=?,output=?,currency=?,acquired_at=?,released_at=?,expires_at=?,failed_at=?,scheduler_outcome=?,scheduler_source=?,scheduler_reason=?,analytics_to_state=?,attempt_role=?,projection_version=?,failed_day=julianday(?),recorded_day=julianday(?) WHERE rowid=? AND data_json=? AND projection_version IS NULL`
 
 func analyticsProjection(raw string) ([]any, error) {
 	var data map[string]json.RawMessage
@@ -131,66 +126,4 @@ func analyticsProjection(raw string) ([]any, error) {
 		values = append(values, rawTime)
 	}
 	return values, nil
-}
-
-func writeAnalyticsSample(ctx context.Context, tx nativeExecer, organization, project string, hour int64, metric, dimension string, value float64, raw string) error {
-	values, err := analyticsProjection(raw)
-	if err != nil {
-		return err
-	}
-	stored := raw
-	if metric == "attempt" {
-		stored = "{}"
-	}
-	args := append([]any{organization, project, hour, metric, dimension, value, stored}, values...)
-	_, err = tx.ExecContext(ctx, analyticsSampleUpsert, args...)
-	return err
-}
-
-func (d *database) convertAnalyticsProjections(ctx context.Context) error {
-	var after int64
-	if err := d.reader.QueryRowContext(ctx, `SELECT projection_rowid FROM analytics_maintenance_cursor WHERE id=1`).Scan(&after); err != nil {
-		return err
-	}
-	rows, err := d.reader.QueryContext(ctx, `SELECT rowid,data_json FROM analytics_hourly_rollups WHERE projection_version IS NULL AND rowid>? ORDER BY rowid LIMIT ?`, after, storageConversionRows)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type projectionRow struct {
-		id  int64
-		raw string
-	}
-	var batch []projectionRow
-	for rows.Next() {
-		var row projectionRow
-		if err := rows.Scan(&row.id, &row.raw); err != nil {
-			return err
-		}
-		batch = append(batch, row)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	if len(batch) == 0 && after == 0 {
-		return nil
-	}
-	var failures error
-	for _, row := range batch {
-		after = row.id
-		values, err := analyticsProjection(row.raw)
-		if err != nil {
-			failures = errors.Join(failures, fmt.Errorf("analytics rollup rowid=%d projection: %w", row.id, err))
-			continue
-		}
-		values = append(values, row.id, row.raw)
-		if _, err := d.db.ExecContext(ctx, analyticsProjectionBackfill, values...); err != nil {
-			return errors.Join(failures, err)
-		}
-	}
-	if len(batch) < storageConversionRows {
-		after = 0
-	}
-	_, err = d.db.ExecContext(ctx, `UPDATE analytics_maintenance_cursor SET projection_rowid=? WHERE id=1`, after)
-	return errors.Join(failures, err)
 }

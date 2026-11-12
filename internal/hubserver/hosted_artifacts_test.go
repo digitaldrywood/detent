@@ -26,6 +26,7 @@ func TestPostgresHostedArtifactAllowanceBoundary(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			cfg.Clock = func() time.Time { return now }
 			cfg.Hosted.OrganizationID = string(organization)
+			seedHostedStartup(t, cfg)
 			service, err := Open(t.Context(), cfg)
 			if err != nil {
 				t.Fatal(err)
@@ -37,7 +38,6 @@ func TestPostgresHostedArtifactAllowanceBoundary(t *testing.T) {
 			})
 			service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
 			repository := service.config.TenantRepository
-			seedStartupOrganization(t, repository, organization)
 			publisherID, publisher := "credential_publisher", "publisher_"+suffix
 			operator := "operator_" + suffix
 			binding := artifact.Binding{ServiceID: artifact.NewID("service"), Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: publisherID}

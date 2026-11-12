@@ -151,6 +151,18 @@ func TestHostedArtifactUsageEnforcesTenantIsolation(t *testing.T) {
 	db := template.Database(t)
 	seedCore(t, db)
 	organizations := []string{"org_first", "org_second"}
+	repository, _ := repositoryFor(t, db, smallPool())
+	for _, org := range organizations {
+		if err := repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.HostedArtifactUsage(t.Context())
+			if !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("missing usage for %s: %v", org, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, org := range organizations {
 		if _, err := db.ExecContext(t.Context(), `INSERT INTO hosted_artifact_usage(organization_id,service_id,observed_at,retained_bytes,reserved_bytes) VALUES($1,'service_example',$2,12,34)`, org, historyAt()); err != nil {
 			t.Fatal(err)
@@ -186,6 +198,44 @@ func TestHostedArtifactUsageEnforcesTenantIsolation(t *testing.T) {
 			var denied *pgconn.PgError
 			if !errors.As(err, &denied) || denied.Code != "42501" {
 				t.Fatalf("foreign usage write error = %v", err)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name               string
+		observed           time.Time
+		retained, reserved int64
+	}{
+		{"unobserved", time.Unix(0, 0).UTC(), 0, 0},
+		{"measured zero", historyAt(), 0, 0},
+		{"measured usage", historyAt().Add(time.Hour), 12, 34},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			usages := make([]artifact.Usage, len(organizations))
+			for index, org := range organizations {
+				usage := artifact.Usage{ObservedAt: test.observed, RetainedBytes: test.retained * int64(index+1), ReservedBytes: test.reserved * int64(index+1)}
+				if usage.ObservedAt.After(time.Unix(0, 0)) {
+					usage.ObservedAt = usage.ObservedAt.Add(time.Duration(index) * time.Minute)
+				}
+				usages[index] = usage
+				if _, err := db.ExecContext(t.Context(), `UPDATE hosted_artifact_usage SET observed_at=$2,retained_bytes=$3,reserved_bytes=$4 WHERE organization_id=$1`, org, usage.ObservedAt, usage.RetainedBytes, usage.ReservedBytes); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for index, org := range organizations {
+				if err := repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+					usage, err := r.HostedArtifactUsage(t.Context())
+					if err != nil {
+						return err
+					}
+					usage.ObservedAt = usage.ObservedAt.UTC()
+					if !reflect.DeepEqual(usage, usages[index]) {
+						t.Fatalf("typed usage for %s = %+v, want %+v", org, usage, usages[index])
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}

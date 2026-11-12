@@ -111,16 +111,6 @@ func (f *conversationWorkerFixture) advance(d time.Duration) {
 	f.now = f.now.Add(d)
 }
 
-func (f *conversationWorkerFixture) tx(t *testing.T) *sql.Tx {
-	t.Helper()
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = tx.Rollback() })
-	return tx
-}
-
 // claim claims a fresh lease for the issue and starts a new attempt on it.
 func (f *conversationWorkerFixture) claim(t *testing.T, start ...bool) {
 	t.Helper()

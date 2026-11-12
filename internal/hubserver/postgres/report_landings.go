@@ -20,7 +20,7 @@ LEFT JOIN LATERAL (
  ), attempts AS (
    SELECT a.id,a.started_at,f.landing_receipt,f.landed,f.landing_change_id
    FROM candidate_attempts a
-   LEFT JOIN LATERAL (SELECT rf.* FROM collaboration_events e JOIN report_event_facts rf ON rf.organization_id=e.organization_id AND rf.event_id=e.id WHERE e.organization_id=i.organization_id AND e.attempt_id=a.id ORDER BY e.sequence DESC LIMIT 1) f ON true
+   LEFT JOIN LATERAL (SELECT rf.* FROM collaboration_events e JOIN report_event_facts rf ON rf.organization_id=e.organization_id AND rf.event_id=e.id WHERE e.organization_id=i.organization_id AND e.attempt_id=a.id AND e.attempt_id<>'' ORDER BY e.sequence DESC LIMIT 1) f ON true
    WHERE f.role='merge' OR f.landing_receipt OR f.event_id IS NULL
  ), numbered AS (SELECT *,row_number() OVER(ORDER BY started_at,id) n FROM attempts), success AS (
    SELECT min(n) n FROM numbered WHERE landed AND landing_change_id=c.id

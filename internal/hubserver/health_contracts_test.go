@@ -1,222 +1,193 @@
 package hubserver
 
 import (
-	"context"
-	"database/sql"
-	"encoding/json"
-	"fmt"
-	"reflect"
-	"slices"
-	"strconv"
+	"net/http"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type healthContractQueries struct {
-	nativeQueryer
-	issues   int
-	policies int
-}
-
-func (q *healthContractQueries) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	if strings.HasPrefix(query, "SELECT o.slug, p.slug, i.id") {
-		q.issues++
-	}
-	if strings.HasPrefix(query, "SELECT r.policy_id, r.metadata_json") {
-		q.policies++
-	}
-	return q.nativeQueryer.QueryRowContext(ctx, query, args...)
-}
-
-func TestHealthContractsReuseRevisions(t *testing.T) {
-	t.Parallel()
-	f := newNativeFixture(t, nil, "", "health-contracts")
-	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-health-contracts")
-	first, second := f.create(t, "first"), other.create(t, "second")
-	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
-	clock := func() time.Time { return now }
-	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
-	runner.enroll(t)
-	routing := fmt.Sprintf(`{"project_ranks":{%q:1}}`, f.project.ID)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET routing_settings_json=?,last_heartbeat_at=?,created_at=? WHERE id=?", routing, formatHubTime(now), formatHubTime(now), runner.binding.RunnerID); err != nil {
-		t.Fatal(err)
-	}
-	appendTestHealthEvent(t, other, second, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "permission_wait"}, now)
-	exec := func(query string, args ...any) {
-		t.Helper()
-		if _, err := f.service.database.db.ExecContext(t.Context(), query, args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	report, err := json.Marshal(gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1/attempts/1", Conclusion: "success"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	exec("INSERT INTO scheduled_validation_reports(organization_id,project_id,repository,run_id,run_attempt,record_json,recorded_at) VALUES(?,?,?,'1','1',?,?)", other.project.OrganizationID, other.project.ID, "example-org/example-project", string(report), formatHubTime(now.Add(-5*time.Hour-29*time.Minute)))
-	var cache healthContractCache
-	for _, test := range []struct {
-		name      string
-		change    func()
-		loads     int
-		contracts int
-		heartbeat bool
-		elapsed   bool
-	}{
-		{name: "first tick", loads: 2},
-		{name: "unchanged next tick"},
-		{name: "issue revision invalidates one project", change: func() {
-			exec("UPDATE issues SET body='Incomplete contract',revision=revision+1,native_updated_at=? WHERE native_id=?", formatHubTime(now), first.WorkItemID)
-		}, loads: 1, contracts: 1},
-		{name: "unsatisfied result is reused", contracts: 1},
-		{name: "policy revision invalidates one project", change: func() {
-			changed := hubTestPolicy()
-			changed.SourceRevision = strings.Repeat("b", 40)
-			approveHubTestPolicy(t, f.service, f.base+"/policy", changed.WithID())
-		}, loads: 1, contracts: 1},
-		{name: "heartbeat advances without reevaluation", change: func() { now = now.Add(5 * time.Minute) }, contracts: 1, heartbeat: true},
-		{name: "elapsed wait advances without reevaluation", change: func() { now = now.Add(26 * time.Minute) }, contracts: 1, heartbeat: true, elapsed: true},
-		{name: "issue correction clears cached finding", change: func() {
-			exec("UPDATE issues SET body=?,revision=revision+1,native_updated_at=? WHERE native_id=?", first.Body, formatHubTime(now), first.WorkItemID)
-		}, loads: 1, heartbeat: true, elapsed: true},
-		{name: "policy removal invalidates", change: func() { clearNativeFixturePolicy(t, other) }, loads: 1, heartbeat: true, elapsed: true},
-		{name: "missing policy is reused", heartbeat: true, elapsed: true},
-		{name: "policy restoration invalidates", change: func() {
-			seedNativeFixturePolicy(t, f.service, string(other.project.OrganizationID)+"/"+string(other.project.ID))
-		}, loads: 1, heartbeat: true, elapsed: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if test.change != nil {
-				test.change()
+func TestHealthContractsLiveInputs(t *testing.T) {
+	t.Run("linked intake", func(t *testing.T) {
+		service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
+		for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+			f := newNativeFixture(t, service, organization, "Example linked contract")
+			if err := service.accessWrite(t.Context(), organization, func(writer tenantstore.Writer) error {
+				project, err := writer.ProjectRecord(t.Context(), f.project.ID)
+				if err != nil {
+					return err
+				}
+				project.Settings.RepositoryEnabled, project.Settings.Repository = true, "example-org/example-project"
+				_, err = writer.UpdateProjectRecord(t.Context(), project)
+				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
-			tx, err := f.service.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+			const sourceURL = "https://github.com/example-org/example-project/issues/1"
+			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "live-linked-contract"}, Title: "Example linked issue", Body: "Incomplete contract", GitHubIssueURL: sourceURL, State: "Todo"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			credential, _, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(f.token), "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback()
-			queries := &healthContractQueries{nativeQueryer: tx}
-			snapshot, err := readHealthSnapshotWithContracts(t.Context(), queries, f.project.OrganizationID, clock(), &cache)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if queries.issues != test.loads || queries.policies != 2*test.loads {
-				t.Fatalf("issue loads=%d contract policy reads=%d, want %d and %d", queries.issues, queries.policies, test.loads, 2*test.loads)
-			}
-			uncached, err := readHealthSnapshot(t.Context(), tx, f.project.OrganizationID, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			findings, want := evaluateHealth(now, snapshot), evaluateHealth(now, uncached)
-			sort := func(findings []healthFinding) {
-				slices.SortFunc(findings, func(a, b healthFinding) int { return strings.Compare(a.Fingerprint, b.Fingerprint) })
-			}
-			sort(findings)
-			sort(want)
-			if !reflect.DeepEqual(findings, want) {
-				t.Fatalf("cached findings=%+v, uncached=%+v", findings, want)
-			}
-			contracts, heartbeat, elapsed, scheduled := 0, false, false, false
-			for _, finding := range findings {
-				if finding.Evidence.Reason == "issue_contract_unsatisfied" {
-					contracts++
-					if finding.Subject.ID != string(first.WorkItemID) || !slices.Equal(finding.Projects, []string{string(f.project.ID)}) {
-						t.Fatalf("contract finding escaped project: %+v", finding)
+			scope := nativeScope{organization: organization, project: f.project.ID, credential: credential}
+			request := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID}
+			for step, wantAllowed := range []bool{true, false, false} {
+				if step == 1 {
+					ref, err := eventstore.NewContent(service.runDetailStore()).PrepareLinkedIssueSnapshot(t.Context(), organization, tracker.GitHubIssueSnapshot{URL: sourceURL})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := service.accessWrite(t.Context(), organization, func(writer tenantstore.Writer) error {
+						linked, err := writer.LinkedSource(t.Context(), f.project.ID, issue.WorkItemID)
+						if err != nil {
+							return err
+						}
+						if linked.SnapshotSHA256 != "" {
+							linked.ExpectedSnapshotSHA256 = new(linked.SnapshotSHA256)
+						}
+						linked.SnapshotObjectKey, linked.SnapshotSHA256, linked.SnapshotBytes, linked.SnapshotContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
+						_, err = writer.UpdateLinkedSource(t.Context(), linked)
+						return err
+					}); err != nil {
+						t.Fatal(err)
 					}
 				}
-				heartbeat = heartbeat || finding.Signal == "runner_heartbeat_gap"
-				elapsed = elapsed || finding.Signal == "unanswered_human_wait" && finding.Subject.ID == string(second.WorkItemID)
-				scheduled = scheduled || finding.Signal == "dead_man" && finding.Subject.ID == string(other.project.ID) && finding.Evidence.Counts["scheduled_silent"] == 1
-			}
-			if contracts != test.contracts || heartbeat != test.heartbeat || elapsed != test.elapsed || scheduled != test.elapsed {
-				t.Fatalf("contracts=%d heartbeat=%t elapsed=%t scheduled=%t, want %d %t %t %t", contracts, heartbeat, elapsed, scheduled, test.contracts, test.heartbeat, test.elapsed, test.elapsed)
-			}
-		})
-	}
-}
+				plan, err := service.readNativeClaimPlan(service.freshRunDetailContext(t.Context()), scope, request, service.config.now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if plan.item.Revision != int64(issue.Revision) || plan.issue.Revision != issue.Revision || nativeClaimIssueContractAllowed(plan) != wantAllowed {
+					t.Fatalf("organization=%s step=%d revision=%d/%d allowed=%t want revision=%d allowed=%t", organization, step, plan.item.Revision, plan.issue.Revision, nativeClaimIssueContractAllowed(plan), issue.Revision, wantAllowed)
+				}
+				context := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}.Context(t.Context(), hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
+				if err := service.maintainHealthWaitItem(context, organization, corestore.WorkItemReference{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}); err != nil {
+					t.Fatal(err)
+				}
+				page, err := service.readHealthFindings(t.Context(), scope, "open", "", "", 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				waiting := false
+				for _, finding := range page.Items {
+					if finding.Signal == "unanswered_human_wait" && finding.Subject.ID == string(issue.WorkItemID) {
+						waiting = true
+						if finding.Evidence.Reason != "issue_contract_unsatisfied" {
+							t.Fatalf("current contract wait reason=%+v", finding)
+						}
+					}
+				}
+				if waiting == wantAllowed {
+					t.Fatalf("health contract projection reused stale source: step=%d waiting=%t allowed=%t", step, waiting, wantAllowed)
+				}
 
-func TestHealthContractsBoundedRetention(t *testing.T) {
-	t.Parallel()
-	f := newNativeFixture(t, nil, "", "bounded-health-contracts")
-	issue := f.create(t, "candidate")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
-	key := healthContractKey{organization: scope.organization, project: scope.project, item: string(issue.WorkItemID)}
-	cache := healthContractCache{entries: make(map[healthContractKey]healthContractResult)}
-	for i := range healthReadLimit {
-		old := healthContractKey{item: strconv.Itoa(i)}
-		cache.order = append(cache.order, old)
-		cache.entries[old] = healthContractResult{}
-	}
-	for _, test := range []struct {
-		name     string
-		revision tracker.Revision
-	}{
-		{name: "evicts oldest at capacity", revision: issue.Revision},
-		{name: "updates existing without evicting", revision: issue.Revision + 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if _, err := cache.read(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), test.revision, "policy"); err != nil {
+			}
+		}
+	})
+	t.Run("release delegation", func(t *testing.T) {
+		f := newReleaseTenantFixture(t)
+		service := f.f.service
+		prompt := "## Release delivery contract\nVerified release picks of reviewed develop fixes may receive the approved delivery contract.\n### Acceptance criteria\nDeliver only the verified source.\n### Must not break\nPreserve gates.\n### How we know it worked\nThe associated pick passes review."
+		cfg := config.Default()
+		cfg.Tracker.Kind = config.TrackerHubNative
+		descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg, SharedPrompt: prompt, Authored: &policy.Authored{Version: 1, Digest: policy.Digest([]byte(prompt))}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := eventstore.NewContent(service.runDetailStore()).PrepareProjectPolicy(t.Context(), "org_security", descriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared.ProjectID, prepared.ApprovedBy, prepared.ApprovedAt = f.f.project, "example-owner", service.config.now()
+		if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(writer tenantstore.Writer) error {
+			current, err := writer.ProjectPolicy(t.Context(), f.f.project)
+			if err != nil {
+				return err
+			}
+			return writer.ApproveProjectPolicy(t.Context(), prepared, current.PolicyID)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		contract, err := config.ResolvePolicyIssueContract(descriptor)
+		if err != nil || contract.ReleaseDeliveryBody() == "" {
+			t.Fatalf("release contract unavailable: %v", err)
+		}
+		f.delivery = writeReleaseAdmissionIssue(t, f, f.delivery, func(issue *tracker.NativeIssue) {
+			issue.Body = issueorigin.Stamp(contract.ReleaseDeliveryBody(), issueorigin.Origin{Kind: "worker", Fingerprint: "release-delivery"})
+			issue.IssueContract = nil
+		})
+		var currentRules tracker.ChangeReviewPolicy
+		decodeHubResponse(t, f.f.request(t, f.owner, http.MethodGet, f.f.base+"/change-review-policy", nil), &currentRules)
+		rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: true}
+		requireNativeStatus(t, f.f.request(t, f.owner, http.MethodPut, f.f.base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "live-release-review"}, ExpectedID: currentRules.ID, Policy: rules}), http.StatusOK)
+		f.request.ExpectedRevision = f.delivery.Revision
+		itemPath := f.f.base + "/work-items/" + string(f.delivery.WorkItemID)
+		requireNativeStatus(t, f.f.request(t, f.owner, http.MethodPost, itemPath+"/release-pick", f.request), http.StatusOK)
+		decodeHubResponse(t, f.f.request(t, f.owner, http.MethodGet, itemPath, nil), &f.delivery)
+		if f.delivery.IssueContract == nil || f.delivery.IssueContract.ReleaseDelivery == nil || f.delivery.IssueContract.ReleaseDelivery.PolicyID != descriptor.ID || !strings.Contains(f.delivery.Body, "Acceptance criteria") {
+			t.Fatalf("verified release delegation missing: %+v", f.delivery.IssueContract)
+		}
+		token, _, machineID := seedReleaseAdmissionRunner(t, f, descriptor.ID)
+		credential, _, err := service.authenticateTenantAPIHash(t.Context(), "org_security", apikey.HashToken(token), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := nativeScope{organization: "org_security", project: f.f.project, credential: credential}
+		request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: f.delivery.WorkItemID, MachineID: machineID}
+		for step, wantAllowed := range []bool{false, true, true} {
+			if step < 2 {
+				operation := "remove"
+				if step == 1 {
+					operation = "add"
+				}
+				if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(writer tenantstore.Writer) error {
+					if err := writer.LockRelationshipGraph(t.Context()); err != nil {
+						return err
+					}
+					if err := writer.LockWorkItemProject(t.Context(), f.f.project); err != nil {
+						return err
+					}
+					return writer.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: "org_security", ProjectID: f.f.project, WorkItemID: f.delivery.WorkItemID, RelatedProjectID: f.f.project, RelatedWorkItemID: f.source.WorkItemID, Type: "dependency"}, operation, service.config.now())
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			plan, err := service.readNativeClaimPlan(service.freshRunDetailContext(t.Context()), scope, request, service.config.now())
+			if err != nil {
 				t.Fatal(err)
 			}
-			if _, stale := cache.entries[healthContractKey{item: "0"}]; stale {
-				t.Fatal("oldest entry retained")
+			if plan.item.Revision != int64(f.delivery.Revision) || plan.issue.Revision != f.delivery.Revision || nativeClaimIssueContractAllowed(plan) != wantAllowed {
+				t.Fatalf("step=%d revision=%d/%d allowed=%t want revision=%d allowed=%t", step, plan.item.Revision, plan.issue.Revision, nativeClaimIssueContractAllowed(plan), f.delivery.Revision, wantAllowed)
 			}
-			if len(cache.entries) != healthReadLimit || len(cache.order) != healthReadLimit || cache.oldest != 1 || cache.entries[key].revision != test.revision {
-				t.Fatalf("entries=%d order=%d oldest=%d revision=%d", len(cache.entries), len(cache.order), cache.oldest, cache.entries[key].revision)
+			context := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}.Context(t.Context(), hubmaintenance.Tenant{Organization: "org_security", Generation: 1})
+			if err := service.maintainHealthWaitItem(context, "org_security", corestore.WorkItemReference{ProjectID: f.f.project, WorkItemID: f.delivery.WorkItemID}); err != nil {
+				t.Fatal(err)
 			}
-		})
-	}
-}
+			page, err := service.readHealthFindings(t.Context(), scope, "open", "", "", 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			waiting := false
+			for _, finding := range page.Items {
+				if finding.Signal == "unanswered_human_wait" && finding.Subject.ID == string(f.delivery.WorkItemID) {
+					waiting = true
+				}
+			}
+			if waiting == wantAllowed {
+				t.Fatalf("health release contract reused stale association: step=%d waiting=%t allowed=%t", step, waiting, wantAllowed)
+			}
 
-func TestHealthContractsLiveInputs(t *testing.T) {
-	t.Parallel()
-	for _, name := range []string{"linked intake", "release delegation"} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			f := newNativeFixture(t, nil, "", "health-live")
-			issue := f.create(t, "candidate")
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
-			exec := func(query string, args ...any) {
-				t.Helper()
-				if _, err := f.service.database.db.ExecContext(t.Context(), query, args...); err != nil {
-					t.Fatal(err)
-				}
-			}
-			var change func()
-			if name == "linked intake" {
-				exec("UPDATE issues SET body='Incomplete contract' WHERE native_id=?", issue.WorkItemID)
-				exec("INSERT INTO linked_issue_sources(work_item_id,source_url,title_supplied,body_supplied) VALUES(?,?,1,1)", issue.WorkItemID, "https://github.com/example-org/example-project/issues/1")
-				change = func() {
-					exec("UPDATE linked_issue_sources SET snapshot_json='{}' WHERE work_item_id=?", issue.WorkItemID)
-				}
-			} else {
-				original, err := json.Marshal(issue.IssueContract)
-				if err != nil {
-					t.Fatal(err)
-				}
-				exec(`UPDATE issues SET issue_contract_json='{"release_delivery":{"policy_id":"previous","body_sha256":"previous"}}' WHERE native_id=?`, issue.WorkItemID)
-				change = func() {
-					exec("UPDATE issues SET issue_contract_json=? WHERE native_id=?", string(original), issue.WorkItemID)
-				}
-			}
-			var cache healthContractCache
-			for step := range 2 {
-				if step == 1 {
-					change()
-				}
-				queries := &healthContractQueries{nativeQueryer: f.service.database.reader}
-				wait, err := cache.read(t.Context(), queries, scope, string(issue.WorkItemID), issue.Revision, hubTestPolicy().ID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				wantWait := name == "linked intake" && step == 1 || name == "release delegation" && step == 0
-				if queries.issues != 1 || (wait != nil) != wantWait {
-					t.Fatalf("step=%d loads=%d wait=%+v, want load and wait=%t", step, queries.issues, wait, wantWait)
-				}
-			}
-		})
-	}
+		}
+	})
 }

@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -42,6 +45,7 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 		recordID = comment
 	}
 	var version eventstore.CollaborationVersion
+	var archived *attachmentstore.StorageArchiveSection
 	var path string
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
@@ -62,11 +66,26 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 			return corestore.ErrNotFound
 		}
 		version, err = r.CollaborationVersion(ctx, recordID, revision)
-		if err != nil {
-			return err
-		}
-		if version.OrganizationID != scope.organization || version.ProjectID != scope.project || version.WorkItemID != row.NativeID || version.RecordID != recordID || version.Revision != revision {
-			return corestore.ErrNotFound
+		if errors.Is(err, corestore.ErrNotFound) && revision > 0 {
+			owner, ok := r.(attachmentstore.StorageArchiveReader)
+			if !ok {
+				return err
+			}
+			section, err := owner.StorageArchiveSection(ctx, attachmentstore.StorageArchiveSectionQuery{ProjectID: scope.project, WorkItemID: row.NativeID, Kind: "revision", Subject: recordID, At: revision})
+			if err != nil {
+				return err
+			}
+			if section.OrganizationID != scope.organization || section.Stamp.ProjectID != scope.project || section.Stamp.WorkItemID != row.NativeID || section.Kind != "revision" || section.Subject != recordID || section.First > revision || section.Last < revision || section.Archive.Reference.SchemaVersion != 1 {
+				return corestore.ErrNotFound
+			}
+			archived = &section
+		} else {
+			if err != nil {
+				return err
+			}
+			if version.OrganizationID != scope.organization || version.ProjectID != scope.project || version.WorkItemID != row.NativeID || version.RecordID != recordID || version.Revision != revision {
+				return corestore.ErrNotFound
+			}
 		}
 		if comment == "" {
 			organization, err := r.AccessOrganization(ctx)
@@ -80,7 +99,21 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 	if err != nil {
 		return nil, projectRecordError(err)
 	}
-	body, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).CollaborationVersion(ctx, version)
+	var body json.RawMessage
+	if archived != nil {
+		ctx = s.archiveContext(ctx, scope, false)
+		state := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead)
+		section, found, readErr := state.load(ctx, item, "revision", recordID, revision, archived.ID, archived.First, archived.Last, archived.Archive.Reference)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if !found {
+			return nil, corestore.ErrNotFound
+		}
+		body, err = archivedVersionPayload(section, recordID, revision)
+	} else {
+		body, err = eventstore.NewContent(s.runDetailStoreFor(ctx)).CollaborationVersion(ctx, version)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -147,4 +180,49 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 	issue.BlockedReason.Text, issue.UnblocksReason.Text = "", ""
 	issue.WebURL = path
 	return json.Marshal(s.nativeIssueResponse(scope.reporterIssue(issue)))
+}
+
+func archivedVersionPayload(section attachment.ArchiveSection, recordID string, revision int64) (json.RawMessage, error) {
+	for _, table := range section.Tables {
+		if table.Name != "collaboration_versions" {
+			continue
+		}
+		names := map[string]bool{}
+		for _, name := range table.Columns {
+			if names[name] {
+				return nil, artifact.ErrIntegrity
+			}
+			names[name] = true
+		}
+		idColumn := slices.Index(table.Columns, "record_id")
+		revisionColumn := slices.Index(table.Columns, "revision")
+		payloadColumn := slices.Index(table.Columns, "record_json")
+		encodingColumn := slices.Index(table.Columns, "encoding")
+		if idColumn < 0 || revisionColumn < 0 || payloadColumn < 0 || encodingColumn < 0 {
+			return nil, artifact.ErrIntegrity
+		}
+		var result json.RawMessage
+		for _, row := range table.Rows {
+			if len(row) != len(table.Columns) {
+				return nil, artifact.ErrIntegrity
+			}
+			var id string
+			var version int64
+			if json.Unmarshal(row[idColumn], &id) != nil || json.Unmarshal(row[revisionColumn], &version) != nil {
+				return nil, artifact.ErrIntegrity
+			}
+			if id != recordID || version != revision {
+				continue
+			}
+			var encoding, payload string
+			if result != nil || json.Unmarshal(row[encodingColumn], &encoding) != nil || encoding != "snapshot" || json.Unmarshal(row[payloadColumn], &payload) != nil || !json.Valid([]byte(payload)) {
+				return nil, artifact.ErrIntegrity
+			}
+			result = json.RawMessage(payload)
+		}
+		if result != nil {
+			return result, nil
+		}
+	}
+	return nil, corestore.ErrNotFound
 }

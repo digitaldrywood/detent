@@ -764,7 +764,7 @@ func isolatedInstallCheckout(t *testing.T, source string, checkout string) strin
 	if output, err := clone.CombinedOutput(); err != nil {
 		t.Fatalf("clone install checkout: %v\n%s", err, output)
 	}
-	files := exec.CommandContext(t.Context(), "git", "ls-files", "-z")
+	files := exec.CommandContext(t.Context(), "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z")
 	files.Dir = source
 	output, err := files.Output()
 	if err != nil {

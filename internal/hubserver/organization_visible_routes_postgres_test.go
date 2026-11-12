@@ -35,8 +35,15 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.Clock = func() time.Time { return now }
+	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	key := hostedSharedKey(41)
 	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	seedHostedStartup(t, cfg)
+	otherBinding := *cfg.Hosted
+	otherBinding.OrganizationID, otherBinding.WorkOSOrganizationID = "org_second", "provider_org_second"
+	otherConfig := cfg
+	otherConfig.Hosted = &otherBinding
+	seedHostedStartup(t, otherConfig)
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -47,8 +54,6 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 		}
 	})
 	repository := service.config.TenantRepository
-	seedStartupOrganization(t, repository, "org_startup")
-	seedStartupOrganization(t, repository, "org_second")
 	for _, organization := range []tracker.OrganizationID{"org_startup", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "credential_owner", Name: "Example owner", Hash: "example", Scope: "admin", KeyScope: "admin", ProjectAccess: "all", Kind: "personal", UserID: "user_owner", MembershipID: "membership_owner", CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -107,7 +112,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 	}
 	secondConfig := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	secondConfig.Clock = func() time.Time { return now }
-	secondConfig.Hosted.OrganizationID = "org_second"
+	secondConfig.Hosted.OrganizationID, secondConfig.Hosted.WorkOSOrganizationID = "org_second", "provider_org_second"
 	secondConfig.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	secondService, err := Open(t.Context(), secondConfig)
 	if err != nil {

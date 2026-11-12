@@ -1,14 +1,17 @@
 package hubserver
 
 import (
+	"encoding/json"
 	"net/http"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -27,13 +30,13 @@ func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	organization := tracker.OrganizationID("org_security")
 	projectID := tracker.ProjectID("prj_security")
-	project := projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native", RequireDependencies: true}, States: nativeFixtureStates()}
+	project := projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native", RequireDependencies: true}, States: append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true})}
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		now := time.Now().UTC()
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", CreatedAt: now}); err != nil {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: "example-organization", CreatedAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "org_provider"}); err != nil {
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "org_provider", BootstrapSubject: "user_owner", Deployment: "origin", PublicURL: "https://cloud.example"}); err != nil {
 			return err
 		}
 		free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
@@ -46,6 +49,7 @@ func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
+		cfg.Hosted.PublicURL = "https://cloud.example"
 		cfg.AccessRepository = repository
 		cfg.BillingRepository = repository
 		cfg.TenantRepository = repository
@@ -99,5 +103,72 @@ func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
 	requireNativeStatus(t, replay, http.StatusOK)
 	if replay.Body.String() != response.Body.String() {
 		t.Fatal("source intake replay changed its committed response")
+	}
+	f.service.outbox.stop()
+	backend := &recordingOutboxBackend{}
+	f.service.config.OutboxBackend = backend
+	secondURL := "https://github.com/example/repository/issues/13"
+	secondResponse := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "second-linked-create"}, GitHubIssueURL: secondURL, State: "Todo"})
+	requireNativeStatus(t, secondResponse, http.StatusOK)
+	var second tracker.NativeIssue
+	decodeHubResponse(t, secondResponse, &second)
+	secondSnapshot := snapshot
+	secondSnapshot.URL, secondSnapshot.Provenance.ExternalID = secondURL, "node_13"
+	secondResponse = f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(second.WorkItemID)+"/source-intake", tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "second-linked-intake"}, Snapshot: secondSnapshot})
+	requireNativeStatus(t, secondResponse, http.StatusOK)
+	decodeHubResponse(t, secondResponse, &second)
+	for index, selected := range []tracker.NativeIssue{refreshed, second} {
+		path := f.base + "/work-items/" + string(selected.WorkItemID)
+		transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "cancel-linked-" + strconv.Itoa(index)}, ExpectedRevision: selected.Revision, State: "Cancelled", Reason: "user_requested"}
+		cancelled := f.request(t, owner, http.MethodPost, path+"/workflow", transition)
+		requireNativeStatus(t, cancelled, http.StatusOK)
+		var current tracker.NativeIssue
+		decodeHubResponse(t, cancelled, &current)
+		if current.State != "Cancelled" || !current.Terminal {
+			t.Fatalf("linked cancellation did not commit: %+v", current)
+		}
+		replayed := f.request(t, owner, http.MethodPost, path+"/workflow", transition)
+		requireNativeStatus(t, replayed, http.StatusOK)
+		if replayed.Body.String() != cancelled.Body.String() {
+			t.Fatal("linked cancellation replay changed its response")
+		}
+		transition.IdempotencyKey += "-unchanged"
+		transition.ExpectedRevision = current.Revision
+		requireNativeStatus(t, f.request(t, owner, http.MethodPost, path+"/workflow", transition), http.StatusOK)
+		var key string
+		if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT command_key FROM github_outbound WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", organization, projectID, selected.WorkItemID).Scan(&key); err != nil {
+			t.Fatal(err)
+		}
+		var outbound projectstore.GitHubOutbound
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			outbound, err = r.(projectstore.GitHubOutboxWriter).GitHubOutbound(t.Context(), key)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := eventstore.NewContent(f.service.runDetailStore()).Receipt(t.Context(), outbound.Payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var desired WorkpadDesired
+		if err := json.Unmarshal(raw, &desired); err != nil {
+			t.Fatal(err)
+		}
+		expected := "Cancelled in Detent: https://cloud.example/example-organization/example-project/issues/" + strconv.Itoa(selected.Number)
+		if desired.Body != expected || !desired.CloseSource || desired.StateReason != "not_planned" || outbound.Repository != "example/repository" || outbound.IssueNumber != int64(12+index) {
+			t.Fatalf("linked cancellation summary/routing = %+v, %+v", desired, outbound)
+		}
+		requireNativeStatus(t, f.request(t, owner, http.MethodPost, path+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "private-linked-" + strconv.Itoa(index)}, Body: "Private Cloud discussion"}), http.StatusOK)
+		if worked, err := f.service.ProcessOutbox(t.Context()); err != nil || !worked {
+			t.Fatalf("linked cancellation did not publish: %t, %v", worked, err)
+		}
+	}
+	var count int
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbound WHERE organization_id=$1 AND project_id=$2", organization, projectID).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("replay/private discussion queued duplicate cancellation writes: %d, %v", count, err)
+	}
+	if backend.effects != 2 {
+		t.Fatalf("linked cancellation effects = %d, want 2", backend.effects)
 	}
 }

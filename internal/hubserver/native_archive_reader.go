@@ -108,7 +108,7 @@ func archiveQuery(ctx context.Context, query nativeQueryer, item, kind, subject 
 }
 
 func (r *nativeArchiveRead) resolve(ctx context.Context, query nativeQueryer, item, kind, subject string, sequence int64) (attachment.ArchiveSection, bool, error) {
-	s, scope := r.service, r.scope
+	scope := r.scope
 	if _, _, err := readNativeIssue(ctx, query, scope, item); err != nil {
 		return attachment.ArchiveSection{}, false, err
 	}
@@ -129,6 +129,11 @@ AND (?=0 OR n.first_sequence<=?) ORDER BY n.first_sequence DESC LIMIT 1`, scope.
 	if (kind == "revision" || kind == "history") && sequence > last {
 		return attachment.ArchiveSection{}, false, nil
 	}
+	return r.load(ctx, item, kind, subject, sequence, id, first, last, ref)
+}
+
+func (r *nativeArchiveRead) load(ctx context.Context, item, kind, subject string, sequence int64, id string, first, last int64, ref attachment.ArchiveReference) (attachment.ArchiveSection, bool, error) {
+	s, scope := r.service, r.scope
 	if r.descriptor != nil {
 		if r.section == nil || r.section.SectionID != id || r.section.WorkItemID != item || r.section.ProjectID != string(scope.project) || r.section.OrganizationID != string(scope.organization) || r.descriptor.SHA256 != ref.SHA256 {
 			if r.err != nil {

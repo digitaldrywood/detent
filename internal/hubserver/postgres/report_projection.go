@@ -15,6 +15,7 @@ type ReportEventProjectionImport struct {
 }
 
 type ReportLandingImport struct {
+	Frozen  eventstore.VersionLanding
 	Change  eventstore.Change
 	Receipt eventstore.LandingReceipt
 }
@@ -61,13 +62,13 @@ func (s *session) putReportEventProjection(ctx context.Context, event eventstore
 		return nil
 	}
 	p := event.Report
-	_, err := s.db.Exec(ctx, `INSERT INTO report_event_facts (organization_id,event_id,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) ON CONFLICT (organization_id,event_id) DO UPDATE SET process_evidence_status=EXCLUDED.process_evidence_status,process_peak_memory_bytes=EXCLUDED.process_peak_memory_bytes,process_user_cpu_seconds=EXCLUDED.process_user_cpu_seconds,process_system_cpu_seconds=EXCLUDED.process_system_cpu_seconds,process_wall_seconds=EXCLUDED.process_wall_seconds,process_lease_id=EXCLUDED.process_lease_id,process_fencing_token=EXCLUDED.process_fencing_token,process_runner_id=EXCLUDED.process_runner_id,process_machine_id=EXCLUDED.process_machine_id WHERE report_event_facts.process_evidence_status='unknown' AND EXCLUDED.process_evidence_status<>'unknown'`, s.organization, event.ID, p.RunSequence, p.RunStatus, p.Role, p.Model, p.Effort, p.Failed, p.FailureClass, p.FailureKind, p.LandingReceipt, p.Landed, p.LandingChangeID, p.ReworkClass, p.ReworkKind, p.DurationSeconds, p.ProcessEvidenceStatus, p.ProcessPeakMemoryBytes, p.ProcessUserCPUSeconds, p.ProcessSystemCPUSeconds, p.ProcessWallSeconds, p.ProcessLeaseID, p.ProcessFencingToken, p.ProcessRunnerID, p.ProcessMachineID)
+	_, err := s.db.Exec(ctx, `INSERT INTO report_event_facts (organization_id,event_id,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) ON CONFLICT (organization_id,event_id) DO UPDATE SET phase_timing_status=CASE WHEN report_event_facts.phase_timing_status='' THEN EXCLUDED.phase_timing_status ELSE report_event_facts.phase_timing_status END,process_evidence_status=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_evidence_status ELSE report_event_facts.process_evidence_status END,process_peak_memory_bytes=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_peak_memory_bytes ELSE report_event_facts.process_peak_memory_bytes END,process_user_cpu_seconds=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_user_cpu_seconds ELSE report_event_facts.process_user_cpu_seconds END,process_system_cpu_seconds=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_system_cpu_seconds ELSE report_event_facts.process_system_cpu_seconds END,process_wall_seconds=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_wall_seconds ELSE report_event_facts.process_wall_seconds END,process_lease_id=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_lease_id ELSE report_event_facts.process_lease_id END,process_fencing_token=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_fencing_token ELSE report_event_facts.process_fencing_token END,process_runner_id=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_runner_id ELSE report_event_facts.process_runner_id END,process_machine_id=CASE WHEN report_event_facts.process_evidence_status='unknown' THEN EXCLUDED.process_machine_id ELSE report_event_facts.process_machine_id END WHERE (report_event_facts.process_evidence_status='unknown' AND EXCLUDED.process_evidence_status<>'unknown') OR (report_event_facts.phase_timing_status='' AND EXCLUDED.phase_timing_status<>'')`, s.organization, event.ID, p.RunSequence, p.RunStatus, p.Role, p.Model, p.Effort, p.Failed, p.FailureClass, p.FailureKind, p.LandingReceipt, p.Landed, p.LandingChangeID, p.ReworkClass, p.ReworkKind, p.DurationSeconds, p.PhaseTimingStatus, p.ProcessEvidenceStatus, p.ProcessPeakMemoryBytes, p.ProcessUserCPUSeconds, p.ProcessSystemCPUSeconds, p.ProcessWallSeconds, p.ProcessLeaseID, p.ProcessFencingToken, p.ProcessRunnerID, p.ProcessMachineID)
 	if err != nil {
 		return mapError(ctx, err)
 	}
 	var actual reportstore.EventProjection
-	err = s.db.QueryRow(ctx, `SELECT run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id FROM report_event_facts WHERE organization_id=$1 AND event_id=$2`, s.organization, event.ID).Scan(&actual.RunSequence, &actual.RunStatus, &actual.Role, &actual.Model, &actual.Effort, &actual.Failed, &actual.FailureClass, &actual.FailureKind, &actual.LandingReceipt, &actual.Landed, &actual.LandingChangeID, &actual.ReworkClass, &actual.ReworkKind, &actual.DurationSeconds, &actual.ProcessEvidenceStatus, &actual.ProcessPeakMemoryBytes, &actual.ProcessUserCPUSeconds, &actual.ProcessSystemCPUSeconds, &actual.ProcessWallSeconds, &actual.ProcessLeaseID, &actual.ProcessFencingToken, &actual.ProcessRunnerID, &actual.ProcessMachineID)
+	err = s.db.QueryRow(ctx, `SELECT run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds,phase_timing_status,process_evidence_status,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds,process_lease_id,process_fencing_token,process_runner_id,process_machine_id FROM report_event_facts WHERE organization_id=$1 AND event_id=$2`, s.organization, event.ID).Scan(&actual.RunSequence, &actual.RunStatus, &actual.Role, &actual.Model, &actual.Effort, &actual.Failed, &actual.FailureClass, &actual.FailureKind, &actual.LandingReceipt, &actual.Landed, &actual.LandingChangeID, &actual.ReworkClass, &actual.ReworkKind, &actual.DurationSeconds, &actual.PhaseTimingStatus, &actual.ProcessEvidenceStatus, &actual.ProcessPeakMemoryBytes, &actual.ProcessUserCPUSeconds, &actual.ProcessSystemCPUSeconds, &actual.ProcessWallSeconds, &actual.ProcessLeaseID, &actual.ProcessFencingToken, &actual.ProcessRunnerID, &actual.ProcessMachineID)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -129,11 +130,25 @@ func (s *session) putReportEscapeProjection(ctx context.Context, evidence events
 	if actual != *p {
 		return corestore.ErrRevisionConflict
 	}
+	if _, err := s.db.Exec(ctx, `UPDATE change_evidence SET quality_at=$4 WHERE organization_id=$1 AND change_id=$2 AND sequence=$3 AND kind='discussion' AND quality_at IS NULL`, s.organization, evidence.ChangeID, evidence.Sequence, recordTime(p.ObservedAt)); err != nil {
+		return mapError(ctx, err)
+	}
+	var bound bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=$3 AND kind='discussion' AND quality_at=$4)`, s.organization, evidence.ChangeID, evidence.Sequence, recordTime(p.ObservedAt)).Scan(&bound); err != nil {
+		return mapError(ctx, err)
+	}
+	if !bound {
+		return corestore.ErrRevisionConflict
+	}
 	return nil
 }
 
 func (r *Repository) ImportReportChangeLanding(ctx context.Context, record eventstore.Change, proof eventstore.LandingReceipt) error {
-	return r.ImportReportChangeLandings(ctx, []ReportLandingImport{{Change: record, Receipt: proof}})
+	frozen, err := eventstore.VersionLandingFromChange(record)
+	if err != nil {
+		return err
+	}
+	return r.ImportReportChangeLandings(ctx, []ReportLandingImport{{Change: record, Receipt: proof, Frozen: frozen}})
 }
 
 func (r *Repository) ImportReportChangeLandings(ctx context.Context, records []ReportLandingImport) error {
@@ -149,6 +164,11 @@ func (r *Repository) ImportReportChangeLandings(ctx context.Context, records []R
 		if change.OrganizationID != organization || proof.OrganizationID != organization || change.ID == "" || change.LandedVersionID == nil || change.LandedAt == nil || change.LandedHeadSHA == nil || change.LandedMergeSHA == nil || change.LandedBaseRef == nil || proof.AttemptID == "" || proof.PayloadSHA256 == "" {
 			return eventstore.ErrInvalidRecord
 		}
+		frozen := record.Frozen
+		if frozen.OrganizationID != organization || frozen.ProjectID != change.ProjectID || frozen.WorkItemID != change.WorkItemID || frozen.ChangeID != change.ID || frozen.VersionID != *change.LandedVersionID || !recordTime(frozen.At).Equal(recordTime(*change.LandedAt)) || frozen.HeadSHA != *change.LandedHeadSHA || frozen.MergeSHA != *change.LandedMergeSHA || frozen.BaseRef != *change.LandedBaseRef {
+			return corestore.ErrRevisionConflict
+		}
+
 	}
 	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
 		return s.importReportLandings(ctx, records)

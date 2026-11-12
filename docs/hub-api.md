@@ -275,9 +275,7 @@ references return not found, including for previously granted credentials.
 Deletion is an atomic tombstone, with no restore action. Project secrets and
 project access grants (member, API token, runner and unconsumed enrollment)
 are deleted. Issues, comments, runs, Changes, conversations, artifacts and
-attachment bytes, and audit and billing history are retained in storage but
-are no longer accessible through the project. The deleted project's name
-remains reserved. Retained storage remains subject to existing accounting.
+attachment bytes, and audit and billing history are retained in storage but are no longer accessible through the project. The current retention tick removes audit events older than 30 days across organizations in two maintenance stages of at most 5,000 events each per hourly tick, with events exactly at the cutoff retained. The effective cutoff is the earlier of the application cutoff and PostgreSQL transaction time minus 720 hours; an earlier application clock retains events longer. Successful ordinary reads without a mutation or support actor are not recorded; existing ordinary-read audit rows without stored mutation evidence are cleaned up separately. Billing history is retained independently and is not deleted by audit retention. The deleted project's name remains reserved. Retained storage remains subject to existing accounting.
 The connected GitHub repository, its issues and PRs, other projects,
 organization settings and shared runners are unchanged.
 
@@ -589,12 +587,7 @@ for snapshot consistency, offline maintenance and restore instructions.
 
 ## Local board migration
 
-The local board is retired. An operator can import a read-only copy of a
-retired `local_sqlite` or `github_local` store into an existing native project
-using `detent hub issue import-local` (supports `--dry-run`, a stable
-`--store-id`, and item-level transactions that replay safely). See
-[Hub local migration](hub-local-migration.md). The scoped command endpoint is
-`POST /api/v2/organizations/{organization}/projects/{project}/local-board-import`.
+To recover a preserved `local_sqlite` or `github_local` store, use the historical import client built from Detent v0.185.7 (source commit `4a23d118fbc876c8ae26b117fa78e16f4a67b9a0`). The client sends records to `POST /api/v2/organizations/{organization}/projects/{project}/local-board-import` with an operator credential for the target native project. The Hub imports each item in its own transaction and supports replay with the same source identity. See [Hub local migration](hub-local-migration.md#5-import-open-work-without-dispatching-it).
 
 ## Authentication
 
@@ -1256,34 +1249,12 @@ can continue using their legacy configuration until their native cutover.
 | Endpoint | Minimum scope | Purpose |
 | --- | --- | --- |
 | `GET /health` | any scoped token | Service, schema, repository, and outbox health |
-| `GET /api/v1/work-items` | any scoped token | Filtered, sorted work-item page |
-| `GET /api/v1/work-items/{id}` | any scoped token | Normalized item, graph, PRs, lease, workpad, and event timeline |
-| `POST /api/v1/claims` | worker | Atomically claim a requested item or the next compatible item |
-| `POST /api/v1/leases/{id}/renew` | worker | Renew with the exact fencing token |
-| `POST /api/v1/leases/{id}/release` | worker | Release with the exact fencing token |
-| `POST /api/v1/work-items/{id}/events` | worker | Append a session event with the exact fencing token |
-| `POST /api/v1/machines/register` | worker | Register or refresh a machine |
-| `POST /api/v1/machines/{id}/heartbeat` | worker | Update heartbeat, capacity, version, or capabilities |
-| `POST /api/v1/work-items/{id}/workflow` | operator | Change workflow state and enqueue its managed GitHub label |
-| `POST /api/v1/work-items/{id}/dependencies` | operator | Add or remove a Hub-authoritative dependency |
-| `POST /api/v1/work-items/{id}/priority` | operator | Change priority and enqueue its managed GitHub label |
-| `POST /api/v1/work-items/{id}/order` | operator | Change Hub-authoritative queue rank |
 | `GET /api/v1/repositories/freshness` | any scoped token | Repository synchronization health page |
 | `GET /api/v1/outbox/health` | any scoped token | Outbox counts and operator-action page |
 
 Worker events and operator mutations expose typed state changes only. They do not provide a generic GitHub request or arbitrary mutation surface.
 
-The legacy event upload accepts `kind: progress` with an optional typed `payload.step`: `plan`, `implement`, `test`, `review`, or `complete`. Unknown payload fields and event kinds are rejected. Existing locally recorded v1 history remains readable; it is not copied into native event payloads. New integrations should use the versioned v2 schemas below.
-
-## Work-item queries and cursors
-
-`GET /api/v1/work-items` accepts repeatable or comma-separated filters: `repository`, `workflow_state`, `readiness`, `priority`, `label`, `assignee`, `machine`, `lease`, `pr`, and `sync_health`.
-
-Supported sort values are `priority`, `created`, `updated`, `identifier`, and `workflow_state`; `order` is `asc` or `desc`. The default priority order uses priority, queue-rank presence, queue rank, creation time, repository owner/name, issue number, and internal ID. Every other sort also ends with repository owner/name, issue number, and internal ID, giving every page a stable total order.
-
-List responses contain an opaque `next_cursor`. Pass it back with the same sort and order. `limit` defaults to 50 and may not exceed 200. Repository freshness and outbox health use the same `limit` and opaque `cursor` convention. Work-item detail timelines use `timeline_limit` and `timeline_cursor`.
-
-Omit `work_item_id` from `POST /api/v1/claims` to claim next. Candidate selection and lease creation execute in one SQLite transaction; clients must not list candidates and then attempt a separate specific claim. Renew, release, and event requests must carry the positive `fencing_token` returned by the claim.
+The SQLite-only generic tracker API for numeric work items, claims, leases and machines has been removed. Runners use the organization- and project-scoped native APIs below. Runner projects must be mapped to Hub-native projects or discovered from the enrolled identity.
 
 ## Issue archive
 
@@ -1626,6 +1597,8 @@ so concurrent changes to state, priority, activity or filters
 cannot skip or repeat those items. New items appear in a fresh query. Each page
 loads current item details, so this is not a transactional export snapshot;
 a consistent export still requires a quiescent owner backup.
+
+For GitHub-compatible project work lists, the final authorization snapshot omits items that changed, were deleted or archived, or are no longer visible during content hydration. The response sets `partial` when it omits these items. The cursor has already advanced past them, so continuing the same list does not revisit them. Restart the list or fetch a known item directly to obtain its current state.
 
 MCP `work_list` accepts `include: ["summary"]` for a compact lane scan. Each
 item contains exactly `identifier`, `number`, `state`, `priority`, `title`,
@@ -3225,41 +3198,13 @@ nonterminal-to-terminal transition time; terminal-to-terminal moves and late
 comments do not restart the clock, and reopening clears it. Work without a
 trustworthy terminal time stays live.
 
-The sweep uploads bounded, single-member gzip sections and publishes an immutable
-issue root last, then rechecks the issue revision and conversation sequence before
-committing its archive pointer. Detail retirement resumes in transactions of at
-most 500 rows. The issue, comments, factual timeline, replay receipts and recovery
-identities remain in SQLite. Viewer-filtered issue revisions and private
-conversations also remain in SQLite. Shared message ranges and historical comment
-revisions load through the bounded archive reader, with existing content objects
-referenced without downloading their payloads. Active leases, unfinished
-executions, queued messages, pending questions and unresolved Changes prevent
-archival. A reopened issue is never retired by an earlier publication.
+The sweep uploads bounded, single-member gzip sections and publishes an immutable issue root last, then rechecks the issue revision and conversation sequence before committing its archive pointer. Detail retirement resumes in transactions of at most 500 rows. The issue, comments, factual timeline, replay receipts and recovery identities remain in PostgreSQL. Viewer-filtered issue revisions and private conversations also remain in PostgreSQL. Shared message ranges and historical comment revisions load through the bounded archive reader, with existing content objects referenced without downloading their payloads. Active leases, unfinished executions, queued messages, pending questions and unresolved Changes prevent archival. A reopened issue is never retired by an earlier publication.
 
-Closed-work event compaction requires a committed archive; the board visibility
-flag and a separate age cutoff do not authorize it. Standalone conversations
-retain their 30-day settled-event policy. Live streaming deltas and completed turn
-batch receipts retain their existing compaction behavior. Original archived run
-events remain retrievable while browser timelines read their retained SQLite
-facts, independently of object storage availability.
+Work-item history remains immutable in PostgreSQL. History pages omit activity spans on every read and include the `activity_spans_omitted_read_with_board_session_history` coverage note; authorized callers retrieve those spans through board session history. Canonical archived run payloads remain unchanged. Work-item history pages do not carry a `compaction` summary, and their cursors do not expire because of compaction. Ordinary collaboration updates and deletions remain rejected.
 
-History pages and conversation snapshots carry an optional `compaction` summary
-with removed event counts by type, retained event count, removed payload bytes,
-last removed sequence, compacted activity event count and compaction time. Existing history cursors invalidate
-when their aggregate is compacted and instruct the reader to restart. Conversation
-SSE cursors behind a removed event receive `closed` with `cursor_expired`; clients
-fetch the current snapshot and resume from its cursor. Open work streams retain
-all events and their existing cursors. Ordinary collaboration updates and
-deletions remain rejected; retention replaces and restores the deletion and update
-triggers within its transaction, so a failed batch rolls back rows and enforcement.
+Standalone conversation snapshots retain their optional `compaction` summary and the 30-day settled-event policy. The summary records removed event counts by type, retained event count, removed payload bytes, last removed sequence and compaction time. Live streaming deltas remain protected. A conversation SSE cursor behind a removed event receives `closed` with `cursor_expired`; clients fetch the current snapshot and resume from its cursor. Conversation compaction prepares archive content outside the write transaction, then rechecks current metadata and atomically commits the summary, archive references and event removal. A failed write rolls back that publication and removal.
 
-The first compaction records database and event-table sizes in the existing
-maintenance record and marks space reclamation pending. The online diff-body
-owner never invokes VACUUM: a quiet hour does not make VACUUM safe for tenant
-health checks. Reclaim space through offline operator maintenance after the
-first compaction has finished, with the tenant Hub quiesced and the database
-ownership lock held. Later compaction frees pages for reuse without requesting another first-pass
-VACUUM.
+There is no SQLite database-size baseline or offline VACUUM step in the PostgreSQL retention workflow.
 
 Privileged scoped purge is not a supported operation.
 The supported full-instance restore revokes copied credentials and releases leases;

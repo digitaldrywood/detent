@@ -353,6 +353,15 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope
 		evidence.Selection = "latest"
 	} else {
 		evidence.Unavailable = append(evidence.Unavailable, "native_attempt")
+		if explanationRead(ctx) {
+			detail, err := s.readExplanationCurrentChange(ctx, scope, issue.WorkItemID, now)
+			if err != nil {
+				return evidence, nil, false, err
+			}
+			if detail != nil {
+				attachRuntimeChangeDetail(&evidence, *detail)
+			}
+		}
 	}
 	failures := make([]nativeFailure, 0, len(snapshots))
 	for _, snapshot := range snapshots {

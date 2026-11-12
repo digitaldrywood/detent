@@ -15,10 +15,20 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -42,7 +52,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 				f = newHostedSecurityFixture(t)
 				user = f.user(t, "operator", scenario.role, "operator@example.test", "write", "")
 			}
-			operatorSQL(t, f, "UPDATE projects SET checkout_repository='digitaldrywood/detent' WHERE id=?", f.project)
+			updateOperatorWorkflowProject(t, f, func(record *projectstore.Record) { record.Settings.CheckoutRepository = "owner/repository" })
 			previous := hubTestPolicy()
 			pinnedPolicyID := previous.ID
 			policyScope := "org_security/" + string(f.project)
@@ -51,10 +61,21 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			}
 			issueID := f.seedIssue(t, 1)
 			now := f.service.config.now()
-			stamp := formatHubTime(now)
-			operatorSQL(t, f, "INSERT INTO machines(id,organization_id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES('machine_policy','org_security','runner',1,'test',?,?,?)", stamp, stamp, stamp)
-			operatorSQL(t, f, "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'policy-lease',id,'machine_policy','policy-session',?,?,?,?,? FROM issues WHERE native_id=?", formatHubTime(now.Add(time.Hour)), stamp, stamp, stamp, stamp, issueID)
-			operatorSQL(t, f, "INSERT INTO lease_policies(lease_id,scope,policy_id) VALUES('policy-lease',?,?)", policyScope, previous.ID)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_security", ID: "machine_policy", Hostname: "runner", Capacity: 1, Version: "test"}); err != nil {
+					return err
+				}
+				item, err := w.WorkItem(t.Context(), f.project, issueID)
+				if err != nil {
+					return err
+				}
+				if _, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: "machine_policy", SessionID: "policy-session", LeaseID: "policy-lease", TTL: time.Hour}); err != nil {
+					return err
+				}
+				return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: "org_security", ProjectID: f.project, LeaseID: "policy-lease", PolicyID: previous.ID, BoundAt: now})
+			}); err != nil {
+				t.Fatal(err)
+			}
 			issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
 			if err != nil {
 				t.Fatal(err)
@@ -120,7 +141,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			}
 			sources := workflowconfig.ProjectDefinitionSources{
 				ConfigPath: "detent.yaml", HasConfig: true,
-				Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: true\n  required_status_checks: []\n"),
+				Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: owner/repository\ngate:\n  run: true\n  required_status_checks: []\n"),
 				WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", 1400)),
 				AgentsPath: "AGENTS.md", HasAgents: true, Agents: []byte(strings.Repeat("Preserve policy authority.\n", 150)),
 			}
@@ -230,14 +251,14 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 						if reply.Result.StructuredContent.Code != "policy_mismatch" {
 							t.Fatalf("stale refusal must be structured: %s", response.Body)
 						}
-						unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+						unchanged, _, err := readTestTenantProjectPolicy(t.Context(), f.service, policyScope)
 						if err != nil || !reflect.DeepEqual(unchanged.Policy, previous) {
 							t.Fatalf("stale refusal changed policy = %+v, %v", unchanged, err)
 						}
 					}
 				})
 			}
-			approved, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+			approved, _, err := readTestTenantProjectPolicy(t.Context(), f.service, policyScope)
 			if err != nil || !reflect.DeepEqual(approved.Policy, descriptor) || approved.ApprovedBy != key.ID {
 				t.Fatalf("approval=%+v error=%v", approved, err)
 			}
@@ -262,7 +283,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 				}
 				return text
 			}
-			full, err := readProjectPolicyWithHistory(t.Context(), f.service.database.db, policyScope, 0, "")
+			full, err := readOperatorWorkflowPolicyHistory(t, f)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -271,15 +292,20 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 				t.Fatalf("fixture must exceed the result cap: history=%d bytes=%d, %v", len(full.History), len(fullJSON), err)
 			}
 			call := projectCall(t, "approve_project_policy", string(f.project), "approve", operatortool.PolicyApprovalInput{ExpectedID: previous.ID, Policy: descriptor, RepositoryPolicy: true})
-			var receipt string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(response_object_key,''),response_json) FROM native_commands WHERE actor_id=? AND command_key=?", key.ID, "approve").Scan(&receipt); err != nil {
+			operation := projectOperationID(nativeScope{organization: "org_security", project: f.project}, http.MethodPut, "/policy")
+			var stored eventstore.Receipt
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				stored, err = r.Receipt(t.Context(), key.ID, operation, "approve")
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
-			resolved, err := resolveStorageJSON(f.service.contentContext(t.Context()), []byte(receipt))
+			resolved, err := eventstore.NewContent(f.service.runDetailStore()).Receipt(t.Context(), stored)
 			if err != nil {
 				t.Fatal(err)
 			}
-			receipt = string(resolved)
+			receipt := string(resolved)
 			var durable policy.Approval
 			if err := json.Unmarshal([]byte(receipt), &durable); err != nil || !reflect.DeepEqual(durable, approved) || len(durable.History) != 0 {
 				t.Fatalf("durable approval differs from commit: %v", err)
@@ -327,11 +353,59 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			if err := json.Unmarshal([]byte(toolText(call.Name, call.Arguments)), &action); err != nil || action.Status != chat.ActionSucceeded || action.Result != receipt {
 				t.Fatalf("reconnected receipt differs: %v", err)
 			}
-			operatorSQL(t, f, "UPDATE native_commands SET response_json=?,response_object_key='' WHERE actor_id=? AND command_key=?", string(fullJSON), key.ID, "approve")
+			legacy := stored
+			legacy.CommandKey = "historical-approve"
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.Receipt(t.Context(), key.ID, operation, legacy.CommandKey)
+				return err
+			}); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("historical receipt target already exists: %v", err)
+			}
+			legacy, err = eventstore.NewContent(f.service.runDetailStore()).PrepareReceipt(t.Context(), legacy, fullJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encodedSource, err := json.Marshal(legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := receiptstore.Import{Record: legacy, SnapshotID: "historical-policy-" + string(f.project), SourceHash: artifact.Digest(encodedSource), ObservedAt: now}
+			for range 2 {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+					_, err := w.(receiptstore.ImportWriter).ImportReceipt(t.Context(), source)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var imported eventstore.Receipt
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				imported, err = r.Receipt(t.Context(), key.ID, operation, legacy.CommandKey)
+				if err != nil || imported.RequestHash != stored.RequestHash || imported.PayloadObjectKey != legacy.PayloadObjectKey || imported.PayloadSHA256 != legacy.PayloadSHA256 {
+					return fmt.Errorf("historical receipt identity changed: %v", err)
+				}
+				snapshot, hash, err := r.(receiptstore.ImportReader).ReceiptSource(t.Context(), key.ID, operation, legacy.CommandKey)
+				if err != nil || snapshot != source.SnapshotID || hash != source.SourceHash {
+					return fmt.Errorf("historical receipt source changed: %v", err)
+				}
+				current, err := r.Receipt(t.Context(), key.ID, operation, "approve")
+				if err != nil || !reflect.DeepEqual(current, stored) {
+					return fmt.Errorf("historical import replaced immutable receipt: %v", err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			historical, err := eventstore.NewContent(f.service.runDetailStore()).Receipt(t.Context(), imported)
+			if err != nil || string(historical) != string(fullJSON) {
+				t.Fatalf("historical oversized receipt body changed: %v", err)
+			}
+			call = projectCall(t, "approve_project_policy", string(f.project), legacy.CommandKey, operatortool.PolicyApprovalInput{ExpectedID: previous.ID, Policy: descriptor, RepositoryPolicy: true})
 			if err := json.Unmarshal([]byte(toolText(call.Name, call.Arguments)), &action); err != nil || action.Result != receipt {
 				t.Fatalf("legacy oversized receipt replay differs: %v", err)
 			}
-			unchanged, err := readProjectPolicyWithHistory(t.Context(), f.service.database.db, policyScope, 0, "")
+			unchanged, err := readOperatorWorkflowPolicyHistory(t, f)
 			if err != nil || !reflect.DeepEqual(unchanged, full) {
 				t.Fatalf("replay performed another approval: %v", err)
 			}
@@ -344,7 +418,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			for _, channel := range []string{"UI", "API"} {
 				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 					ConfigPath: "detent.yaml", HasConfig: true,
-					Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: make check-land\n  required_status_checks: []\n"),
+					Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: owner/repository\ngate:\n  run: make check-land\n  required_status_checks: []\n"),
 					WorkflowPath: "WORKFLOW.md", Workflow: []byte("Implement the approved policy via " + channel),
 				})
 				if err != nil {
@@ -376,28 +450,39 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 				if approved.Policy.ID != next.ID {
 					t.Fatalf("%s approval=%+v", channel, approved)
 				}
-				pinned, err := f.service.database.leasePolicyID(t.Context(), "policy-lease")
+				var pinned string
+				pinErr := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+					row, err := r.LeasePolicy(t.Context(), "policy-lease")
+					pinned = row.PolicyID
+					return err
+				})
+				err = pinErr
 				if err != nil || pinned != pinnedPolicyID {
 					t.Fatalf("%s approval changed active lease: %s %v", channel, pinned, err)
 				}
 			}
 			configuration := runnerauth.ProjectConfiguration{ProjectID: string(f.project), Authority: "local_global_configuration", ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, SelectedPolicy: &approved.Policy, EffectivePolicy: &approved.Policy, ObservedAt: f.service.config.now()}
-			rawConfiguration, err := json.Marshal(map[string]runnerauth.ProjectConfiguration{string(f.project): configuration})
-			if err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_security", UserID: user.identity.Subject, ProjectID: f.project, CanWrite: true, ManageRunner: true}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: "policy-worker", Name: "runner", Hash: apikey.HashToken("example-policy-worker"), Fingerprint: "worker", Scope: "worker", KeyScope: "worker", Kind: "service", ProjectAccess: "selected", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: "policy-worker", ProjectID: f.project}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_security", ID: "policy-enrollment", RunnerID: "policy-runner", MachineID: "machine_policy", TokenHash: apikey.HashToken("example-policy-enrollment"), Scope: "projects", ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Claim, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: key.ID}); err != nil {
+					return err
+				}
+				if err := w.RedeemRunnerEnrollment(t.Context(), "policy-enrollment", "policy-runner", "machine_policy", now); err != nil {
+					return err
+				}
+				return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_security", RunnerID: "policy-runner", MachineID: "machine_policy", TokenID: "policy-worker", EnrollmentID: "policy-enrollment", Scope: "projects", ProjectIDs: []tracker.ProjectID{f.project}, State: "active", Revision: 1, MachineUse: "dedicated", Operations: []string{runnerauth.Claim, runnerauth.Heartbeat}, DisplayName: "runner", CapacityLimit: 1, ReportedCapacity: 1, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
+			}); err != nil {
 				t.Fatal(err)
 			}
-			for _, statement := range []struct {
-				query string
-				args  []any
-			}{
-				{"UPDATE hosted_project_grants SET manage_runner=1 WHERE user_id=?", []any{user.identity.Subject}},
-				{"INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at,expires_at,native_only) VALUES('policy-worker','runner',?,'worker','worker',?,?,?,1)", []any{strings.Repeat("c", 64), stamp, stamp, formatHubTime(expires)}},
-				{"INSERT INTO token_grants(token_id,organization_id,project_id) VALUES('policy-worker','org_security',?)", []any{f.project}},
-				{"INSERT INTO runner_enrollments(id,organization_id,runner_id,machine_id,token_hash,operations_json,created_at,expires_at,created_by,redeemed_at) VALUES('policy-enrollment','org_security','policy-runner','machine_policy',?,'[\"claim\",\"heartbeat\"]',?,?,?,?)", []any{strings.Repeat("d", 64), stamp, formatHubTime(expires), key.ID, stamp}},
-				{"INSERT INTO runner_identities(id,organization_id,machine_id,token_id,enrollment_id,operations_json,created_at,display_name,capacity_limit,reported_capacity,last_heartbeat_at,project_configuration_json) VALUES('policy-runner','org_security','machine_policy','policy-worker','policy-enrollment','[\"claim\",\"heartbeat\"]',?,'runner',1,1,?,?)", []any{stamp, stamp, string(rawConfiguration)}},
-			} {
-				operatorSQL(t, f, statement.query, statement.args...)
-			}
+			seedHubConfiguration(t, nativeFixture{service: f.service, project: tracker.NativeProject{OrganizationID: "org_security", ID: f.project}}, "policy-runner", configuration)
 			for _, call := range []operatortool.Call{
 				{Name: operatortool.ListRunnerRouting, Arguments: json.RawMessage(`{}`)},
 				{Name: "drain_local_project"},
@@ -414,14 +499,14 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 					t.Fatalf("%s owner administration=%s", call.Name, response.Body)
 				}
 			}
-			operatorSQL(t, f, "UPDATE projects SET checkout_repository='' WHERE id=?", f.project)
+			updateOperatorWorkflowProject(t, f, func(record *projectstore.Record) { record.Settings.CheckoutRepository = "" })
 			missing := projectCall(t, "approve_project_policy", string(f.project), "missing-binding", operatortool.PolicyApprovalInput{ExpectedID: descriptor.ID, Policy: descriptor, RepositoryPolicy: true})
 			refused := send(map[string]any{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": map[string]any{"name": missing.Name, "arguments": missing.Arguments}})
 			requireNativeStatus(t, refused, http.StatusOK)
 			if !strings.Contains(refused.Body.String(), `"isError":true`) || !strings.Contains(refused.Body.String(), "Project has no linked repository policy") {
 				t.Fatalf("missing binding refusal=%s", refused.Body)
 			}
-			operatorSQL(t, f, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(time.Now()), key.ID)
+			revokeOperatorWorkflowCredential(t, f, key.ID)
 			denied := send(map[string]any{"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": map[string]any{"name": missing.Name, "arguments": missing.Arguments}})
 			requireNativeStatus(t, denied, http.StatusUnauthorized)
 			if !strings.Contains(denied.Body.String(), `"code":"access_denied"`) {
@@ -593,21 +678,13 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				t.Fatalf("info=%s %v", info.Content, err)
 			}
 			states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done", "Cancelled"}}, {Name: "Done", Terminal: true}, {Name: "Cancelled", Terminal: true}}
-			stateJSON, _ := json.Marshal(states)
-			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET states_json=? WHERE id=?", string(stateJSON), f.project)
-			operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Cancelled','Cancelled',1,0,?,?)", f.project, testTimestamp, testTimestamp)
+			updateOperatorWorkflowProject(t, f.hostedSecurityFixture, func(record *projectstore.Record) { record.States = states })
 			var call operatortool.Call
 			var issue tracker.NativeIssue
 			var descriptor policy.Descriptor
 			policyScope := "org_security/" + string(f.project)
 			if test.repository {
-				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO repositories(github_node_id,github_owner,github_name,created_at,updated_at) VALUES('repository-policy','digitaldrywood','detent',?,?)", testTimestamp, testTimestamp)
-				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET repository_id=NULL WHERE repository_id=(SELECT id FROM repositories WHERE github_node_id='repository-policy')")
-				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET repository_id=(SELECT id FROM repositories WHERE github_node_id='repository-policy') WHERE id=?", f.project)
-				policyScope = "repository:digitaldrywood/detent"
-				if _, err := f.service.approveTestTenantPolicy(t.Context(), policyScope, "previous-admin", policy.Change{Policy: hubTestPolicy()}); err != nil {
-					t.Fatal(err)
-				}
+				updateOperatorWorkflowProject(t, f.hostedSecurityFixture, func(record *projectstore.Record) { record.Settings.CheckoutRepository = "owner/repository" })
 			}
 			switch test.tool {
 			case operatortool.MoveItem:
@@ -630,13 +707,13 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				raw, _ := json.Marshal(map[string]any{"description": nativeContractTestBody, "project_id": f.project, "request_id": "create-terminal", "title": "Terminal creation", "state": test.target})
 				call = operatortool.Call{Name: test.tool, Arguments: raw}
 			default:
-				current, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+				current, _, err := readTestTenantProjectPolicy(t.Context(), f.service, policyScope)
 				if err != nil {
 					t.Fatal(err)
 				}
 				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 					ConfigPath: "detent.yaml", HasConfig: true,
-					Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: true\n  required_status_checks: []\n"),
+					Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: owner/repository\ngate:\n  run: true\n  required_status_checks: []\n"),
 					WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", 100)),
 					AgentsPath: "AGENTS.md", HasAgents: true, Agents: []byte(strings.Repeat("Preserve policy authority.\n", 100)),
 				})
@@ -651,15 +728,32 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				call = projectCall(t, test.tool, string(f.project), "policy", operatortool.PolicyApprovalInput{ExpectedID: current.Policy.ID, Policy: descriptor, RepositoryPolicy: test.repository})
 			}
 			if test.revoked {
-				operatorSQL(t, f.hostedSecurityFixture, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(time.Now()), key.ID)
+				revokeOperatorWorkflowCredential(t, f.hostedSecurityFixture, key.ID)
 			}
 			if test.expired {
-				operatorSQL(t, f.hostedSecurityFixture, "UPDATE api_tokens SET expires_at=? WHERE id=?", formatHubTime(time.Now().Add(-time.Hour)), key.ID)
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+					row, err := w.AccessCredential(t.Context(), key.ID)
+					if err != nil {
+						return err
+					}
+					return w.RenewAccessCredential(t.Context(), key.ID, row.Hash, row.Fingerprint, f.service.config.now().Add(-time.Hour), f.service.config.now())
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if test.pressure {
 				connection := operatortool.CurrentConnection(ctx)
-				storedAt := f.service.config.now().Add(-5 * time.Minute).UTC().Format("2006-01-02T15:04:05.000000000Z")
-				operatorSQL(t, f.hostedSecurityFixture, "UPDATE operator_chat_sessions SET last_used_at=? WHERE connection_id=?", storedAt, connection.ID)
+				storedAt := f.service.config.now().Add(-5 * time.Minute).UTC().Truncate(time.Microsecond)
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+					row, err := w.OperatorSession(t.Context(), connection.ID, storedAt.Add(-time.Hour))
+					if err != nil {
+						return err
+					}
+					row.LastUsedAt = storedAt
+					return w.SaveOperatorSession(t.Context(), row, 256)
+				}); err != nil {
+					t.Fatal(err)
+				}
 				for index := range 256 {
 					if _, err := f.service.operatorChat.Send(t.Context(), fmt.Sprintf("pressure-%d", index), "hello"); !errors.Is(err, chat.ErrUnavailable) {
 						t.Fatal(err)
@@ -679,8 +773,13 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var after string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT last_used_at FROM operator_chat_sessions WHERE connection_id=?", connection.ID).Scan(&after); err != nil || after != storedAt {
+				var after time.Time
+				sessionErr := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+					row, err := r.OperatorSession(t.Context(), connection.ID, storedAt.Add(-time.Hour))
+					after = row.LastUsedAt
+					return err
+				})
+				if err := sessionErr; err != nil || !after.Equal(storedAt) {
 					t.Fatalf("read extended lifetime: before=%s after=%s error=%v", storedAt, after, err)
 				}
 			}
@@ -704,13 +803,21 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 						t.Fatalf("transition=%s", result.Content)
 					}
 					if test.tool == operatortool.MoveItem {
-						var detail string
-						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(json_extract(data_json,'$.reason_detail'),'') FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&detail); err != nil || detail != test.reason {
-							t.Fatalf("reason_detail=%q want %q error=%v", detail, test.reason, err)
+						var rows []eventstore.Event
+						if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+							var err error
+							rows, err = r.HistoryEventsBefore(t.Context(), f.project, issue.WorkItemID, 0, 1)
+							return err
+						}); err != nil || len(rows) != 1 || rows[0].Type != "workflow.transitioned" {
+							t.Fatalf("latest workflow event=%+v error=%v", rows, err)
+						}
+						history, err := eventstore.NewContent(f.service.runDetailStore()).Event(t.Context(), rows[0])
+						if err != nil || history.Data.ReasonDetail != test.reason {
+							t.Fatalf("reason_detail=%q want %q error=%v", history.Data.ReasonDetail, test.reason, err)
 						}
 					}
 				} else {
-					approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+					approval, _, err := readTestTenantProjectPolicy(t.Context(), f.service, policyScope)
 					if err != nil || !reflect.DeepEqual(approval.Policy, descriptor) || approval.ApprovedBy != key.ID {
 						t.Fatalf("policy=%+v %v", approval, err)
 					}
@@ -755,7 +862,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 								t.Fatalf("%s refusal = %v (%s, %s)", refusal.name, err, code, message)
 							}
 						}
-						unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+						unchanged, _, err := readTestTenantProjectPolicy(t.Context(), f.service, policyScope)
 						if err != nil || !reflect.DeepEqual(unchanged.Policy, descriptor) {
 							t.Fatalf("refusal changed policy = %+v, %v", unchanged, err)
 						}
@@ -764,7 +871,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				if _, err := executor.Execute(ctx, call); err != nil {
 					t.Fatalf("replay=%v", err)
 				}
-				operatorSQL(t, f.hostedSecurityFixture, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(time.Now()), key.ID)
+				revokeOperatorWorkflowCredential(t, f.hostedSecurityFixture, key.ID)
 				if _, err := executor.Execute(ctx, call); !errors.Is(err, operatortool.ErrAccessDenied) {
 					t.Fatalf("revoked replay=%v", err)
 				}
@@ -776,5 +883,39 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 			}
 			requireNativeStatus(t, f.browser(http.MethodGet, "/chat/approval?connection_id=old", nil), http.StatusNotFound)
 		})
+	}
+}
+
+func updateOperatorWorkflowProject(t *testing.T, f hostedSecurityFixture, update func(*projectstore.Record)) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), f.project)
+		if err != nil {
+			return err
+		}
+		update(&record)
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readOperatorWorkflowPolicyHistory(t *testing.T, f hostedSecurityFixture) (policy.Approval, error) {
+	t.Helper()
+	approval, err := f.service.readTenantProjectPolicy(t.Context(), "org_security", f.project)
+	if err != nil {
+		return approval, err
+	}
+	approval.History, approval.HistoryNext, err = f.service.tenantProjectWorkflowHistory(t.Context(), "org_security", f.project, 200, "")
+	return approval, err
+}
+
+func revokeOperatorWorkflowCredential(t *testing.T, f hostedSecurityFixture, id string) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RevokeAccessCredential(t.Context(), id, f.service.config.now())
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

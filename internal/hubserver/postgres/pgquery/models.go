@@ -120,19 +120,20 @@ type ApiToken struct {
 }
 
 type ArchiveObject struct {
-	OrganizationID   tracker.OrganizationID
-	ID               string
-	ObjectKey        string
-	Sha256           string
-	CompressedSize   int64
-	UncompressedSize int64
-	Codec            string
-	SchemaVersion    int32
-	Kind             string
-	Retention        string
-	BindingID        string
-	CustomerOwned    bool
-	CreatedAt        time.Time
+	OrganizationID     tracker.OrganizationID
+	ID                 string
+	ObjectKey          string
+	Sha256             string
+	CompressedSize     int64
+	UncompressedSize   int64
+	Codec              string
+	SchemaVersion      int32
+	Kind               string
+	Retention          string
+	BindingID          string
+	CustomerOwned      bool
+	CreatedAt          time.Time
+	CollaborationBytes int64
 }
 
 type ArchiveObjectOwner struct {
@@ -451,18 +452,24 @@ type AttemptDiffBodyReference struct {
 }
 
 type AttemptUsage struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	AttemptID      string
-	Period         time.Time
-	Provider       string
-	Model          string
-	Input          int64
-	CachedInput    int64
-	Output         int64
-	CostEstimate   float64
-	Currency       string
-	UpdatedAt      time.Time
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	AttemptID             string
+	Period                time.Time
+	Provider              string
+	Model                 string
+	Input                 int64
+	CachedInput           int64
+	Output                int64
+	CostEstimate          float64
+	Currency              string
+	UpdatedAt             time.Time
+	UsageOrigin           string
+	UsageInputTotal       pgtype.Int8
+	UsageCachedInputTotal pgtype.Int8
+	UsageOutputTotal      pgtype.Int8
+	UsageCostTotal        pgtype.Float8
+	UsageSequence         int64
 }
 
 type ChangeEvidence struct {
@@ -486,14 +493,17 @@ type ChangeEvidence struct {
 	ReviewSessionKnown   bool
 	ReviewSessionID      int64
 	ReviewSessionMachine string
+	ProjectID            tracker.ProjectID
+	QualityAt            *time.Time
 }
 
 type ChangeIssueLink struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	WorkItemID     tracker.NativeWorkItemID
-	ChangeID       string
-	CreatedAt      time.Time
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	WorkItemID          tracker.NativeWorkItemID
+	ChangeID            string
+	CreatedAt           time.Time
+	RetainedPrVersionID *string
 }
 
 type ChangeLandingReceipt struct {
@@ -507,6 +517,11 @@ type ChangeLandingReceipt struct {
 	PayloadContentBytes int64
 	Repository          string
 	BaseRef             string
+	IssueID             int64
+	ChangeID            string
+	FencingToken        int64
+	RepositoryIdentity  string
+	ProjectID           tracker.ProjectID
 }
 
 type ChangeRequest struct {
@@ -556,33 +571,44 @@ type ChangeReviewPolicyRevision struct {
 }
 
 type ChangeVersion struct {
-	OrganizationID        tracker.OrganizationID
-	ID                    string
-	ChangeID              string
-	Number                int64
-	HeadSHA               string
-	BaseSHA               string
-	MergeBaseSHA          string
-	Repository            string
-	PolicyRevisionID      string
-	AttemptID             string
-	ActorKind             string
-	ActorPrincipalID      string
-	ExternalProvider      string
-	ExternalID            string
-	ExternalURL           string
-	CreatedAt             time.Time
-	PayloadObjectKey      string
-	PayloadSHA256         string
-	PayloadBytes          int64
-	PayloadContentBytes   int64
-	PayloadFormatVersion  int64
-	SourceObjectKey       *string
-	SourceSha256          *string
-	SourceBytes           pgtype.Int8
-	SourceContentBytes    pgtype.Int8
-	ImplementingSessionID int64
-	ImplementingMachineID string
+	OrganizationID             tracker.OrganizationID
+	ID                         string
+	ChangeID                   string
+	Number                     int64
+	HeadSHA                    string
+	BaseSHA                    string
+	MergeBaseSHA               string
+	Repository                 string
+	PolicyRevisionID           string
+	AttemptID                  string
+	ActorKind                  string
+	ActorPrincipalID           string
+	ExternalProvider           string
+	ExternalID                 string
+	ExternalURL                string
+	CreatedAt                  time.Time
+	PayloadObjectKey           string
+	PayloadSHA256              string
+	PayloadBytes               int64
+	PayloadContentBytes        int64
+	PayloadFormatVersion       int64
+	SourceObjectKey            *string
+	SourceSha256               *string
+	SourceBytes                pgtype.Int8
+	SourceContentBytes         pgtype.Int8
+	ImplementingSessionID      int64
+	ImplementingMachineID      string
+	ProjectID                  tracker.ProjectID
+	LandingHistoryKnown        bool
+	LandedAt                   *time.Time
+	LandedHeadSHA              string
+	LandedMergeSHA             string
+	LandedBaseRef              string
+	LandedObjectKey            string
+	LandedSha256               string
+	LandedBytes                int64
+	LandedContentBytes         int64
+	LandedPayloadFormatVersion int16
 }
 
 type ChangeViewedFile struct {
@@ -650,6 +676,9 @@ type CollaborationVersion struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+	SourceKnown         bool
+	SourceScheduled     bool
+	SourceObservedAt    time.Time
 }
 
 type Conversation struct {
@@ -693,6 +722,23 @@ type Conversation struct {
 	CompactionScannedSequence        int64
 	CompactionContentScannedSequence int64
 	CompactionContentID              string
+	ExecutionAttemptID               *string
+	ExecutionRunID                   *string
+	ExecutionFencingToken            pgtype.Int8
+	ExecutionRunnerID                *string
+	ExecutionMachineID               *string
+	ExecutionThreadID                *string
+	ExecutionTurnID                  *string
+	ExecutionResume                  *string
+	ExecutionCanSteer                pgtype.Bool
+	ExecutionCanInterrupt            pgtype.Bool
+	ExecutionCanAnswer               pgtype.Bool
+	ExecutionCanContinue             pgtype.Bool
+	ExecutionError                   *string
+	ExecutionUpdatedAt               *time.Time
+	PreferenceModel                  *string
+	PreferenceEffort                 *string
+	PreferenceAccess                 *string
 }
 
 type ConversationAttachment struct {
@@ -747,6 +793,13 @@ type ConversationCommand struct {
 	QueryMetadataVersion int32
 	ReceiptStatus        *string
 	TargetTurnID         string
+	ReceiptKey           *string
+	ReceiptKind          *string
+	ReceiptMessageID     *string
+	ReceiptQuestionID    *string
+	ReceiptErrorCode     *string
+	ReceiptErrorMessage  *string
+	ReceiptUpdatedAt     *time.Time
 }
 
 type ConversationContentObject struct {
@@ -1180,6 +1233,7 @@ type GithubOutbound struct {
 	Verification        int64
 	PageSequence        int64
 	SourceUpdatedAt     time.Time
+	CoalesceKey         string
 }
 
 type GithubOutboundObservation struct {
@@ -1192,15 +1246,59 @@ type GithubOutboundObservation struct {
 	Ready          bool
 }
 
+type GithubPullRequestRefresh struct {
+	OrganizationID          tracker.OrganizationID
+	ProjectID               tracker.ProjectID
+	ChangeID                *string
+	Repository              string
+	PullNumber              int64
+	WorkItemID              *string
+	RequestedVersion        *string
+	RequestedHeadSha        *string
+	RequestCount            pgtype.Int8
+	RequestedAt             *time.Time
+	NextAttemptAt           *time.Time
+	Pending                 bool
+	Attempts                int64
+	ObservedHeadSha         *string
+	SourceUpdatedAt         *time.Time
+	ObservedAt              *time.Time
+	State                   *string
+	Draft                   pgtype.Bool
+	Mergeable               pgtype.Bool
+	ChecksStatus            *string
+	ChecksConclusion        *string
+	ChecksTotal             pgtype.Int8
+	ChecksPending           pgtype.Int8
+	ChecksPassed            pgtype.Int8
+	ChecksFailed            pgtype.Int8
+	ReviewsState            *string
+	ReviewsDecision         *string
+	ReviewsApprovals        pgtype.Int8
+	ReviewsChangesRequested pgtype.Int8
+	ReviewsComments         pgtype.Int8
+	ObservedRequestCount    pgtype.Int8
+	SourceKind              string
+	WebhookDeliveryID       *string
+	MergeSha                *string
+	BaseRef                 *string
+	MergedAt                *time.Time
+	MergedBy                *string
+	MergePolicyBound        bool
+	RepositoryDefaultBranch *string
+}
+
 type GithubReconciliation struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	Repository     string
-	NodeID         string
-	AfterWorkItem  string
-	Revision       int64
-	Attempts       int64
-	NextAttemptAt  time.Time
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	Repository            string
+	NodeID                string
+	AfterWorkItem         string
+	Revision              int64
+	Attempts              int64
+	NextAttemptAt         time.Time
+	LastSuccessfulSweepAt *time.Time
+	LastFailureAt         *time.Time
 }
 
 type GithubWebhookReceipt struct {
@@ -1220,6 +1318,7 @@ type GithubWebhookReceipt struct {
 	AfterProject        string
 	Attempts            int64
 	NextAttemptAt       time.Time
+	LastReceivedAt      *time.Time
 }
 
 type GoTestReceipt struct {
@@ -1320,6 +1419,18 @@ type HealthFindingProject struct {
 	FindingID      string
 	ProjectID      tracker.ProjectID
 	PageSequence   int64
+}
+
+type HealthScheduledReport struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Repository     string
+	RunID          string
+	RunAttempt     string
+	RunUrl         string
+	HeadSHA        string
+	Conclusion     string
+	RecordedAt     time.Time
 }
 
 type HealthSlackDelivery struct {
@@ -1523,16 +1634,17 @@ type HostedInvitationGrant struct {
 }
 
 type HostedMember struct {
-	OrganizationID tracker.OrganizationID
-	UserID         string
-	Email          string
-	MembershipID   string
-	Role           string
-	Active         bool
-	PrincipalID    string
-	NotifyIssues   bool
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	OrganizationID        tracker.OrganizationID
+	UserID                string
+	Email                 string
+	MembershipID          string
+	Role                  string
+	Active                bool
+	PrincipalID           string
+	NotifyIssues          bool
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	SessionsRevokedBefore *time.Time
 }
 
 type HostedMemberReservation struct {
@@ -1787,15 +1899,43 @@ type Issue struct {
 	RecoveryRunnerID       string
 	RecoveryVersionID      string
 	DoctorIdentityRevision *int64
+	TerminalEnteredAt      *time.Time
+	ArchiveRestoredAt      *time.Time
+	ArchiveRestoreKnown    bool
+	SourceRevision         int64
+	SourceScheduled        bool
+	SourceObservedAt       *time.Time
+}
+
+type IssueArchiveMessagePayload struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	WorkItemID        string
+	ArchiveRevision   int64
+	SectionID         string
+	ConversationID    string
+	MessageID         string
+	Sequence          int64
+	MessageRevision   int64
+	ExpectedReference string
+	ContentID         string
 }
 
 type IssueArchiveSection struct {
-	OrganizationID  tracker.OrganizationID
-	ProjectID       tracker.ProjectID
-	WorkItemID      string
-	ArchiveRevision int64
-	SectionID       string
-	AttachmentID    string
+	OrganizationID             tracker.OrganizationID
+	ProjectID                  tracker.ProjectID
+	WorkItemID                 string
+	ArchiveRevision            int64
+	SectionID                  string
+	AttachmentID               string
+	Kind                       string
+	SourceEventSequence        int64
+	SourceConversationSequence int64
+	SubjectID                  string
+	FirstSequence              int64
+	LastSequence               int64
+	RetiredThrough             int64
+	RetirementComplete         bool
 }
 
 type IssueClaimFact struct {
@@ -1870,6 +2010,19 @@ type IssueRelationship struct {
 	CreatedAt        time.Time
 }
 
+type IssueStorageArchive struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	WorkItemID           string
+	IssueRevision        int64
+	EventSequence        int64
+	ConversationSequence int64
+	RootAttachmentID     string
+	ThroughHistory       int64
+	LastMessageScanned   int64
+	PublishedAt          time.Time
+}
+
 type IssueSubscription struct {
 	OrganizationID tracker.OrganizationID
 	WorkItemID     string
@@ -1892,6 +2045,8 @@ type Lease struct {
 	ExpiresAt        time.Time
 	ReleasedAt       *time.Time
 	ReleaseReason    string
+	ProjectID        *tracker.ProjectID
+	RunnerID         *string
 }
 
 type LeasePolicyBinding struct {
@@ -1949,6 +2104,8 @@ type Machine struct {
 	SpriteName          string
 	RoutingRevision     int64
 	RegistrationTokenID *string
+	SpriteWokenAt       *time.Time
+	SpriteWakeFailedAt  *time.Time
 }
 
 type MessageReference struct {
@@ -1991,29 +2148,34 @@ type MonthlyBudgetPolicy struct {
 }
 
 type NativeAttempt struct {
-	OrganizationID         tracker.OrganizationID
-	ID                     string
-	IssueID                int64
-	LeaseID                string
-	FencingToken           int64
-	RunID                  string
-	Sequence               int64
-	Status                 string
-	WorkItemRevision       int64
-	DispatchGeneration     int64
-	PayloadObjectKey       string
-	CheckpointObjectKey    *string
-	ArtifactsObjectKey     *string
-	StartedAt              time.Time
-	UpdatedAt              time.Time
-	StartedAtSubmicroNs    int16
-	RunnerTokensRecorded   bool
-	CleanupAcknowledgedAt  *time.Time
-	RuntimeHeartbeatAt     *time.Time
-	RuntimeSummarySequence pgtype.Int8
-	ClaimDisposition       *string
-	LocalAttemptID         pgtype.Int8
-	LocalAttemptIDRecorded bool
+	OrganizationID            tracker.OrganizationID
+	ID                        string
+	IssueID                   int64
+	LeaseID                   string
+	FencingToken              int64
+	RunID                     string
+	Sequence                  int64
+	Status                    string
+	WorkItemRevision          int64
+	DispatchGeneration        int64
+	PayloadObjectKey          string
+	CheckpointObjectKey       *string
+	ArtifactsObjectKey        *string
+	StartedAt                 time.Time
+	UpdatedAt                 time.Time
+	StartedAtSubmicroNs       int16
+	RunnerTokensRecorded      bool
+	CleanupAcknowledgedAt     *time.Time
+	RuntimeHeartbeatAt        *time.Time
+	RuntimeSummarySequence    pgtype.Int8
+	ClaimDisposition          *string
+	LocalAttemptID            pgtype.Int8
+	LocalAttemptIDRecorded    bool
+	CheckpointPreservesSource pgtype.Bool
+	ProjectID                 tracker.ProjectID
+	UsagePendingSequence      int64
+	UsageProjectedSequence    int64
+	WorkerCleanupRequired     pgtype.Bool
 }
 
 type NativeAttemptEvent struct {
@@ -2058,6 +2220,12 @@ type NativeBoardDelta struct {
 	CurrentSha256        *string
 	CurrentBytes         pgtype.Int8
 	CurrentContentBytes  pgtype.Int8
+	Topic                string
+	EntityID             string
+	EntityRevision       pgtype.Int8
+	Kind                 string
+	Status               string
+	RelatedID            string
 }
 
 type NativeBoardDirty struct {
@@ -2676,6 +2844,9 @@ type NativeComment struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	RecordID             int64
+	SourceRevision       int64
+	SourceScheduled      bool
+	SourceObservedAt     *time.Time
 }
 
 type NativeCommentPage struct {
@@ -4166,6 +4337,9 @@ type QueueEntry struct {
 	PriorityOverride pgtype.Int4
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	ListPriority     pgtype.Int4
+	ListRankMissing  pgtype.Int4
+	ListRank         *string
 }
 
 type ReleaseAuditCheckpoint struct {
@@ -4286,6 +4460,7 @@ type ReportEventFact struct {
 	ProcessFencingToken     int64
 	ProcessRunnerID         string
 	ProcessMachineID        string
+	PhaseTimingStatus       string
 }
 
 type ReportUsageCurrent struct {
@@ -4302,6 +4477,8 @@ type ReportUsageCurrent struct {
 	Output         int64
 	CostEstimate   float64
 	Complete       bool
+	Currency       *string
+	UsageKind      *string
 }
 
 type ReportUsageImportCoverage struct {
@@ -4621,18 +4798,19 @@ type RunnerNativeAdmissionSelector struct {
 }
 
 type RunnerProblemReport struct {
-	OrganizationID tracker.OrganizationID
-	RunnerID       string
-	Code           string
-	ProjectID      tracker.ProjectID
-	Subject        string
-	CheckName      string
-	ErrorOutput    string
-	FixCommand     string
-	Message        string
-	FixHint        string
-	ReportedAt     time.Time
-	FirstSeen      time.Time
+	OrganizationID     tracker.OrganizationID
+	RunnerID           string
+	Code               string
+	ProjectID          tracker.ProjectID
+	Subject            string
+	CheckName          string
+	ErrorOutput        string
+	FixCommand         string
+	Message            string
+	FixHint            string
+	ReportedAt         time.Time
+	FirstSeen          time.Time
+	CachedCapabilities bool
 }
 
 type RunnerProcessReceipt struct {
@@ -4677,27 +4855,42 @@ type RunnerProjectCapacityLimit struct {
 }
 
 type RunnerProjectConfiguration struct {
-	OrganizationID         tracker.OrganizationID
-	RunnerID               string
-	ProjectID              tracker.ProjectID
-	Revision               int64
-	ConfigRevision         string
-	PolicyID               string
-	State                  string
-	Paused                 bool
-	AllowLocalBinding      bool
-	LocalIntakeEnabled     bool
-	PayloadObjectKey       string
-	PayloadSHA256          string
-	PayloadBytes           int64
-	PayloadContentBytes    int64
-	ObservedConfigRevision string
-	ObservedPolicyID       string
-	ObservedRegistered     bool
-	ObservedPaused         bool
-	ObservedDraining       bool
-	ObservedAt             *time.Time
-	UpdatedAt              time.Time
+	OrganizationID                 tracker.OrganizationID
+	RunnerID                       string
+	ProjectID                      tracker.ProjectID
+	Revision                       int64
+	ConfigRevision                 string
+	PolicyID                       string
+	State                          string
+	Paused                         bool
+	AllowLocalBinding              bool
+	LocalIntakeEnabled             bool
+	PayloadObjectKey               string
+	PayloadSHA256                  string
+	PayloadBytes                   int64
+	PayloadContentBytes            int64
+	ObservedConfigRevision         string
+	ObservedPolicyID               string
+	ObservedRegistered             bool
+	ObservedPaused                 bool
+	ObservedDraining               bool
+	ObservedAt                     *time.Time
+	UpdatedAt                      time.Time
+	RequestID                      string
+	RequestOperation               string
+	RequestActorID                 string
+	RequestHash                    string
+	RequestRunnerRevision          int64
+	RequestStatus                  string
+	RequestPayloadObjectKey        string
+	RequestPayloadSha256           string
+	RequestPayloadBytes            int64
+	RequestPayloadContentBytes     int64
+	ObservationPayloadObservedAt   *time.Time
+	ObservationPayloadObjectKey    string
+	ObservationPayloadSha256       string
+	ObservationPayloadBytes        int64
+	ObservationPayloadContentBytes int64
 }
 
 type RunnerProjectDailyToken struct {
@@ -5218,18 +5411,19 @@ type SpriteLifecycleOperation struct {
 }
 
 type StorageConversionCursor struct {
-	OrganizationID tracker.OrganizationID
-	Family         string
-	Turn           int64
-	Positioned     bool
-	Key1           string
-	Key2           string
-	Key3           string
-	Key4           string
-	Sequence       int64
-	ExaminedRows   int64
-	ExaminedBytes  int64
-	OversizedRows  int64
+	OrganizationID    tracker.OrganizationID
+	Family            string
+	Turn              int64
+	Positioned        bool
+	Key1              string
+	Key2              string
+	Key3              string
+	Key4              string
+	Sequence          int64
+	ExaminedRows      int64
+	ExaminedBytes     int64
+	OversizedRows     int64
+	ArchiveTerminalAt *time.Time
 }
 
 type StorageConversionProgress struct {

@@ -2,11 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"errors"
 	"net/http"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -26,19 +22,6 @@ func (s *Service) registerOnboardingRoutes(e *echo.Echo) {
 	e.PUT(nativeBase+"/onboarding", s.saveOnboarding, write)
 	e.PUT(nativeBase+"/onboarding/policy", s.approveProjectPolicy, s.requireOnboardingAdmin())
 	e.PUT(nativeBase+"/onboarding/artifact-services/:service", s.bindArtifactService, s.requireOnboardingAdmin())
-}
-
-func readOnboardingProgress(ctx context.Context, query nativeQueryer, scope nativeScope) (onboarding.Progress, error) {
-	var progress onboarding.Progress
-	var raw string
-	err := query.QueryRowContext(ctx, "SELECT progress_json FROM project_onboarding WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return progress, nil
-	}
-	if err != nil {
-		return progress, err
-	}
-	return progress, json.Unmarshal([]byte(raw), &progress)
 }
 
 func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onboarding.Project, error) {
@@ -70,34 +53,7 @@ func (s *Service) saveOnboarding(c echo.Context) error {
 	if err := request.Progress.Validate(); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
-	if s.config.TenantRepository != nil {
-		return s.saveOnboardingProgressRecord(c, request)
-	}
-	return s.nativeMutation(c, request.Mutation, request, s.saveOnboardingOperation(request))
-}
-
-func (s *Service) saveOnboardingOperation(request saveOnboardingRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
-	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		if err := request.Progress.Validate(); err != nil {
-			return nil, nativeInvalid(err.Error())
-		}
-		current, err := readOnboardingProgress(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if current.Revision != request.Progress.Revision {
-			return nil, nativeConflict(current.Revision)
-		}
-		progress := request.Progress
-		progress.Revision++
-		progress.UpdatedAt = formatHubTime(now)
-		raw, err := marshalNative(progress)
-		if err != nil {
-			return nil, err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO project_onboarding(organization_id,project_id,revision,progress_json,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(organization_id,project_id) DO UPDATE SET revision=excluded.revision,progress_json=excluded.progress_json,updated_at=excluded.updated_at`, scope.organization, scope.project, progress.Revision, raw, progress.UpdatedAt)
-		return progress, err
-	}
+	return s.saveOnboardingProgressRecord(c, request)
 }
 
 func (s *Service) requireOnboardingAdmin() echo.MiddlewareFunc {

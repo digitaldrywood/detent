@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -39,7 +40,7 @@ func ClosePostgres() error {
 	return testsupport.CloseScenarioPostgres(ctx)
 }
 
-func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracker.NativeState, requireDependencies bool) hubserver.Config {
+func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracker.NativeState, requireDependencies bool) (hubserver.Config, func(context.Context, string) error) {
 	t.Helper()
 	admin := testsupport.ScenarioPostgresDatabase(t)
 	connection := pgtransport.Connection{User: "hubclient_test", Password: "test-only", SSLMode: "disable"}
@@ -74,6 +75,10 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 	if err != nil {
 		t.Fatal(err)
 	}
+	deployment, generation := "origin", int64(0)
+	if cfg.Hosted.SharedEntry != nil {
+		deployment, generation = "shared", cfg.Hosted.SharedEntry.Generation
+	}
 	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
 	project := hubclientPostgresProject(cfg)
 	now := cfg.Clock().UTC()
@@ -81,7 +86,7 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: "example", CreatedAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, AllocationGeneration: 1}); err != nil {
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 			return err
 		}
 		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: "hub_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {
@@ -117,7 +122,35 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 	if err := errors.Join(err, repository.Close()); err != nil {
 		t.Fatal(err)
 	}
-	return cfg
+	return cfg, func(ctx context.Context, attempt string) error {
+		var before string
+		if err := admin.QueryRowContext(ctx, "SELECT checkpoint_object_key FROM native_attempts WHERE organization_id=$1 AND id=$2", organization, attempt).Scan(&before); err != nil {
+			return fmt.Errorf("read historical checkpoint key: %w", err)
+		}
+		if before == "" {
+			return errors.New("historical checkpoint has no source key")
+		}
+		result, err := admin.ExecContext(ctx, "UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE organization_id=$1 AND id=$2", organization, attempt)
+		if err != nil {
+			return fmt.Errorf("clear historical source fact: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read historical source fact rows: %w", err)
+		}
+		if rows != 1 {
+			return errors.New("historical source fixture did not update exactly one attempt")
+		}
+		var after string
+		var preserves *bool
+		if err := admin.QueryRowContext(ctx, "SELECT checkpoint_object_key,checkpoint_preserves_source FROM native_attempts WHERE organization_id=$1 AND id=$2", organization, attempt).Scan(&after, &preserves); err != nil {
+			return fmt.Errorf("verify historical source fact: %w", err)
+		}
+		if after != before || preserves != nil {
+			return errors.New("historical source fixture changed its key or retained a known fact")
+		}
+		return nil
+	}
 }
 
 func hubclientPostgresProject(cfg hubserver.Config) tracker.ProjectID {

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -239,4 +240,78 @@ func applyPostgresReportUsage(out *hostedReportsReport, work []reportstore.Overv
 	out.Unavailable = postgresReportRemoveUnavailable(out.Unavailable, "recorded_usage", "stage_usage", "runner_usage")
 	out.Analytics.Unavailable = postgresReportRemoveUnavailable(out.Analytics.Unavailable, "recorded_usage", "stage_usage", "runner_usage")
 	return nil
+}
+
+func readPostgresReportCompletionCosts(ctx context.Context, reader tenantstore.Reader, query reportstore.OverviewQuery, facts []reportstore.OverviewFact, w, prior operatortool.AnalyticsWindow, compare bool) (map[reportstore.CompletionCostItem]reportstore.CompletionCostFact, error) {
+	items := []reportstore.CompletionCostItem{}
+	seen := map[reportstore.CompletionCostItem]bool{}
+	for _, fact := range facts {
+		current := fact.CompletedState == "Done" && fact.CompletedAt != nil && !fact.CompletedAt.Before(w.From) && fact.CompletedAt.Before(w.To)
+		previous := compare && fact.PreviousCompletedState == "Done" && fact.PreviousCompletedAt != nil && !fact.PreviousCompletedAt.Before(prior.From) && fact.PreviousCompletedAt.Before(prior.To)
+		item := reportstore.CompletionCostItem{ProjectID: fact.ProjectID, WorkItemID: fact.WorkItemID}
+		if (current || previous) && !seen[item] {
+			items = append(items, item)
+			seen[item] = true
+		}
+	}
+	out := make(map[reportstore.CompletionCostItem]reportstore.CompletionCostFact, len(items))
+	if len(items) == 0 {
+		return out, nil
+	}
+	owner, ok := reader.(reportstore.CompletionCostReader)
+	if !ok {
+		return nil, fmt.Errorf("PostgreSQL completion cost owner is unavailable")
+	}
+	rows, err := owner.ReadCompletionCosts(ctx, reportstore.CompletionCostQuery{Items: items, Principal: query.Principal, CurrentTo: w.To, PriorTo: prior.To})
+	if errors.Is(err, reportstore.ErrPopulationExceeded) {
+		for _, item := range items {
+			out[item] = reportstore.CompletionCostFact{CompletionCostItem: item}
+		}
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		_, duplicate := out[row.CompletionCostItem]
+		if !seen[row.CompletionCostItem] || duplicate {
+			return nil, fmt.Errorf("completion cost population differs from selected work items")
+		}
+		out[row.CompletionCostItem] = row
+	}
+	if len(out) != len(items) {
+		return nil, fmt.Errorf("completion cost population is incomplete")
+	}
+	return out, nil
+}
+
+func applyPostgresReportCompletionCosts(out *hostedReportsReport, facts []reportstore.OverviewFact, costs map[reportstore.CompletionCostItem]reportstore.CompletionCostFact, w, prior operatortool.AnalyticsWindow, compare bool) {
+	out.Completion.Cost, out.Previous.Cost = 0, 0
+	out.Completion.CostP50, out.Completion.CostP90 = nil, nil
+	samples := []float64{}
+	currentKnown, previousKnown := true, true
+	for _, fact := range facts {
+		cost, exists := costs[reportstore.CompletionCostItem{ProjectID: fact.ProjectID, WorkItemID: fact.WorkItemID}]
+		if fact.CompletedState == "Done" && fact.CompletedAt != nil && !fact.CompletedAt.Before(w.From) && fact.CompletedAt.Before(w.To) {
+			out.Completion.Cost += cost.Cost
+			samples = append(samples, cost.Cost)
+			currentKnown = currentKnown && exists && cost.Complete
+		}
+		if compare && fact.PreviousCompletedState == "Done" && fact.PreviousCompletedAt != nil && !fact.PreviousCompletedAt.Before(prior.From) && fact.PreviousCompletedAt.Before(prior.To) {
+			out.Previous.Cost += cost.PriorCost
+			previousKnown = previousKnown && exists && cost.Complete
+		}
+	}
+	out.Completion.perIssue = nil
+	if currentKnown && len(samples) > 0 {
+		spread := sampledDuration(samples)
+		out.Completion.CostP50, out.Completion.CostP90 = &spread.P50Seconds, &spread.P90Seconds
+		out.Completion.perIssue = spread.Samples
+	}
+	if !currentKnown || !previousKnown {
+		out.Unavailable = append(out.Unavailable, "completion_usage")
+		out.Analytics.Unavailable = append(out.Analytics.Unavailable, "completion_usage")
+	}
+	out.Completion.Partial = out.Completion.Partial || !currentKnown
+	out.Previous.Partial = out.Previous.Partial || !previousKnown
 }

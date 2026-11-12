@@ -177,9 +177,6 @@ func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 	server := httptest.NewServer(f.service.Handler())
 	t.Cleanup(server.Close)
 	key := seedChangeReadCredential(t, repository, f.project)
-	originalDB, originalReader := f.service.database.db, f.service.database.reader
-	f.service.database.db, f.service.database.reader = nil, nil
-	t.Cleanup(func() { f.service.database.db, f.service.database.reader = originalDB, originalReader })
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	t.Cleanup(transport.CloseIdleConnections)
 	client, err := hubapi.New(hubapi.Config{URL: server.URL, TokenSource: func() string { return key.Token }, HTTPClient: &http.Client{Transport: transport}})
@@ -188,6 +185,19 @@ func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 	}
 	native, err := client.Native("org_security", f.project)
 	if err != nil {
+		t.Fatal(err)
+	}
+	pushPolicy := hubTestPolicy()
+	pushPolicy.Gates.GitHubPullRequest = true
+	pushPolicy = pushPolicy.WithID()
+	pushRevision, err := eventstore.NewContent(details).PrepareProjectPolicy(t.Context(), "org_security", pushPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushRevision.ProjectID, pushRevision.ApprovedBy, pushRevision.ApprovedAt = f.project, "example-owner", time.Now().UTC().Truncate(time.Microsecond)
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.ApproveProjectPolicy(t.Context(), pushRevision, hubTestPolicy().ID)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	var firstChange string
@@ -297,7 +307,7 @@ func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 			for i := 0; i < discussionCount; i++ {
 				appendEvidence("discussion", tracker.ChangeDiscussion{ID: fmt.Sprintf("discussion_%s_%d", key, i), Body: "Example discussion", Actor: actor, CreatedAt: now})
 			}
-			run := tracker.NativeRunData{AttemptID: "attempt_" + key, RunID: "run_" + key, Sequence: 1, PolicyID: hubTestPolicy().ID}
+			run := tracker.NativeRunData{AttemptID: "attempt_" + key, RunID: "run_" + key, Sequence: 1, PolicyID: latest.PolicyID}
 			reference := tracker.NativeChangeReference{ChangeID: change.ID, VersionID: latest.ID, HeadSHA: latest.HeadSHA}
 			run.Handoff = &tracker.NativeCheckpoint{Change: &reference, HeadSHA: latest.HeadSHA, ExternalEffect: "git_push", EffectState: "confirmed", EffectID: fmt.Sprintf("effect_%032x", len(key))}
 			if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
@@ -334,7 +344,15 @@ func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 					event.PushExternalEffect = ""
 					event.PushEffectState = ""
 				}
-				if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: run.AttemptID, RunID: run.RunID, Sequence: 1, Status: "running", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, PayloadObjectKey: event.PayloadObjectKey}); err != nil {
+				runRaw, err := json.Marshal(run)
+				if err != nil {
+					return err
+				}
+				payload, err := content.PreparePayload(t.Context(), "org_security", runRaw)
+				if err != nil {
+					return err
+				}
+				if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: run.AttemptID, RunID: run.RunID, Sequence: 1, Status: "running", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, PayloadObjectKey: payload.Key, PayloadReference: payload}); err != nil {
 					return err
 				}
 				_, err = w.AppendEvent(t.Context(), event)

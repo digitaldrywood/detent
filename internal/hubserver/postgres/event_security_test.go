@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -138,11 +139,11 @@ func TestEventChangeRelationships(t *testing.T) {
 	for _, tc := range []struct{ name, statement, state string }{
 		{"event issue", `INSERT INTO collaboration_events SELECT organization_id,project_id,'wi_missing', 'other_event',sequence,type,schema_version,actor_kind,actor_principal_id,event_revision,change_id,version_id,head_sha,run_id,attempt_id,from_state,to_state,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events WHERE id='event_first'`, "23503"},
 		{"change project", `INSERT INTO change_requests SELECT organization_id,'prj_second',work_item_id,'bad_change',revision,title,current_version_id,evidence_sequence,created_at,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM change_requests WHERE id='change_first'`, "23503"},
-		{"version foreign change", `INSERT INTO change_versions SELECT organization_id,'bad_version','change_foreign',number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,attempt_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM change_versions LIMIT 1`, "23503"},
-		{"evidence wrong change version", `INSERT INTO change_evidence SELECT organization_id,change_id,99,'version_second',kind,'new_source',actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM change_evidence WHERE change_id='change_first'`, "23503"},
+		{"version foreign change", `INSERT INTO change_versions(organization_id,id,change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,attempt_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id) SELECT organization_id,'bad_version','change_foreign',number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,attempt_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id FROM change_versions LIMIT 1`, "23503"},
+		{"evidence wrong change version", `INSERT INTO change_evidence(organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id) SELECT organization_id,change_id,99,'version_second',kind,'new_source',actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id FROM change_evidence WHERE change_id='change_first'`, "23503"},
 		{"link wrong project", `INSERT INTO change_issue_links VALUES ('org_first','prj_second','wi_second_1','change_first')`, "23503"},
 		{"foreign current version", `UPDATE change_requests SET current_version_id='version_foreign' WHERE id='change_first'`, "23503"},
-		{"duplicate version number", `INSERT INTO change_versions SELECT organization_id,'other_version',change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,attempt_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM change_versions WHERE id='version_first'`, "23505"},
+		{"duplicate version number", `INSERT INTO change_versions(organization_id,id,change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,attempt_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id) SELECT organization_id,'other_version',change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,attempt_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id FROM change_versions WHERE id='version_first'`, "23505"},
 		{"duplicate event sequence", `INSERT INTO collaboration_events SELECT organization_id,project_id,work_item_id,'other_event',sequence,type,schema_version,actor_kind,actor_principal_id,event_revision,change_id,version_id,head_sha,run_id,attempt_id,from_state,to_state,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events WHERE id='event_first'`, "23505"},
 		{"cross tenant object", `UPDATE change_requests SET payload_object_key=replace(payload_object_key,'org_first','org_second') WHERE id='change_first'`, "23514"},
 	} {
@@ -290,6 +291,107 @@ func TestEventChangeLegacyDecodeRejectsInvalidPayload(t *testing.T) {
 			}
 		})
 	}
+	t.Run("malformed phase objects cannot replace typed receipts", func(t *testing.T) {
+		raw := []byte(`{"id":"malformed-phase","organization_id":"org_first","project_id":"prj_first","aggregate_id":"wi_first_1","type":"run.observed","schema_version":1,"actor":{"kind":"runner","principal_id":"example"},"data":{"run":{"attempt_id":"attempt","run_id":"run","runtime":{"phases":"malformed","activity":{"schema":1}}}}}`)
+		if _, err := c.PrepareEvent(t.Context(), "org_first", raw); !errors.Is(err, eventstore.ErrInvalidRecord) {
+			t.Fatalf("malformed typed phases error=%v", err)
+		}
+	})
+	t.Run("typed event facts", func(t *testing.T) {
+		value := tracker.CollaborationEvent{ID: "event_example", OrganizationID: "org_first", ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "workflow.transitioned", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "Persisted reason", Run: &tracker.NativeRunData{AttemptID: "persisted-attempt", FencingToken: 3}}}
+		original, err := c.PrepareEvent(t.Context(), value.OrganizationID, historyJSON(t, value))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range []struct {
+			name     string
+			edit     func(*eventstore.Event)
+			revision tracker.Revision
+			from     string
+			to       string
+			invalid  bool
+		}{
+			{"current write", func(*eventstore.Event) {}, 2, "Todo", "Done", false},
+			{"typed historical correction", func(row *eventstore.Event) { row.EventRevision, row.FromState, row.ToState = 7, "Backlog", "Cancelled" }, 7, "Backlog", "Cancelled", false},
+			{"typed zero and empty states", func(row *eventstore.Event) { row.EventRevision, row.FromState, row.ToState = 0, "", "" }, 0, "", "", false},
+			{"legacy actor envelope", func(row *eventstore.Event) { row.ActorEnvelopeKnown, row.ActorViaKey = false, "untracked" }, 2, "Todo", "Done", false},
+			{"work item mismatch", func(row *eventstore.Event) { row.WorkItemID = "wi_other" }, 0, "", "", true},
+			{"actor mismatch", func(row *eventstore.Event) { row.ActorPrincipalID = "other" }, 0, "", "", true},
+			{"run id mismatch", func(row *eventstore.Event) { row.RunID = "other-run" }, 0, "", "", true},
+			{"attempt id mismatch", func(row *eventstore.Event) { row.AttemptID = "other-attempt" }, 0, "", "", true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				row := original
+				test.edit(&row)
+				for _, reader := range []struct {
+					name string
+					read func(eventstore.Event) (tracker.CollaborationEvent, error)
+				}{
+					{"event", func(row eventstore.Event) (tracker.CollaborationEvent, error) { return c.Event(t.Context(), row) }},
+					{"analytics", func(row eventstore.Event) (tracker.CollaborationEvent, error) {
+						value, malformed, err := c.AnalyticsEvent(t.Context(), row)
+						if malformed {
+							t.Fatal("valid phases classified malformed")
+						}
+						return value, err
+					}},
+				} {
+					t.Run(reader.name, func(t *testing.T) {
+						read := reader.read
+						got, err := read(row)
+						if test.invalid {
+							if !errors.Is(err, artifact.ErrIntegrity) {
+								t.Fatalf("mismatched event identity error=%v", err)
+							}
+							return
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						if got.Data.Revision != test.revision || got.Data.FromState != test.from || got.Data.ToState != test.to {
+							t.Fatalf("event facts=%+v want revision=%d from=%q to=%q", got.Data, test.revision, test.from, test.to)
+						}
+						if got.Data.Reason != value.Data.Reason || got.Data.Run == nil || !reflect.DeepEqual(got.Data.Run, value.Data.Run) || got.Actor != value.Actor {
+							t.Fatalf("event detail changed=%+v", got)
+						}
+					})
+				}
+
+			})
+		}
+	})
+	t.Run("non-run event projection", func(t *testing.T) {
+		value := tracker.CollaborationEvent{ID: "event_nonrun", OrganizationID: "org_first", ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "workflow.transitioned", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt()}
+		original, err := c.PrepareEvent(t.Context(), value.OrganizationID, historyJSON(t, value))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range []struct {
+			name    string
+			run     string
+			attempt string
+			invalid bool
+		}{
+			{"empty projection", "", "", false},
+			{"invented run", "other-run", "", true},
+			{"invented attempt", "", "other-attempt", true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				row := original
+				row.RunID, row.AttemptID = test.run, test.attempt
+				got, err := c.Event(t.Context(), row)
+				if test.invalid {
+					if !errors.Is(err, artifact.ErrIntegrity) {
+						t.Fatalf("non-run projection error=%v", err)
+					}
+					return
+				}
+				if err != nil || got.Data.Run != nil {
+					t.Fatalf("non-run event run=%+v error=%v", got.Data.Run, err)
+				}
+			})
+		}
+	})
 }
 
 func TestEventChangeEvidenceKinds(t *testing.T) {

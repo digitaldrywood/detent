@@ -2,10 +2,15 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -41,18 +46,7 @@ type analyticsResidenceTimeline struct {
 	rework  []analyticsResidenceEvent
 }
 
-func projectNativeAnalyticsResidence(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
-	if _, projected := q.(analyticsRollupReader); projected && analyticsPopulationOffset(ctx, "residence_events") == 0 {
-		return projectAnalyticsResidenceRollups(ctx, q, scope, r, out)
-	}
-	return projectNativeAnalyticsResidenceHistory(ctx, q, scope, r, out)
-}
-
-func projectNativeAnalyticsResidenceHistory(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
-	states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, out.Window)
-	if err != nil {
-		return err
-	}
+func projectAnalyticsResidencePopulation(states map[string]tracker.NativeState, issues []analyticsResidenceIssue, clipped bool, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
 	residence := operatortool.AnalyticsResidence{
 		Source:         "native_workflow_transitions_and_issue_creation",
 		Coverage:       "per_issue; residence_clipped_to_window; system_excludes_intake_terminal_and_held; held_after_first_dispatch; lead_created_to_done_at_completion; aging_at_window_end; quantiles_linear_interpolation",
@@ -132,195 +126,95 @@ func withAnalyticsLiveIssues(ctx context.Context) context.Context {
 	return context.WithValue(ctx, analyticsLiveIssuesKey{}, true)
 }
 
-func readAnalyticsResidenceHistory(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) (map[string]tracker.NativeState, []analyticsResidenceIssue, bool, error) {
-	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_events")
-	if prepareErr != nil {
-		return nil, nil, false, prepareErr
-	}
-	states := map[string]tracker.NativeState{}
-	rows, err := queryAnalyticsRows(ctx, q, `SELECT ws.detent_state,ws.terminal,ws.dispatchable FROM workflow_states ws
-JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT 50`, scope.organization, scope.project)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var state tracker.NativeState
-		if err := rows.Scan(&state.Name, &state.Terminal, &state.Dispatchable); err != nil {
-			rows.Close()
-			return nil, nil, false, err
-		}
-		states[state.Name] = state
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, nil, false, err
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, nil, false, err
-	}
-	issueFilter, issueArgs := reportsIssueClause(ctx, "i.native_id")
-	if _, live := ctx.Value(analyticsLiveIssuesKey{}).(bool); live {
-		issueFilter += " AND NOT (i.archived=1 AND coalesce(ws.terminal,0)=0)"
-	}
-	rows, err = queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT i.native_id,i.created_at,coalesce(
-(SELECT e.analytics_from_state FROM report_events e
- WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned'
- ORDER BY e.sequence LIMIT 1),CASE WHEN EXISTS (
- SELECT 1 FROM report_events c WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.work_item_id=i.native_id AND c.type='issue.created'
- ) THEN ws.detent_state END,'')
-FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
-WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?)
-AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?))`+issueFilter+`
-ORDER BY i.native_id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From)}, issueArgs...)...)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	defer rows.Close()
-	issues := []analyticsResidenceIssue{}
-	clipped := analyticsPopulationOffset(ctx, "residence_issues") > 0 || analyticsPopulationOffset(ctx, "residence_events") > 0
-	for rows.Next() {
-		if len(issues) == maxAnalyticsPopulation {
-			clipped = true
-			break
-		}
-		var issue analyticsResidenceIssue
-		var created string
-		if err := rows.Scan(&issue.id, &created, &issue.initial); err != nil {
-			rows.Close()
-			return nil, nil, false, err
-		}
-		issue.created, err = parseTimeValue(created)
-		if err != nil {
-			rows.Close()
-			return nil, nil, false, err
-		}
-		issue.partial = analyticsPopulationOffset(ctx, "residence_events") > 0
-		if issue.partial {
-			issue.initial = ""
-		}
-		issues = append(issues, issue)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, nil, false, err
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, nil, false, err
-	}
-	if len(issues) == 0 {
-		return states, issues, clipped, nil
-	}
-	ids := make([]string, 0, len(issues))
-	for _, issue := range issues {
-		ids = append(ids, issue.id)
-	}
-	encodedIDs, err := sqlList(ids)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	args := []any{scope.organization, scope.project, formatHubTime(w.To), encodedIDs}
-	byID := make(map[string]int, len(issues))
-	for i, issue := range issues {
-		byID[issue.id] = i
-	}
-	rows, err = queryAnalyticsPopulation(ctx, q, "residence_events", `SELECT work_item_id,type,recorded_at,data_json FROM report_events
-WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<julianday(?)
-AND work_item_id IN (SELECT value FROM sql_rows(?))
-AND (type='workflow.transitioned' OR (type='scheduler.decision' AND scheduler_source='native_claim' AND scheduler_outcome='claimed'))
-ORDER BY work_item_id,sequence LIMIT ? OFFSET ?`, args...)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	defer rows.Close()
-	observed := 0
-	type record struct {
-		id, at, raw string
-		event       analyticsResidenceEvent
-	}
-	var records []record
-	for rows.Next() {
-		var r record
-		if err := rows.Scan(&r.id, &r.event.kind, &r.at, &r.raw); err != nil {
-			return nil, nil, false, err
-		}
-		records = append(records, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, nil, false, err
-	}
-	for _, r := range records {
-		id, at, raw, event := r.id, r.at, r.raw, r.event
-		if observed == maxAnalyticsPopulation {
-			clipped = true
-			for i := byID[id]; i < len(issues); i++ {
-				issues[i].partial = true
-			}
-			break
-		}
-		observed++
-		event.at, err = parseTimeValue(at)
-		if err != nil {
-			return nil, nil, false, err
-		}
-		if err := decodeRunHistory(ctx, q, raw, &event.data); err != nil {
-			return nil, nil, false, err
-		}
-		issues[byID[id]].events = append(issues[byID[id]].events, event)
-	}
-	return states, issues, clipped, rows.Err()
+type analyticsResidenceFold struct {
+	issue   analyticsResidenceIssue
+	states  map[string]tracker.NativeState
+	to      time.Time
+	queueTo time.Time
+	last    time.Time
+	started *time.Time
+	state   string
+	entered time.Time
 }
 
-func buildAnalyticsResidenceTimeline(issue analyticsResidenceIssue, states map[string]tracker.NativeState, to time.Time) analyticsResidenceTimeline {
-	timeline := analyticsResidenceTimeline{issue: issue, state: issue.initial, entered: issue.created}
+type analyticsResidenceDelta struct {
+	span    analyticsResidenceSpan
+	hasSpan bool
+	done    bool
+	rework  bool
+}
+
+func newAnalyticsResidenceFold(issue analyticsResidenceIssue, states map[string]tracker.NativeState, to time.Time) analyticsResidenceFold {
+	fold := analyticsResidenceFold{issue: issue, states: states, to: to, queueTo: to, last: issue.created, state: issue.initial, entered: issue.created}
 	if issue.initial == "" {
-		timeline.issue.partial = true
+		fold.issue.partial = true
 	}
 	if states[issue.initial].Dispatchable && analyticsResidenceGroup(issue.initial, states) == "system" {
 		at := issue.created
-		timeline.started = &at
+		fold.started = &at
 	}
-	queueTo := to
-	last := issue.created
+	return fold
+}
+
+func (fold *analyticsResidenceFold) append(event analyticsResidenceEvent) analyticsResidenceDelta {
+	delta := analyticsResidenceDelta{}
+	if event.at.Before(fold.last) {
+		fold.issue.partial = true
+		return delta
+	}
+	fold.last = event.at
+	if event.kind == "scheduler.decision" {
+		if fold.state == "Rework" && fold.queueTo.After(event.at) {
+			fold.queueTo = event.at
+		}
+		return delta
+	}
+	if event.data.FromState != fold.state || event.data.ToState == "" {
+		fold.issue.partial = true
+	} else if event.data.ToState != fold.state && fold.started != nil {
+		delta.span = analyticsResidenceSpan{lane: fold.state, from: maxTime(fold.entered, *fold.started), to: event.at, queueTo: minTime(fold.queueTo, event.at)}
+		delta.hasSpan = true
+	}
+	if event.data.ToState == "" || event.data.ToState == fold.state {
+		return delta
+	}
+	fold.state, fold.entered = event.data.ToState, event.at
+	fold.queueTo = fold.to
+	if fold.started == nil && fold.states[fold.state].Dispatchable && analyticsResidenceGroup(fold.state, fold.states) == "system" {
+		at := event.at
+		fold.started = &at
+	}
+	delta.done = fold.state == "Done"
+	delta.rework = fold.state == "Rework"
+	return delta
+}
+
+func (fold *analyticsResidenceFold) finish() (analyticsResidenceSpan, bool) {
+	if fold.started == nil || fold.issue.partial {
+		return analyticsResidenceSpan{}, false
+	}
+	return analyticsResidenceSpan{lane: fold.state, from: maxTime(fold.entered, *fold.started), to: fold.to, queueTo: fold.queueTo}, true
+}
+
+func buildAnalyticsResidenceTimeline(issue analyticsResidenceIssue, states map[string]tracker.NativeState, to time.Time) analyticsResidenceTimeline {
+	fold := newAnalyticsResidenceFold(issue, states, to)
+	timeline := analyticsResidenceTimeline{}
 	for _, event := range issue.events {
-		if event.at.Before(last) {
-			timeline.issue.partial = true
-			continue
+		delta := fold.append(event)
+		if delta.hasSpan {
+			timeline.spans = append(timeline.spans, delta.span)
 		}
-		last = event.at
-		if event.kind == "scheduler.decision" {
-			if timeline.state == "Rework" && queueTo.After(event.at) {
-				queueTo = event.at
-			}
-			continue
-		}
-		if event.data.FromState != timeline.state || event.data.ToState == "" {
-			timeline.issue.partial = true
-		} else if event.data.ToState != timeline.state && timeline.started != nil {
-			timeline.spans = append(timeline.spans, analyticsResidenceSpan{lane: timeline.state, from: maxTime(timeline.entered, *timeline.started), to: event.at, queueTo: minTime(queueTo, event.at)})
-		}
-		if event.data.ToState == "" || event.data.ToState == timeline.state {
-			continue
-		}
-		timeline.state, timeline.entered = event.data.ToState, event.at
-		queueTo = to
-		if timeline.started == nil && states[timeline.state].Dispatchable && analyticsResidenceGroup(timeline.state, states) == "system" {
-			at := event.at
-			timeline.started = &at
-		}
-		if timeline.state == "Done" {
+		if delta.done {
 			timeline.done = append(timeline.done, event.at)
 		}
-		if timeline.state == "Rework" {
+		if delta.rework {
 			timeline.rework = append(timeline.rework, event)
 		}
 	}
-	if timeline.started != nil && !timeline.issue.partial {
-		timeline.spans = append(timeline.spans, analyticsResidenceSpan{lane: timeline.state, from: maxTime(timeline.entered, *timeline.started), to: to, queueTo: queueTo})
+	if span, ok := fold.finish(); ok {
+		timeline.spans = append(timeline.spans, span)
 	}
+	timeline.issue, timeline.started, timeline.state, timeline.entered = fold.issue, fold.started, fold.state, fold.entered
 	return timeline
 }
 
@@ -441,4 +335,99 @@ func analyticsDuration(values []float64) operatortool.AnalyticsDuration {
 	}
 	out.P50Seconds, out.P90Seconds = quantile(0.5), quantile(0.9)
 	return out
+}
+
+func (s *Service) projectNativeAnalyticsResidenceTenant(ctx context.Context, scope nativeScope, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
+	live, _ := ctx.Value(analyticsLiveIssuesKey{}).(bool)
+	after, cursor, key, err := s.analyticsResidenceSeek(ctx, scope, out.Window, live)
+	if err != nil {
+		return err
+	}
+	defer clear(key)
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return workItemStorageUnavailable()
+	}
+	var page eventstore.AnalyticsResidencePage
+	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		principal, err := s.analyticsSnapshotPrincipal(ctx, reader, scope)
+		if err != nil {
+			return err
+		}
+		owner, ok := reader.(eventstore.AnalyticsResidenceReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		page, err = owner.ReadAnalyticsResidencePage(ctx, eventstore.AnalyticsResidenceQuery{ProjectID: scope.project, Principal: principal, From: out.Window.From, To: out.Window.To, Limit: maxAnalyticsPopulation, Live: live, IssuesAfter: after.IssuesAfter, EventsAfterItem: after.EventItem, EventsAfterSequence: after.EventSequence})
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	page.Issues = slices.DeleteFunc(page.Issues, func(row eventstore.AnalyticsResidenceIssue) bool { return !analyticsCohortAllows(ctx, row.WorkItemID) })
+	states := map[string]tracker.NativeState{}
+	for _, state := range page.States {
+		states[state.Name] = state
+	}
+	issues := make([]analyticsResidenceIssue, len(page.Issues))
+	byID := map[tracker.NativeWorkItemID]int{}
+	for i, issue := range page.Issues {
+		issues[i] = analyticsResidenceIssue{id: string(issue.WorkItemID), created: issue.CreatedAt, initial: issue.InitialState, partial: after.EventItem != ""}
+		byID[issue.WorkItemID] = i
+		if after.EventItem != "" {
+			issues[i].initial = ""
+		}
+		if page.EventsMore && issue.WorkItemID >= page.EventsAfterItem {
+			issues[i].partial = true
+		}
+	}
+	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	for _, row := range page.Events {
+		if row.OrganizationID != scope.organization || row.ProjectID != scope.project {
+			return artifact.ErrIntegrity
+		}
+		if !analyticsCohortAllows(ctx, row.WorkItemID) {
+			continue
+		}
+		i, ok := byID[row.WorkItemID]
+		if !ok {
+			return artifact.ErrIntegrity
+		}
+		value, err := content.Event(ctx, row)
+		if err != nil {
+			return err
+		}
+		if value.Type == "scheduler.decision" {
+			if value.Data.Decision == nil {
+				return artifact.ErrIntegrity
+			}
+			if value.Data.Decision.Source != "native_claim" || value.Data.Decision.Outcome != "claimed" {
+				continue
+			}
+		}
+		issues[i].events = append(issues[i].events, analyticsResidenceEvent{at: value.RecordedAt, kind: value.Type, data: value.Data})
+	}
+	paging := analyticsPagingFromContext(ctx)
+	if paging == nil {
+		return errors.New("analytics residence paging context unavailable")
+	}
+	if page.IssuesMore && len(key) > 0 {
+		token, err := s.encodeAnalyticsResidenceCursor(cursor, key, analyticsResidenceCursor{IssuesAfter: page.IssuesAfter}, "residence_issues")
+		if err != nil {
+			return err
+		}
+		paging.next["residence_issues"] = token
+	}
+	if page.EventsMore && len(key) > 0 {
+		token, err := s.encodeAnalyticsResidenceCursor(cursor, key, analyticsResidenceCursor{IssuesAfter: after.IssuesAfter, EventItem: page.EventsAfterItem, EventSequence: page.EventsAfterSequence}, "residence_events")
+		if err != nil {
+			return err
+		}
+		paging.next["residence_events"] = token
+	}
+	clipped := page.IssuesMore || page.EventsMore || after.IssuesAfter != "" || after.EventItem != ""
+	if (page.IssuesMore || page.EventsMore) && len(key) == 0 {
+		out.Unavailable = append(out.Unavailable, "residence_continuation_requires_secret_keys")
+	}
+	return projectAnalyticsResidencePopulation(states, issues, clipped, r, out)
 }

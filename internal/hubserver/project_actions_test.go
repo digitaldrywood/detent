@@ -24,11 +24,24 @@ import (
 // the catalogue and the runs that need a workspace share one hub.
 type actionFixture struct {
 	*workspaceRunnerFixture
+	nativeFixture
+	ownerID string
 }
 
 func newActionFixture(t *testing.T) actionFixture {
 	t.Helper()
-	return actionFixture{newWorkspaceRunnerFixture(t)}
+	runner := newWorkspaceRunnerFixture(t)
+	return actionFixture{workspaceRunnerFixture: runner, nativeFixture: runner.nativeFixture, ownerID: runner.ownerID}
+}
+
+func newActionAuthoringFixture(t *testing.T) actionFixture {
+	t.Helper()
+	f := newPostgresDefaultNativeFixture(t, Config{})
+	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return actionFixture{nativeFixture: f, ownerID: credential.ID}
 }
 
 // execCapabilities is what a runner that serves project actions reports. The
@@ -74,9 +87,9 @@ func (f actionFixture) actions(t *testing.T) projectActionList {
 func (f actionFixture) requireRefusedAction(t *testing.T, method, actionID string, body map[string]any, reason string) {
 	t.Helper()
 	var logs bytes.Buffer
-	service := &Service{database: f.service.database, config: Config{
-		Hosted: &HostedConfig{}, Logger: slog.New(hostedLogHandler{output: slog.NewJSONHandler(&logs, nil)}), now: f.service.config.now,
-	}}
+	config := f.service.config
+	config.Logger = slog.New(hostedLogHandler{output: slog.NewJSONHandler(&logs, nil)})
+	service := &Service{database: f.service.database, config: config, localOrganization: f.service.localOrganization}
 	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +133,7 @@ func (f actionFixture) requireRefusedAction(t *testing.T, method, actionID strin
 // records who authored it.
 func TestProjectActionCreateNormalizesAndRecordsProvenance(t *testing.T) {
 	t.Parallel()
-	f := newActionFixture(t)
+	f := newActionAuthoringFixture(t)
 
 	action := f.authored(t, map[string]any{
 		"name": "  Run tests  ", "command": "  go test ./...  ", "keybinding": " MOD+Shift+T ",
@@ -155,7 +168,7 @@ func TestProjectActionCreateNormalizesAndRecordsProvenance(t *testing.T) {
 	t.Run("the listing is authoring order", func(t *testing.T) {
 		// A project that wants install before build writes install first, and
 		// the listing is the only thing that says so.
-		local := newActionFixture(t)
+		local := newActionAuthoringFixture(t)
 		first := local.authored(t, map[string]any{"name": "Install", "command": "npm install"})
 		second := local.authored(t, map[string]any{"name": "Build", "command": "npm run build"})
 		listing := local.actions(t)
@@ -169,7 +182,7 @@ func TestProjectActionCreateNormalizesAndRecordsProvenance(t *testing.T) {
 // the normalizer: a field nobody routed to its normalizer would pass.
 func TestProjectActionCreateRefusals(t *testing.T) {
 	t.Parallel()
-	f := newActionFixture(t)
+	f := newActionAuthoringFixture(t)
 	action := f.authored(t, map[string]any{"name": "Example action", "command": "make test"})
 
 	for _, test := range []struct {
@@ -202,7 +215,7 @@ func TestProjectActionCreateRefusals(t *testing.T) {
 	}
 
 	t.Run("a chord another action already claims is refused without customer content", func(t *testing.T) {
-		local := newActionFixture(t)
+		local := newActionAuthoringFixture(t)
 		local.authored(t, map[string]any{"name": "private-action-name", "command": "go test ./...", "keybinding": "private-chord"})
 		local.requireRefusedAction(t, http.MethodPost, "", map[string]any{
 			"name": "Run example", "command": "private-token", "keybinding": "PRIVATE-CHORD"}, "The keybinding is already used by another action")
@@ -211,7 +224,7 @@ func TestProjectActionCreateRefusals(t *testing.T) {
 	t.Run("two actions may both have no chord", func(t *testing.T) {
 		// The unique index is partial for this reason: no shortcut is not a
 		// shortcut two actions are fighting over.
-		local := newActionFixture(t)
+		local := newActionAuthoringFixture(t)
 		local.authored(t, map[string]any{"name": "One", "command": "make one"})
 		local.authored(t, map[string]any{"name": "Two", "command": "make two"})
 		if listing := local.actions(t); len(listing.Items) != 2 {
@@ -225,7 +238,7 @@ func TestProjectActionCreateRefusals(t *testing.T) {
 // menu.
 func TestProjectActionCreateRefusesPastTheProjectCap(t *testing.T) {
 	t.Parallel()
-	f := newActionFixture(t)
+	f := newActionAuthoringFixture(t)
 	for range workspacesession.MaxActionsPerProject {
 		f.authored(t, map[string]any{"name": "Action", "command": "make target"})
 	}
@@ -240,7 +253,7 @@ func TestProjectActionCreateRefusesPastTheProjectCap(t *testing.T) {
 // fenced by the revision the author read.
 func TestProjectActionPatch(t *testing.T) {
 	t.Parallel()
-	f := newActionFixture(t)
+	f := newActionAuthoringFixture(t)
 
 	t.Run("an absent field keeps what is stored and a present empty one clears it", func(t *testing.T) {
 		action := f.authored(t, map[string]any{"name": "Run tests", "command": "go test ./...",
@@ -328,8 +341,8 @@ func TestProjectActionDeleteCascadesItsRuns(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet,
 		f.base+"/actions/"+action.ID+"/runs/"+run, f.token, nil), http.StatusNotFound)
 	var rows int
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT count(*) FROM project_action_runs WHERE id = ?", run).Scan(&rows); err != nil {
+	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(),
+		"SELECT count(*) FROM project_action_runs WHERE organization_id=$1 AND project_id=$2 AND id=$3", f.project.OrganizationID, f.project.ID, run).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
 	if rows != 0 {

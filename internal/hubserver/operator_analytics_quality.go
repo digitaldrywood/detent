@@ -1,14 +1,18 @@
 package hubserver
 
 import (
-	"cmp"
 	"context"
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -75,272 +79,19 @@ type qualityDiscussion struct {
 	tracker.ChangeDiscussion
 }
 
-func analyticsEventsInRecordedOrder(q nativeQueryer) string {
-	if _, projected := q.(analyticsRollupReader); !projected {
-		return "collaboration_events INDEXED BY collaboration_events_analytics_order"
-	}
-	return `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id AS work_item_id,r.sequence AS sequence,r.type AS type,r.recorded_at AS recorded_at,e.data_json,e.from_state,e.to_state FROM analytics_hourly_rollups r INDEXED BY analytics_event_order CROSS JOIN main.collaboration_events e ON e.id=r.dimension WHERE r.metric='event') AS collaboration_events`
-}
-
-func readQualityLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
-	pending, err := analyticsChangeColumnsPending(ctx, q, scope)
-	if err != nil {
-		return nil, err
-	}
-	if pending {
-		return readUnconvertedAnalyticsLandings(ctx, q, scope, w, true)
-	}
-	issues, issueArgs := reportsIssueClause(ctx, "l.work_item_id")
-	rows, err := queryAnalyticsRows(ctx, q, `WITH reopened_items(work_item_id) AS MATERIALIZED (
-SELECT e.work_item_id FROM collaboration_events e WHERE e.organization_id=? AND e.project_id=? AND e.type='workflow.transitioned' AND e.recorded_at>=? AND e.recorded_at<? AND julianday(e.recorded_at)>=julianday(?) AND julianday(e.recorded_at)<julianday(?) AND lower(e.from_state)='done'
-),escaped_versions(change_id,version_id) AS MATERIALIZED (
-SELECT e.change_id,e.version_id FROM change_evidence e INDEXED BY change_evidence_analytics_escape CROSS JOIN change_requests c ON c.id=e.change_id
-WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escape_occurrence_id<>'' AND e.escape_observed_at>=? AND e.escape_observed_at<?
-),relevant_changes(id) AS (
-SELECT c.id FROM quality_landings l INDEXED BY quality_landings_analytics_landed CROSS JOIN change_versions v ON v.id=l.version_id CROSS JOIN change_requests c ON c.id=v.change_id
-WHERE c.organization_id=? AND c.project_id=? AND l.landed_at>=? AND l.landed_at<?
-UNION ALL SELECT c.id FROM change_requests c WHERE c.organization_id=? AND c.project_id=? AND c.landed_at>=? AND c.landed_at<?
-UNION ALL SELECT c.id FROM reopened_items i CROSS JOIN change_requests c ON c.work_item_id=i.work_item_id WHERE c.organization_id=? AND c.project_id=?
-UNION ALL SELECT change_id FROM escaped_versions
-),landed AS (
-SELECT c.id,c.work_item_id,v.id AS version_id,l.record_json AS landing,l.landed_at AS landed_at FROM quality_landings l JOIN change_versions v ON v.id=l.version_id JOIN change_requests c ON c.id=v.change_id WHERE c.organization_id=? AND c.project_id=? AND c.id IN (SELECT id FROM relevant_changes)
-UNION ALL SELECT c.id,c.work_item_id,v.id,c.record_json,c.landed_at FROM change_requests c JOIN change_versions v ON v.change_id=c.id AND v.id=c.landed_version_id
-WHERE c.organization_id=? AND c.project_id=? AND c.id IN (SELECT id FROM relevant_changes) AND NOT EXISTS (SELECT 1 FROM quality_landings l WHERE l.version_id=v.id) AND c.landed_head_sha=v.head_sha AND length(c.landed_merge_sha) IN (40,64)
-)
-SELECT id,work_item_id,landing,version_id,landed_at FROM landed l WHERE julianday(landed_at)<julianday(?) AND (
-julianday(landed_at)>=julianday(?) OR l.work_item_id IN (SELECT work_item_id FROM reopened_items)
-OR (l.id,l.version_id) IN (SELECT change_id,version_id FROM escaped_versions))
-`+issues+`
-`, append([]any{
-		scope.organization, scope.project, w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly), changeColumnTime(w.From), changeColumnTime(w.To),
-		scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To),
-		scope.organization, scope.project, w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly),
-		scope.organization, scope.project, w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly),
-		scope.organization, scope.project,
-		scope.organization, scope.project, scope.organization, scope.project, changeColumnTime(w.To), changeColumnTime(w.From)}, issueArgs...)...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	type qualityLandingRow struct {
-		id, item, raw, version, at string
-	}
-	population := newAnalyticsOrderedPopulation(ctx, "quality_landings", func(a, b qualityLandingRow) int {
-		if order := cmp.Compare(a.at, b.at); order != 0 {
-			return order
-		}
-		if order := cmp.Compare(a.id, b.id); order != 0 {
-			return order
-		}
-		return cmp.Compare(a.version, b.version)
-	})
-	for rows.Next() {
-		var row qualityLandingRow
-		if err := rows.Scan(&row.id, &row.item, &row.raw, &row.version, &row.at); err != nil {
-			return nil, err
-		}
-		population.add(row)
-	}
-	landings := []nativeAnalyticsLanding{}
-	for _, row := range population.page(ctx, "quality_landings") {
-		landing := nativeAnalyticsLanding{ChangeID: row.id, WorkItemID: tracker.NativeWorkItemID(row.item)}
-		if err := decodeQualityLanding(ctx, row.raw, &landing.Landing); err != nil {
-			return nil, err
-		}
-		landings = append(landings, landing)
-	}
-	return landings, rows.Err()
-}
-
 type analyticsQualityInputs struct {
+	unavailable []string
 	landings    []nativeAnalyticsLanding
 	events      []qualityHistoryEvent
 	discussions []qualityDiscussion
 	partial     bool
 }
 
-func loadAnalyticsQualityInputs(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) (analyticsQualityInputs, error) {
-	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_attempts", "report_events")
-	if prepareErr != nil {
-		return analyticsQualityInputs{}, prepareErr
-	}
-	landings, err := readQualityLandings(ctx, q, scope, w)
-	if err != nil {
-		return analyticsQualityInputs{}, err
-	}
-	partial := len(landings) > maxAnalyticsPopulation || analyticsPopulationOffset(ctx, "quality_landings") > 0 || analyticsPopulationOffset(ctx, "quality_events") > 0 || analyticsPopulationOffset(ctx, "quality_evidence") > 0 || analyticsPopulationOffset(ctx, "quality_worked") > 0
-	landings = landings[:min(len(landings), maxAnalyticsPopulation)]
-	eventIssues, eventArgs := reportsIssueClause(ctx, "work_item_id")
-	var rows interface {
-		Next() bool
-		Scan(...any) error
-		Err() error
-		Close()
-	}
-	rows, err = queryAnalyticsPopulation(ctx, q, "quality_events", `SELECT id,work_item_id,type,recorded_at,data_json,to_state,coalesce((SELECT terminal FROM workflow_states ws WHERE ws.project_id=collaboration_events.project_id AND ws.detent_state=to_state),0) FROM `+analyticsEventsInRecordedOrder(q)+`
-WHERE organization_id=? AND project_id=? AND type='workflow.transitioned'
-AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) AND recorded_at>=? AND recorded_at<?`+eventIssues+` ORDER BY recorded_at,sequence,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, eventArgs...)...)
-	if err != nil {
-		return analyticsQualityInputs{}, err
-	}
-	defer rows.Close()
-	events := []qualityHistoryEvent{}
-	for rows.Next() {
-		var e qualityHistoryEvent
-		var at, raw string
-		var target sql.NullString
-		if err := rows.Scan(&e.ID, &e.Item, &e.Kind, &at, &raw, &target, &e.ToTerminal); err != nil {
-			rows.Close()
-			return analyticsQualityInputs{}, err
-		}
-		e.At, err = parseTimeValue(at)
-		if err == nil {
-			err = decodeChangeColumnsJSON(ctx, []byte(raw), &e.Data)
-		}
-		if err != nil {
-			rows.Close()
-			return analyticsQualityInputs{}, err
-		}
-		if !target.Valid {
-			if err := q.QueryRowContext(ctx, `SELECT COALESCE((SELECT terminal FROM workflow_states WHERE project_id=? AND detent_state=?),0)`, scope.project, e.Data.ToState).Scan(&e.ToTerminal); err != nil {
-				rows.Close()
-				return analyticsQualityInputs{}, err
-			}
-		}
-
-		events = append(events, e)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return analyticsQualityInputs{}, err
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return analyticsQualityInputs{}, err
-	}
-	partial = partial || len(events) > maxAnalyticsPopulation
-	events = events[:min(len(events), maxAnalyticsPopulation)]
-	evidenceIssues, evidenceArgs := reportsIssueClause(ctx, "c.work_item_id")
-	pending, err := analyticsChangeColumnsPending(ctx, q, scope)
-	if err != nil {
-		return analyticsQualityInputs{}, err
-	}
-	if pending {
-		rows, err = queryLegacyAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key,''),e.record_json),c.work_item_id,e.sequence FROM change_evidence e JOIN change_requests c ON c.id=e.change_id WHERE c.organization_id=? AND c.project_id=? AND e.kind IN ('review','discussion')`+evidenceIssues+` ORDER BY e.sequence`, append([]any{scope.organization, scope.project}, evidenceArgs...)...)
-	} else {
-		rows, err = queryAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key,''),e.record_json),c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_review CROSS JOIN change_requests c ON c.id=e.change_id
-WHERE c.organization_id=? AND c.project_id=? AND e.kind='review' AND e.claim_review_decision='changes_requested' AND e.created_at>=? AND e.created_at<? AND NOT EXISTS (SELECT 1 FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=e.version_id AND julianday(newer.created_at)<=julianday(e.created_at))
-`+evidenceIssues+`
-UNION ALL SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key,''),e.record_json),c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_escape CROSS JOIN change_requests c ON c.id=e.change_id
-WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escape_occurrence_id<>'' AND e.escape_observed_at>=? AND e.escape_observed_at<?
-`+evidenceIssues, append(append(append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To)}, evidenceArgs...), scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To)), evidenceArgs...)...)
-	}
-
-	if err != nil {
-		return analyticsQualityInputs{}, err
-	}
-	defer rows.Close()
-	type qualityEvidenceRow struct {
-		id, kind, raw, item string
-		sequence            int64
-	}
-	evidence := newAnalyticsOrderedPopulation(ctx, "quality_evidence", func(a, b qualityEvidenceRow) int { return cmp.Compare(a.sequence, b.sequence) })
-	for rows.Next() {
-		var value qualityEvidenceRow
-		if err := rows.Scan(&value.id, &value.kind, &value.raw, &value.item, &value.sequence); err != nil {
-			return analyticsQualityInputs{}, err
-		}
-		if pending {
-			matches, err := legacyQualityEvidenceMatches(ctx, q, value.kind, value.raw, w)
-			if err != nil {
-				return analyticsQualityInputs{}, err
-			}
-			if !matches {
-				continue
-			}
-		}
-
-		evidence.add(value)
-	}
-	if err := rows.Err(); err != nil {
-		return analyticsQualityInputs{}, err
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return analyticsQualityInputs{}, err
-	}
-	discussions := []qualityDiscussion{}
-	values := evidence.page(ctx, "quality_evidence")
-	partial = partial || len(values) > maxAnalyticsPopulation
-	for _, value := range values[:min(len(values), maxAnalyticsPopulation)] {
-		id, kind, raw, item := value.id, value.kind, value.raw, value.item
-		if kind == "discussion" {
-			var discussion qualityDiscussion
-			discussion.ChangeID = id
-			if err := decodeChangeColumnsJSON(ctx, []byte(raw), &discussion.ChangeDiscussion); err != nil {
-				rows.Close()
-				return analyticsQualityInputs{}, err
-			}
-			discussions = append(discussions, discussion)
-		} else {
-			var review tracker.ChangeReview
-			if err := decodeChangeColumnsJSON(ctx, []byte(raw), &review); err != nil {
-				rows.Close()
-				return analyticsQualityInputs{}, err
-			}
-			events = append(events, qualityHistoryEvent{ID: review.ID, Item: item, Kind: "changes_requested", VersionID: review.VersionID, At: review.CreatedAt})
-		}
-	}
-	role := "coalesce(nullif(role,''),execution_role)"
-	workedSource := analyticsAttemptsInStartedOrder(q)
-	if _, projected := q.(analyticsRollupReader); projected {
-		role = "attempt_role"
-		workedSource = "(SELECT organization_id,project_id,dimension AS id,work_item_id,started_at,attempt_role FROM analytics_hourly_rollups INDEXED BY analytics_attempt_started WHERE metric='attempt')"
-	}
-	workedIssues, workedArgs := reportsIssueClause(ctx, "work_item_id")
-	rows, err = queryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM `+workedSource+` a WHERE organization_id=? AND project_id=? AND `+role+` IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?) AND started_at>=? AND started_at<?`+workedIssues+` ORDER BY started_at,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, workedArgs...)...)
-	if err != nil {
-		return analyticsQualityInputs{}, err
-	}
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		var item, at string
-		if err := rows.Scan(&item, &at); err != nil {
-			rows.Close()
-			return analyticsQualityInputs{}, err
-		}
-		count++
-		if count > maxAnalyticsPopulation {
-			partial = true
-			break
-		}
-		when, err := parseTimeValue(at)
-		if err != nil {
-			rows.Close()
-			return analyticsQualityInputs{}, err
-		}
-		events = append(events, qualityHistoryEvent{Item: item, Kind: "worked", At: when})
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return analyticsQualityInputs{}, err
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return analyticsQualityInputs{}, err
-	}
-	return analyticsQualityInputs{landings, events, discussions, partial}, nil
-}
-
-func readAnalyticsQuality(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (analyticsQuality, error) {
-	inputs, err := reportsQualityInputs(ctx, q, scope, w)
-	if err != nil {
-		return analyticsQuality{}, err
-	}
+func projectAnalyticsQualityInputs(inputs analyticsQualityInputs, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (analyticsQuality, error) {
 	landings, events, discussions, partial := inputs.landings, inputs.events, inputs.discussions, inputs.partial
 	out := summarizeAnalyticsQuality(landings, events, discussions, w)
 	out.Partial = partial
+	out.Unavailable = append(out.Unavailable, inputs.unavailable...)
 	if partial {
 		out.Unavailable = append(out.Unavailable, "quality_complete_population")
 		out.ReworkPercent, out.EscapePercent = nil, nil
@@ -498,4 +249,351 @@ func qualityCounts(landings []nativeAnalyticsLanding, events []qualityHistoryEve
 		out.EscapePercent = new(100 * float64(out.EscapedVersions) / float64(out.LandedVersions))
 	}
 	return out
+}
+
+type analyticsLandingPopulation struct {
+	Items                                            []nativeAnalyticsLanding
+	Partial, HistoryUnknown, ContinuationUnavailable bool
+}
+
+func (s *Service) readAnalyticsLandingPopulationTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, name string, reopened []tracker.NativeWorkItemID, escaped []string) (analyticsLandingPopulation, error) {
+	out := analyticsLandingPopulation{Items: []nativeAnalyticsLanding{}}
+	after, cursor, key, err := s.analyticsFactSeek(ctx, scope, w, name)
+	if err != nil {
+		return out, err
+	}
+	defer clear(key)
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return out, workItemStorageUnavailable()
+	}
+	var page eventstore.AnalyticsLandingPage
+	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
+		if err != nil {
+			return err
+		}
+		owner, ok := r.(eventstore.AnalyticsLandingReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		page, err = owner.ReadAnalyticsLandingPage(ctx, eventstore.AnalyticsLandingQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, AllVersions: name == "quality_landings", After: after.Landing, ReopenedItems: reopened, EscapedVersions: escaped})
+		return err
+	})
+	if err != nil {
+		return out, err
+	}
+	out.Partial, out.HistoryUnknown = page.Partial, page.HistoryUnknown
+	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	for _, row := range page.Items {
+		if row.OrganizationID != scope.organization || row.ProjectID != scope.project {
+			return out, artifact.ErrIntegrity
+		}
+		if !analyticsCohortAllows(ctx, row.WorkItemID) {
+			continue
+		}
+		value, err := content.VersionLanding(ctx, row)
+		if err != nil {
+			return out, err
+		}
+		if name == "landings" {
+			value.Quality = nil
+		}
+		out.Items = append(out.Items, nativeAnalyticsLanding{ChangeID: row.ChangeID, WorkItemID: row.WorkItemID, Landing: value})
+	}
+	if page.Next.ChangeID != "" {
+		if len(key) == 0 {
+			out.Partial = true
+			out.ContinuationUnavailable = true
+		} else {
+			token, err := s.encodeAnalyticsFactCursor(cursor, key, analyticsFactCursor{Landing: page.Next}, name)
+			if err != nil {
+				return out, err
+			}
+			if paging := analyticsPagingFromContext(ctx); paging != nil {
+				paging.next[name] = token
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) readAnalyticsQualityInputsTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow) (analyticsQualityInputs, error) {
+	out := analyticsQualityInputs{landings: []nativeAnalyticsLanding{}, events: []qualityHistoryEvent{}, discussions: []qualityDiscussion{}}
+	ctx, _, err := analyticsPagingContext(ctx, "")
+	if err != nil {
+		return out, err
+	}
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return out, workItemStorageUnavailable()
+	}
+	after, eventCursor, eventKey, err := s.analyticsFactSeek(ctx, scope, w, "quality_events")
+	if err != nil {
+		return out, err
+	}
+	defer clear(eventKey)
+	evidenceAfter, evidenceCursor, evidenceKey, err := s.analyticsFactSeek(ctx, scope, w, "quality_evidence")
+	if err != nil {
+		return out, err
+	}
+	defer clear(evidenceKey)
+	var workflow eventstore.AnalyticsWorkflowPage
+	var evidence eventstore.AnalyticsEvidencePage
+	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
+		if err != nil {
+			return err
+		}
+		workflowOwner, ok := r.(eventstore.AnalyticsWorkflowReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		evidenceOwner, ok := r.(eventstore.AnalyticsEvidenceReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		workflow, err = workflowOwner.ReadAnalyticsWorkflowPage(ctx, eventstore.AnalyticsWorkflowQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: after.Workflow})
+		if err != nil {
+			return err
+		}
+		evidence, err = evidenceOwner.ReadAnalyticsEvidencePage(ctx, eventstore.AnalyticsEvidenceQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: evidenceAfter.Evidence})
+		return err
+	})
+	if err != nil {
+		return out, err
+	}
+	out.partial = workflow.Partial || evidence.Partial
+	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	reopened := []tracker.NativeWorkItemID{}
+	seenReopened := map[tracker.NativeWorkItemID]bool{}
+	escaped := []string{}
+	seenEscaped := map[string]bool{}
+	for _, row := range workflow.Items {
+		if row.Event.OrganizationID != scope.organization || row.Event.ProjectID != scope.project {
+			return out, artifact.ErrIntegrity
+		}
+		if !analyticsCohortAllows(ctx, row.Event.WorkItemID) {
+			continue
+		}
+		value, err := content.Event(ctx, row.Event)
+		if err != nil {
+			return out, err
+		}
+		out.events = append(out.events, qualityHistoryEvent{ID: value.ID, Item: string(value.AggregateID), Kind: value.Type, ToTerminal: row.ToTerminal, At: value.RecordedAt, Data: value.Data})
+		if strings.EqualFold(value.Data.FromState, "Done") && !seenReopened[value.AggregateID] {
+			seenReopened[value.AggregateID] = true
+			reopened = append(reopened, value.AggregateID)
+		}
+	}
+	for _, row := range evidence.Items {
+		if row.Evidence.OrganizationID != scope.organization {
+			return out, artifact.ErrIntegrity
+		}
+		if !analyticsCohortAllows(ctx, row.WorkItemID) {
+			continue
+		}
+		raw, err := content.Evidence(ctx, row.Evidence)
+		if err != nil {
+			return out, err
+		}
+		if row.Evidence.Kind == "review" {
+			review, err := eventstore.DecodeChangeReview(row.Evidence, raw)
+			if err != nil {
+				return out, err
+			}
+			out.events = append(out.events, qualityHistoryEvent{ID: review.ID, Item: string(row.WorkItemID), Kind: "changes_requested", VersionID: review.VersionID, At: review.CreatedAt})
+		} else {
+			var value tracker.ChangeDiscussion
+			version := ""
+			if row.Evidence.VersionID != nil {
+				version = *row.Evidence.VersionID
+			}
+			if json.Unmarshal(raw, &value) != nil || value.ID == "" || value.VersionID != version || value.Actor.Kind != row.Evidence.ActorKind || value.Actor.PrincipalID != row.Evidence.ActorPrincipalID || !value.CreatedAt.UTC().Truncate(time.Microsecond).Equal(row.Evidence.CreatedAt.UTC().Truncate(time.Microsecond)) || value.Escape == nil || row.Escape == nil || value.Escape.OccurrenceID != row.Escape.OccurrenceID {
+				return out, artifact.ErrIntegrity
+			}
+			value.Escape.Kind, value.Escape.Cause, value.Escape.ObservedAt, value.Escape.InstanceID, value.Escape.HumanOverride = row.Escape.Kind, row.Escape.Cause, row.Escape.ObservedAt, row.Escape.InstanceID, row.Escape.HumanOverride
+			out.discussions = append(out.discussions, qualityDiscussion{ChangeID: row.Evidence.ChangeID, ChangeDiscussion: value})
+			identity := row.Evidence.ChangeID + "/" + value.VersionID
+			if !seenEscaped[identity] {
+				seenEscaped[identity] = true
+				escaped = append(escaped, identity)
+			}
+		}
+	}
+	paging := analyticsPagingFromContext(ctx)
+	if workflow.Next.ID != "" {
+		if len(eventKey) == 0 {
+			out.partial = true
+			out.unavailable = append(out.unavailable, "quality_events_continuation_requires_secret_keys")
+		} else {
+			token, err := s.encodeAnalyticsFactCursor(eventCursor, eventKey, analyticsFactCursor{Workflow: workflow.Next}, "quality_events")
+			if err != nil {
+				return out, err
+			}
+			paging.next["quality_events"] = token
+		}
+	}
+	if evidence.Next.ChangeID != "" {
+		if len(evidenceKey) == 0 {
+			out.partial = true
+			out.unavailable = append(out.unavailable, "quality_evidence_continuation_requires_secret_keys")
+		} else {
+			token, err := s.encodeAnalyticsFactCursor(evidenceCursor, evidenceKey, analyticsFactCursor{Evidence: evidence.Next}, "quality_evidence")
+			if err != nil {
+				return out, err
+			}
+			paging.next["quality_evidence"] = token
+		}
+	}
+	landings, err := s.readAnalyticsLandingPopulationTenant(ctx, scope, w, "quality_landings", reopened, escaped)
+	if err != nil {
+		return out, err
+	}
+	out.landings = landings.Items
+	out.partial = out.partial || landings.Partial
+	if landings.HistoryUnknown {
+		out.unavailable = append(out.unavailable, "quality_landing_history_unavailable")
+	}
+	if landings.ContinuationUnavailable {
+		out.unavailable = append(out.unavailable, "quality_landings_continuation_requires_secret_keys")
+	}
+	worked, partial, unavailable, err := s.readAnalyticsWorkedPopulationTenant(ctx, scope, w)
+	if err != nil {
+		return out, err
+	}
+	out.events = append(out.events, worked...)
+	out.partial = out.partial || partial
+	out.unavailable = append(out.unavailable, unavailable...)
+	return out, nil
+}
+
+func (s *Service) readAnalyticsWorkedPopulationTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow) ([]qualityHistoryEvent, bool, []string, error) {
+	out := []qualityHistoryEvent{}
+	unavailable := []string{}
+	after, cursor, key, err := s.analyticsAttemptCursor(ctx, scope, w, "", "quality_worked")
+	if err != nil {
+		return out, false, nil, err
+	}
+	defer clear(key)
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return out, false, nil, workItemStorageUnavailable()
+	}
+	var page reportstore.AnalyticsAttemptPage
+	unknownEvents := map[string]eventstore.Event{}
+	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
+		if err != nil {
+			return err
+		}
+		owner, ok := r.(reportstore.AnalyticsAttemptReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		page, err = owner.ReadAnalyticsAttemptPage(ctx, reportstore.AnalyticsAttemptQuery{ProjectID: scope.project, Principal: principal, RunnerIDs: analyticsCohortRunners(ctx), From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: after, StartedInWindow: true, OldestFirst: true})
+		if err != nil {
+			return err
+		}
+		unknown := []string{}
+		for _, row := range page.Items {
+			if analyticsCohortAllows(ctx, row.WorkItemID) && (row.Role == nil || *row.Role == "") {
+				unknown = append(unknown, row.AttemptID)
+			}
+		}
+		if len(unknown) == 0 {
+			return nil
+		}
+		batch, ok := r.(eventstore.RunEventBatchReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		events, err := batch.LatestRunEvents(ctx, scope.project, unknown)
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			if event.OrganizationID != scope.organization || event.ProjectID != scope.project || event.AttemptID == "" {
+				return artifact.ErrIntegrity
+			}
+			if _, duplicate := unknownEvents[event.AttemptID]; duplicate {
+				return artifact.ErrIntegrity
+			}
+			unknownEvents[event.AttemptID] = event
+		}
+		return nil
+	})
+	if err != nil {
+		return out, false, nil, err
+	}
+	partial := page.Partial
+	for _, row := range page.Items {
+		if row.ProjectID != scope.project {
+			return out, false, nil, artifact.ErrIntegrity
+		}
+		if !analyticsCohortAllows(ctx, row.WorkItemID) {
+			continue
+		}
+		role := stringValue(row.Role)
+		if role == "" {
+			event, ok := unknownEvents[row.AttemptID]
+			if !ok {
+				partial = true
+				unavailable = append(unavailable, "quality_worked_role_unavailable")
+				continue
+			}
+			if event.WorkItemID != row.WorkItemID {
+				return out, false, nil, artifact.ErrIntegrity
+			}
+			value, _, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).AnalyticsEvent(ctx, event)
+			if errors.Is(err, artifact.ErrMissing) {
+				partial = true
+				unavailable = append(unavailable, "quality_worked_role_unavailable")
+				continue
+			}
+			if err != nil {
+				return out, false, nil, err
+			}
+			if value.Data.Run == nil || value.Data.Run.AttemptID != row.AttemptID {
+				return out, false, nil, artifact.ErrIntegrity
+			}
+			if value.Data.Run.Runtime != nil {
+				role = value.Data.Run.Runtime.Identity.Role
+			}
+			if role == "" && value.Data.Run.Identity != nil {
+				role = value.Data.Run.Identity.Role
+			}
+			if role == "" {
+				partial = true
+				unavailable = append(unavailable, "quality_worked_role_unavailable")
+				continue
+			}
+		}
+		if role == "code" || role == "rework" {
+			out = append(out, qualityHistoryEvent{Item: string(row.WorkItemID), Kind: "worked", At: row.StartedAt})
+		}
+	}
+	if page.Next.ID != "" {
+		if len(key) == 0 {
+			partial = true
+			unavailable = append(unavailable, "quality_worked_continuation_requires_secret_keys")
+		} else {
+			token, err := s.encodeAnalyticsAttemptCursor(cursor, key, page.Next, "quality_worked")
+			if err != nil {
+				return out, false, nil, err
+			}
+			if paging := analyticsPagingFromContext(ctx); paging != nil {
+				paging.next["quality_worked"] = token
+			}
+		}
+	}
+	return out, partial, slices.Compact(unavailable), nil
+}
+
+func (s *Service) readAnalyticsQualityTenant(ctx context.Context, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (analyticsQuality, error) {
+	inputs, err := s.readAnalyticsQualityInputsTenant(ctx, scope, w)
+	if err != nil {
+		return analyticsQuality{}, err
+	}
+	return projectAnalyticsQualityInputs(inputs, r, w)
 }

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,21 +85,30 @@ func TestNativeWorkListOrder(t *testing.T) {
 }
 
 func TestNativeWorkListPagingDuringChanges(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "changing-list")
+	f, guard := newWriterGuardNativeFixture(t)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
 	original := make([]tracker.NativeIssue, 0, 12)
 	for index := range 12 {
-		issue := f.create(t, fmt.Sprintf("changing-%d", index))
 		state := f.project.States[index%len(f.project.States)]
 		priority := index % 4
-		activity := time.Date(2026, 10, 1, 0, 0, 0, index*100, time.UTC)
-		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id =
- (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?), last_activity_at = ? WHERE native_id = ?`, f.project.ID, state.Name, formatHubTime(activity), issue.WorkItemID); err != nil {
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{
+			Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("create-changing-%d", index)}, Title: fmt.Sprintf("changing-%d", index),
+			Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: state.Name, Priority: &priority,
+		})
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		activity := time.Date(2026, 10, 1, 0, 0, 0, index*int(time.Microsecond), time.UTC)
+		result, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE issues SET last_activity_at=$1 WHERE organization_id=$2 AND project_id=$3 AND native_id=$4", activity, f.project.OrganizationID, f.project.ID, issue.WorkItemID)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = ? WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", priority, issue.WorkItemID); err != nil {
+		if count, err := result.RowsAffected(); err != nil || count != 1 {
+			t.Fatalf("activity fixture affected%d rows: %v", count, err)
+		}
+		if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}, f.service.config.now()); err != nil {
 			t.Fatal(err)
 		}
 		issue.State, issue.Terminal, issue.Priority, issue.LastActivityAt = state.Name, state.Terminal, &priority, activity
@@ -118,13 +128,13 @@ func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 	params := url.Values{"limit": {"2"}}
 	var seen []tracker.NativeWorkItemID
 	var firstCursor string
+	drainTestNativeBoard(t, f.service)
+	installWriterReadGuard(t, f.service, guard)
 	writes := func() int64 {
 		t.Helper()
-		var changes int64
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&changes); err != nil {
-			t.Fatal(err)
-		}
-		return changes
+		guard.mu.Lock()
+		defer guard.mu.Unlock()
+		return int64(len(guard.violations))
 	}
 	for {
 		before := writes()
@@ -147,15 +157,24 @@ func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token,
 					tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "paging-" + string(issue.WorkItemID)}, Body: "activity while paging"})
 				requireNativeStatus(t, response, http.StatusOK)
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id =
- (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'Done'), archived = 1 WHERE native_id = ?`, f.project.ID, issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = 0 WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", issue.WorkItemID); err != nil {
+				current := readWorkItem(t, f, issue.WorkItemID, "")
+				response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), f.token,
+					tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "priority-" + string(issue.WorkItemID)}, ExpectedRevision: current.Revision, Priority: tracker.SetPriority(new(0))})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &current)
+				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", f.token,
+					tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "done-" + string(issue.WorkItemID)}, ExpectedRevision: current.Revision, State: "Done", Reason: "user_requested"})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &current)
+				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/archive", f.token,
+					archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive-" + string(issue.WorkItemID)}, ExpectedRevision: current.Revision})
+				requireNativeStatus(t, response, http.StatusOK)
+				if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}, f.service.config.now()); err != nil {
 					t.Fatal(err)
 				}
 			}
 			f.create(t, "added-while-paging")
+			drainTestNativeBoard(t, f.service)
 		}
 		if page.NextCursor == "" {
 			break
@@ -183,13 +202,9 @@ func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 	if len(fresh.Items) != 1 || fresh.Items[0].Title != "added-while-paging" {
 		t.Fatalf("fresh list = %#v", fresh.Items)
 	}
-	for _, table := range []string{"native_issue_pages", "native_issue_page_items"} {
-		var count int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		if count != 0 {
-			t.Fatalf("retained %d expired or single-page rows in %s", count, table)
-		}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=1&cursor="+url.QueryEscape(firstCursor), f.token, nil)
+	requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	if writes() != 0 || guard.queries.Load() == 0 || guard.transactions.Load() == 0 {
+		t.Fatalf("page reads bypassed PostgreSQL read-only guard: writes=%d queries=%d transactions=%d", writes(), guard.queries.Load(), guard.transactions.Load())
 	}
 }

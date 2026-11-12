@@ -1,27 +1,15 @@
 package cli
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/hubclient"
-	"github.com/digitaldrywood/detent/internal/issueorigin"
-	"github.com/digitaldrywood/detent/internal/lessons"
-	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -53,79 +41,9 @@ type doctorWorkflowProposalOutcome struct {
 	Status string `json:"status"`
 }
 
-type doctorWorkflowCreatedProposalIssue struct {
-	ProposalID    string `json:"proposal_id"`
-	ProjectID     string `json:"project_id"`
-	IssueID       string `json:"issue_id,omitempty"`
-	Identifier    string `json:"identifier,omitempty"`
-	URL           string `json:"url,omitempty"`
-	OutcomeStatus string `json:"outcome_status,omitempty"`
-	Reused        bool   `json:"reused,omitempty"`
-}
-
 type doctorWorkflowProposalConnector interface {
 	connector.Connector
 	connector.IssueCreator
-}
-
-type doctorWorkflowValidatorFindingPattern struct {
-	Key      string
-	Count    int
-	Severity string
-	Body     string
-	Path     string
-	Line     int
-}
-
-func doctorWorkflowOptimizationOptionsWithDefaults(options doctorWorkflowOptimizationOptions) doctorWorkflowOptimizationOptions {
-	if options.ProposalThreshold <= 0 {
-		options.ProposalThreshold = doctorWorkflowProposalDefaultThreshold
-	}
-	return options
-}
-
-func doctorWorkflowImprovementProposals(
-	ctx context.Context,
-	db doctorTelemetryStore,
-	project globalconfig.Project,
-	cfg workflowconfig.Config,
-	findings []doctorWorkflowOptimizationFinding,
-	threshold int,
-) ([]doctorWorkflowImprovementProposal, error) {
-	threshold = doctorWorkflowNormalizedProposalThreshold(threshold)
-	projectID := doctorProjectID(project)
-	proposals := doctorWorkflowImprovementProposalsFromFindings(projectID, findings, threshold)
-
-	validatorPatterns, err := doctorWorkflowValidatorFindingPatterns(ctx, db, projectID, threshold)
-	if err != nil {
-		return nil, err
-	}
-	for _, pattern := range validatorPatterns {
-		proposals = append(proposals, doctorWorkflowValidatorFindingProposal(projectID, pattern))
-	}
-
-	lessonPatterns, err := doctorWorkflowLessonFailureKindPatterns(project, cfg, threshold)
-	if err != nil {
-		return nil, err
-	}
-	for _, pattern := range lessonPatterns {
-		proposals = append(proposals, doctorWorkflowLessonPatternProposal(projectID, pattern))
-	}
-
-	seen := map[string]struct{}{}
-	out := make([]doctorWorkflowImprovementProposal, 0, len(proposals))
-	for _, proposal := range proposals {
-		proposal = doctorWorkflowFinalizeProposal(proposal)
-		if proposal.ID == "" {
-			continue
-		}
-		if _, ok := seen[proposal.ID]; ok {
-			continue
-		}
-		seen[proposal.ID] = struct{}{}
-		out = append(out, proposal)
-	}
-	return out, nil
 }
 
 func doctorWorkflowProposalsForFindings(projectID string, findings []doctorWorkflowOptimizationFinding, threshold int) []doctorWorkflowImprovementProposal {
@@ -163,52 +81,6 @@ func doctorWorkflowImprovementProposalsFromFindings(projectID string, findings [
 		})
 	}
 	return proposals
-}
-
-func doctorWorkflowValidatorFindingProposal(projectID string, pattern doctorWorkflowValidatorFindingPattern) doctorWorkflowImprovementProposal {
-	evidence := map[string]any{
-		"count":    pattern.Count,
-		"severity": pattern.Severity,
-		"finding":  pattern.Body,
-	}
-	if pattern.Path != "" {
-		evidence["path"] = pattern.Path
-	}
-	if pattern.Line > 0 {
-		evidence["line"] = pattern.Line
-	}
-	return doctorWorkflowImprovementProposal{
-		ProjectID:       projectID,
-		SignalKind:      "validator_finding",
-		Pattern:         pattern.Key,
-		Count:           pattern.Count,
-		Title:           "Propose guard for repeated validator finding",
-		Detail:          fmt.Sprintf("validator finding repeated %d times: %s", pattern.Count, pattern.Body),
-		TargetKind:      "gate",
-		TargetPath:      pattern.Path,
-		SuggestedChange: "Update WORKFLOW.md instructions, a prompt template, or a gate rule so agents address this validator finding before review: " + pattern.Body,
-		Evidence:        evidence,
-	}
-}
-
-func doctorWorkflowLessonPatternProposal(projectID string, pattern lessons.FailureKindPattern) doctorWorkflowImprovementProposal {
-	evidence := map[string]any{
-		"count":          pattern.Count,
-		"failure_kind":   pattern.FailureKind,
-		"recent_lessons": append([]string(nil), pattern.Examples...),
-	}
-	return doctorWorkflowImprovementProposal{
-		ProjectID:       projectID,
-		SignalKind:      "lesson_failure_kind",
-		Pattern:         strings.ToLower(strings.TrimSpace(pattern.FailureKind)),
-		Count:           pattern.Count,
-		Title:           "Propose skill or workflow guard for repeated " + pattern.FailureKind,
-		Detail:          fmt.Sprintf("lessons recorded failure kind %q %d times", pattern.FailureKind, pattern.Count),
-		TargetKind:      "skill",
-		TargetPath:      ".detent/skills",
-		SuggestedChange: "Draft or update a reviewed skill, prompt checklist, or gate note that prevents repeated " + pattern.FailureKind + " failures. The change must enter the backlog or a PR for human review before use.",
-		Evidence:        evidence,
-	}
 }
 
 func doctorWorkflowFinalizeProposal(proposal doctorWorkflowImprovementProposal) doctorWorkflowImprovementProposal {
@@ -315,246 +187,6 @@ func doctorWorkflowReviewFlowProposalTarget(finding doctorWorkflowOptimizationFi
 	}
 }
 
-func doctorWorkflowValidatorFindingPatterns(ctx context.Context, db doctorTelemetryStore, projectID string, threshold int) ([]doctorWorkflowValidatorFindingPattern, error) {
-	rows, err := db.QueryContext(ctx, `
-SELECT COALESCE(findings_json, '[]')
-FROM validator_verdicts
-WHERE submitted = 1
-  AND (? = '' OR project_id = ?)
-ORDER BY updated_at DESC, id DESC
-LIMIT 200`, projectID, projectID)
-	if err != nil {
-		return nil, fmt.Errorf("read validator verdict findings: %w", err)
-	}
-	defer rows.Close()
-
-	byKey := map[string]*doctorWorkflowValidatorFindingPattern{}
-	keys := []string{}
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var findings []store.ValidatorFinding
-		if err := json.Unmarshal([]byte(raw), &findings); err != nil {
-			return nil, fmt.Errorf("decode validator findings: %w", err)
-		}
-		for _, finding := range findings {
-			key := doctorWorkflowValidatorFindingKey(finding)
-			if key == "" {
-				continue
-			}
-			pattern, ok := byKey[key]
-			if !ok {
-				pattern = &doctorWorkflowValidatorFindingPattern{
-					Key:      key,
-					Severity: strings.ToLower(strings.TrimSpace(finding.Severity)),
-					Body:     strings.Join(strings.Fields(finding.Body), " "),
-					Path:     strings.TrimSpace(finding.Path),
-					Line:     finding.Line,
-				}
-				byKey[key] = pattern
-				keys = append(keys, key)
-			}
-			pattern.Count++
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	sort.Slice(keys, func(i, j int) bool {
-		left := byKey[keys[i]]
-		right := byKey[keys[j]]
-		if left.Count != right.Count {
-			return left.Count > right.Count
-		}
-		return left.Key < right.Key
-	})
-	patterns := make([]doctorWorkflowValidatorFindingPattern, 0, len(keys))
-	for _, key := range keys {
-		pattern, ok := byKey[key]
-		if !ok || pattern == nil {
-			continue
-		}
-		if pattern.Count < threshold {
-			continue
-		}
-		patterns = append(patterns, *pattern)
-	}
-	return patterns, nil
-}
-
-func doctorWorkflowValidatorFindingKey(finding store.ValidatorFinding) string {
-	body := strings.ToLower(strings.Join(strings.Fields(finding.Body), " "))
-	if body == "" {
-		return ""
-	}
-	path := strings.ToLower(strings.TrimSpace(finding.Path))
-	severity := strings.ToLower(strings.TrimSpace(finding.Severity))
-	return strings.Join([]string{severity, path, body}, "|")
-}
-
-func doctorWorkflowLessonFailureKindPatterns(project globalconfig.Project, cfg workflowconfig.Config, threshold int) ([]lessons.FailureKindPattern, error) {
-	path := strings.TrimSpace(cfg.Agent.Lessons.Path)
-	if path == "" {
-		path = lessons.DefaultPath
-	}
-	resolved, err := resolveDoctorProjectPath(project, path)
-	if err != nil {
-		return nil, err
-	}
-	patterns, err := lessons.FailureKindPatterns(resolved, threshold)
-	if errors.Is(err, os.ErrNotExist) {
-		return []lessons.FailureKindPattern{}, nil
-	}
-	return patterns, err
-}
-
-func createDoctorWorkflowImprovementProposalIssues(
-	ctx context.Context,
-	global globalconfig.Config,
-	projectID string,
-	cfg workflowconfig.Config,
-	deps doctorDeps,
-	proposals []doctorWorkflowImprovementProposal,
-) (created []doctorWorkflowCreatedProposalIssue, err error) {
-	if len(proposals) == 0 {
-		return nil, nil
-	}
-	if deps.proposalLaneWriter == nil {
-		return nil, errors.New("self-improvement proposals require the orchestrator lane writer")
-	}
-	if err := doctorWorkflowProposalIssueDeliverySupported(cfg); err != nil {
-		return nil, err
-	}
-
-	if deps.proposalConnector == nil {
-		deps.proposalConnector = defaultDoctorProposalConnector
-	}
-	projectConnector, err := deps.proposalConnector(global, projectID, cfg)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if closeErr := closeDoctorAutoPromoteConnector(projectConnector); err == nil && closeErr != nil {
-			err = closeErr
-		}
-	}()
-
-	existingIssueStates := doctorWorkflowProposalIssueSearchStates(cfg)
-	created = make([]doctorWorkflowCreatedProposalIssue, 0, len(proposals))
-	for _, proposal := range proposals {
-		issue, reused, err := doctorWorkflowExistingProposalIssue(ctx, projectConnector, proposal, existingIssueStates)
-		if err != nil {
-			return nil, err
-		}
-		if reused && !issue.Closed {
-			body := issueorigin.Stamp(proposal.IssueBody, issueorigin.Origin{Kind: "doctor", Source: time.Now().UTC().Format(time.RFC3339Nano), Fingerprint: issueorigin.Fingerprint(proposal.IssueMarker)})
-			if err := projectConnector.CreateComment(ctx, issue.ID, issueorigin.Occurrence(body)); err != nil {
-				return nil, err
-			}
-		}
-		if !reused {
-			issue, err = projectConnector.CreateIssue(ctx, connector.IssueDraft{
-				Title: proposal.Title,
-				Body:  issueorigin.Stamp(proposal.IssueBody, issueorigin.Origin{Kind: "doctor", Source: time.Now().UTC().Format(time.RFC3339Nano), Fingerprint: issueorigin.Fingerprint(proposal.IssueMarker)}),
-			})
-			if err != nil {
-				return nil, err
-			}
-			if issue.PublicationReused {
-				reused = true
-			} else if err := deps.proposalLaneWriter(ctx, projectID, cfg, projectConnector, issue, doctorWorkflowProposalBacklogState); errors.Is(err, connector.ErrStateUpdateBlocked) {
-				slog.Default().Debug("skip blocked self-improvement proposal state update", "issue_id", issue.ID, "target_state", doctorWorkflowProposalBacklogState, "error", err)
-			} else if err != nil {
-				return nil, err
-			}
-		}
-		created = append(created, doctorWorkflowCreatedProposalIssue{
-			ProposalID:    proposal.ID,
-			ProjectID:     projectID,
-			IssueID:       issue.ID,
-			Identifier:    issue.Identifier,
-			URL:           issue.URL,
-			OutcomeStatus: doctorWorkflowProposalOutcomeStatus(issue.Description),
-			Reused:        reused,
-		})
-	}
-	return created, nil
-}
-
-func doctorWorkflowProposalIssueDeliverySupported(cfg workflowconfig.Config) error {
-	if cfg.Tracker.Kind != workflowconfig.TrackerHubNative {
-		return errors.New("self-improvement proposal issue creation requires tracker.kind hub_native")
-	}
-	return nil
-}
-
-func defaultDoctorProposalConnector(global globalconfig.Config, projectID string, cfg workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
-	if err := doctorWorkflowProposalIssueDeliverySupported(cfg); err != nil {
-		return nil, err
-	}
-	settings := global.Client.Normalized()
-	id := settings.NativeProjects[projectID]
-	if strings.TrimSpace(id) == "" {
-		return nil, errors.New("self-improvement proposals require a configured native project mapping")
-	}
-	client, err := hubclient.New(hubclient.Config{
-		URL: settings.URL, IdentityFile: settings.IdentityFile,
-		TokenSource: func() string { return os.Getenv(settings.TokenEnvironment) },
-	})
-	if err != nil {
-		return nil, err
-	}
-	native, err := client.Native(tracker.OrganizationID(settings.OrganizationID), tracker.ProjectID(id))
-	if err != nil {
-		return nil, err
-	}
-	return hubclient.NewNativeConnector(native)
-}
-
-func doctorWorkflowProposalIssueSearchStates(cfg workflowconfig.Config) []string {
-	states := make([]string, 0, 1+len(cfg.Tracker.ObservedStates)+len(cfg.Tracker.ActiveStates)+len(cfg.Tracker.TerminalStates))
-	seen := make(map[string]struct{})
-	add := func(state string) {
-		state = strings.TrimSpace(state)
-		if state == "" {
-			return
-		}
-		key := strings.ToLower(state)
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		states = append(states, state)
-	}
-	add(doctorWorkflowProposalBacklogState)
-	for _, state := range cfg.Tracker.ObservedStates {
-		add(state)
-	}
-	for _, state := range cfg.Tracker.ActiveStates {
-		add(state)
-	}
-	for _, state := range cfg.Tracker.TerminalStates {
-		add(state)
-	}
-	return states
-}
-
-func doctorWorkflowExistingProposalIssue(ctx context.Context, projectConnector doctorWorkflowProposalConnector, proposal doctorWorkflowImprovementProposal, states []string) (connector.Issue, bool, error) {
-	issues, err := projectConnector.FetchIssuesByStates(ctx, states)
-	if err != nil {
-		return connector.Issue{}, false, err
-	}
-	for _, issue := range issues {
-		if !issue.Closed && strings.Contains(issue.Description, proposal.IssueMarker) {
-			return issue, true, nil
-		}
-	}
-	return connector.Issue{}, false, nil
-}
-
 func doctorWorkflowProposalIssueBody(proposal doctorWorkflowImprovementProposal) string {
 	var builder strings.Builder
 	builder.WriteString(proposal.IssueMarker)
@@ -592,32 +224,10 @@ func doctorWorkflowProposalIssueBody(proposal doctorWorkflowImprovementProposal)
 	return builder.String()
 }
 
-func doctorWorkflowProposalOutcomeStatus(body string) string {
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		value, ok := strings.CutPrefix(line, "- status:")
-		if !ok {
-			continue
-		}
-		switch strings.ToLower(strings.Trim(strings.TrimSpace(value), "`")) {
-		case "pending", "accepted", "rejected":
-			return strings.ToLower(strings.Trim(strings.TrimSpace(value), "`"))
-		}
-	}
-	return ""
-}
-
 func doctorWorkflowProposalID(projectID string, signalKind string, pattern string) string {
 	raw := strings.ToLower(strings.TrimSpace(projectID)) + "|" + strings.ToLower(strings.TrimSpace(signalKind)) + "|" + strings.ToLower(strings.TrimSpace(pattern))
 	sum := sha256.Sum256([]byte(raw))
 	return "detent-self-improve-" + hex.EncodeToString(sum[:])[:12]
-}
-
-func doctorWorkflowNormalizedProposalThreshold(threshold int) int {
-	if threshold <= 0 {
-		return doctorWorkflowProposalDefaultThreshold
-	}
-	return threshold
 }
 
 func cloneAnyMap(values map[string]any) map[string]any {

@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -123,6 +125,13 @@ func (s *session) fleetLeases(ctx context.Context, now time.Time, limit int, mac
 	if limit < 1 || limit > 10000 {
 		return nil, corestore.ErrInvalidPage
 	}
+	return s.fleetLeaseRows(ctx, now, limit, machineID, machines, false, false)
+}
+
+func (s *session) fleetLeaseRows(ctx context.Context, now time.Time, limit int, machineID tracker.MachineID, machines []string, retainSentinel, runtime bool) ([]runnerstore.FleetLease, error) {
+	if limit < 1 || limit > 10000 {
+		return nil, corestore.ErrInvalidPage
+	}
 	selector := ""
 	args := []any{s.organization, now, limit + 1}
 	if machineID != "" {
@@ -133,15 +142,35 @@ func (s *session) fleetLeases(ctx context.Context, now time.Time, limit int, mac
 		selector = " AND l.machine_id=ANY($4)"
 		args = append(args, machines)
 	}
-	rows, err := s.db.Query(ctx, `SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,''),coalesce(policy.policy_id,''),coalesce(current_policy.policy_id,''),l.renewed_at,coalesce(runtime.id,''),runtime.runtime_heartbeat_at
-FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+	prefix, relation := "", "leases"
+	if retainSentinel {
+		prefix = "WITH candidates AS MATERIALIZED (SELECT * FROM leases l WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.expires_at>$2" + selector + " ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT $3) "
+		relation = "candidates"
+	}
+	workflowColumns, runtimeJoins := "", ""
+	if runtime {
+		workflowColumns = ",coalesce(i.workflow_state_name,''),CASE WHEN lower(trim(coalesce(i.workflow_state_name,'')))='merging' AND landing_policy.gate_github_pull_request IS FALSE THEN i.project_id ELSE '' END"
+		runtimeJoins = `
+LEFT JOIN LATERAL (
+ SELECT approved.gate_github_pull_request FROM change_issue_links link
+ JOIN change_requests change ON change.organization_id=link.organization_id AND change.project_id=link.project_id AND change.id=link.change_id
+ JOIN change_versions version ON version.organization_id=change.organization_id AND version.change_id=change.id AND version.id=change.current_version_id
+ JOIN policy_revisions approved ON approved.organization_id=version.organization_id AND approved.project_id=i.project_id AND approved.policy_id=version.policy_revision_id
+ JOIN projects project ON project.organization_id=i.organization_id AND project.id=i.project_id AND project.profile IN ('native','github_compatible')
+ WHERE link.organization_id=i.organization_id AND link.project_id=i.project_id AND link.work_item_id=i.native_id
+ ORDER BY link.created_at DESC,link.change_id DESC LIMIT 1
+) landing_policy ON true
+`
+	}
+	rows, err := s.db.Query(ctx, prefix+`SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,''),coalesce(policy.policy_id,''),coalesce(current_policy.policy_id,''),l.renewed_at,coalesce(runtime.id,''),runtime.runtime_heartbeat_at`+workflowColumns+`
+FROM `+relation+` l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 LEFT JOIN runner_lease_assignments r ON r.organization_id=l.organization_id AND r.lease_id=l.lease_id
 LEFT JOIN native_attempts runtime ON runtime.organization_id=l.organization_id AND runtime.lease_id=l.lease_id AND runtime.fencing_token=l.fencing_token AND runtime.status='running' AND runtime.runtime_summary_sequence=runtime.sequence
 LEFT JOIN provider_reservations p ON p.organization_id=l.organization_id AND p.lease_id=l.lease_id
 LEFT JOIN lease_policy_bindings binding ON binding.organization_id=l.organization_id AND binding.lease_id=l.lease_id
 LEFT JOIN policy_revisions policy ON policy.organization_id=binding.organization_id AND policy.project_id=binding.project_id AND policy.policy_id=binding.policy_id
 LEFT JOIN project_policies current_policy ON current_policy.organization_id=i.organization_id AND current_policy.project_id=i.project_id
-WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.expires_at>$2
+`+runtimeJoins+`WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.expires_at>$2
 `+selector+` ORDER BY l.fencing_token LIMIT $3`, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
@@ -152,7 +181,11 @@ WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.
 		var row runnerstore.FleetLease
 		var reservation providercapacity.Reservation
 		var observed, reset pgtype.Timestamptz
-		if err := rows.Scan(&row.RunnerID, &row.MachineID, &row.SessionID, &row.LandingCapacity, &row.Lease.ID, &row.Lease.FencingToken, &row.Lease.WorkItemID, &row.Lease.Title, &row.Lease.ProjectID, &row.Lease.ExpiresAt, &row.ActorPrincipalID, &reservation.Role, &reservation.Backend, &reservation.Model, &reservation.Report.Provider, &reservation.Report.Backend, &reservation.Report.AccountAlias, &reservation.Report.SharedAccountAlias, &reservation.Report.Billing, &reservation.Report.MaxConcurrent, &reservation.Report.Availability, &observed, &reset, &reservation.Reason, &row.PolicyID, &row.CurrentPolicyID, &row.RenewedAt, &row.RuntimeAttemptID, &row.RuntimeHeartbeatAt); err != nil {
+		destinations := []any{&row.RunnerID, &row.MachineID, &row.SessionID, &row.LandingCapacity, &row.Lease.ID, &row.Lease.FencingToken, &row.Lease.WorkItemID, &row.Lease.Title, &row.Lease.ProjectID, &row.Lease.ExpiresAt, &row.ActorPrincipalID, &reservation.Role, &reservation.Backend, &reservation.Model, &reservation.Report.Provider, &reservation.Report.Backend, &reservation.Report.AccountAlias, &reservation.Report.SharedAccountAlias, &reservation.Report.Billing, &reservation.Report.MaxConcurrent, &reservation.Report.Availability, &observed, &reset, &reservation.Reason, &row.PolicyID, &row.CurrentPolicyID, &row.RenewedAt, &row.RuntimeAttemptID, &row.RuntimeHeartbeatAt}
+		if runtime {
+			destinations = append(destinations, &row.WorkflowState, &row.CapacityProject)
+		}
+		if err := rows.Scan(destinations...); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		if observed.Valid {
@@ -162,7 +195,7 @@ WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.
 		}
 		result = append(result, row)
 	}
-	if len(result) > limit {
+	if limit > 0 && len(result) > limit && !retainSentinel {
 		return nil, runnerstore.ErrLimitExceeded
 	}
 	return result, mapError(ctx, rows.Err())
@@ -342,4 +375,160 @@ func (s *session) SourceRecoveryDestination(ctx context.Context, project tracker
 	}
 	candidate.Providers, err = s.fleetRecordProviderViews(ctx, records[0], now)
 	return candidate, err
+}
+
+func (s *session) RuntimeCapacitySnapshot(ctx context.Context, query runnerstore.RuntimeCapacityQuery) (runnerstore.RuntimeCapacitySnapshot, error) {
+	var snapshot runnerstore.RuntimeCapacitySnapshot
+	if query.ProjectID == "" || query.At.IsZero() {
+		return snapshot, corestore.ErrInvalidPage
+	}
+	limit := 100
+	var owners []string
+	if query.Explanation {
+		limit = 16
+		rows, err := s.db.Query(ctx, `WITH capacity_owner_window AS MATERIALIZED (SELECT runner_id FROM runner_identities WHERE organization_id=$1 ORDER BY runner_id LIMIT 17) SELECT runner_id FROM capacity_owner_window ORDER BY runner_id`, s.organization)
+		if err != nil {
+			return snapshot, mapError(ctx, err)
+		}
+		owners = []string{}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return snapshot, mapError(ctx, err)
+			}
+			owners = append(owners, id)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return snapshot, mapError(ctx, err)
+		}
+		snapshot.Truncated = len(owners) > limit
+		owners = owners[:min(len(owners), limit)]
+	}
+	records, err := s.runtimeCapacityRunners(ctx, query, limit, owners)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Truncated = snapshot.Truncated || len(records) > limit
+	snapshot.Records = records[:min(len(records), limit)]
+	if len(snapshot.Records) == 0 {
+		return snapshot, nil
+	}
+	machines, ids := []string{}, []string{}
+	for _, record := range snapshot.Records {
+		ids = append(ids, record.Runner.RunnerID)
+		machine := string(record.Runner.MachineID)
+		if !slices.Contains(machines, machine) {
+			machines = append(machines, machine)
+		}
+	}
+	snapshot.Leases, err = s.fleetLeaseRows(ctx, query.At, 1024, "", machines, true, true)
+	if err != nil {
+		return snapshot, err
+	}
+	if len(snapshot.Leases) > 1024 {
+		snapshot.Truncated = true
+		snapshot.Leases = snapshot.Leases[:1024]
+	}
+	provider, err := s.runtimeProviderSnapshot(ctx, query.At, query.Explanation, ids, machines)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Providers = provider
+	for i := range snapshot.Records {
+		for _, report := range provider.Reports {
+			if report.RunnerID == snapshot.Records[i].Runner.RunnerID {
+				snapshot.Records[i].Reports = append(snapshot.Records[i].Reports, report.Report)
+			}
+		}
+	}
+	snapshot.Truncated = snapshot.Truncated || provider.OwnersTruncated || provider.CandidatesTruncated
+	for _, lease := range snapshot.Leases {
+		if query.Explanation && strings.HasPrefix(lease.SessionID, "landing/") {
+			snapshot.Truncated = true
+		}
+	}
+	return snapshot, nil
+}
+
+func (s *session) runtimeProviderSnapshot(ctx context.Context, now time.Time, explanation bool, selected, machines []string) (runnerstore.RuntimeProviderSnapshot, error) {
+	var snapshot runnerstore.RuntimeProviderSnapshot
+	limit := 100
+	if explanation {
+		limit = 64
+	}
+	rows, err := s.db.Query(ctx, `WITH provider_owners AS MATERIALIZED (
+ SELECT r.runner_id,r.machine_id,t.revoked_at,t.created_at,t.expires_at,row_number() OVER(ORDER BY r.runner_id) AS ordinal
+ FROM runner_identities r JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
+ WHERE r.organization_id=$1 AND ($3::boolean OR r.runner_id=ANY($4)) ORDER BY r.runner_id LIMIT $5
+), provider_runners AS (
+ SELECT * FROM provider_owners
+ UNION ALL SELECT r.runner_id,r.machine_id,t.revoked_at,t.created_at,t.expires_at,0::bigint FROM runner_identities r
+ JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
+ WHERE r.organization_id=$1 AND r.runner_id=ANY($4) AND NOT EXISTS(SELECT 1 FROM provider_owners o WHERE o.runner_id=r.runner_id)
+)
+SELECT r.runner_id,r.machine_id,r.ordinal,r.revoked_at IS NOT NULL,r.created_at<=$2,r.expires_at,p.backend,p.provider,p.account_alias,p.shared_account_alias,p.billing,p.max_concurrent,p.availability,p.observed_at,p.reset_at,
+ARRAY(SELECT model_id FROM runner_provider_report_models m WHERE m.organization_id=$1 AND m.runner_id=p.runner_id AND m.backend=p.backend ORDER BY position)
+FROM provider_runners r LEFT JOIN runner_provider_reports p ON p.organization_id=$1 AND p.runner_id=r.runner_id ORDER BY r.runner_id,p.backend`, s.organization, now, explanation, selected, limit+1)
+	if err != nil {
+		return snapshot, mapError(ctx, err)
+	}
+	ids := []string{}
+	providerMachines := []string{}
+	for rows.Next() {
+		var id, machine string
+		var revoked, started bool
+		var ordinal int64
+		var expires, observed, reset pgtype.Timestamptz
+		var backend, provider, alias, shared, billing, state pgtype.Text
+		var concurrent pgtype.Int8
+		var models []string
+		if err := rows.Scan(&id, &machine, &ordinal, &revoked, &started, &expires, &backend, &provider, &alias, &shared, &billing, &concurrent, &state, &observed, &reset, &models); err != nil {
+			rows.Close()
+			return snapshot, mapError(ctx, err)
+		}
+		if ordinal > 0 && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+			if ordinal <= int64(limit) && !slices.Contains(providerMachines, machine) {
+				providerMachines = append(providerMachines, machine)
+			}
+		}
+		if ordinal > int64(limit) && !slices.Contains(selected, id) || !backend.Valid {
+			continue
+		}
+		report := providercapacity.Report{Backend: backend.String, Provider: provider.String, AccountAlias: alias.String, SharedAccountAlias: shared.String, Billing: billing.String, MaxConcurrent: int(concurrent.Int64), Availability: state.String, ObservedAt: observed.Time, Models: models}
+		if reset.Valid {
+			report.ResetAt = reset.Time
+		}
+		snapshot.Reports = append(snapshot.Reports, runnerstore.RuntimeProviderReport{RunnerID: id, Report: report, CapacityOwner: !revoked && started && (!expires.Valid || expires.Time.After(now)) && ordinal > 0 && ordinal <= int64(limit)})
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return snapshot, mapError(ctx, err)
+	}
+	snapshot.OwnersTruncated = len(ids) > limit
+	if !explanation {
+		providerMachines = machines
+	}
+	if len(providerMachines) == 0 {
+		return snapshot, nil
+	}
+	snapshot.Leases, err = s.fleetLeaseRows(ctx, now, 1024, "", providerMachines, true, true)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Candidates = len(snapshot.Leases)
+	if len(snapshot.Leases) > 1024 {
+		snapshot.CandidatesTruncated = true
+		snapshot.Leases = snapshot.Leases[:1024]
+	}
+	for _, lease := range snapshot.Leases {
+		if explanation && lease.Reservation != nil && strings.HasPrefix(lease.SessionID, "landing/") {
+			snapshot.CandidatesTruncated = true
+		}
+	}
+	return snapshot, nil
 }

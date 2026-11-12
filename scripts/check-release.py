@@ -23,12 +23,8 @@ PRIORITY = (
     "windows-vet", "windows-build-arm64", "vet", "subprocess-lifecycle", "security",
 )
 SMOKE_SPECS = (
-    "tests/visual/magic-link-auth.spec.js",
     "tests/visual/hub-login.spec.js",
-    "tests/visual/board-navigation.spec.js",
-    "tests/visual/change-review.spec.js",
     "tests/visual/conversation-actions.spec.js",
-    "tests/visual/mobile.spec.js",
 )
 
 

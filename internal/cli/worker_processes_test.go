@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,14 +17,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
-	runpkg "github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/testenv"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -245,31 +238,16 @@ func TestReapWorkerProcessesRevalidatesArtifactsAfterRetry(t *testing.T) {
 }
 
 func TestReapWorkerProcessesPreservesInterruptedSession(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	for _, failures := range []int{1, 5} {
 		t.Run(fmt.Sprintf("cleanup_failures_%d", failures), func(t *testing.T) {
 			t.Parallel()
 			ctx := t.Context()
-			backend, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "recovery.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { backend.Close() })
+			backend := &memorySessions{}
 			startedAt := time.Date(2026, 9, 7, 16, 33, 55, 0, time.UTC)
-			attemptID, err := backend.StartWorkAttempt(ctx, store.WorkAttemptStart{
-				ProjectID: "detent", IssueID: "issue-2193", Identifier: "digitaldrywood/detent#2193",
-				WorkerType: "agent", Lane: "In Progress", AttemptNumber: 1, StartedAt: startedAt,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
 			sessionID, err := backend.StartSession(ctx, store.SessionStart{
-				WorkAttemptID: attemptID, ProjectID: "detent", IssueID: "issue-2193", Identifier: "digitaldrywood/detent#2193", StartedAt: startedAt,
+				ProjectID: "detent", IssueID: "issue-2193", Identifier: "digitaldrywood/detent#2193", StartedAt: startedAt,
 				ProviderThreadID: "thread-2193", ProviderSessionID: "turn-2193", AgentBackendKind: "codex", AgentRole: "code",
 			})
 			if err != nil {
@@ -316,23 +294,12 @@ func TestReapWorkerProcessesPreservesInterruptedSession(t *testing.T) {
 					t.Fatalf("later recovery failed: %v", err)
 				}
 			}
-			session, err := backend.Queries().GetCodexSession(ctx, sessionID)
-			if err != nil {
-				t.Fatal(err)
+			recorded, ok := backend.reaped(sessionID)
+			if !ok || recorded.Outcome != "already_exited" || recorded.Reason != "startup" {
+				t.Fatalf("incorrect recorded reap: %#v", recorded)
 			}
-			if !session.WorkerReapedAt.Valid || session.WorkerReapOutcome.String != "already_exited" || session.WorkerReapReason.String != "startup" {
-				t.Fatalf("incorrect persisted reap: %#v", session)
-			}
-			if session.CompletedAt.Valid || session.FinalState.String != store.SessionStateRunning {
-				t.Fatalf("interrupted session incorrectly completed: %#v", session)
-			}
-			orphans, err := backend.ListOrphanedAgentSessions(ctx, "detent")
-			if err != nil || len(orphans) != 1 {
-				t.Fatalf("recoverable sessions = %#v, error = %v", orphans, err)
-			}
-			resume := orphans[0].ResumeState
-			if resume.DetentSessionID != sessionID || resume.ProviderThreadID != "thread-2193" || resume.ProviderSessionID != "turn-2193" {
-				t.Fatalf("incorrect resume state: %#v", resume)
+			if backend.open() != 1 {
+				t.Fatal("interrupted session incorrectly completed")
 			}
 		})
 	}
@@ -351,11 +318,7 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			database := filepath.Join(t.TempDir(), "processes.db")
-			backend, err := store.Open(t.Context(), store.Config{Path: database})
-			if err != nil {
-				t.Fatal(err)
-			}
+			backend := &memorySessions{}
 			sessionID, err := backend.StartSession(t.Context(), store.SessionStart{IssueID: "host-gate", StartedAt: time.Now().UTC(), AgentRole: store.WorkerProcessRoleHostValidation})
 			if err != nil {
 				t.Fatal(err)
@@ -385,14 +348,6 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 			if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
 				t.Fatalf("child startup: %q %v", line, err)
 			}
-			if err := backend.Close(); err != nil {
-				t.Fatal(err)
-			}
-			backend, err = store.Open(t.Context(), store.Config{Path: database})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = backend.Close() })
 			if stale {
 				if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{
 					WorkerProcessIdentity: store.WorkerProcessIdentity{PID: os.Getpid(), GroupID: os.Getpid(), StartedAt: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)},
@@ -617,228 +572,8 @@ func TestReapWorkerProcessesClassifiesCleanupOnlyFailures(t *testing.T) {
 	}
 }
 
-func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-	for _, tc := range []struct {
-		projectID, host string
-		scratchFailure  bool
-		deferred        bool
-		liveLease       bool
-	}{
-		{projectID: "deferred-live", deferred: true, liveLease: true},
-		{projectID: "deferred-expired", deferred: true},
-		{projectID: "configured"},
-		{projectID: "scratch-failure", scratchFailure: true},
-		{projectID: "removed"},
-		{projectID: "configured", host: "pool-a"},
-		{projectID: "removed", host: "pool-a"},
-	} {
-		projectID := tc.projectID
-		t.Run(projectID+"/"+tc.host, func(t *testing.T) {
-			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { backend.Close() })
-			now := time.Now().UTC()
-			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: projectID, IssueID: "stranded", WorkerType: "agent", WorkerHost: tc.host, StartedAt: now.Add(-46 * time.Hour), LeaseExpiresAt: now.Add(-22 * time.Hour)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			issue := connector.NewIssue()
-			issue.ID, issue.State = "stranded", "In Progress"
-			issue.Identifier, issue.Title = "project#2749", "Resume stranded work"
-			if tc.deferred {
-				metadata, err := json.Marshal(map[string]any{"deferred_completion": map[string]any{
-					"schema":       1,
-					"running":      orchestrator.Running{Issue: issue, WorkAttemptID: id, Attempt: 1, StartedAt: now.Add(-time.Minute)},
-					"request":      map[string]any{"project_id": projectID, "issue": issue, "work_attempt_id": id, "attempt": 1},
-					"result":       runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Tokens: runpkg.TokenTotals{TotalTokens: 37}},
-					"completed_at": now.Add(-time.Minute), "deferred_at": now.Add(-2 * time.Hour),
-				}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				expires := now.Add(-time.Minute)
-				if tc.liveLease {
-					expires = now.Add(time.Hour)
-				}
-				if err := backend.RecordWorkAttemptHeartbeat(t.Context(), store.WorkAttemptHeartbeat{AttemptID: id, HeartbeatAt: now, LeaseExpiresAt: expires, Phase: "completion_deferred", WorkerMetadataJSON: string(metadata)}); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			if tc.scratchFailure {
-				sessionID, err := backend.StartSession(t.Context(), store.SessionStart{ProjectID: projectID, IssueID: "stranded", WorkAttemptID: id, StartedAt: now.Add(-time.Hour), AgentRole: store.WorkerProcessRoleHostValidation})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{CleanupRoot: t.TempDir(), CleanupPath: "pending-host-scratch"}); err != nil {
-					t.Fatal(err)
-				}
-				err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, "startup", time.Second, func() time.Time { return now }, nil, func(store.WorkerProcess) error { return &workerProcessTerminationError{err: context.DeadlineExceeded} })
-				if !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("scratch failure=%v", err)
-				}
-				active, err := backend.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{})
-				if err != nil || len(active) != 1 || active[0].ID != id {
-					t.Fatalf("unconfirmed attempt lost protection: %+v err=%v", active, err)
-				}
-				processes, err := backend.ListActiveWorkerProcesses(t.Context())
-				if err != nil || len(processes) != 1 || processes[0].SessionID != sessionID {
-					t.Fatalf("scratch reservation lost: %+v err=%v", processes, err)
-				}
-				return
-			}
-			err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, "startup", time.Second, func() time.Time { return now }, nil, func(store.WorkerProcess) error { return nil })
-			if err != nil {
-				t.Fatal(err)
-			}
-			attempt, err := backend.WorkAttempt(t.Context(), id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.liveLease {
-				if attempt.Status != store.WorkAttemptStatusActive {
-					t.Fatal("startup discarded live deferred completion")
-				}
-				runner := newRestartRecoveryRunner()
-				publishedIssue := issue
-				publishedIssue.State = "Done"
-				tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{publishedIssue}, Stateful: true})
-				orch, stop := runRestartRecoveryOrchestrator(t, tracker, runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
-				testenv.WaitUntil(t, t.Context(), func() error {
-					state, err := orch.State(t.Context())
-					if err != nil {
-						return err
-					}
-					if state.TokenTotals.TotalTokens != 37 {
-						return fmt.Errorf("published tokens = %d", state.TokenTotals.TotalTokens)
-					}
-					return nil
-				})
-				stop()
-				select {
-				case <-runner.started:
-					t.Fatal("provider redispatched during completion recovery")
-				default:
-				}
-				orch, stop = runRestartRecoveryOrchestrator(t, tracker, runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
-				state, err := orch.State(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				stop()
-				if state.TokenTotals.TotalTokens != 0 {
-					t.Fatal("completion published again on second restart")
-				}
-				select {
-				case <-runner.started:
-					t.Fatal("provider redispatched deferred completion")
-				default:
-				}
-				return
-			}
-
-			if attempt.Status != store.WorkAttemptStatusTerminal {
-				t.Fatalf("status = %s, want terminal before project startup", attempt.Status)
-			}
-			active, err := backend.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(active) != 0 {
-				t.Fatalf("active attempts = %d, want 0", len(active))
-			}
-			runner := newRestartRecoveryRunner()
-			orch, stop := runRestartRecoveryOrchestrator(t, fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}}), runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
-			defer stop()
-			select {
-			case <-runner.started:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("reclaimed card did not dispatch: %+v", restartRecoveryState(t, orch).SchedulerDecisions)
-			}
-
-		})
-	}
-}
-
-func TestStartupRetainsOwnedWorkAttempts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-	for _, tc := range []struct {
-		name, host string
-		expired    bool
-	}{
-		{name: "local live lease", host: "local"},
-		{name: "local expired lease with live process", host: "local", expired: true},
-		{name: "pool live lease", host: "pool-a"},
-		{name: "pool expired lease", host: "pool-a", expired: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { backend.Close() })
-			now := time.Now().UTC()
-			lease := now.Add(time.Hour)
-			if tc.expired {
-				lease = now.Add(-time.Hour)
-			}
-			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
-				ProjectID: "removed", IssueID: "retained", WorkerType: "agent", WorkerHost: tc.host,
-				StartedAt: now.Add(-2 * time.Hour), LeaseExpiresAt: lease,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			sessionID, err := backend.StartSession(t.Context(), store.SessionStart{
-				ProjectID: "removed", IssueID: "retained", WorkAttemptID: id, StartedAt: now.Add(-2 * time.Hour),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			// The test process is alive; inject a failed termination so it is never signalled.
-			if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{
-				WorkerProcessIdentity: store.WorkerProcessIdentity{PID: os.Getpid(), GroupID: os.Getpid(), StartedAt: now},
-			}); err != nil {
-				t.Fatal(err)
-			}
-			called := false
-			terminationErr := errors.New("worker remains alive")
-			err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, "startup", time.Second, func() time.Time { return now },
-				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
-					called = true
-					return "", terminationErr
-				}, func(store.WorkerProcess) error { t.Fatal("cleaned live worker"); return nil })
-			if !called || !errors.Is(err, terminationErr) {
-				t.Fatalf("reap called=%v, err=%v", called, err)
-			}
-			attempt, err := backend.WorkAttempt(t.Context(), id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if attempt.Status != store.WorkAttemptStatusActive {
-				t.Fatalf("live attempt was terminalized: %+v", attempt)
-			}
-		})
-	}
-}
-
 // Pool names are scheduling labels; every registered worker belongs to this instance.
 func TestReapPoolWorkerProcesses(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		reason, host string
@@ -848,21 +583,10 @@ func TestReapPoolWorkerProcesses(t *testing.T) {
 		{reason: "shutdown", host: "pool-a"},
 	} {
 		t.Run(tc.reason+"/"+tc.host, func(t *testing.T) {
-			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { backend.Close() })
+			backend := &memorySessions{}
 			now := time.Now().UTC()
-			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
-				ProjectID: "removed", IssueID: "pool-worker", WorkerType: "agent", WorkerHost: tc.host,
-				StartedAt: now.Add(-time.Hour), LeaseExpiresAt: now.Add(time.Hour),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
 			sessionID, err := backend.StartSession(t.Context(), store.SessionStart{
-				ProjectID: "removed", IssueID: "pool-worker", WorkAttemptID: id, StartedAt: now.Add(-time.Hour),
+				ProjectID: "removed", IssueID: "pool-worker", StartedAt: now.Add(-time.Hour),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -891,14 +615,8 @@ func TestReapPoolWorkerProcesses(t *testing.T) {
 			if !called || len(processes) != 0 {
 				t.Fatalf("reap called=%v, remaining processes=%d", called, len(processes))
 			}
-			if tc.reason == "startup" {
-				attempt, err := backend.WorkAttempt(t.Context(), id)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalAbandoned {
-					t.Fatalf("reaped attempt = %+v, want abandoned", attempt)
-				}
+			if reap, ok := backend.reaped(sessionID); !ok || reap.Reason != tc.reason || reap.Outcome != store.WorkerProcessOutcomeAlreadyExited {
+				t.Fatalf("recorded reap = %#v", reap)
 			}
 		})
 	}

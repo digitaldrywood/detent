@@ -196,11 +196,14 @@ func (o *Orchestrator) restorePreTurnIssue(ctx context.Context, state *State, ru
 				target = normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
 			}
 		}
-		var allowed bool
-		target, allowed = nativeRetryLane(states, issue.State, target)
+		lane, allowed := nativeRetryLane(states, issue.State, target)
+		if !allowed {
+			lane, allowed = nativeRetryLane(states, issue.State, issue.State)
+		}
 		if !allowed {
 			return issue, false, errors.New("native workflow allows no instance retry from " + issue.State)
 		}
+		target = lane
 	}
 	if o.connector != nil && target != "" && normalizeState(issue.State) != normalizeState(target) && (running.DispatchTargetState == "" || normalizeState(issue.State) == normalizeState(running.DispatchTargetState)) {
 		var err error

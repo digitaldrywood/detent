@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -37,6 +38,9 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 		credential := apiCredential{ID: "reader", Hash: apikey.HashToken(string(org) + "_reader"), Scope: apiScopeOperator}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", Slug: string(org), CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: string(org) + "_provider"}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: credential.ID, Hash: credential.Hash, Name: "Example reader", Scope: "operator", KeyScope: "read", Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -96,13 +100,19 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 		if err != nil {
 			t.Fatal(err)
 		}
-		originalPolicy := policy.Descriptor{ID: "policy_original", SourceRevision: string(org) + " original policy"}
+		originalPolicy := policy.Descriptor{
+			ID:             "policy_original",
+			SourceRevision: string(org) + " original policy",
+			Authored:       &policy.Authored{Version: 1, Files: map[string]string{"WORKFLOW.md": string(org) + " retained workflow"}},
+			Configuration:  &policy.Configuration{Behavior: json.RawMessage(`{}`), Prompt: string(org) + " retained prompt"},
+			Workflow:       &policy.Workflow{Source: "WORKFLOW.md", Revision: string(org) + " original workflow"},
+		}
 		policyRow, err := eventstore.NewContent(details).PrepareProjectPolicy(t.Context(), org, originalPolicy)
 		if err != nil {
 			t.Fatal(err)
 		}
 		policyRow.ProjectID, policyRow.ApprovedBy, policyRow.ApprovedAt = "example", "reader", now
-		originalVersion := tracker.ChangeVersion{ID: "version_original", ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), PolicyID: originalPolicy.ID}, Actor: tracker.Actor{Kind: "human", PrincipalID: "reader"}, CreatedAt: now}
+		originalVersion := tracker.ChangeVersion{ID: "version_original", ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), PolicyID: originalPolicy.ID}, Policy: originalPolicy, Actor: tracker.Actor{Kind: "human", PrincipalID: "reader"}, CreatedAt: now}
 		versionRaw, err := json.Marshal(originalVersion)
 		if err != nil {
 			t.Fatal(err)
@@ -139,6 +149,122 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 			t.Fatal(err)
 		}
 		scope := nativeScope{organization: org, project: "example", credential: credential}
+		t.Run(string(org)+"/bounded change tool", func(t *testing.T) {
+			ctx := changeOperatorContext(t, service, string(org)+"_reader", string(org))
+			executor := hubOperatorExecutor{service}
+			args := operatortool.ChangeArguments{ProjectID: string(change.ProjectID), ItemID: string(change.WorkItemID), ChangeID: change.ID}
+			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var current operatortool.ChangeResult
+			if err := json.Unmarshal(result.Content, &current); err != nil {
+				t.Fatal(err)
+			}
+			if current.OrganizationID != string(org) || current.ProjectID != args.ProjectID || current.WorkItemID != args.ItemID || current.ChangeID != args.ChangeID || current.Freshness != "live" || current.URL != "/api/v2/organizations/"+string(org)+"/projects/example/work-items/wi_example_1/changes/"+change.ID {
+				t.Fatalf("wrong Change tool result identity: %+v", current)
+			}
+			if current.Detail == nil || current.Read == nil || current.Detail.Change.Title != change.Title || current.Detail.Summary.Status != "draft" || !current.Read.PolicyDetailsOmitted {
+				t.Fatalf("wrong current Change tool result: %+v", current)
+			}
+
+			args.Section, args.VersionID = "checks", originalVersion.ID
+			result, err = executor.Execute(ctx, changeToolCall(operatortool.GetChange, args))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var selected operatortool.ChangeResult
+			if err := json.Unmarshal(result.Content, &selected); err != nil {
+				t.Fatal(err)
+			}
+			if selected.Detail == nil || selected.Read == nil || selected.Read.VersionID != originalVersion.ID || len(selected.Detail.Versions) != 1 || selected.Detail.Versions[0].ID != originalVersion.ID || selected.Detail.Versions[0].HeadSHA != originalVersion.HeadSHA || selected.Detail.Change.CurrentVersion != "" {
+				t.Fatalf("wrong selected Change version: %+v", selected)
+			}
+
+			args.Cursor = "malformed"
+			if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args)); !errors.Is(err, operatortool.ErrInvalidArguments) {
+				t.Fatalf("malformed cursor: %v", err)
+			}
+			args.Cursor, args.VersionID = "", "version_missing"
+			if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args)); !errors.Is(err, operatortool.ErrAccessDenied) {
+				t.Fatalf("foreign selected version: %v", err)
+			}
+			args.VersionID, args.ItemID = "", "wi_example_2"
+			if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args)); !errors.Is(err, operatortool.ErrAccessDenied) {
+				t.Fatalf("unlinked work item: %v", err)
+			}
+		})
+		t.Run(string(org)+"/exact change version tool", func(t *testing.T) {
+			ctx := changeOperatorContext(t, service, string(org)+"_reader", string(org))
+			executor := hubOperatorExecutor{service}
+			args := operatortool.ChangeArguments{ProjectID: string(change.ProjectID), ItemID: string(change.WorkItemID), ChangeID: change.ID, VersionID: originalVersion.ID}
+			call := changeToolCall(operatortool.GetChangeVersion, args)
+			result, err := executor.Execute(ctx, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var exact operatortool.ChangeResult
+			if err := json.Unmarshal(result.Content, &exact); err != nil {
+				t.Fatal(err)
+			}
+			if exact.OrganizationID != string(org) || exact.ProjectID != args.ProjectID || exact.WorkItemID != args.ItemID || exact.ChangeID != args.ChangeID || exact.Detail != nil || exact.Read != nil || exact.Version == nil || !reflect.DeepEqual(*exact.Version, originalVersion) {
+				t.Fatalf("wrong exact version identity or retained policy: %+v", exact)
+			}
+
+			foreign := args
+			foreign.VersionID = "version_missing"
+			if result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChangeVersion, foreign)); !errors.Is(err, operatortool.ErrAccessDenied) || len(result.Content) != 0 {
+				t.Fatalf("foreign version result bytes=%d error=%v", len(result.Content), err)
+			}
+
+			t.Run("missing version object", func(t *testing.T) {
+				details.mu.Lock()
+				raw, found := details.data[versionRow.PayloadObjectKey]
+				delete(details.data, versionRow.PayloadObjectKey)
+				details.mu.Unlock()
+				if !found {
+					t.Fatal("version object was absent before removal")
+				}
+				t.Cleanup(func() {
+					details.mu.Lock()
+					details.data[versionRow.PayloadObjectKey] = raw
+					details.mu.Unlock()
+				})
+				result, err := executor.Execute(ctx, call)
+				if !errors.Is(err, artifact.ErrMissing) || !errors.Is(err, operatortool.ErrServiceUnavailable) || len(result.Content) != 0 {
+					t.Fatalf("missing version object result bytes=%d error=%v", len(result.Content), err)
+				}
+			})
+
+			t.Run("grant removed during version hydration", func(t *testing.T) {
+				intercept := &changeReadInterceptionStore{DetailStore: details, key: versionRow.PayloadObjectKey}
+				var removed bool
+				intercept.afterRead = func(ctx context.Context) error {
+					err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.DeleteAccessTokenGrant(ctx, credential.ID, change.ProjectID)
+					})
+					removed = err == nil
+					return err
+				}
+				service.config.RunDetails = intercept
+				t.Cleanup(func() {
+					service.config.RunDetails = details
+					if removed {
+						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+						defer cancel()
+						if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+							return w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: org, TokenID: credential.ID, ProjectID: change.ProjectID})
+						}); err != nil {
+							t.Error(err)
+						}
+					}
+				})
+				result, err := executor.Execute(ctx, call)
+				if !removed || intercept.afterRead != nil || !errors.Is(err, operatortool.ErrAccessDenied) || len(result.Content) != 0 {
+					t.Fatalf("version hydration grant removal=%t result bytes=%d error=%v", removed, len(result.Content), err)
+				}
+			})
+		})
 		for _, test := range []struct {
 			name, reference, role string
 			want                  error

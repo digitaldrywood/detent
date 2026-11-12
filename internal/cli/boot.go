@@ -25,15 +25,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/logging"
-	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 )
@@ -363,11 +360,7 @@ func startOnboarding(ctx context.Context, cfg BootConfig) error {
 
 	//nolint:contextcheck // Echo middleware receives request contexts at serve time.
 	server, err := web.NewServer(web.Config{
-		Mode:         web.ModeOnboarding,
-		WorkflowPath: firstWorkflowPath(cfg),
-		Version:      cfg.Version,
 		Build:        cfg.Build,
-		DashboardURL: displayURL,
 		GlobalConfig: cfg.Global,
 	}, web.Dependencies{})
 	if err != nil {
@@ -1170,246 +1163,6 @@ func parseSlogLevel(level string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
-}
-
-func refresherForRegistry(registry *project.Registry) web.Refresher {
-	if registry == nil {
-		return nil
-	}
-	return registryRefresher{registry: registry}
-}
-
-type registryRefresher struct {
-	registry  *project.Registry
-	attempts  store.WorkAttemptStore
-	processes workerProcessStore
-}
-
-func (r registryRefresher) RequestRefresh(ctx context.Context) (web.RefreshResponse, error) {
-	var response web.RefreshResponse
-	refreshed := false
-	for _, trackedProject := range r.registry.List() {
-		if !trackedProject.Running() {
-			continue
-		}
-		orch := trackedProject.Orchestrator()
-		if orch == nil {
-			continue
-		}
-
-		next, err := orch.RequestRefresh(ctx)
-		if err != nil {
-			return web.RefreshResponse{}, err
-		}
-		if !refreshed {
-			response = next
-			refreshed = true
-			continue
-		}
-		response = mergeRefreshResponse(response, next)
-	}
-	if !refreshed {
-		return web.RefreshResponse{}, project.ErrProjectNotFound
-	}
-	return response, nil
-}
-
-func (r registryRefresher) RequestTargetedRefresh(ctx context.Context, target web.RefreshTarget) (web.RefreshResponse, error) {
-	repository := strings.TrimSpace(target.Repository)
-	if repository == "" {
-		return r.RequestRefresh(ctx)
-	}
-	projectIDs := make(map[string]struct{}, len(target.ProjectIDs))
-	for _, projectID := range target.ProjectIDs {
-		if projectID = strings.TrimSpace(projectID); projectID != "" {
-			projectIDs[projectID] = struct{}{}
-		}
-	}
-
-	var response web.RefreshResponse
-	refreshed := false
-	for _, trackedProject := range r.registry.List() {
-		if !trackedProject.Running() {
-			continue
-		}
-		if len(projectIDs) > 0 {
-			if _, ok := projectIDs[string(trackedProject.ID())]; !ok {
-				continue
-			}
-		}
-		workflow := trackedProject.Workflow().Config
-		configuredRepository := strings.TrimSpace(workflow.Tracker.Repository)
-		if len(projectIDs) == 0 && configuredRepository != "" && !strings.EqualFold(configuredRepository, repository) {
-			continue
-		}
-		orch := trackedProject.Orchestrator()
-		if orch == nil {
-			continue
-		}
-
-		var next web.RefreshResponse
-		var err error
-		if target.IssueNumber > 0 || target.PullRequestNumber > 0 || strings.TrimSpace(target.Branch) != "" {
-			next, err = orch.RequestTargetedRefresh(ctx, connector.ReconcileTarget{
-				Scope:          repository,
-				WorkItemNumber: target.IssueNumber,
-				ChangeNumber:   target.PullRequestNumber,
-				Revision:       strings.TrimSpace(target.SHA),
-				Branch:         strings.TrimSpace(target.Branch),
-				Event:          strings.TrimSpace(target.Event),
-				DeliveryID:     strings.TrimSpace(target.DeliveryID),
-			})
-		} else {
-			next, err = orch.RequestRefresh(ctx)
-		}
-		if err != nil {
-			return web.RefreshResponse{}, err
-		}
-		next.Operations = appendOperations([]string{"target:" + repository}, next.Operations)
-		if !refreshed {
-			response = next
-			refreshed = true
-			continue
-		}
-		response = mergeRefreshResponse(response, next)
-	}
-	if !refreshed {
-		return web.RefreshResponse{}, project.ErrProjectNotFound
-	}
-	return response, nil
-}
-
-func (r registryRefresher) WorkAttemptReceipt(ctx context.Context, projectID string, attemptID int64) (orchestrator.WorkAttemptRecoveryResponse, error) {
-	orch, err := r.projectOrchestrator(projectID)
-	if err != nil {
-		return orchestrator.WorkAttemptRecoveryResponse{}, err
-	}
-	return orch.WorkAttemptReceipt(ctx, projectID, attemptID)
-}
-
-func (r registryRefresher) ReconcileOperatorMove(ctx context.Context, request orchestrator.OperatorMoveRequest) (orchestrator.OperatorMoveResult, error) {
-	orch, err := r.projectOrchestrator(request.ProjectID)
-	if err != nil {
-		return orchestrator.OperatorMoveResult{}, err
-	}
-	return orch.ReconcileOperatorMove(ctx, request)
-}
-
-func (r registryRefresher) RecoverWorkAttempt(ctx context.Context, request orchestrator.WorkAttemptRecoveryRequest) (orchestrator.WorkAttemptRecoveryResponse, error) {
-	orch, err := r.projectOrchestrator(request.ProjectID)
-	if err != nil {
-		return orchestrator.WorkAttemptRecoveryResponse{}, err
-	}
-	return orch.RecoverWorkAttempt(ctx, request)
-}
-
-func (r registryRefresher) StopRun(ctx context.Context, request orchestrator.StopRunRequest) (orchestrator.StopRunResult, error) {
-	orch, err := r.projectOrchestrator(request.ProjectID)
-	if err != nil {
-		if r.attempts == nil || r.processes == nil {
-			return orchestrator.StopRunResult{}, err
-		}
-		cfg := orchestrator.Config{}
-		if tracked, ok := r.registry.Get(project.ID(request.ProjectID)); ok {
-			cfg = orchestrator.ConfigFromWorkflow(tracked.Workflow().Config)
-		} else if pending, ok := r.registry.Pending(project.ID(request.ProjectID)); ok && pending.Project.Workflow != "" {
-			workflow, loadErr := project.LoadWorkflowContext(ctx, pending.Project)
-			// Broken workflow settings must not prevent a processless record
-			// from being stopped. Canonical routes need no workflow config.
-			if loadErr == nil {
-				cfg = orchestrator.ConfigFromWorkflow(workflow.Config)
-			}
-		}
-		return orchestrator.StopRecordedRun(ctx, r.attempts, r.processes, request, cfg)
-	}
-	return orch.StopRun(ctx, request)
-}
-
-func (r registryRefresher) projectOrchestrator(projectID string) (*orchestrator.Orchestrator, error) {
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		return nil, project.ErrMissingProjectID
-	}
-	trackedProject, ok := r.registry.Get(project.ID(projectID))
-	if !ok {
-		return nil, project.ErrProjectStopped
-	}
-	if !trackedProject.Running() {
-		return nil, project.ErrNotRunning
-	}
-	orch := trackedProject.Orchestrator()
-	if orch == nil {
-		return nil, project.ErrMissingOrchestrator
-	}
-	return orch, nil
-}
-
-func mergeRefreshResponse(current web.RefreshResponse, next web.RefreshResponse) web.RefreshResponse {
-	current.Queued = current.Queued || next.Queued
-	current.Coalesced = current.Coalesced || next.Coalesced
-	current.Refused = current.Refused || next.Refused
-	if current.RequestedAt.IsZero() || (!next.RequestedAt.IsZero() && next.RequestedAt.Before(current.RequestedAt)) {
-		current.RequestedAt = next.RequestedAt
-		current.RequestID = next.RequestID
-	}
-	if current.RequestID == "" {
-		current.RequestID = next.RequestID
-	}
-	if strings.TrimSpace(next.LastError) != "" {
-		if strings.TrimSpace(current.LastError) == "" ||
-			current.LastErrorAt == nil ||
-			next.LastErrorAt == nil ||
-			current.LastErrorAt.Before(*next.LastErrorAt) {
-			current.LastError = next.LastError
-		}
-	}
-	current.LastErrorAt = latestTime(current.LastErrorAt, next.LastErrorAt)
-	current.RetryAt = earliestTime(current.RetryAt, next.RetryAt)
-	current.Operations = appendOperations(current.Operations, next.Operations)
-	current.Status = mergeRefreshResponseStatus(current, next)
-	return current
-}
-
-func mergeRefreshResponseStatus(current web.RefreshResponse, next web.RefreshResponse) telemetry.RefreshAttemptStatus {
-	if current.Coalesced || next.Coalesced {
-		return telemetry.RefreshAttemptStatusCoalesced
-	}
-	if current.Queued || next.Queued {
-		return telemetry.RefreshAttemptStatusInProgress
-	}
-	if current.Refused || next.Refused {
-		return telemetry.RefreshAttemptStatusRefused
-	}
-	if current.Status != "" {
-		return current.Status
-	}
-	if next.Status != "" {
-		return next.Status
-	}
-	return ""
-}
-
-func appendOperations(operations []string, next []string) []string {
-	for _, operation := range next {
-		if !hasOperation(operations, operation) {
-			operations = append(operations, operation)
-		}
-	}
-	return operations
-}
-
-func hasOperation(operations []string, operation string) bool {
-	return slices.Contains(operations, operation)
-}
-
-func firstWorkflowPath(cfg BootConfig) string {
-	if strings.TrimSpace(cfg.WorkflowPath) != "" {
-		return cfg.WorkflowPath
-	}
-	if len(cfg.Global.Projects) == 0 {
-		return filepath.Join(mustGetwd(), defaultWorkflowFile)
-	}
-	return cfg.Global.Projects[0].Workflow
 }
 
 func firstGlobalWorkflowPath(cfg globalconfig.Config) string {

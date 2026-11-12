@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -35,10 +36,12 @@ type changeWorkflowTransition struct {
 	policyFound  bool
 	contract     *eventstore.Receipt
 	attempt      *leasestore.Attempt
+	cancellation *preparedNativeLeaseCancellation
 	linked       *eventstore.LinkedSource
 	request      tracker.Transition
 	stopState    string
 	dependencies bool
+	outbound     *projectstore.GitHubOutbound
 }
 
 type changeReviewWorkflow struct {
@@ -212,6 +215,7 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 		return nil, err
 	}
 	p = &changeWorkflowTransition{eligible: true, plan: workItemRecordPlan{project: project, current: row, eventType: "workflow.transitioned"}, fields: workItemRecordFields{Body: stringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}, dependencies: !rework}
+	sourceIssue := issue
 	content := eventstore.NewContent(s.runDetailStore())
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		attempt, err := r.LatestAttempt(ctx, row.ID)
@@ -231,6 +235,12 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 	})
 	if err != nil {
 		return nil, err
+	}
+	if p.attempt != nil {
+		p.cancellation, err = s.prepareExpiredNativeLeaseCancellation(ctx, scope, row.ID, false)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if p.linked != nil {
 		issue.LinkedSource = &tracker.LinkedIssueSource{URL: p.linked.URL, Status: "pending"}
@@ -261,9 +271,27 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 		issue.ClosedAt = nil
 	}
 	p.request = tracker.Transition{State: target, ExpectedRevision: tracker.Revision(row.Revision), Reason: "user_requested"}
-	p.policy, p.policyFound, err = s.validateTenantTransitionIssueContract(ctx, scope, &issue, &project, previous, p.request, &p.stopState)
+	var workflowLabel string
+	p.policy, p.policyFound, err = s.validateTenantTransitionIssueContract(ctx, scope, &issue, &project, previous, p.request, &p.stopState, &workflowLabel)
 	if err != nil {
 		return nil, err
+	}
+	p.request.WorkflowLabel = workflowLabel
+	if issue.Profile == "github_compatible" && workflowLabel != "" {
+		repository, _, sourceErr := cutoverSourceReference(sourceIssue)
+		if sourceErr == nil && project.Settings.RepositoryEnabled && strings.EqualFold(repository, strings.TrimSpace(project.Settings.Repository)) {
+			key, err := nativeCommandHash(struct {
+				Organization, Project, Change, Item, State, Policy string
+				Revision                                           int64
+			}{string(scope.organization), string(scope.project), change.ID, string(issue.WorkItemID), target, p.policy.PolicyID, int64(issue.Revision)})
+			if err != nil {
+				return nil, err
+			}
+			p.outbound, err = s.prepareCompatibilityWorkflowLabel(ctx, scope, sourceIssue, project, workflowLabel, "change-workflow:"+key, now)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	p.plan.issue = issue
 	if issue.IssueContract != nil {
@@ -411,10 +439,10 @@ func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstor
 		return false, err
 	}
 	if err == nil {
-		if lease.ExpiresAt.After(s.config.now().UTC()) {
+		if !p.cancellation.expiresLease(lease) && lease.ExpiresAt.After(s.config.now().UTC()) {
 			return false, tracker.ErrLeaseConflict
 		}
-		if err := s.settleHumanWorkflowLease(ctx, w, scope, lease, p.request, nil, p.stopState); err != nil {
+		if err := s.settleHumanWorkflowLease(ctx, w, scope, lease, p.request, p.cancellation, p.stopState); err != nil {
 			return false, err
 		}
 	}
@@ -455,6 +483,15 @@ func (s *Service) applyChangeWorkflowTransition(ctx context.Context, w tenantsto
 	if _, err := w.CreateCollaborationVersion(ctx, p.version); err != nil {
 		return err
 	}
-	_, err := w.AppendEvent(ctx, p.event)
-	return err
+	if _, err := w.AppendEvent(ctx, p.event); err != nil {
+		return err
+	}
+	if p.outbound != nil {
+		owner, ok := w.(projectstore.GitHubOutboxWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		return owner.EnqueueGitHubOutbound(ctx, *p.outbound)
+	}
+	return nil
 }

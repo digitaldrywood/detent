@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -26,11 +26,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 const (
@@ -54,8 +53,8 @@ func TestOpenTestServiceUsesPostgres(t *testing.T) {
 				}
 			}
 			service := openTestService(t, cfg)
-			if service.database.postgres == nil || service.database.db != nil || service.database.reader != nil || service.database.authReader != nil || service.database.claimReader != nil {
-				t.Fatal("shared service fixture must use PostgreSQL without legacy SQL handles")
+			if service.database.postgres == nil || service.config.TenantRepository == nil {
+				t.Fatal("required PostgreSQL fixture owners are not configured")
 			}
 			if hosted && service.config.Hosted != cfg.Hosted {
 				t.Fatal("shared service fixture replaced the supplied hosted configuration")
@@ -125,6 +124,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 			cfg.Postgres = defaults.Postgres
 			if cfg.Hosted == nil {
 				cfg.Hosted = defaults.Hosted
+				seedSuppliedRepositoryBinding(t, repository, cfg.Hosted, cfg.normalized().now().UTC())
 			}
 		}
 	}
@@ -152,7 +152,8 @@ func openTestService(t *testing.T, cfg Config) *Service {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: "example", CreatedAt: now}); err != nil {
 				return err
 			}
-			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, AllocationGeneration: 1}); err != nil {
+			deployment, generation := cfg.Hosted.deployment()
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 				return err
 			}
 			return w.CreateAccessCredential(t.Context(), accessstore.Credential{
@@ -179,6 +180,28 @@ func openTestService(t *testing.T, cfg Config) *Service {
 		}
 	})
 	return service
+}
+
+func seedSuppliedRepositoryBinding(t *testing.T, repository *postgres.Repository, hosted *HostedConfig, now time.Time) {
+	t.Helper()
+	organization := tracker.OrganizationID(hosted.OrganizationID)
+	err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.AccessTenant(t.Context()); !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if _, err := w.AccessOrganization(t.Context()); errors.Is(err, corestore.ErrNotFound) {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Fixture binding", Slug: strings.ReplaceAll(string(organization), "_", "-"), CreatedAt: now.Truncate(time.Microsecond)}); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+		deployment, generation := hosted.deployment()
+		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: hosted.WorkOSOrganizationID, BootstrapSubject: hosted.BootstrapSubject, Deployment: deployment, PublicURL: hosted.PublicURL, AllocationGeneration: generation})
+	})
+	if err != nil {
+		t.Fatalf("seed supplied PostgreSQL fixture binding: %v", err)
+	}
 }
 
 func hubPostgresRepository(t *testing.T, maxConnections int) (*postgres.Repository, *sql.DB) {
@@ -361,7 +384,10 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 		return f.service.database.health(ctx)
 	}}
 	detail := read{"work item detail", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
-		_, _, err := readNativeIssue(ctx, f.service.database.reader, scope, item)
+		issue, err := f.service.readWorkItem(ctx, scope, item)
+		if err == nil && string(issue.WorkItemID) != item {
+			return fmt.Errorf("work item detail = %s, want %s", issue.WorkItemID, item)
+		}
 		return err
 	}}
 	attempts := read{"attempts", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
@@ -390,106 +416,220 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		hold  func(*testing.T, *Service) *sql.Tx
-		reads []read
 		write bool
-	}{
-		{
-			name: "writer holds a write transaction",
-			hold: func(t *testing.T, s *Service) *sql.Tx {
-				tx, err := s.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET name = name"); err != nil {
-					t.Fatal(err)
-				}
-				return tx
-			},
-			reads: []read{health, internalHealth, detail, attempts, changes, findings, capabilities},
-			write: true,
-		},
-		{
-			name: "reader pool holds a long read",
-			hold: func(t *testing.T, s *Service) *sql.Tx {
-				tx, err := s.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
-				if err != nil {
-					t.Fatal(err)
-				}
-				var count int
-				if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM issues").Scan(&count); err != nil {
-					t.Fatal(err)
-				}
-				return tx
-			},
-			reads: []read{health, internalHealth, detail, attempts, changes, findings, capabilities, board},
-		},
-	}
+	}{{"writer holds a write transaction", true}, {"reader pool holds a long read", false}}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newDefaultNativeFixture(t, Config{})
+			f := newPostgresDefaultNativeFixture(t, Config{})
 			issue := f.create(t, "first")
 			f.create(t, "second")
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			scope := analyticsTestScope(t, f)
 			item := string(issue.WorkItemID)
-
-			held := test.hold(t, f.service)
-			defer func() { _ = held.Rollback() }()
-			for _, read := range test.reads {
+			installReportsBudgetTrace(t, f.service)
+			repository := f.service.config.TenantRepository
+			admin := hostedPostgresAdmin(t, f.service)
+			poolConfig, err := f.service.config.Postgres.Connection.PoolConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			login := poolConfig.ConnConfig.User
+			heldContext, cancelHeld := context.WithCancel(t.Context())
+			ready, release, heldDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			var heldErr error
+			var secondDone chan struct{}
+			var secondErr error
+			var cancelSecond context.CancelFunc
+			t.Cleanup(func() {
+				releaseOnce.Do(func() { close(release) })
+				cancelHeld()
+				if cancelSecond != nil {
+					cancelSecond()
+				}
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+				defer cancel()
+				select {
+				case <-heldDone:
+				case <-cleanup.Done():
+					t.Error("held transaction did not stop during failure cleanup")
+					return
+				}
+				if secondDone != nil {
+					select {
+					case <-secondDone:
+					case <-cleanup.Done():
+						t.Error("second writer did not stop during failure cleanup")
+					}
+				}
+			})
+			hold := func(reader tenantstore.Reader) error {
+				if test.write {
+					writer := reader.(tenantstore.Writer)
+					if err := writer.LockWorkItemProject(heldContext, scope.project); err != nil {
+						return err
+					}
+					record, err := writer.ProjectRecord(heldContext, scope.project)
+					if err != nil {
+						return err
+					}
+					record.Core.Name += " held"
+					if _, err := writer.UpdateProjectRecord(heldContext, record); err != nil {
+						return err
+					}
+				} else {
+					if _, err := reader.WorkItem(heldContext, scope.project, issue.WorkItemID); err != nil {
+						return err
+					}
+				}
+				close(ready)
+				select {
+				case <-release:
+					return nil
+				case <-heldContext.Done():
+					return heldContext.Err()
+				}
+			}
+			go func() {
+				defer close(heldDone)
+				if test.write {
+					heldErr = repository.WriteTenant(heldContext, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error { return hold(writer) })
+				} else {
+					heldErr = repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(heldContext, scope.organization, corestore.Serving, hold)
+				}
+			}()
+			waitContext := testenv.WaitContext(t, t.Context())
+			select {
+			case <-ready:
+			case <-heldDone:
+				t.Fatalf("hold transaction failed: %v", heldErr)
+			case <-waitContext.Done():
+				t.Fatalf("hold transaction did not become ready: %v", waitContext.Err())
+			}
+			var heldPID int
+			testenv.WaitUntil(t, t.Context(), func() error {
+				select {
+				case <-heldDone:
+					t.Fatalf("held transaction ended before reads: %v", heldErr)
+				default:
+				}
+				var matches int
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*), coalesce(min(pid),0) FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction'", login).Scan(&matches, &heldPID); err != nil {
+					return err
+				}
+				if matches != 1 {
+					return fmt.Errorf("held transaction backend matches = %d, want 1", matches)
+				}
+				return nil
+			})
+			for _, read := range []read{health, internalHealth, detail, attempts, changes, findings, capabilities, board} {
 				started := time.Now()
-				err := read.run(testenv.WaitContext(t, t.Context()), f, scope, item)
-				if err != nil {
+				if err := read.run(testenv.WaitContext(t, t.Context()), f, scope, item); err != nil {
 					t.Fatalf("%s beside a held connection: %v after %s", read.name, err, time.Since(started))
 				}
 			}
-
-			if _, err := f.service.database.reader.ExecContext(t.Context(), "UPDATE projects SET name = name"); err == nil {
-				t.Fatal("reader pool accepted a write")
+			writerAvailable := false
+			readerContext := testenv.WaitContext(t, t.Context())
+			err = repository.ReadTenant(readerContext, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				writer, ok := reader.(tenantstore.Writer)
+				writerAvailable = ok
+				if !ok {
+					return nil
+				}
+				record, err := reader.ProjectRecord(readerContext, scope.project)
+				if err != nil {
+					return err
+				}
+				record.Core.Name = "reader write must be rejected"
+				_, err = writer.UpdateProjectRecord(readerContext, record)
+				return err
+			})
+			if writerAvailable {
+				if pgtransport.SQLState(err) != "25006" {
+					t.Fatalf("reader transaction write = %v (SQLSTATE=%s), want read-only rejection", err, pgtransport.SQLState(err))
+				}
+			} else if err != nil {
+				t.Fatal(err)
 			}
 			if !test.write {
-				window := operatortool.AnalyticsWindow{From: time.Now().UTC().Add(-time.Hour), To: time.Now().UTC().Add(time.Hour), Bucket: time.Hour}
-				read := func() int {
-					t.Helper()
-					analytics, err := readNativeAnalytics(t.Context(), held, scope, operatortool.AnalyticsRequest{Limit: 10}, window)
-					if err != nil {
-						t.Fatal(err)
+				releaseOnce.Do(func() { close(release) })
+				select {
+				case <-heldDone:
+				case <-waitContext.Done():
+					t.Fatalf("held read did not complete: %v", waitContext.Err())
+				}
+				if heldErr != nil {
+					t.Fatalf("held read: %v", heldErr)
+				}
+				if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					record, err := reader.ProjectRecord(t.Context(), scope.project)
+					if err == nil && record.Core.Name != f.project.Name {
+						t.Fatalf("rejected reader write changed project: %q", record.Core.Name)
 					}
-					return analytics.LaneResidence.IssuesObserved
-				}
-				if got := read(); got != 2 {
-					t.Fatalf("initial analytics population = %d, want 2", got)
-				}
-				body, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-third"}, Title: "third", Body: issueContractTestSections, State: "Todo"})
-				if err != nil {
+					return err
+				}); err != nil {
 					t.Fatal(err)
-				}
-				ctx := testenv.WaitContext(t, t.Context())
-				request := httptest.NewRequest(http.MethodPost, f.base+"/work-items", strings.NewReader(string(body))).WithContext(ctx)
-				request.Header.Set("Authorization", "Bearer "+f.token)
-				request.Header.Set("Content-Type", "application/json")
-				response := httptest.NewRecorder()
-				f.service.Handler().ServeHTTP(response, request)
-				requireNativeStatus(t, response, http.StatusOK)
-				if got := read(); got != 2 {
-					t.Fatalf("held analytics snapshot after write = %d, want 2", got)
-				}
-				page, err := f.service.readIssues(ctx, scope, url.Values{})
-				if err != nil || page.Total != 3 {
-					t.Fatalf("committed population = %d, want 3: %v", page.Total, err)
 				}
 				return
 			}
-			blocked, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-			defer cancel()
-			if _, err := f.service.database.db.ExecContext(blocked, "UPDATE projects SET name = name"); !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("second write beside a held write = %v, want it to wait for the writer", err)
+			secondContext, cancel := context.WithCancel(t.Context())
+			cancelSecond = cancel
+			secondDone = make(chan struct{})
+			go func() {
+				defer close(secondDone)
+				secondErr = repository.WriteTenant(secondContext, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+					if err := writer.LockWorkItemProject(secondContext, scope.project); err != nil {
+						return err
+					}
+					record, err := writer.ProjectRecord(secondContext, scope.project)
+					if err != nil {
+						return err
+					}
+					record.Core.Name += " second"
+					_, err = writer.UpdateProjectRecord(secondContext, record)
+					return err
+				})
+			}()
+			testenv.WaitUntil(t, t.Context(), func() error {
+				select {
+				case <-secondDone:
+					t.Fatalf("second writer ended before blocking: %v", secondErr)
+				default:
+				}
+				var waiting bool
+				if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))`, login, heldPID).Scan(&waiting); err != nil {
+					return err
+				}
+				if !waiting {
+					return errors.New("second writer has not reached the held project lock")
+				}
+				return nil
+			})
+			releaseOnce.Do(func() { close(release) })
+			select {
+			case <-heldDone:
+			case <-waitContext.Done():
+				t.Fatalf("held write did not commit: %v", waitContext.Err())
 			}
-			if err := held.Commit(); err != nil {
+			if heldErr != nil {
+				t.Fatalf("held write: %v", heldErr)
+			}
+			select {
+			case <-secondDone:
+			case <-waitContext.Done():
+				t.Fatalf("second writer did not finish after commit: %v", waitContext.Err())
+			}
+			if secondErr != nil {
+				t.Fatalf("write after held write committed: %v", secondErr)
+			}
+			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				record, err := reader.ProjectRecord(t.Context(), scope.project)
+				if err == nil && record.Core.Name != f.project.Name+" held second" {
+					t.Fatalf("serialized writes did not persist: %q", record.Core.Name)
+				}
+				return err
+			}); err != nil {
 				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET name = name"); err != nil {
-				t.Fatalf("write after the held write committed: %v", err)
 			}
 		})
 	}

@@ -1,8 +1,8 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,70 +11,176 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
-
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
-	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
 )
 
 type batchFixture struct {
+	commandToken  string
+	sessionCookie string
+	provider      *hostedSecurityProvider
 	nativeFixture
 	runner   runnerFixture
+	details  *memoryRunDetails
 	batch    *tracker.GitHubBatch
 	sequence int
+	backend  *batchSourceFixture
+	clock    *leaseTestClock
+}
+
+type batchSourceFixture struct {
+	mu             sync.Mutex
+	pages          map[string]tracker.GitHubDiscoveryPage
+	snapshots      map[int]tracker.GitHubIssueSnapshot
+	failures       map[int]error
+	discoveryError error
+	discoveryGaps  bool
+	partial        map[int]bool
+	calls          []GitHubImportRequest
+	beforeFetch    func(GitHubImportRequest)
+}
+
+func (backend *batchSourceFixture) FetchImportPage(ctx context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
+	backend.mu.Lock()
+	backend.calls = append(backend.calls, request)
+	hook := backend.beforeFetch
+	backend.mu.Unlock()
+	if hook != nil {
+		hook(request)
+	}
+	if err := ctx.Err(); err != nil {
+		return GitHubImportPage{}, err
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if request.Stage == "batch" {
+		if backend.discoveryError != nil {
+			return GitHubImportPage{}, backend.discoveryError
+		}
+		page, ok := backend.pages[request.Discovery.Cursor]
+		if !ok {
+			return GitHubImportPage{}, errors.New("unexpected discovery cursor")
+		}
+		if backend.discoveryGaps {
+			return GitHubImportPage{BatchPage: &page, Gaps: []string{"partial page"}}, nil
+		}
+		return GitHubImportPage{BatchPage: &page}, nil
+	}
+	if backend.partial[request.IssueNumber] {
+		return GitHubImportPage{Gaps: []string{"partial discussion"}}, nil
+	}
+	if err := backend.failures[request.IssueNumber]; err != nil {
+		return GitHubImportPage{}, err
+	}
+	snapshot, ok := backend.snapshots[request.IssueNumber]
+	if !ok {
+		return GitHubImportPage{}, errors.New("source context unavailable")
+	}
+	switch request.Stage {
+	case "issue":
+		return GitHubImportPage{Issue: &IssueSource{Number: request.IssueNumber, URL: snapshot.URL, NodeID: snapshot.Provenance.ExternalID, Title: snapshot.Title, Body: snapshot.Body, AuthorID: snapshot.Provenance.AuthorID, CreatedAt: snapshot.Provenance.CreatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}}, nil
+	case "comments":
+		start := 0
+		if request.Cursor != "" {
+			var err error
+			start, err = strconv.Atoi(request.Cursor)
+			if err != nil {
+				return GitHubImportPage{}, err
+			}
+		}
+		page := GitHubImportPage{}
+		for _, comment := range snapshot.Comments[start:min(start+30, len(snapshot.Comments))] {
+			page.Records = append(page.Records, GitHubImportRecord{Kind: "comment", Body: comment.Body, Provenance: comment.Provenance})
+		}
+		if start+30 < len(snapshot.Comments) {
+			page.NextCursor = strconv.Itoa(start + 30)
+		}
+		return page, nil
+	}
+	return GitHubImportPage{}, errors.New("unexpected import stage")
 }
 
 func newBatchFixture(t *testing.T) *batchFixture {
 	t.Helper()
-	return newBatchFixtureForProject(t, linkedFixture(t))
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	details := &memoryRunDetails{}
+	service := newPostgresNativeService(t, Config{RunDetails: details, Clock: clock.Now})
+	f := newBatchFixtureForProject(t, newNativeFixture(t, service, "", "Example batch"))
+	f.clock, f.details = clock, details
+	return f
 }
 
 func newBatchFixtureForProject(t *testing.T, f nativeFixture) *batchFixture {
 	t.Helper()
-	f.service.config.ImportBackend = nil
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE repositories SET github_owner='example-org', github_name='example-project' WHERE github_node_id='R_repo'"); err != nil {
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
-	// Exercise the hosted runner-first association, without a GitHub backend.
-	_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=NULL, checkout_repository='example-org/example-project', github_intake='manual' WHERE id=?", f.project.ID)
-	if err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+		project, err := writer.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.Settings.RepositoryEnabled = true
+		project.Settings.Repository, project.Settings.CheckoutRepository, project.Settings.Intake = "example-org/example-project", "example-org/example-project", "manual"
+		project.States = nativeTriageStates(append(project.States, tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo"}}, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo", "Backlog"}}))
+		_, err = writer.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	states := append(f.project.States, tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo"}}, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo"}})
-	raw, err := marshalNative(states)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", raw, f.project.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?, 'Backlog','Backlog',0,0,?,?), (?, 'Blocked','Blocked',0,0,?,?)", f.project.ID, testTimestamp, testTimestamp, f.project.ID, testTimestamp, testTimestamp)
-	if err != nil {
-		t.Fatal(err)
-	}
+	backend := &batchSourceFixture{pages: map[string]tracker.GitHubDiscoveryPage{}, snapshots: map[int]tracker.GitHubIssueSnapshot{}, failures: map[int]error{}, partial: map[int]bool{}}
+	f.service.config.ImportBackend = backend
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	runner.enroll(t)
-	fixture := &batchFixture{nativeFixture: f, runner: runner}
+	fixture := &batchFixture{nativeFixture: f, runner: runner, backend: backend}
 	fixture.heartbeat(t)
 	return fixture
 }
-func (f *batchFixture) heartbeat(t *testing.T) *tracker.GitHubBatchTask {
+
+func (f *batchFixture) scope(t *testing.T) nativeScope {
 	t.Helper()
-	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 1, "display_name": "runner", "checkout_repository": "example-org/example-project", "local_checks": runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}})
-	requireNativeStatus(t, r, http.StatusOK)
-	var response runnerauth.RoutingSnapshot
-	decodeHubResponse(t, r, &response)
-	return response.GitHubIntake
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 }
+
+func (f *batchFixture) refresh(t *testing.T) {
+	t.Helper()
+	batch, err := f.service.loadGitHubBatchRecord(t.Context(), f.scope(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.batch = batch
+}
+
+func (f *batchFixture) advance(t *testing.T) error {
+	t.Helper()
+	scope, err := f.service.gitHubIntegrationScope(t.Context(), f.project.OrganizationID, f.project.ID)
+	if err == nil {
+		err = f.service.advanceGitHubBatchRecord(t.Context(), scope)
+	}
+	f.refresh(t)
+	return err
+}
+
 func (f *batchFixture) command(t *testing.T, request tracker.GitHubBatchCommand, status int) {
 	t.Helper()
 	f.sequence++
@@ -82,51 +188,44 @@ func (f *batchFixture) command(t *testing.T, request tracker.GitHubBatchCommand,
 	if f.batch != nil {
 		request.Revision = f.batch.Revision
 	}
-	if request.RunnerID == "" {
-		request.RunnerID = f.runner.binding.RunnerID
+	token := f.commandToken
+	if token == "" {
+		token = testHubAdminToken
 	}
-	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake", testHubAdminToken, request)
-	requireNativeStatus(t, r, status)
+	var response *httptest.ResponseRecorder
+	if f.sessionCookie != "" {
+		raw, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, f.base+"/onboarding/issue-intake", bytes.NewReader(raw)).WithContext(t.Context())
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		req.Header.Set("X-CSRF-Token", hostedCSRF(f.sessionCookie))
+		req.AddCookie(&http.Cookie{Name: hostedCookie, Value: f.sessionCookie})
+		response = httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, req)
+	} else {
+		response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake", token, request)
+	}
+	requireNativeStatus(t, response, status)
 	if status == http.StatusOK {
 		var view githubBatchView
-		decodeHubResponse(t, r, &view)
-		f.batch = view.Batch
-	}
-}
-func (f *batchFixture) report(t *testing.T, request tracker.GitHubBatchResult, status int) {
-	t.Helper()
-	f.sequence++
-	request.IdempotencyKey = fmt.Sprint("result-", f.sequence)
-	request.BatchID = f.batch.ID
-	request.Revision = f.batch.Revision
-	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", f.runner.redemption.Credential, request)
-	requireNativeStatus(t, r, status)
-	if status == http.StatusOK {
-		var view githubBatchView
-		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding/issue-intake", testHubAdminToken, nil)
-		requireNativeStatus(t, response, http.StatusOK)
 		decodeHubResponse(t, response, &view)
 		f.batch = view.Batch
 	}
 }
+
+func (f *batchFixture) heartbeat(t *testing.T) *tracker.GitHubBatchTask {
+	t.Helper()
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 1, "display_name": "runner", "checkout_repository": "example-org/example-project", "local_checks": runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}})
+	requireNativeStatus(t, response, http.StatusOK)
+	var routing runnerauth.RoutingSnapshot
+	decodeHubResponse(t, response, &routing)
+	return routing.GitHubIntake
+}
+
 func previewIssue(number int, closed bool) tracker.GitHubIssuePreview {
 	return tracker.GitHubIssuePreview{Number: number, ID: fmt.Sprint("I_", number), URL: fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", number), Title: fmt.Sprint("Source ", number), Body: "Preview", Closed: closed, Labels: []string{"enhancement"}}
-}
-func (f *batchFixture) preview(t *testing.T, closed bool) {
-	t.Helper()
-	f.command(t, tracker.GitHubBatchCommand{Action: "discover", IncludeClosed: closed}, http.StatusOK)
-	if task := f.heartbeat(t); task == nil || task.Discovery == nil || task.Discovery.IncludeClosed != closed {
-		t.Fatalf("discovery task = %#v", task)
-	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	var setup onboarding.Project
-	decodeHubResponse(t, response, &setup)
-	if len(setup.Runners) != 1 || setup.Runners[0].LocalChecks == nil || !setup.Runners[0].LocalChecks.Passed() || setup.Runners[0].LocalChecks.ObservedAt.IsZero() {
-		t.Fatalf("heartbeat lost local checks while delivering intake: %+v", setup.Runners)
-	}
-	issues := []tracker.GitHubIssuePreview{previewIssue(12, false), previewIssue(13, closed), previewIssue(14, false)}
-	f.report(t, tracker.GitHubBatchResult{Page: &tracker.GitHubDiscoveryPage{Issues: issues, Total: 3}}, http.StatusOK)
 }
 func batchSnapshot(number int) tracker.GitHubIssueSnapshot {
 	snapshot := linkedSnapshot()
@@ -136,188 +235,198 @@ func batchSnapshot(number int) tracker.GitHubIssueSnapshot {
 	return snapshot
 }
 
+func (f *batchFixture) preview(t *testing.T, closed bool) {
+	t.Helper()
+	f.backend.pages[""] = tracker.GitHubDiscoveryPage{Total: 3, Issues: []tracker.GitHubIssuePreview{previewIssue(12, false), previewIssue(13, closed), previewIssue(14, false)}}
+	for _, number := range []int{12, 13, 14} {
+		f.backend.snapshots[number] = batchSnapshot(number)
+	}
+	f.command(t, tracker.GitHubBatchCommand{Action: "discover", IncludeClosed: closed}, http.StatusOK)
+	if !f.batch.HubOwned || f.heartbeat(t) != nil {
+		t.Fatalf("batch escaped Hub ownership: %+v", f.batch)
+	}
+	if err := f.advance(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.batch.Status != "preview" || len(f.batch.Page.Issues) != 3 {
+		t.Fatalf("preview=%+v", f.batch)
+	}
+}
+
+func (f *batchFixture) issue(t *testing.T, id tracker.NativeWorkItemID) tracker.NativeIssue {
+	t.Helper()
+	row, version, err := f.service.readWorkItemRecord(t.Context(), f.scope(t), string(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err := f.service.hydrateWorkItemRecord(t.Context(), row, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return issue
+}
+
+func (f *batchFixture) itemCount(t *testing.T) int {
+	t.Helper()
+	count := 0
+	var after int64
+	for {
+		var rows []corestore.WorkItem
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			rows, err = reader.WorkItems(t.Context(), f.project.ID, after, 200)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		count += len(rows)
+		if len(rows) < 200 {
+			return count
+		}
+		after = rows[len(rows)-1].ID
+	}
+}
+
+func (f *batchFixture) commentCount(t *testing.T, id tracker.NativeWorkItemID) int {
+	t.Helper()
+	var rows []corestore.Comment
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		rows, err = reader.SelectComments(t.Context(), f.project.ID, id, 0, false, 200)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return len(rows)
+}
+
+func (f *batchFixture) save(t *testing.T) {
+	t.Helper()
+	scope := f.scope(t)
+	current, err := f.service.loadGitHubBatchState(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope.githubIntakeRevision = &githubIntakeRevision{issuer: current.Issuer, fallbackRunner: current.FallbackRunnerID, requireAdminKey: current.RequireAdminKey}
+	if err := f.service.saveGitHubBatchRecord(t.Context(), scope, f.batch); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *batchFixture) restart(t *testing.T) {
+	t.Helper()
+	cfg := f.service.config
+	cfg.TenantRepository, cfg.AccessRepository, cfg.BillingRepository = nil, nil, nil
+	if err := f.service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service, err := Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { service.Close() })
+	f.service = service
+	f.runner.service = service
+	if err := service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	f.refresh(t)
+}
+
 func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
-		name           string
-		closed         bool
-		rateLimit      bool
-		mcp            bool
-		importDisabled bool
-		projectLane    string
-		unmapped       bool
-	}{{name: "partial import and native edit"}, {name: "429 after first import", rateLimit: true}, {name: "explicit mixed open and closed history", closed: true}, {name: "MCP bounded intake receipts and authority", mcp: true}, {name: "manual import disabled", importDisabled: true}, {name: "corrected project mapping for precreated issue", projectLane: "Backlog"}, {name: "corrected dispatchable project mapping requires confirmation", projectLane: "Todo"}, {name: "corrected unmapped project status uses destination", projectLane: "Backlog", unmapped: true}} {
+		name                                                         string
+		closed, rateLimit, mcp, importDisabled, integration, partial bool
+		projectLane                                                  string
+		unmapped                                                     bool
+	}{
+		{name: "partial import and native edit"}, {name: "429 after first import", rateLimit: true}, {name: "explicit mixed open and closed history", closed: true}, {name: "MCP bounded intake receipts and authority", mcp: true}, {name: "manual import disabled", importDisabled: true}, {name: "corrected project mapping for precreated issue", projectLane: "Backlog"}, {name: "corrected dispatchable project mapping requires confirmation", projectLane: "Todo"}, {name: "corrected unmapped project status uses destination", projectLane: "Backlog", unmapped: true}, {name: "recorded integration actor destination correction", projectLane: "Backlog", integration: true}, {name: "partial source discussion", partial: true},
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			f := newBatchFixture(t)
-			if test.projectLane == "" {
-				f.preview(t, test.closed)
-			} else {
-				source := &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}
-				f.command(t, tracker.GitHubBatchCommand{Action: "discover", ProjectV2: source}, http.StatusOK)
-				page := tracker.GitHubDiscoveryPage{Total: 3}
-				for _, number := range []int{12, 13, 14} {
-					preview := previewIssue(number, false)
-					preview.ProjectStatus = "Ready"
-					page.Issues = append(page.Issues, preview)
+			if test.integration {
+				f = newHostedBatchFixture(t)
+				f.commandToken = seedBatchServiceKey(t, f)
+			}
+			f.preview(t, test.closed)
+			integrationActor := ""
+			if test.integration {
+				integrationActor = f.batch.RequestedBy.PrincipalID
+				if f.batch.RequestedBy.Kind != "integration" {
+					t.Fatalf("service key actor=%+v", f.batch.RequestedBy)
 				}
-				f.report(t, tracker.GitHubBatchResult{Page: &page}, http.StatusOK)
+			}
+			if test.projectLane != "" {
+				f.batch.Discovery.ProjectV2 = &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}
+				for index := range f.batch.Page.Issues {
+					f.batch.Page.Issues[index].ProjectStatus = "Ready"
+				}
+				f.save(t)
 			}
 			if test.importDisabled {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET github_intake='disabled' WHERE id=?", f.project.ID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+					project, err := writer.ProjectRecord(t.Context(), f.project.ID)
+					if err != nil {
+						return err
+					}
+					project.Settings.Intake = "disabled"
+					_, err = writer.UpdateProjectRecord(t.Context(), project)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 				f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Backlog"}, http.StatusUnprocessableEntity)
-				var linked int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM issues WHERE project_id=? AND github_number=12", f.project.ID).Scan(&linked); err != nil {
-					t.Fatal(err)
-				}
-				if linked != 0 || f.heartbeat(t) != nil {
-					t.Fatalf("disabled import created %d issues or scheduled runner intake", linked)
+				if f.itemCount(t) != 0 || f.heartbeat(t) != nil {
+					t.Fatal("disabled import created issues or assigned intake")
 				}
 				return
 			}
 			if test.mcp {
-				captureds := make(chan context.Context, 1)
-				f.service.echo.GET("/api/v2/organizations/:organization/mcp-batch-fixture", func(c echo.Context) error { captureds <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
-				path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp-batch-fixture"
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), http.StatusOK)
-				captured := <-captureds
-				connect := func(id string) context.Context {
-					ctx := operatortool.BindConnection(captured, id, "batch fixture")
-					if err := (hostedOperatorExecutor{f.service}).OpenConnection(ctx); err != nil {
-						t.Fatal(err)
-					}
-					return ctx
-				}
-				ctx := connect("batch-tools")
-				e := hubProjectExecutor{f.service}
-				f.batch.Error = "provider credential-secret"
-				f.batch.Page.Issues[0].Body = strings.Repeat("preview body", 30000)
-				raw, err := json.Marshal(f.batch)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET request_json=? WHERE project_id=?", raw, f.project.ID); err != nil {
-					t.Fatal(err)
-				}
-				input := operatortool.GitHubBatchInput{Revision: f.batch.Revision, Action: "apply", Numbers: []int{12, 13, 14}, Destination: "Backlog"}
-				input.Destination = "Todo"
-				var refusal *operatortool.RequestError
-				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "dispatch-preview", input)); !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.Message != "Select a destination and explicitly confirm any dispatchable lane" {
-					t.Fatalf("unconfirmed dispatch=%v", err)
-				}
-				input.Destination = "Backlog"
-				call := projectCall(t, "command_git_hub_batch", string(f.project.ID), "batch-apply", input)
-				a := projectAction(t, e, ctx, call)
-				if a.Status != chatpkg.ActionSucceeded || strings.Contains(a.Result, "credential-secret") || strings.Contains(a.Result, `"body"`) {
-					t.Fatalf("batch apply=%+v", a)
-				}
-				if replay := projectAction(t, e, connect("batch-reconnected"), call); replay.Result != a.Result {
-					t.Fatalf("batch replay=%+v", replay)
-				}
-				input.Numbers = []int{12}
-				if _, err := e.Execute(connect("batch-conflict"), projectCall(t, "command_git_hub_batch", string(f.project.ID), "batch-apply", input)); !errors.Is(err, mutation.ErrConflict) {
-					t.Fatalf("changed batch replay=%v", err)
-				}
-				read := operatortool.Call{Name: "get_git_hub_batch", Arguments: json.RawMessage(`{"project_id":"` + string(f.project.ID) + `","limit":1}`)}
-				result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read)
-				if err != nil || strings.Contains(string(result.Content), "credential-secret") || strings.Contains(string(result.Content), `"body"`) || !strings.Contains(string(result.Content), `"next_cursor":"1"`) {
-					t.Fatalf("batch page=%s %v", result.Content, err)
-				}
-				var envelope struct {
-					Data projectBatchPage `json:"data"`
-				}
-				if json.Unmarshal(result.Content, &envelope) != nil || len(envelope.Data.Batch.Items) != 1 || len(envelope.Data.Batch.Page.Issues) != 1 {
-					t.Fatalf("batch bounds=%s", result.Content)
-				}
-				preview := envelope.Data.Batch.Page.Issues[0]
-				if preview.Number != f.batch.Page.Issues[0].Number || preview.Title != f.batch.Page.Issues[0].Title || preview.Status != "open" {
-					t.Fatalf("batch preview=%+v", preview)
-				}
-				stored, err := readGitHubBatch(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
-				if err != nil || stored.Page.Issues[0].Body != strings.Repeat("preview body", 30000) {
-					t.Fatalf("stored batch preview body changed: %v", err)
-				}
-				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "stale-batch", input)); !errors.Is(err, mutation.ErrConflict) {
-					t.Fatalf("stale batch=%v", err)
-				}
-				other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-batch")
-				read.Arguments = json.RawMessage(`{"project_id":"` + string(other.project.ID) + `"}`)
-				result, err = e.Execute(ctx, read)
-				if err != nil || strings.Contains(string(result.Content), f.batch.ID) {
-					t.Fatalf("cross-project batch=%s %v", result.Content, err)
-				}
+				exerciseBatchMCP(t, f)
 				return
 			}
 			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 12, 13, 14}, Destination: "Todo"}, http.StatusUnprocessableEntity)
 			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 12, 13, 14}, Destination: "Backlog"}, http.StatusOK)
 			if len(f.batch.Items) != 3 || f.batch.Destination != "Backlog" {
-				t.Fatalf("selection = %#v", f.batch)
+				t.Fatalf("selection=%+v", f.batch)
 			}
-			snapshot := batchSnapshot(12)
-			f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: &snapshot}, http.StatusOK)
-			if task := f.heartbeat(t); task == nil || task.Item.Number != 13 {
-				t.Fatalf("next intake = %#v", task)
+			f.backend.failures[13] = githubconnector.ErrNotFound
+			if test.partial {
+				delete(f.backend.failures, 13)
+				f.backend.partial[13] = true
 			}
-			deadline := ""
 			if test.rateLimit {
-				deadline = time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+				f.backend.failures[13] = &githubconnector.StatusError{StatusCode: 429, RetryAfter: time.Hour, Err: githubconnector.ErrRateLimited}
 			}
-			if test.projectLane != "" {
-				invalidSnapshot := batchSnapshot(13)
-				invalidSnapshot.Comments = append(invalidSnapshot.Comments, invalidSnapshot.Comments[0])
-				f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: &invalidSnapshot}, http.StatusOK)
-				if f.batch.Items[1].Status != "failed" || f.batch.Items[1].WorkItemID == "" {
-					t.Fatalf("expected failed precreated import: %+v", f.batch.Items[1])
-				}
-			} else {
-				f.report(t, tracker.GitHubBatchResult{Number: 13, Error: "Source context incomplete: private access or partial page", RetryAt: deadline}, http.StatusOK)
-			}
-			if !test.rateLimit {
-				snapshot = batchSnapshot(14)
-				f.report(t, tracker.GitHubBatchResult{Number: 14, Snapshot: &snapshot}, http.StatusOK)
-			}
-			if task := f.heartbeat(t); task != nil {
-				t.Fatalf("failed intake retried without operator: %#v", task)
-			}
-			if err := f.service.Close(); err != nil {
+			if err := f.advance(t); err != nil {
 				t.Fatal(err)
 			}
-			f.service = openTestService(t, Config{DatabasePath: f.service.config.DatabasePath})
-			f.runner.service = f.service
-			responseAfterRestart := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding/issue-intake", testHubAdminToken, nil)
-			requireNativeStatus(t, responseAfterRestart, http.StatusOK)
-			var durable githubBatchView
-			decodeHubResponse(t, responseAfterRestart, &durable)
-			if durable.Batch.Revision != f.batch.Revision || durable.Batch.Items[0].Status != "completed" {
-				t.Fatalf("lost intake checkpoints after restart: %#v", durable.Batch)
+			if f.batch.Items[0].Status != "completed" || f.batch.Items[1].Status != "failed" || f.batch.Items[1].WorkItemID == "" || f.batch.Status != "finished" {
+				t.Fatalf("partial progress=%+v", f.batch)
 			}
-			f.batch = durable.Batch
+			if want := "completed"; test.rateLimit {
+				if f.batch.Items[2].Status != "failed" || f.batch.Items[2].RetryAt == "" {
+					t.Fatalf("throttle lost remaining item: %+v", f.batch.Items[2])
+				}
+			} else if f.batch.Items[2].Status != want {
+				t.Fatalf("later valid item did not progress: %+v", f.batch.Items[2])
+			}
+			revision := f.batch.Revision
+			f.restart(t)
+			if f.batch.Revision != revision || f.batch.Items[0].Status != "completed" {
+				t.Fatalf("lost checkpoints after restart: %+v", f.batch)
+			}
 			id := f.batch.Items[1].WorkItemID
-			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
-			requireNativeStatus(t, response, http.StatusOK)
-			var native tracker.NativeIssue
-			decodeHubResponse(t, response, &native)
+			native := f.issue(t, id)
 			title, body := "Native task title", "Native body during retry"
 			if test.projectLane == "Todo" {
 				body += issueContractTestSections
 			}
-			edit := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "native-edit"}, ExpectedRevision: native.Revision, Title: &title, Body: &body}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(id), f.token, edit), http.StatusOK)
+			response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(id), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "native-edit"}, ExpectedRevision: native.Revision, Title: &title, Body: &body})
+			requireNativeStatus(t, response, http.StatusOK)
 			if test.rateLimit {
 				f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusUnprocessableEntity)
-				// Move the recorded source deadline into the past without sleeping.
-				for i := range f.batch.Items {
-					f.batch.Items[i].RetryAt = time.Now().Add(-time.Hour).Format(time.RFC3339Nano)
-				}
-				raw, err := marshalNative(f.batch)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err = f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET request_json=? WHERE project_id=?", raw, f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				f.clock.Advance(2 * time.Hour)
 			}
 			retry := tracker.GitHubBatchCommand{Action: "retry"}
 			if test.projectLane != "" {
@@ -327,318 +436,832 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				}
 				if test.projectLane == "Todo" {
 					f.command(t, retry, http.StatusUnprocessableEntity)
-					response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
-					decodeHubResponse(t, response, &native)
-					if native.State != "Blocked" || f.batch.Items[1].Status != "failed" || f.heartbeat(t) != nil {
-						t.Fatalf("unconfirmed retry changed routing: issue=%+v item=%+v", native, f.batch.Items[1])
+					if got := f.issue(t, id); got.State != "Blocked" || f.batch.Items[1].Status != "failed" {
+						t.Fatalf("unconfirmed retry changed issue: %+v", got)
 					}
 					retry.AllowDispatch = true
 				}
 			}
+			delete(f.backend.failures, 13)
+			delete(f.backend.partial, 13)
 			f.command(t, retry, http.StatusOK)
-			snapshot = batchSnapshot(13)
-			f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: &snapshot}, http.StatusOK)
-			if test.rateLimit {
-				snapshot = batchSnapshot(14)
-				f.report(t, tracker.GitHubBatchResult{Number: 14, Snapshot: &snapshot}, http.StatusOK)
-			}
-			for range 3 {
-				if task := f.heartbeat(t); task != nil {
-					t.Fatalf("completed intake still requesting GitHub: %#v", task)
+			if test.integration {
+				scope, err := f.service.gitHubIntegrationScope(t.Context(), f.project.OrganizationID, f.project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scope.sourceActor = f.batch.RequestedBy
+				state, err := f.service.loadGitHubBatchState(t.Context(), scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scope, err = f.service.bindGitHubBatchIssuer(t.Context(), scope, state)
+				if err != nil {
+					t.Fatal(err)
+				}
+				original := f.issue(t, id)
+				for _, fault := range []string{"missing batch", "wrong batch", "stale batch", "wrong repository", "wrong actor", "completed item", "unapproved destination"} {
+					invalid := scope
+					fence := *scope.githubIntakeRevision
+					invalid.githubIntakeRevision = &fence
+					target, destination := id, "Backlog"
+					switch fault {
+					case "missing batch":
+						invalid.githubIntakeRevision = nil
+					case "wrong batch":
+						invalid.githubIntakeRevision.batchID = "other-batch"
+					case "stale batch":
+						invalid.githubIntakeRevision.revision--
+					case "wrong repository":
+						invalid.integrationRepository = "other/repository"
+					case "wrong actor":
+						invalid.sourceActor = &tracker.Actor{Kind: "integration", PrincipalID: "other-key"}
+					case "completed item":
+						target = f.batch.Items[0].WorkItemID
+					case "unapproved destination":
+						destination = "Todo"
+					}
+					_, err := f.service.transitionNativeIssueTenant(t.Context(), invalid, string(target), tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "denied-" + strings.ReplaceAll(fault, " ", "-")}, ExpectedRevision: original.Revision, State: destination, Reason: "user_requested"})
+					if err == nil {
+						t.Fatalf("invalid integration routing accepted: %s", fault)
+					}
+					if after := f.issue(t, id); after.Revision != original.Revision || after.State != original.State {
+						t.Fatalf("denied routing changed issue: fault=%s issue=%+v", fault, after)
+					}
 				}
 			}
-			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
-			decodeHubResponse(t, response, &native)
+			if err := f.advance(t); err != nil {
+				t.Fatal(err)
+			}
+			native = f.issue(t, id)
 			wantLane := "Backlog"
 			if test.projectLane != "" {
 				wantLane = test.projectLane
 				for _, index := range []int{0, 2} {
-					completed, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.batch.Items[index].WorkItemID))
-					if err != nil || completed.State != "Blocked" || f.batch.Items[index].Status != "completed" {
-						t.Fatalf("corrected mapping changed completed issue: %+v error=%v", completed, err)
+					completed := f.issue(t, f.batch.Items[index].WorkItemID)
+					if completed.State != "Blocked" || f.batch.Items[index].Status != "completed" {
+						t.Fatalf("retry remapped completed issue: %+v", completed)
 					}
 				}
 				unmapped := f.batch.Items[1].UnmappedProjectStatus
 				if (unmapped != nil) != test.unmapped || test.unmapped && *unmapped != "Ready" {
-					t.Fatalf("corrected mapping report=%+v", f.batch.Items[1])
+					t.Fatalf("unmapped status=%+v", f.batch.Items[1])
 				}
 			}
 			if native.WorkItemID != id || native.Title != title || native.Body != body || native.State != wantLane || native.LinkedSource.Status != "complete" {
-				t.Fatalf("native ownership = %#v item=%+v", native, f.batch.Items[1])
+				t.Fatalf("native ownership=%+v", native)
 			}
-			var comments, count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", id).Scan(&comments); err != nil {
-				t.Fatal(err)
+			if test.integration {
+				var events []eventstore.Event
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					var err error
+					events, err = reader.Events(t.Context(), f.project.ID, id, 0, 100)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if !slices.ContainsFunc(events, func(event eventstore.Event) bool {
+					return event.Type == "workflow.transitioned" && event.ActorKind == "integration" && event.ActorPrincipalID == integrationActor
+				}) {
+					t.Fatalf("routing rewrote recorded actor: %+v", events)
+				}
 			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
-				t.Fatal(err)
-			}
-			if comments != 1 || count != 3 {
+			if comments, count := f.commentCount(t, id), f.itemCount(t); comments != 1 || count != 3 {
 				t.Fatalf("comments=%d issues=%d", comments, count)
 			}
-			// A subsequent selected batch reuses both URL and stable identities.
+			for range 3 {
+				if f.heartbeat(t) != nil {
+					t.Fatal("completed Hub intake assigned runner work")
+				}
+			}
 			f.preview(t, test.closed)
 			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13, 14}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
+			if err := f.advance(t); err != nil {
+				t.Fatal(err)
+			}
 			for _, item := range f.batch.Items {
 				if item.Status != "skipped" {
-					t.Fatalf("duplicate = %#v", item)
+					t.Fatalf("duplicate=%+v", item)
 				}
 			}
 		})
+	}
+}
+
+func exerciseBatchMCP(t *testing.T, f *batchFixture) {
+	t.Helper()
+	captureds := make(chan context.Context, 1)
+	f.service.echo.GET("/api/v2/organizations/:organization/mcp-batch-fixture", func(c echo.Context) error { captureds <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp-batch-fixture"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), http.StatusOK)
+	captured := <-captureds
+	connect := func(id string) context.Context {
+		ctx := operatortool.BindConnection(captured, id, "batch fixture")
+		if err := (hostedOperatorExecutor{f.service}).OpenConnection(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	}
+	ctx := connect("batch-tools")
+	e := hubProjectExecutor{f.service}
+	f.batch.Error = "provider credential-secret"
+	f.batch.Page.Issues[0].Body = strings.Repeat("preview body", 30000)
+	f.save(t)
+	input := operatortool.GitHubBatchInput{Revision: f.batch.Revision, Action: "apply", Numbers: []int{12, 13, 14}, Destination: "Backlog"}
+	input.Destination = "Todo"
+	var refusal *operatortool.RequestError
+	if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "dispatch-preview", input)); !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.Message != "Select a destination and explicitly confirm any dispatchable lane" {
+		t.Fatalf("unconfirmed dispatch=%v", err)
+	}
+	input.Destination = "Backlog"
+	call := projectCall(t, "command_git_hub_batch", string(f.project.ID), "batch-apply", input)
+	a := projectAction(t, e, ctx, call)
+	if a.Status != chatpkg.ActionSucceeded || strings.Contains(a.Result, "credential-secret") || strings.Contains(a.Result, `"body"`) {
+		t.Fatalf("batch apply=%+v", a)
+	}
+	stored, err := f.service.loadGitHubBatchState(t.Context(), f.scope(t))
+	if err != nil || !stored.RequireAdminKey {
+		t.Fatalf("MCP intake lost existing admin-key authority: %+v error=%v", stored, err)
+	}
+
+	if replay := projectAction(t, e, connect("batch-reconnected"), call); replay.Result != a.Result {
+		t.Fatalf("batch replay=%+v", replay)
+	}
+	input.Numbers = []int{12}
+	if _, err := e.Execute(connect("batch-conflict"), projectCall(t, "command_git_hub_batch", string(f.project.ID), "batch-apply", input)); !errors.Is(err, mutation.ErrConflict) {
+		t.Fatalf("changed batch replay=%v", err)
+	}
+	read := operatortool.Call{Name: "get_git_hub_batch", Arguments: json.RawMessage(`{"project_id":"` + string(f.project.ID) + `","limit":1}`)}
+	result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read)
+	if err != nil || strings.Contains(string(result.Content), "credential-secret") || strings.Contains(string(result.Content), `"body"`) || !strings.Contains(string(result.Content), `"next_cursor":"1"`) {
+		t.Fatalf("batch page=%s %v", result.Content, err)
+	}
+	var envelope struct {
+		Data projectBatchPage `json:"data"`
+	}
+	if json.Unmarshal(result.Content, &envelope) != nil || len(envelope.Data.Batch.Items) != 1 || len(envelope.Data.Batch.Page.Issues) != 1 {
+		t.Fatalf("batch bounds=%s", result.Content)
+	}
+	preview := envelope.Data.Batch.Page.Issues[0]
+	if preview.Number != f.batch.Page.Issues[0].Number || preview.Title != f.batch.Page.Issues[0].Title || preview.Status != "open" {
+		t.Fatalf("batch preview=%+v", preview)
+	}
+	storedBatch, err := f.service.loadGitHubBatchRecord(t.Context(), f.scope(t))
+	if err != nil || storedBatch.Page.Issues[0].Body != strings.Repeat("preview body", 30000) {
+		t.Fatalf("stored batch preview body changed: %v", err)
+	}
+	if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "stale-batch", input)); !errors.Is(err, mutation.ErrConflict) {
+		t.Fatalf("stale batch=%v", err)
+	}
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-batch")
+	read.Arguments = json.RawMessage(`{"project_id":"` + string(other.project.ID) + `"}`)
+	result, err = e.Execute(ctx, read)
+	if err != nil || strings.Contains(string(result.Content), f.batch.ID) {
+		t.Fatalf("cross-project batch=%s %v", result.Content, err)
 	}
 }
 
 func TestGitHubBatchDiscoveryFailureAndSourceValidation(t *testing.T) {
-	t.Parallel()
 	f := newBatchFixture(t)
+	f.backend.discoveryError = githubconnector.ErrNotFound
 	f.command(t, tracker.GitHubBatchCommand{Action: "discover", Labels: []string{"enhancement"}}, http.StatusOK)
-	f.report(t, tracker.GitHubBatchResult{Error: "Private repository inaccessible; verify runner read access"}, http.StatusOK)
-	if task := f.heartbeat(t); task != nil {
-		t.Fatal("private access failure caused idle polling")
+	if err := f.advance(t); err == nil || f.batch.Status != "discovery_failed" || f.batch.Error == "" {
+		t.Fatalf("discovery failure=%+v error=%v", f.batch, err)
 	}
+	if f.heartbeat(t) != nil {
+		t.Fatal("private access failure assigned runner polling")
+	}
+	f.backend.discoveryError = nil
 	f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusOK)
-	f.report(t, tracker.GitHubBatchResult{Page: &tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{previewIssue(12, true)}}}, http.StatusUnprocessableEntity)
-	f.report(t, tracker.GitHubBatchResult{Page: &tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{previewIssue(12, false)}}}, http.StatusOK)
+	for _, test := range []struct {
+		name string
+		page tracker.GitHubDiscoveryPage
+	}{
+		{"closed source", tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{previewIssue(12, true)}}},
+		{"duplicate source", tracker.GitHubDiscoveryPage{Total: 2, Issues: []tracker.GitHubIssuePreview{previewIssue(12, false), previewIssue(12, false)}}},
+		{"stationary cursor", tracker.GitHubDiscoveryPage{Total: 2, NextCursor: "", Issues: []tracker.GitHubIssuePreview{{ID: "I_12", URL: "https://github.com/other/repository/issues/12", Number: 12, Title: "Foreign"}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f.backend.pages[""] = test.page
+			if err := f.advance(t); err == nil {
+				t.Fatal("invalid discovery accepted")
+			}
+			if len(f.batch.Page.Issues) != 0 {
+				t.Fatal("invalid page changed durable preview")
+			}
+		})
+	}
+	f.backend.pages[""] = tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{previewIssue(12, false)}}
+	if err := f.advance(t); err != nil {
+		t.Fatal(err)
+	}
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{999}}, http.StatusUnprocessableEntity)
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
 	snapshot := batchSnapshot(12)
 	snapshot.Provenance.ExternalID = "I_wrong"
-	f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: &snapshot}, http.StatusUnprocessableEntity)
-	other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat)
-	other.enroll(t)
-	request := tracker.GitHubBatchResult{Mutation: tracker.Mutation{IdempotencyKey: "wrong-runner"}, BatchID: f.batch.ID, Revision: f.batch.Revision, Number: 12, Snapshot: &snapshot}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", other.redemption.Credential, request), http.StatusNotFound)
+	f.backend.snapshots[12] = snapshot
+	if err := f.advance(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.batch.Items[0].Status != "failed" || !strings.Contains(f.batch.Items[0].Error, "stable source identity") {
+		t.Fatalf("mismatched snapshot accepted: %+v", f.batch.Items[0])
+	}
+	request := tracker.GitHubBatchResult{Mutation: tracker.Mutation{IdempotencyKey: "unassigned-result"}, BatchID: f.batch.ID, Revision: f.batch.Revision, Number: 12, Snapshot: &snapshot}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", f.runner.redemption.Credential, request), http.StatusNotFound)
+	t.Run("partial discovery does not become a complete preview", func(t *testing.T) {
+		current := newBatchFixture(t)
+		current.backend.pages[""] = tracker.GitHubDiscoveryPage{}
+		current.backend.discoveryGaps = true
+		current.command(t, tracker.GitHubBatchCommand{Action: "discover"}, http.StatusOK)
+		if err := current.advance(t); err == nil || current.batch.Status != "discovery_failed" || current.batch.Error == "" || len(current.batch.Items) != 0 {
+			t.Fatalf("partial discovery=%+v error=%v", current.batch, err)
+		}
+		current.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusOK)
+		current.backend.discoveryGaps = false
+		if err := current.advance(t); err != nil || current.batch.Status != "preview" {
+			t.Fatalf("discovery recovery=%+v error=%v", current.batch, err)
+		}
+	})
+
 }
 
 func TestGitHubBatchRunnerOperations(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name       string
-		known      any
-		operations string
-		heartbeat  bool
-		status     int
-	}{
-		{"typed grant overrides payload refusal", true, `[]`, true, http.StatusOK},
-		{"typed refusal overrides payload grant", true, `["heartbeat"]`, false, http.StatusUnprocessableEntity},
-		{"unknown operations evaluate legacy grant", nil, `["heartbeat"]`, false, http.StatusOK},
-		{"unknown operations evaluate legacy refusal", nil, `[]`, false, http.StatusUnprocessableEntity},
-		{"unknown operations ignore incomplete typed grant", nil, `[]`, true, http.StatusUnprocessableEntity},
-		{"unknown malformed operations refuse", nil, `[1]`, true, http.StatusInternalServerError},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
+	for _, runner := range []string{"", "missing-runner"} {
+		t.Run(runner, func(t *testing.T) {
 			f := newBatchFixture(t)
-			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+			f.backend.pages[""] = tracker.GitHubDiscoveryPage{}
+			f.command(t, tracker.GitHubBatchCommand{Action: "discover", RunnerID: runner}, http.StatusOK)
+			if !f.batch.HubOwned || f.batch.RunnerID != "" || f.heartbeat(t) != nil {
+				t.Fatalf("Hub intake depends on a worker transport: %+v", f.batch)
+			}
+			if err := f.advance(t); err != nil {
 				t.Fatal(err)
 			}
-			d := f.service.database
-			if _, err := d.db.ExecContext(t.Context(), `DELETE FROM runner_operations WHERE runner_id=? AND operation='heartbeat'`, f.runner.binding.RunnerID); err != nil {
-				t.Fatal(err)
-			}
-			if test.heartbeat {
-				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO runner_operations(runner_id,operation) VALUES(?,'heartbeat')`, f.runner.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := d.db.ExecContext(t.Context(), `UPDATE runner_identities SET operations_known=?,operations_json=? WHERE id=?`, test.known, test.operations, f.runner.binding.RunnerID); err != nil {
-				t.Fatal(err)
-			}
-			f.command(t, tracker.GitHubBatchCommand{Action: "discover"}, test.status)
-			batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if test.status == http.StatusOK {
-				if batch == nil || batch.RunnerID != f.runner.binding.RunnerID || batch.Status != "discovering" {
-					t.Fatalf("authorized runner did not receive discovery: %+v", batch)
-				}
-			} else if batch != nil {
-				t.Fatalf("refused runner created a batch: %+v", batch)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake", f.runner.redemption.Credential, tracker.GitHubBatchCommand{Mutation: tracker.Mutation{IdempotencyKey: "worker-command"}, Revision: f.batch.Revision, Action: "discover"})
+			if response.Code == http.StatusOK {
+				t.Fatal("runner obtained administrator intake authority")
 			}
 		})
 	}
+	t.Run("selection follows first requested occurrence", func(t *testing.T) {
+		f := newBatchFixture(t)
+		f.preview(t, false)
+		f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{14, 12, 14, 13, 12}, Destination: "Backlog"}, http.StatusOK)
+		numbers := make([]int, len(f.batch.Items))
+		for index, item := range f.batch.Items {
+			numbers[index] = item.Number
+		}
+		if !slices.Equal(numbers, []int{14, 12, 13}) {
+			t.Fatalf("selection lost first occurrence or request order: %v", numbers)
+		}
+	})
+
+	t.Run("runner transport without Hub import backend preserves full intake", func(t *testing.T) {
+		f := newBatchFixture(t)
+		f.workerPreview(t)
+		f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13, 14}, Destination: "Backlog"}, http.StatusOK)
+		if err := f.advance(t); err != nil {
+			t.Fatal(err)
+		}
+		task := f.heartbeat(t)
+		if task == nil || len(task.Items) != 3 || task.Items[0].Number != 12 {
+			t.Fatalf("worker selected page=%+v", task)
+		}
+		original := tracker.GitHubBatchResult{Mutation: tracker.Mutation{IdempotencyKey: "worker-source-first"}, BatchID: f.batch.ID, Revision: f.batch.Revision, Results: []tracker.GitHubBatchItemResult{{Number: 12, Snapshot: new(batchSnapshot(12))}, {Number: 13, Error: "Source context incomplete: private repository"}, {Number: 14, Snapshot: new(batchSnapshot(14))}}}
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", f.runner.redemption.Credential, original)
+		requireNativeStatus(t, response, http.StatusOK)
+		first := response.Body.String()
+		f.refresh(t)
+		if f.batch.Items[0].Status != "completed" || f.batch.Items[1].Status != "failed" || f.batch.Items[2].Status != "completed" || f.itemCount(t) != 3 {
+			t.Fatalf("worker partial import=%+v count=%d", f.batch, f.itemCount(t))
+		}
+		replay := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", f.runner.redemption.Credential, original)
+		requireNativeStatus(t, replay, http.StatusOK)
+		if replay.Body.String() != first {
+			t.Fatalf("worker receipt replay changed: %s", replay.Body.String())
+		}
+		changed := original
+		changed.Number = 99
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", f.runner.redemption.Credential, changed), http.StatusConflict)
+
+		edited := f.issue(t, f.batch.Items[1].WorkItemID)
+		title, body := "Native retry title", "Native retry body"
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(edited.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "worker-native-edit"}, ExpectedRevision: edited.Revision, Title: &title, Body: &body}), http.StatusOK)
+		f.command(t, tracker.GitHubBatchCommand{Action: "retry", RunnerID: f.runner.binding.RunnerID}, http.StatusOK)
+		next := f.heartbeat(t)
+		if next == nil || len(next.Items) != 1 || next.Items[0].Number != 13 {
+			t.Fatalf("worker retry selection=%+v", next)
+		}
+		f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: new(batchSnapshot(13))}, http.StatusOK)
+		current := f.issue(t, edited.WorkItemID)
+		if current.Title != title || current.Body != body || current.LinkedSource.Status != "complete" || f.commentCount(t, current.WorkItemID) != 1 || f.itemCount(t) != 3 {
+			t.Fatalf("worker intake overwrote native content or duplicated data: %+v", current)
+		}
+		if task := f.heartbeat(t); task != nil {
+			t.Fatalf("finished worker intake redelivered: %+v", task)
+		}
+	})
+	t.Run("requester current authority fences delivery and writes", func(t *testing.T) {
+		for _, fault := range []string{"credential revoked", "credential expired", "membership inactive", "project grant removed", "session revoked"} {
+			t.Run(fault, func(t *testing.T) {
+				first := newHostedBatchFixture(t)
+				secondCfg := first.service.config
+				secondCfg.Hosted = &HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://second.example.test", Provider: first.provider}
+				secondService := openPostgresHubTestService(t, first.service.database.postgres, secondCfg)
+				second := newBatchFixtureForProject(t, newNativeFixture(t, secondService, "org_first_second", "Example unaffected intake"))
+				second.clock = first.clock
+				first.commandToken = seedBatchServiceKey(t, first)
+				second.commandToken = seedBatchServiceKey(t, second)
+				if fault == "credential expired" {
+					first.commandToken = seedBatchExpiringKey(t, first, time.Minute)
+				}
+				if fault == "session revoked" {
+					first.sessionCookie = createBatchSession(t, first)
+				}
+				for _, current := range []*batchFixture{first, second} {
+					current.workerPreview(t)
+					current.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Backlog"}, http.StatusOK)
+					if err := current.advance(t); err != nil {
+						t.Fatal(err)
+					}
+					if task := current.heartbeat(t); task == nil || len(task.Items) != 1 {
+						t.Fatalf("valid requester did not deliver before fault: %+v", task)
+					}
+				}
+				state, err := first.service.loadGitHubBatchState(t.Context(), first.scope(t))
+				if err != nil {
+					t.Fatal(err)
+				}
+				before := state.Revision
+				switch fault {
+				case "credential expired":
+					first.clock.Advance(2 * time.Minute)
+				case "session revoked":
+					if err := first.service.config.TenantRepository.WriteTenant(t.Context(), first.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+						return writer.RevokeAccessSession(t.Context(), apikey.HashToken(first.sessionCookie), first.clock.Now())
+					}); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					caller := first.scope(t).credential
+					if err := first.service.config.TenantRepository.WriteTenant(t.Context(), first.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+						switch fault {
+						case "credential revoked":
+							key, err := writer.CredentialByHash(t.Context(), apikey.HashToken(first.commandToken))
+							if err != nil {
+								return err
+							}
+							return writer.RevokeAccessCredential(t.Context(), key.ID, first.clock.Now())
+						case "membership inactive":
+							member, err := writer.AccessMember(t.Context(), caller.Hosted.Subject)
+							if err != nil {
+								return err
+							}
+							member.Active = false
+							return writer.UpdateAccessMember(t.Context(), member)
+						case "project grant removed":
+							key, err := writer.CredentialByHash(t.Context(), apikey.HashToken(first.commandToken))
+							if err != nil {
+								return err
+							}
+							return writer.DeleteAccessTokenGrant(t.Context(), key.ID, first.project.ID)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if task := second.heartbeat(t); task == nil {
+					t.Fatal("fault in first tenant removed unaffected tenant task")
+				}
+				if task := first.heartbeat(t); task != nil {
+					t.Fatalf("revoked requesting authority delivered task: %+v", task)
+				}
+				scope, err := first.service.gitHubIntegrationScope(t.Context(), first.project.OrganizationID, first.project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := first.service.advanceGitHubBatchRecord(t.Context(), scope); err == nil {
+					t.Fatal("revoked requester authorized maintenance write")
+				}
+				rejected := performHubAPIRequest(t, first.service, http.MethodPost, first.base+"/onboarding/issue-intake/result", first.runner.redemption.Credential, tracker.GitHubBatchResult{Mutation: tracker.Mutation{IdempotencyKey: "revoked-requester-result"}, BatchID: state.ID, Revision: state.Revision, Number: 12, Snapshot: new(batchSnapshot(12))})
+				if rejected.Code == http.StatusOK {
+					t.Fatal("revoked requester authorized result write")
+				}
+				var row projectstore.IntakeBatch
+				if err := first.service.config.TenantRepository.ReadTenant(t.Context(), first.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					var err error
+					row, err = reader.(projectstore.IntakeBatchReader).ProjectIntakeBatch(t.Context(), first.project.ID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if row.Revision != before {
+					t.Fatalf("requester fault changed batch revision=%d want=%d", row.Revision, before)
+				}
+				second.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: new(batchSnapshot(12))}, http.StatusOK)
+				if second.batch.Status != "finished" {
+					t.Fatalf("unaffected tenant did not finish: %+v", second.batch)
+				}
+			})
+		}
+	})
+
+	for _, fault := range []string{"different runner", "runner revoked", "runner removed", "runner project grant removed", "checkout report expired"} {
+		t.Run(fault, func(t *testing.T) {
+			f := newBatchFixture(t)
+			f.workerPreview(t)
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Backlog"}, http.StatusOK)
+			if err := f.advance(t); err != nil {
+				t.Fatal(err)
+			}
+			before := f.batch.Revision
+			token := f.runner.redemption.Credential
+			switch fault {
+			case "different runner":
+				other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat)
+				other.enroll(t)
+				token = other.redemption.Credential
+			case "checkout report expired":
+				f.clock.Advance(6 * time.Minute)
+			default:
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+					identity, err := writer.RunnerIdentity(t.Context(), f.runner.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					switch fault {
+					case "runner revoked":
+						return writer.RevokeAccessCredential(t.Context(), identity.TokenID, f.clock.Now())
+					case "runner removed":
+						return writer.RemoveRunnerIdentity(t.Context(), identity.RunnerID, f.clock.Now())
+					default:
+						return writer.DeleteAccessTokenGrant(t.Context(), identity.TokenID, f.project.ID)
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", token, tracker.GitHubBatchResult{Mutation: tracker.Mutation{IdempotencyKey: "unassigned-worker-result"}, BatchID: f.batch.ID, Revision: before, Number: 12, Snapshot: new(batchSnapshot(12))})
+			if response.Code == http.StatusOK {
+				t.Fatal("invalid runner authority published source")
+			}
+			f.refresh(t)
+			if f.batch.Revision != before || f.batch.Items[0].Status != "pending" || f.commentCount(t, f.batch.Items[0].WorkItemID) != 0 {
+				t.Fatalf("invalid runner changed intake: %+v", f.batch)
+			}
+		})
+	}
+
+	for _, role := range []string{"owner", "admin", "member"} {
+		t.Run("HTTP personal write key with "+role+" role", func(t *testing.T) {
+			f := newHostedBatchFixture(t)
+			f.commandToken = f.token
+			var membership string
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+				member, err := writer.AccessMember(t.Context(), "user_"+string(f.project.OrganizationID))
+				if err != nil {
+					return err
+				}
+				membership = member.MembershipID
+				member.Role = role
+				return writer.UpdateAccessMember(t.Context(), member)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.provider.SetMembershipRole(t.Context(), membership, role); err != nil {
+				t.Fatal(err)
+			}
+			if role == "member" {
+				f.command(t, tracker.GitHubBatchCommand{Action: "discover", RunnerID: f.runner.binding.RunnerID}, http.StatusNotFound)
+				if f.itemCount(t) != 0 {
+					t.Fatal("ordinary member created intake work")
+				}
+				return
+			}
+			f.workerPreview(t)
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Backlog"}, http.StatusOK)
+			state, err := f.service.loadGitHubBatchState(t.Context(), f.scope(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.RequireAdminKey {
+				t.Fatal("HTTP owner/admin write key acquired MCP-only boundary")
+			}
+			f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: new(batchSnapshot(12))}, http.StatusOK)
+			if f.batch.Status != "finished" || f.itemCount(t) != 1 {
+				t.Fatalf("HTTP administrator write key lost intake: %+v", f.batch)
+			}
+		})
+	}
+
+	t.Run("legacy payload requires current authorized adoption", func(t *testing.T) {
+		f := newBatchFixture(t)
+		f.workerPreview(t)
+		f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Backlog"}, http.StatusOK)
+		legacy := f.scope(t)
+		batch := *f.batch
+		if err := f.service.saveGitHubBatchRecord(t.Context(), legacy, &batch); err != nil {
+			t.Fatal(err)
+		}
+		f.refresh(t)
+		state, err := f.service.loadGitHubBatchState(t.Context(), f.scope(t))
+		if err != nil || state.Issuer != nil {
+			t.Fatalf("legacy payload decode=%+v %v", state, err)
+		}
+		if task := f.heartbeat(t); task != nil {
+			t.Fatalf("legacy issuer fabricated: %+v", task)
+		}
+		scope, err := f.service.gitHubIntegrationScope(t.Context(), f.project.OrganizationID, f.project.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.advanceGitHubBatchRecord(t.Context(), scope); err == nil {
+			t.Fatal("legacy payload wrote without current issuer")
+		}
+		f.command(t, tracker.GitHubBatchCommand{Action: "retry", RunnerID: f.runner.binding.RunnerID}, http.StatusOK)
+		if task := f.heartbeat(t); task == nil || len(task.Items) != 1 {
+			t.Fatalf("current adoption did not restore task: %+v", task)
+		}
+		f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: new(batchSnapshot(12))}, http.StatusOK)
+		if f.batch.Status != "finished" || f.itemCount(t) != 1 {
+			t.Fatalf("legacy adoption incomplete: %+v", f.batch)
+		}
+	})
+
 }
 
 func TestGitHubBatchSkipsLinkedAndLegacyImportedIdentity(t *testing.T) {
-	t.Parallel()
-	for _, mode := range []string{"linked URL", "legacy source key", "stable provenance identity", "unknown provenance identity"} {
+	for _, mode := range []string{"linked URL", "legacy source key", "stable provenance identity"} {
 		t.Run(mode, func(t *testing.T) {
-			t.Parallel()
 			f := newBatchFixture(t)
 			var existing tracker.NativeIssue
 			if mode == "linked URL" {
-				f.service.config.ImportBackend = linkedTestImporter{snapshot: batchSnapshot(12)}
-				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "prior-linked"}, GitHubIssueURL: previewIssue(12, false).URL})
-				requireNativeStatus(t, r, http.StatusOK)
-				decodeHubResponse(t, r, &existing)
-				f.service.config.ImportBackend = nil
+				f.backend.snapshots[12] = batchSnapshot(12)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "prior-linked"}, GitHubIssueURL: previewIssue(12, false).URL})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &existing)
 			} else {
 				snapshot := batchSnapshot(12)
-				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "prior-import"}, Title: "Native edits on old import", Body: "Preserved", State: "Backlog", Provenance: &snapshot.Provenance})
-				requireNativeStatus(t, r, http.StatusOK)
-				decodeHubResponse(t, r, &existing)
-				if mode == "stable provenance identity" || mode == "unknown provenance identity" {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_source_key='github:old-url' WHERE native_id=?", existing.WorkItemID); err != nil {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "prior-import"}, Title: "Native edits on old import", Body: "Preserved", State: "Backlog", Provenance: &snapshot.Provenance})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &existing)
+				if mode == "stable provenance identity" {
+					row, _, err := f.service.readWorkItemRecord(t.Context(), f.scope(t), string(existing.WorkItemID))
+					if err != nil {
+						t.Fatal(err)
+					}
+					existing.Revision++
+					raw, err := json.Marshal(existing)
+					if err != nil {
+						t.Fatal(err)
+					}
+					version, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: existing.WorkItemID, RecordID: string(existing.WorkItemID), Revision: int64(existing.Revision)}, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+						row.NativeSourceKey = new("github:old-url")
+						updated, err := writer.UpdateWorkItem(t.Context(), row)
+						if err != nil {
+							return err
+						}
+						if updated.Revision != int64(existing.Revision) {
+							return corestore.ErrRevisionConflict
+						}
+						_, err = writer.CreateCollaborationVersion(t.Context(), version)
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
-			if mode == "unknown provenance identity" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET provenance_provider=NULL,provenance_external_id=NULL WHERE native_id=?`, existing.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-			}
 			f.preview(t, false)
+			before := len(f.backend.calls)
 			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}}, http.StatusOK)
+			if err := f.advance(t); err != nil {
+				t.Fatal(err)
+			}
 			if len(f.batch.Items) != 1 || f.batch.Items[0].Status != "skipped" || f.batch.Items[0].WorkItemID != existing.WorkItemID {
-				t.Fatalf("duplicate result = %#v", f.batch.Items)
+				t.Fatalf("duplicate result=%+v", f.batch.Items)
 			}
-			if task := f.heartbeat(t); task != nil {
-				t.Fatal("existing source was fetched again")
+			if len(f.backend.calls) != before || f.itemCount(t) != 1 {
+				t.Fatalf("existing source fetched or duplicated: calls=%d/%d issues=%d", len(f.backend.calls), before, f.itemCount(t))
 			}
-			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil || count != 1 {
-				t.Fatalf("issues=%d err=%v", count, err)
+			if got := f.issue(t, existing.WorkItemID); got.Title != existing.Title || got.Body != existing.Body {
+				t.Fatalf("duplicate overwrote native content: %+v", got)
 			}
 		})
 	}
 }
 
 func TestGitHubBatchHonorsFirstRunIntakeWithoutAnotherSourceRead(t *testing.T) {
-	t.Parallel()
 	f := newBatchFixture(t)
-	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-		t.Fatal(err)
-	}
 	f.preview(t, false)
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
-	item := f.batch.Items[0]
-	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
-	requireNativeStatus(t, r, http.StatusOK)
-	if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+	f.backend.failures[12] = githubconnector.ErrNotFound
+	if err := f.advance(t); err != nil {
 		t.Fatal(err)
 	}
-	if task := f.heartbeat(t); task != nil {
-		t.Fatalf("one-time hydration already complete; task=%#v", task)
+	id := f.batch.Items[0].WorkItemID
+	if id == "" {
+		t.Fatal("incomplete source lost its native identity")
 	}
-	r = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding/issue-intake", testHubAdminToken, nil)
-	var view githubBatchView
-	decodeHubResponse(t, r, &view)
-	if view.Batch.Status != "finished" || view.Batch.Items[0].Status != "completed" {
-		t.Fatalf("batch did not retain existing completion: %#v", view)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(id)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)}), http.StatusOK)
+	f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusOK)
+	before := len(f.backend.calls)
+	if err := f.advance(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.batch.Status != "finished" || f.batch.Items[0].Status != "completed" || len(f.backend.calls) != before {
+		t.Fatalf("first-run snapshot fetched again: %+v calls=%d/%d", f.batch, len(f.backend.calls), before)
 	}
 }
 
 func TestHeartbeatDoesNotReconcileGitHubBatchItems(t *testing.T) {
-	t.Parallel()
-	for _, hydrated := range []bool{false, true} {
-		t.Run(fmt.Sprintf("hydrated=%t", hydrated), func(t *testing.T) {
-			t.Parallel()
-			f := newBatchFixture(t)
-			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-				t.Fatal(err)
-			}
-			f.preview(t, false)
-			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
-			if hydrated {
-				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.batch.Items[0].WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
-				requireNativeStatus(t, r, http.StatusOK)
-			}
-			f.service.tokenUseWork.Wait()
-			var statements []string
-			timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-				statements = append(statements, query)
-			}}
-			now := f.service.config.now().Add(time.Minute)
-			f.service.config.now = func() time.Time { return now }
-			f.service.database.now = f.service.config.now
-			request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 2})
-			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(t.Context(), timing)))
-			requireNativeStatus(t, response, http.StatusOK)
-			for _, query := range statements {
-				if strings.Contains(query, "linked_issue_sources") || strings.Contains(query, "INSERT INTO onboarding_issue_intake") || strings.Contains(query, "UPDATE onboarding_issue_intake") {
-					t.Errorf("heartbeat performed batch item work: %s", query)
-				}
-			}
-			var capacity int
-			var heartbeat string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT reported_capacity,last_heartbeat_at FROM runner_identities WHERE id=?", f.runner.binding.RunnerID).Scan(&capacity, &heartbeat); err != nil {
-				t.Fatal(err)
-			}
-			if capacity != 2 || heartbeat != formatHubTime(now) {
-				t.Fatalf("capacity=%d heartbeat=%s want capacity=2 heartbeat=%s", capacity, heartbeat, formatHubTime(now))
-			}
-			batch, err := readGitHubBatch(t.Context(), f.service.database.reader, nativeScope{project: f.project.ID})
-			if err != nil || batch == nil || batch.Revision != f.batch.Revision || batch.Items[0].Status != "pending" {
-				t.Fatalf("heartbeat changed batch: %+v error=%v", batch, err)
-			}
-			var snapshot runnerauth.RoutingSnapshot
-			decodeHubResponse(t, response, &snapshot)
-			if snapshot.GitHubIntake == nil || snapshot.GitHubIntake.Item.Number != 12 {
-				t.Fatalf("pending runner task lost: %+v", snapshot.GitHubIntake)
-			}
-		})
+	f := newBatchFixture(t)
+	f.preview(t, false)
+	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
+	before, calls := f.batch.Revision, len(f.backend.calls)
+	for range 3 {
+		if f.heartbeat(t) != nil {
+			t.Fatal("Hub intake assigned worker work")
+		}
 	}
+	f.refresh(t)
+	if f.batch.Revision != before || f.batch.Items[0].Status != "pending" || f.batch.Items[1].Status != "pending" || len(f.backend.calls) != calls {
+		t.Fatalf("heartbeat reconciled intake: %+v", f.batch)
+	}
+	if err := f.advance(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.batch.Status != "finished" {
+		t.Fatalf("maintenance did not reconcile intake: %+v", f.batch)
+	}
+	t.Run("worker heartbeat projects tasks without reconciling", func(t *testing.T) {
+		f := newBatchFixture(t)
+		f.workerPreview(t)
+		f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
+		before := f.batch.Revision
+		for range 3 {
+			task := f.heartbeat(t)
+			if task == nil || len(task.Items) != 2 {
+				t.Fatalf("worker heartbeat lost task: %+v", task)
+			}
+		}
+		f.refresh(t)
+		if f.batch.Revision != before || f.batch.Items[0].WorkItemID != "" || f.batch.Items[1].WorkItemID != "" || len(f.backend.calls) != 0 {
+			t.Fatalf("worker heartbeat reconciled source: %+v", f.batch)
+		}
+		if err := f.advance(t); err != nil {
+			t.Fatal(err)
+		}
+		if f.batch.Items[0].WorkItemID == "" || f.batch.Items[1].WorkItemID == "" {
+			t.Fatalf("maintenance did not prepare worker selection: %+v", f.batch)
+		}
+	})
+
+	t.Run("unavailable optional intake payload does not fail heartbeat", func(t *testing.T) {
+		f := newBatchFixture(t)
+		f.workerPreview(t)
+		f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Backlog"}, http.StatusOK)
+		if task := f.heartbeat(t); task == nil || len(task.Items) != 1 {
+			t.Fatalf("valid optional task=%+v", task)
+		}
+		var record projectstore.IntakeBatch
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			record, err = reader.(projectstore.IntakeBatchReader).ProjectIntakeBatch(t.Context(), f.project.ID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		details := f.details
+		details.mu.Lock()
+		raw := bytes.Clone(details.data[record.Payload.PayloadObjectKey])
+		delete(details.data, record.Payload.PayloadObjectKey)
+		details.mu.Unlock()
+		t.Cleanup(func() { details.mu.Lock(); details.data[record.Payload.PayloadObjectKey] = raw; details.mu.Unlock() })
+		f.clock.Advance(time.Minute)
+		if task := f.heartbeat(t); task != nil {
+			t.Fatalf("unavailable optional task leaked: %+v", task)
+		}
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+			identity, err := reader.RunnerIdentity(t.Context(), f.runner.binding.RunnerID)
+			if err != nil {
+				return err
+			}
+			if !identity.LastHeartbeatAt.Equal(f.clock.Now()) {
+				t.Fatalf("optional payload failure lost heartbeat: %s want %s", identity.LastHeartbeatAt, f.clock.Now())
+			}
+			current, err := reader.(projectstore.IntakeBatchReader).ProjectIntakeBatch(t.Context(), f.project.ID)
+			if err != nil {
+				return err
+			}
+			if current.Revision != record.Revision {
+				t.Fatalf("optional read mutated batch: %d want %d", current.Revision, record.Revision)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		details.mu.Lock()
+		details.data[record.Payload.PayloadObjectKey] = raw
+		details.mu.Unlock()
+		if task := f.heartbeat(t); task == nil || len(task.Items) != 1 {
+			t.Fatalf("restored optional task did not recover: %+v", task)
+		}
+	})
+
 }
 
 func TestGitHubBatchExplicitRunnerReassignmentKeepsPendingSelection(t *testing.T) {
-	t.Parallel()
 	f := newBatchFixture(t)
 	f.preview(t, false)
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}}, http.StatusOK)
-	original := f.runner
-	other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat)
-	other.enroll(t)
-	f.runner = other
-	f.heartbeat(t)
-	f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusOK)
-	if task := f.heartbeat(t); task == nil || task.Item.Number != 12 {
-		t.Fatalf("reassigned pending selection: %#v", task)
+	f.backend.failures[12] = githubconnector.ErrNotFound
+	if err := f.advance(t); err != nil {
+		t.Fatal(err)
 	}
-	f.runner = original
-	if task := f.heartbeat(t); task != nil {
-		t.Fatal("original runner still receiving intake after reassignment")
+	f.command(t, tracker.GitHubBatchCommand{Action: "retry", RunnerID: "unrelated-runner"}, http.StatusOK)
+	if !f.batch.HubOwned || f.batch.RunnerID != "" || len(f.batch.Items) != 1 || f.batch.Items[0].Number != 12 || f.batch.Items[0].Status != "pending" {
+		t.Fatalf("retry lost Hub-owned selection: %+v", f.batch)
 	}
+	t.Run("worker assignment changes while selected native identity survives", func(t *testing.T) {
+		f := newBatchFixture(t)
+		f.workerPreview(t)
+		f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Backlog"}, http.StatusOK)
+		if err := f.advance(t); err != nil {
+			t.Fatal(err)
+		}
+		f.report(t, tracker.GitHubBatchResult{Number: 12, Error: "Source context incomplete: private repository"}, http.StatusOK)
+		id := f.batch.Items[0].WorkItemID
+		other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat)
+		other.enroll(t)
+		old := f.runner
+		f.runner = other
+		f.heartbeat(t)
+		f.command(t, tracker.GitHubBatchCommand{Action: "retry", RunnerID: other.binding.RunnerID}, http.StatusOK)
+		if f.batch.HubOwned || f.batch.RunnerID != other.binding.RunnerID || len(f.batch.Items) != 1 || f.batch.Items[0].WorkItemID != id || f.batch.Items[0].Status != "pending" {
+			t.Fatalf("reassignment lost selected identity: %+v", f.batch)
+		}
+		f.runner = old
+		if task := f.heartbeat(t); task != nil {
+			t.Fatalf("old runner retained reassigned work: %+v", task)
+		}
+		f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: new(batchSnapshot(12))}, http.StatusNotFound)
+		f.runner = other
+		if task := f.heartbeat(t); task == nil || len(task.Items) != 1 {
+			t.Fatalf("new runner lost pending selection: %+v", task)
+		}
+		f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: new(batchSnapshot(12))}, http.StatusOK)
+		if f.batch.Status != "finished" || f.itemCount(t) != 1 {
+			t.Fatalf("reassignment did not converge: %+v", f.batch)
+		}
+	})
+
 }
 
 func TestGitHubBatchImportsDiscussionBeyondDefaultAPILimit(t *testing.T) {
-	t.Parallel()
 	f := newBatchFixture(t)
 	f.preview(t, false)
-	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}}, http.StatusOK)
 	snapshot := batchSnapshot(12)
-	comment := snapshot.Comments[0]
 	snapshot.Comments = nil
-	for i := range 40 {
-		comment.Provenance.ExternalID = fmt.Sprint("C_large_", i)
-		comment.Body = string(make([]byte, 32<<10))
-		snapshot.Comments = append(snapshot.Comments, comment)
+	for index := range 40 {
+		snapshot.Comments = append(snapshot.Comments, tracker.GitHubIssueComment{Body: fmt.Sprint("Comment ", index), Provenance: tracker.Provenance{Provider: "github", ExternalID: fmt.Sprint("C_", index), AuthorID: "example-author", CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now(), ObservedAt: f.service.config.now()}})
 	}
-	f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: &snapshot}, http.StatusOK)
-	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", f.batch.Items[0].WorkItemID).Scan(&count); err != nil || count != 40 {
-		t.Fatalf("discussion count=%d error=%v", count, err)
+	f.backend.snapshots[12] = snapshot
+	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}}, http.StatusOK)
+	if err := f.advance(t); err != nil {
+		t.Fatal(err)
+	}
+	if count := f.commentCount(t, f.batch.Items[0].WorkItemID); count != 40 {
+		t.Fatalf("discussion count=%d want40", count)
+	}
+	var cursors []string
+	for _, call := range f.backend.calls {
+		if call.Stage == "comments" {
+			cursors = append(cursors, call.Cursor)
+		}
+	}
+	if !slices.Equal(cursors, []string{"", "30"}) {
+		t.Fatalf("discussion paging=%v", cursors)
 	}
 }
 
 func TestGitHubBatchAppPagesAndPartialRetry(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		fail    bool
-		restart bool
+		name          string
+		fail, restart bool
 	}{{name: "100 issue page"}, {name: "invalid issue rolls back and retries", fail: true}, {name: "restart leaves import for background maintenance", restart: true}} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			f := newBatchFixture(t)
 			reads := 0
 			f.service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
 				reads++
 				if request.Stage == "issue" {
 					snapshot := batchSnapshot(request.IssueNumber)
-					return GitHubImportPage{Issue: &IssueSource{URL: snapshot.URL, NodeID: snapshot.Provenance.ExternalID, Title: snapshot.Title, Body: snapshot.Body, AuthorID: snapshot.Provenance.AuthorID, CreatedAt: snapshot.Provenance.CreatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}}, nil
+					return GitHubImportPage{Issue: &IssueSource{Number: request.IssueNumber, URL: snapshot.URL, NodeID: snapshot.Provenance.ExternalID, Title: snapshot.Title, Body: snapshot.Body, AuthorID: snapshot.Provenance.AuthorID, CreatedAt: snapshot.Provenance.CreatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}}, nil
 				}
 				if request.Stage == "comments" {
 					return GitHubImportPage{}, nil
@@ -673,101 +1296,80 @@ func TestGitHubBatchAppPagesAndPartialRetry(t *testing.T) {
 			})
 			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: true}, http.StatusOK)
 			if test.restart {
-				cfg := f.service.config
-				if err := f.service.Close(); err != nil {
-					t.Fatal(err)
-				}
-				cfg.WebhookMaintenanceInterval = time.Hour
-				f.service = openTestService(t, cfg)
+				f.restart(t)
 				if reads != 0 || !f.service.ready.Load() {
-					t.Fatalf("startup performed import work before readiness: reads=%d ready=%t", reads, f.service.ready.Load())
+					t.Fatalf("startup performed import before readiness: reads=%d ready=%t", reads, f.service.ready.Load())
 				}
 			}
-			if task := f.heartbeat(t); task != nil {
-				t.Fatal("App-owned import assigned to runner")
+			if f.heartbeat(t) != nil {
+				t.Fatal("App import assigned to runner")
 			}
-			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+			if err := f.advance(t); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			batch, err := readGitHubBatch(t.Context(), f.service.database.db, scope)
-			if err != nil {
+			if len(f.batch.Items) != 100 || reads != 1 || f.batch.Status != "discovering" {
+				t.Fatalf("first tick budget=%+v reads=%d", f.batch, reads)
+			}
+			if err := f.advance(t); err != nil {
 				t.Fatal(err)
 			}
-			f.batch = batch
-			if batch.Status != "finished" || len(batch.Items) != 101 || reads != 2 {
-				t.Fatalf("progress=%s items=%d source reads=%d", batch.Status, len(batch.Items), reads)
+			if f.batch.Status != "finished" || len(f.batch.Items) != 101 || reads != 2 {
+				t.Fatalf("progress=%s items=%d reads=%d", f.batch.Status, len(f.batch.Items), reads)
 			}
-			for _, item := range batch.Items {
+			for _, item := range f.batch.Items {
 				if test.fail && item.Number == 50 {
 					if item.Status != "failed" || item.WorkItemID != "" || item.Error == "" {
 						t.Fatalf("failed item=%+v", item)
 					}
 					continue
 				}
-				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item.WorkItemID))
-				if err != nil {
-					t.Fatalf("item=%+v: %v", item, err)
-				}
+				issue := f.issue(t, item.WorkItemID)
 				lane := "Todo"
 				if item.Number%2 == 0 {
 					lane = "Backlog"
 				}
-				if item.Status != "completed" || issue.State != lane || len(issue.Labels) != 2 || issue.Labels[0] != "bug" || issue.Labels[1] != "phase:one" || !strings.Contains(issue.Body, "complete-source-body") {
+				if item.Status != "completed" || issue.State != lane || !slices.Equal(issue.Labels, []string{"bug", "phase:one"}) || !strings.Contains(issue.Body, "complete-source-body") {
 					t.Fatalf("item=%+v issue=%+v", item, issue)
 				}
 			}
-			response, err := f.service.projectGitHubBatch(t.Context(), scope)
+			view, err := f.service.projectGitHubBatch(t.Context(), f.scope(t))
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, err := json.Marshal(response)
+			raw, err := json.Marshal(view)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if strings.Contains(string(raw), "complete-source-body") || strings.Contains(string(raw), `"snapshot":`) {
-				t.Fatal("batch read echoed issue bodies")
+				t.Fatal("batch read echoed source bodies")
 			}
 			if test.fail {
 				f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusOK)
-				if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				if err := f.advance(t); err != nil {
 					t.Fatal(err)
 				}
-				batch, err = readGitHubBatch(t.Context(), f.service.database.db, scope)
-				if err != nil {
-					t.Fatal(err)
+				if f.batch.Items[49].Status != "completed" || reads != 4 {
+					t.Fatalf("retry item=%+v reads=%d", f.batch.Items[49], reads)
 				}
-				if batch.Items[49].Status != "completed" || reads != 4 {
-					t.Fatalf("retry item=%+v reads=%d", batch.Items[49], reads)
-				}
-				f.batch = batch
 			}
 			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: true}, http.StatusOK)
-			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
-				t.Fatal(err)
+			for range 2 {
+				if err := f.advance(t); err != nil {
+					t.Fatal(err)
+				}
 			}
-			batch, err = readGitHubBatch(t.Context(), f.service.database.db, scope)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, item := range batch.Items {
+			for _, item := range f.batch.Items {
 				if item.Status != "skipped" {
 					t.Fatalf("rerun duplicated item=%+v", item)
 				}
 			}
-			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
-				t.Fatal(err)
-			}
-			if count != 101 {
+			if count := f.itemCount(t); count != 101 {
 				t.Fatalf("duplicate issues=%d", count)
 			}
 		})
 	}
 }
-
 func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		project       *tracker.GitHubProjectV2Source
@@ -803,452 +1405,568 @@ func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 		{name: "conflicting lane labels stay in destination", labels: []string{"bug", "detent:todo", "detent:blocked"}, allow: true, lane: "Backlog"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			f := newBatchFixture(t)
 			preview := previewIssue(12, false)
 			snapshot := batchSnapshot(12)
-			preview.Labels, preview.Snapshot, preview.ProjectStatus = test.labels, &snapshot, test.projectStatus
-			page := tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{preview}}
+			preview.Labels, preview.ProjectStatus = test.labels, test.projectStatus
 			if !test.fallback {
-				f.service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
-					if request.Discovery == nil || (request.Discovery.ProjectV2 == nil) != (test.project == nil) {
-						t.Fatalf("discovery lost project source: %+v", request.Discovery)
-					}
-					return GitHubImportPage{BatchPage: &page}, nil
-				})
+				preview.Snapshot = &snapshot
 			}
+			f.backend.pages[""] = tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{preview}}
+			f.backend.snapshots[12] = snapshot
 			command := tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: test.allow, LabelLanes: test.mapping, IgnoreLanes: test.ignore, ProjectV2: test.project}
+			if test.selective {
+				command.Action = "discover"
+			}
 			status := http.StatusOK
 			if test.rejected {
 				status = http.StatusUnprocessableEntity
 			}
-			if test.selective {
-				command.Action = "discover"
+			if test.fallback {
+				f.service.config.ImportBackend = nil
+				command.RunnerID = f.runner.binding.RunnerID
 			}
 			f.command(t, command, status)
 			if test.rejected {
-				var imported int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM issues WHERE project_id=? AND github_number=12", f.project.ID).Scan(&imported); err != nil {
-					t.Fatal(err)
-				}
-				if imported != 0 || f.heartbeat(t) != nil {
-					t.Fatalf("refused mapping imported %d issues or scheduled work", imported)
+				if f.itemCount(t) != 0 {
+					t.Fatal("refused mapping created issues")
 				}
 				return
 			}
+			var workerDiscovery *tracker.GitHubDiscovery
 			if test.fallback {
 				task := f.heartbeat(t)
-				if task == nil || task.Discovery == nil || task.Discovery.ProjectV2 == nil || task.Discovery.ProjectV2.ID != "PVT_source" || task.Discovery.ProjectV2.StatusLanes["Ready"] != "Blocked" {
-					t.Fatalf("runner discovery lost mapping: %+v", task)
+				if task == nil || task.Discovery == nil {
+					t.Fatalf("worker routing discovery=%+v", task)
 				}
-				f.report(t, tracker.GitHubBatchResult{Page: &page}, http.StatusOK)
-				if test.selective {
-					f.command(t, tracker.GitHubBatchCommand{Action: "apply", Destination: "Backlog", Numbers: []int{12}}, http.StatusOK)
-				}
-				f.report(t, tracker.GitHubBatchResult{Results: []tracker.GitHubBatchItemResult{{Number: 12, Snapshot: &snapshot}}}, http.StatusOK)
-			} else if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				workerDiscovery = task.Discovery
+				f.report(t, tracker.GitHubBatchResult{Page: &tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{preview}}}, http.StatusOK)
+			} else if err := f.advance(t); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			batch, err := readGitHubBatch(t.Context(), f.service.database.db, scope)
-			if err != nil {
-				t.Fatal(err)
+			if test.selective {
+				f.command(t, tracker.GitHubBatchCommand{Action: "apply", Destination: "Backlog", Numbers: []int{12}, AllowDispatch: test.allow}, http.StatusOK)
+				if err := f.advance(t); err != nil {
+					t.Fatal(err)
+				}
 			}
-			item := batch.Items[0]
-			if (item.UnmappedProjectStatus != nil) != test.unmapped || test.unmapped && *item.UnmappedProjectStatus != test.projectStatus {
-				t.Fatalf("unmapped Status report: %+v", item)
+			if test.fallback {
+				if err := f.advance(t); err != nil {
+					t.Fatal(err)
+				}
+				task := f.heartbeat(t)
+				if task == nil || len(task.Items) != 1 {
+					t.Fatalf("worker routing selected source=%+v", task)
+				}
+				f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: &snapshot}, http.StatusOK)
 			}
-			issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item.WorkItemID))
-			if err != nil {
-				t.Fatalf("item=%+v: %v", item, err)
+			if f.batch.Status != "finished" || len(f.batch.Items) != 1 || f.batch.Items[0].Status != "completed" {
+				t.Fatalf("routing batch=%+v", f.batch)
 			}
-			wantLabels := []string{"bug"}
-			if test.labels[0] == "incoming" {
-				wantLabels = []string{"incoming", "bug"}
+			issue := f.issue(t, f.batch.Items[0].WorkItemID)
+			if issue.State != test.lane {
+				t.Fatalf("lane=%s want=%s issue=%+v", issue.State, test.lane, issue)
 			}
-			if issue.State != test.lane || !slices.Equal(issue.Labels, wantLabels) {
-				t.Fatalf("mapped issue=%+v", issue)
+			if test.project != nil {
+				if (f.batch.Items[0].UnmappedProjectStatus != nil) != test.unmapped {
+					t.Fatalf("unmapped report=%+v", f.batch.Items[0])
+				}
+				got := workerDiscovery
+				if !test.fallback {
+					got = f.backend.calls[0].Discovery
+				}
+				if got == nil || got.ProjectV2 == nil || got.ProjectV2.ID != test.project.ID {
+					t.Fatalf("discovery lost ProjectV2: %+v", got)
+				}
+			}
+			for _, label := range issue.Labels {
+				if strings.HasPrefix(strings.ToLower(label), "detent:") {
+					t.Fatalf("lane label retained as issue label: %s", label)
+				}
+			}
+			if f.heartbeat(t) != nil {
+				t.Fatal("typed routing assigned a worker task")
 			}
 		})
 	}
 }
 
 func TestGitHubBatchAppFallbackAndThrottle(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
-		name           string
-		sourceErr      error
-		fallback       bool
-		projection     bool
-		owned          any
-		status         any
-		payloadUnowned bool
-		payloadStatus  string
-		skipped        bool
-		malformed      bool
-	}{
-		{name: "App lacks repository access", sourceErr: githubconnector.ErrNotFound, fallback: true},
-		{name: "App throttle retains deadline", sourceErr: &githubconnector.StatusError{StatusCode: 429, RetryAfter: time.Hour, Err: githubconnector.ErrRateLimited}},
-		{name: "typed ownership refusal overrides active payload", projection: true, owned: false, status: "discovering", skipped: true},
-		{name: "typed status refusal overrides active payload", projection: true, owned: true, status: "finished", skipped: true},
-		{name: "unknown status preserves typed ownership refusal", projection: true, owned: false, skipped: true},
-		{name: "unknown ownership preserves typed status refusal", projection: true, status: "finished", skipped: true},
-		{name: "unknown projections evaluate active payload", projection: true, sourceErr: githubconnector.ErrNotFound, fallback: true},
-		{name: "unknown ownership evaluates active payload", projection: true, status: "discovering", sourceErr: githubconnector.ErrNotFound, fallback: true},
-		{name: "unknown status evaluates active payload", projection: true, owned: true, sourceErr: githubconnector.ErrNotFound, fallback: true},
-		{name: "unknown ownership evaluates payload refusal", projection: true, status: "discovering", payloadUnowned: true, skipped: true},
-		{name: "unknown status evaluates payload refusal", projection: true, owned: true, payloadStatus: "finished", skipped: true},
-		{name: "typed importing status selects batch", projection: true, owned: true, status: "importing", sourceErr: githubconnector.ErrNotFound, fallback: true},
-		{name: "unknown projections evaluate ownership refusal", projection: true, payloadUnowned: true, skipped: true},
-		{name: "unknown projections evaluate status refusal", projection: true, payloadStatus: "finished", skipped: true},
-		{name: "unknown malformed projections refuse evaluation", projection: true, malformed: true, skipped: true},
-	} {
+		name      string
+		err       error
+		throttled bool
+	}{{name: "App lacks repository access", err: githubconnector.ErrNotFound}, {name: "App throttle retains deadline", err: &githubconnector.StatusError{StatusCode: 429, RetryAfter: time.Hour, Err: githubconnector.ErrRateLimited}, throttled: true}} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			f := newBatchFixture(t)
-			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-				t.Fatal(err)
-			}
-			reads := 0
-			f.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
-				reads++
-				return GitHubImportPage{}, test.sourceErr
-			})
+			f.backend.discoveryError = test.err
 			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog"}, http.StatusOK)
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			batch, err := readGitHubBatch(t.Context(), f.service.database.db, scope)
-			if err != nil {
-				t.Fatal(err)
+			if err := f.advance(t); !errors.Is(err, test.err) {
+				t.Fatalf("source error=%v want=%v", err, test.err)
 			}
-			batch.RunnerID = ""
-			if test.payloadUnowned {
-				batch.HubOwned = false
+			if !f.batch.HubOwned || f.batch.Status != "discovery_failed" || f.batch.Error == "" || f.heartbeat(t) != nil {
+				t.Fatalf("source failure escaped Hub authority: %+v", f.batch)
 			}
-			if test.payloadStatus != "" {
-				batch.Status = test.payloadStatus
-			}
-			raw, err := json.Marshal(batch)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if test.malformed {
-				raw = []byte(`{"hub_owned":"unknown","status":"discovering"}`)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET request_json=? WHERE project_id=?", raw, f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			if test.projection {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET hub_owned=?,batch_status=? WHERE project_id=?", test.owned, test.status, f.project.ID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := f.service.maintainGitHubBatches(t.Context()); (err != nil) != test.malformed {
-				t.Fatalf("maintenance error=%v, want malformed refusal=%t", err, test.malformed)
-			}
-			if test.skipped {
-				var stored string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT request_json FROM onboarding_issue_intake WHERE project_id=?", f.project.ID).Scan(&stored); err != nil {
-					t.Fatal(err)
-				}
-				if reads != 0 || stored != string(raw) {
-					t.Fatalf("ineligible batch advanced: reads=%d batch=%s", reads, stored)
-				}
-				return
-			}
-			batch, err = readGitHubBatch(t.Context(), f.service.database.db, scope)
-			if err != nil {
-				t.Fatal(err)
-			}
-			f.batch = batch
-			task := f.heartbeat(t)
-			if test.fallback {
-				if batch.HubOwned || batch.RunnerID != f.runner.binding.RunnerID || task == nil || task.Discovery == nil {
-					t.Fatalf("fallback=%+v task=%+v", batch, task)
-				}
-			} else {
-				if !batch.HubOwned || batch.Status != "discovery_failed" || batch.RetryAt == "" || task != nil {
-					t.Fatalf("throttle=%+v task=%+v", batch, task)
+			if test.throttled {
+				deadline, err := time.Parse(time.RFC3339Nano, f.batch.RetryAt)
+				if err != nil || !deadline.Equal(f.clock.Now().Add(time.Hour)) {
+					t.Fatalf("source deadline=%s error=%v", f.batch.RetryAt, err)
 				}
 				f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusUnprocessableEntity)
-				if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
-					t.Fatal(err)
-				}
+				f.clock.Advance(2 * time.Hour)
 			}
-			if reads != 1 {
-				t.Fatalf("unexpected source retries=%d", reads)
+			f.backend.discoveryError = nil
+			f.backend.pages[""] = tracker.GitHubDiscoveryPage{}
+			f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusOK)
+			if err := f.advance(t); err != nil || f.batch.Status != "finished" {
+				t.Fatalf("source recovery=%+v error=%v", f.batch, err)
+			}
+		})
+	}
+	t.Run("selected runner restores discovery when App cannot access repository", func(t *testing.T) {
+		f := newBatchFixture(t)
+		f.backend.discoveryError = githubconnector.ErrNotFound
+		f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", RunnerID: f.runner.binding.RunnerID}, http.StatusOK)
+		if err := f.advance(t); err != nil {
+			t.Fatal(err)
+		}
+		if f.batch.HubOwned || f.batch.RunnerID != f.runner.binding.RunnerID || f.batch.Status != "discovering" {
+			t.Fatalf("App fallback lost durable intent: %+v", f.batch)
+		}
+		task := f.heartbeat(t)
+		if task == nil || task.Discovery == nil {
+			t.Fatalf("App fallback discovery=%+v", task)
+		}
+		f.report(t, tracker.GitHubBatchResult{Page: &tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{previewIssue(12, false)}}}, http.StatusOK)
+		f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: new(batchSnapshot(12))}, http.StatusOK)
+		if f.batch.Status != "finished" || f.batch.Items[0].Status != "completed" || f.itemCount(t) != 1 {
+			t.Fatalf("App fallback incomplete: %+v", f.batch)
+		}
+	})
+	for _, sourceErr := range []error{errors.New("temporary source transport outage"), &githubconnector.StatusError{StatusCode: 503, Err: errors.New("temporary source backend outage")}} {
+		t.Run(sourceErr.Error(), func(t *testing.T) {
+			f := newBatchFixture(t)
+			f.preview(t, false)
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Backlog"}, http.StatusOK)
+			before := f.batch.Revision
+			f.backend.failures[12] = sourceErr
+			if err := f.advance(t); !errors.Is(err, sourceErr) {
+				t.Fatalf("infrastructure error=%v", err)
+			}
+			if f.batch.Revision != before || f.batch.Items[0].Status != "pending" || f.batch.Items[0].Error != "" {
+				t.Fatalf("infrastructure outage charged to source: %+v", f.batch)
+			}
+			delete(f.backend.failures, 12)
+			if err := f.advance(t); err != nil {
+				t.Fatal(err)
+			}
+			if f.batch.Status != "finished" || f.batch.Items[0].Status != "completed" || f.itemCount(t) != 1 {
+				t.Fatalf("automatic retry did not converge: %+v", f.batch)
+			}
+		})
+	}
+
+	t.Run("requester revoked during fetch cannot publish source", func(t *testing.T) {
+		f := newHostedBatchFixture(t)
+		f.commandToken = seedBatchServiceKey(t, f)
+		f.preview(t, false)
+		f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Backlog"}, http.StatusOK)
+		before := f.batch.Revision
+		f.backend.beforeFetch = func(request GitHubImportRequest) {
+			if request.Stage != "issue" {
+				return
+			}
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+				key, err := writer.CredentialByHash(t.Context(), apikey.HashToken(f.commandToken))
+				if err != nil {
+					return err
+				}
+				return writer.RevokeAccessCredential(t.Context(), key.ID, f.clock.Now())
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := f.advance(t); err == nil {
+			t.Fatal("source published after requester revocation")
+		}
+		if f.batch.Revision != before || f.batch.Items[0].Status != "pending" {
+			t.Fatalf("revoked fetch changed batch: %+v", f.batch)
+		}
+		scope := f.scope(t)
+		var item tracker.NativeWorkItemID
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+			source, err := reader.LinkedSourceByURL(t.Context(), f.project.ID, previewIssue(12, false).URL)
+			item = source.WorkItemID
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		row, version, err := f.service.readWorkItemRecord(t.Context(), scope, string(item))
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue, err := f.service.hydrateWorkItemRecord(t.Context(), row, version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if issue.LinkedSource == nil || issue.LinkedSource.Status != "pending" || f.commentCount(t, item) != 0 {
+			t.Fatalf("revoked requester published source: %+v", issue)
+		}
+	})
+
+	for _, test := range []struct {
+		name   string
+		owned  bool
+		status string
+		reads  int
+	}{{"typed ownership refusal overrides active payload", false, "discovering", 0}, {"typed status refusal overrides active payload", true, "finished", 0}, {"typed importing status selects batch", true, "importing", 0}, {"typed discovery selects batch", true, "discovering", 1}} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newBatchFixture(t)
+			f.backend.pages[""] = tracker.GitHubDiscoveryPage{}
+			f.command(t, tracker.GitHubBatchCommand{Action: "discover"}, http.StatusOK)
+			f.batch.HubOwned, f.batch.Status = test.owned, test.status
+			if !test.owned {
+				f.batch.RunnerID = f.runner.binding.RunnerID
+			}
+			f.save(t)
+			f.clock.Advance(time.Hour)
+			if !test.owned {
+				f.heartbeat(t)
+			}
+			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.backend.calls) != test.reads {
+				t.Fatalf("typed selection source reads=%d want=%d", len(f.backend.calls), test.reads)
 			}
 		})
 	}
 }
 
 func TestGitHubBatchMaintenanceTraversal(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
-		name, intake, payload             string
-		legacy, malformed, invalidProject bool
-	}{
-		{name: "disabled intake", intake: "disabled"},
-		{name: "legacy ownership refusal", intake: "manual", payload: `{"hub_owned":false,"status":"discovering"}`, legacy: true},
-		{name: "legacy status refusal", intake: "manual", payload: `{"hub_owned":true,"status":"finished"}`, legacy: true},
-		{name: "malformed legacy batch", intake: "manual", payload: `{"hub_owned":"unknown","status":"discovering"}`, legacy: true, malformed: true},
-		{name: "invalid project integration", intake: "manual", invalidProject: true},
-	} {
+		name                      string
+		owned                     bool
+		status, intake            string
+		malformed, invalidProject bool
+	}{{"disabled intake", true, "discovering", "disabled", false, false}, {"typed ownership refusal", false, "discovering", "manual", false, false}, {"typed status refusal", true, "finished", "manual", false, false}, {"malformed batch payload", true, "discovering", "manual", true, false}, {"invalid project integration", true, "discovering", "manual", false, true}} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			f := newBatchFixture(t)
-			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-				t.Fatal(err)
-			}
-			reads := 0
-			f.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
-				reads++
-				return GitHubImportPage{BatchPage: &tracker.GitHubDiscoveryPage{}}, nil
-			})
-			f.command(t, tracker.GitHubBatchCommand{Action: "discover"}, http.StatusOK)
-			d := f.service.database
-			exec := func(statement string, args ...any) {
-				t.Helper()
-				if _, err := d.db.ExecContext(t.Context(), statement, args...); err != nil {
+			f.backend.pages[""] = tracker.GitHubDiscoveryPage{}
+			for index := range githubBatchMaintenanceLimit {
+				projectID := tracker.ProjectID(fmt.Sprintf("prefix_%03d", index))
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+					record, err := writer.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.project.OrganizationID, ID: projectID, Name: string(projectID), Profile: "native"}, States: nativeFixtureStates()})
+					if err != nil {
+						return err
+					}
+					record.Settings.Repository, record.Settings.CheckoutRepository, record.Settings.Intake = "example-org/example-project", "example-org/example-project", test.intake
+					if test.invalidProject {
+						record.Settings.Repository, record.Settings.CheckoutRepository = "", ""
+					}
+					_, err = writer.UpdateProjectRecord(t.Context(), record)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				issuerScope := testGitHubBatchIssuer(t, f.service, f.project.OrganizationID, projectID)
+				batch := &tracker.GitHubBatch{ID: fmt.Sprint("prefix_batch_", index), Revision: 1, HubOwned: test.owned, Status: test.status, Limit: 1000, RequestedBy: new(issuerScope.actor()), Discovery: tracker.GitHubDiscovery{Repository: "example-org/example-project"}}
+				if !test.owned {
+					batch.RunnerID = f.runner.binding.RunnerID
+				}
+				row, err := f.service.prepareGitHubBatchRecord(t.Context(), issuerScope, batch)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.malformed {
+					payload, err := eventstore.NewContent(f.service.runDetailStore()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: f.project.OrganizationID}, json.RawMessage(`{"hub_owned":"unknown","status":"discovering"}`))
+					if err != nil {
+						t.Fatal(err)
+					}
+					row.Payload = payload
+				}
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+					return writer.(projectstore.IntakeBatchWriter).SaveProjectIntakeBatch(t.Context(), row, 0)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			raw, err := json.Marshal(f.batch)
+			f.command(t, tracker.GitHubBatchCommand{Action: "discover"}, http.StatusOK)
+			f.clock.Advance(time.Hour)
+			ticks := 1
+			if test.status == "discovering" {
+				ticks = githubBatchMaintenanceLimit + 1
+			}
+			for tick := range ticks {
+				err := f.service.maintainGitHubBatches(t.Context())
+				wantError := (test.malformed || !test.owned) && tick < githubBatchMaintenanceLimit
+				if (err != nil) != wantError {
+					t.Fatalf("tick=%d error=%v want error=%t", tick, err, wantError)
+				}
+				if tick < ticks-1 && len(f.backend.calls) != 0 {
+					t.Fatalf("tick exceeded one-project budget: reads=%d", len(f.backend.calls))
+				}
+			}
+			f.refresh(t)
+			if f.batch.Status != "preview" || len(f.backend.calls) != 1 {
+				t.Fatalf("later project stranded: batch=%+v calls=%d", f.batch, len(f.backend.calls))
+			}
+			projectID := tracker.ProjectID("prefix_000")
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+				project, err := writer.ProjectRecord(t.Context(), projectID)
+				if err != nil {
+					return err
+				}
+				project.Settings.Intake = "manual"
+				project.Settings.Repository, project.Settings.CheckoutRepository = "example-org/example-project", "example-org/example-project"
+				_, err = writer.UpdateProjectRecord(t.Context(), project)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			issuerScope := testGitHubBatchIssuer(t, f.service, f.project.OrganizationID, projectID)
+			batch := &tracker.GitHubBatch{ID: "prefix_batch_0", Revision: 2, HubOwned: true, Status: "discovering", Limit: 1000, RequestedBy: new(issuerScope.actor()), Discovery: tracker.GitHubDiscovery{Repository: "example-org/example-project"}}
+			row, err := f.service.prepareGitHubBatchRecord(t.Context(), issuerScope, batch)
 			if err != nil {
 				t.Fatal(err)
 			}
-			payload := string(raw)
-			var owned, status any = true, "discovering"
-			if test.legacy {
-				payload, owned, status = test.payload, nil, nil
-			}
-			for index := range githubBatchMaintenanceLimit {
-				project := fmt.Sprintf("batch-prefix-%03d", index)
-				exec(`INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_intake,github_repository_enabled) SELECT ?,organization_id,?,profile,states_json,created_at,?,0 FROM projects WHERE id=?`, project, project, test.intake, f.project.ID)
-				exec(`INSERT INTO onboarding_issue_intake(project_id,request_json,hub_owned,batch_status) VALUES(?,?,?,?)`, project, payload, owned, status)
-			}
-			if test.invalidProject {
-				exec(`UPDATE projects SET states_json='{}' WHERE id LIKE 'batch-prefix-%'`)
-			}
-			wantError := test.malformed || test.invalidProject
-			if err := f.service.maintainGitHubBatches(t.Context()); (err != nil) != wantError {
-				t.Fatalf("first tick error=%v, want refusal=%t", err, wantError)
-			}
-			if reads != 0 {
-				t.Fatalf("first tick exceeded the project budget: source reads=%d", reads)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+				return writer.(projectstore.IntakeBatchWriter).SaveProjectIntakeBatch(t.Context(), row, 1)
+			}); err != nil {
+				t.Fatal(err)
 			}
 			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			batch, err := readGitHubBatch(t.Context(), d.reader, scope)
-			if err != nil || batch == nil || batch.Status != "preview" || reads != 1 {
-				t.Fatalf("later project did not progress: batch=%+v reads=%d error=%v", batch, reads, err)
-			}
-			exec(`UPDATE projects SET github_intake='manual',states_json=(SELECT states_json FROM projects WHERE id=?) WHERE id='batch-prefix-000'`, f.project.ID)
-			exec(`UPDATE onboarding_issue_intake SET request_json=?,hub_owned=1,batch_status='discovering' WHERE project_id='batch-prefix-000'`, string(raw))
-			if err := f.service.maintainGitHubBatches(t.Context()); (err != nil) != wantError {
-				t.Fatalf("wrapped tick error=%v, want refusal=%t", err, wantError)
-			}
-			scope.project = "batch-prefix-000"
-			batch, err = readGitHubBatch(t.Context(), d.reader, scope)
-			if err != nil || batch == nil || batch.Status != "preview" || reads != 2 {
-				t.Fatalf("re-enabled project did not progress after wrap: batch=%+v reads=%d error=%v", batch, reads, err)
+			if len(f.backend.calls) != 2 {
+				t.Fatalf("re-enabled project did not progress: calls=%d", len(f.backend.calls))
 			}
 		})
 	}
 }
 
 func TestGitHubBatchMaintenanceReconcilesRunnerProjects(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct{ backend, legacy bool }{{}, {backend: true}, {legacy: true}} {
-		t.Run(fmt.Sprintf("backend=%t/legacy=%t", test.backend, test.legacy), func(t *testing.T) {
-			t.Parallel()
-			first := newBatchFixture(t)
-			if err := first.service.stopGitHubWebhookMaintenance(); err != nil {
-				t.Fatal(err)
+	first := newHostedBatchFixture(t)
+	repository := first.service.database.postgres
+	cfg := first.service.config
+	cfg.Hosted = &HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://hub.example.test", Provider: first.provider}
+	secondService := openPostgresHubTestService(t, repository, cfg)
+	if secondService.database.hostedOrganization != "org_first_second" {
+		t.Fatalf("second service selected organization=%s", secondService.database.hostedOrganization)
+	}
+	second := newBatchFixtureForProject(t, newNativeFixture(t, secondService, "org_first_second", "Example second batch"))
+	for _, f := range []*batchFixture{first, second} {
+		f.preview(t, false)
+		f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
+		f.backend.failures[12], f.backend.failures[13] = githubconnector.ErrNotFound, githubconnector.ErrNotFound
+		if err := f.advance(t); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.batch.Items[0].WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)}), http.StatusOK)
+		f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusOK)
+	}
+	first.clock.Advance(time.Hour)
+	beforeSecond := second.batch.Revision
+	for index, f := range []*batchFixture{first, second} {
+		before := len(f.backend.calls)
+		if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		f.refresh(t)
+		if f.batch.Items[0].Status != "completed" || f.batch.Items[1].Status != "failed" || len(f.backend.calls) != before+1 {
+			t.Fatalf("tenant maintenance lost current snapshot: %+v calls=%d/%d", f.batch, len(f.backend.calls), before)
+		}
+		if index == 0 {
+			second.refresh(t)
+			if second.batch.Revision != beforeSecond {
+				t.Fatal("first configured service mutated second tenant")
 			}
-			second := newBatchFixtureForProject(t, newNativeFixture(t, first.service, first.project.OrganizationID, "second-batch"))
-			fixtures := []*batchFixture{first, second}
-			for _, f := range fixtures {
-				f.preview(t, false)
-				f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
-				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.batch.Items[0].WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
-				requireNativeStatus(t, r, http.StatusOK)
-				if test.legacy {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET batch_status=NULL WHERE project_id=?", f.project.ID); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			if test.backend {
-				first.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
-					t.Error("runner-owned batch used the Hub import transport")
-					return GitHubImportPage{}, nil
-				})
-			}
-			d := first.service.database
-			for index := range githubBatchMaintenanceLimit {
-				project := fmt.Sprintf("batch-prefix-%03d", index)
-				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,?,profile,states_json,created_at FROM projects WHERE id=?`, project, project, first.project.ID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO onboarding_issue_intake(project_id,request_json,hub_owned,batch_status) VALUES(?,'{"status":"importing"}',0,'importing')`, project); err != nil {
-					t.Fatal(err)
-				}
-			}
-			for tick := range 2 {
-				var probes, writes int
-				ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-					if strings.Contains(query, "FROM linked_issue_sources") {
-						if d.db.Stats().InUse != 0 {
-							t.Error("completion probe held the writer")
-						}
-						probes++
-					}
-					if strings.HasPrefix(query, "UPDATE onboarding_issue_intake") {
-						writes++
-					}
-				}})
-				if err := first.service.maintainGitHubBatches(ctx); err != nil {
-					t.Fatal(err)
-				}
-				if probes != tick*4 || writes != tick*2 {
-					t.Fatalf("tick=%d probes=%d writes=%d want probes=%d writes=%d", tick, probes, writes, tick*4, tick*2)
-				}
-				for _, f := range fixtures {
-					batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
-					if err != nil {
-						t.Fatal(err)
-					}
-					want := "pending"
-					if tick == 1 {
-						want = "completed"
-					}
-					if batch.Items[0].Status != want || batch.Items[1].Status != "pending" || batch.Status != "importing" {
-						t.Fatalf("tick=%d project=%s batch=%+v", tick, f.project.ID, batch)
-					}
-				}
-			}
-			for _, f := range fixtures {
-				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.batch.Items[1].WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "second-run-intake"}, Snapshot: batchSnapshot(13)})
-				requireNativeStatus(t, r, http.StatusOK)
-			}
-			if err := first.service.maintainGitHubBatches(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			if err := first.service.maintainGitHubBatches(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			for _, f := range fixtures {
-				batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
-				if err != nil || batch == nil || batch.Status != "finished" || batch.Items[1].Status != "completed" {
-					t.Fatalf("project=%s did not finish: batch=%+v error=%v", f.project.ID, batch, err)
-				}
-				if task := f.heartbeat(t); task != nil {
-					t.Fatalf("completed batch delivered task: %+v", task)
-				}
-			}
-		})
+		}
 	}
 }
 
 func TestGitHubBatchMaintenanceItemBudgetAndConcurrentResult(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
-		name       string
-		items      int
-		concurrent bool
-	}{{name: "item budget", items: githubBatchMaintenanceLimit + 1}, {name: "concurrent result", items: 2, concurrent: true}} {
+		name                  string
+		items                 int
+		concurrent, authority bool
+	}{{"item budget", githubBatchMaintenanceLimit + 1, false, false}, {"concurrent result", 2, true, false}, {"current repository authority changed", 2, false, true}} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			f := newBatchFixture(t)
-			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-				t.Fatal(err)
-			}
-			f.command(t, tracker.GitHubBatchCommand{Action: "discover"}, http.StatusOK)
 			var numbers []int
 			for start := 1; start <= test.items; start += 100 {
 				page := tracker.GitHubDiscoveryPage{Total: test.items}
 				for number := start; number <= min(start+99, test.items); number++ {
-					page.Issues = append(page.Issues, previewIssue(number, false))
+					preview := previewIssue(number, false)
+					snapshot := batchSnapshot(number)
+					if !test.concurrent && !test.authority {
+						preview.Snapshot = &snapshot
+					}
+					f.backend.snapshots[number] = snapshot
+					page.Issues = append(page.Issues, preview)
 					numbers = append(numbers, number)
 				}
 				if start+100 <= test.items {
 					page.NextCursor = strconv.Itoa(start + 100)
 				}
+				cursor := ""
 				if start > 1 {
-					f.command(t, tracker.GitHubBatchCommand{Action: "more"}, http.StatusOK)
+					cursor = strconv.Itoa(start)
 				}
-				f.report(t, tracker.GitHubBatchResult{Page: &page}, http.StatusOK)
+				f.backend.pages[cursor] = page
 			}
-			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: numbers}, http.StatusOK)
-			d := f.service.database
-			if _, err := d.db.ExecContext(t.Context(), "UPDATE linked_issue_sources SET snapshot_json='{}' WHERE work_item_id IN (SELECT native_id FROM issues WHERE project_id=?)", f.project.ID); err != nil {
+			f.command(t, tracker.GitHubBatchCommand{Action: "discover"}, http.StatusOK)
+			if err := f.advance(t); err != nil {
 				t.Fatal(err)
 			}
-			probes, writes := 0, 0
-			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-				if strings.Contains(query, "FROM linked_issue_sources") {
-					probes++
-					if test.concurrent && probes == 1 {
-						f.report(t, tracker.GitHubBatchResult{Number: 2, Error: "Source unavailable"}, http.StatusOK)
+			if test.items > 100 {
+				f.command(t, tracker.GitHubBatchCommand{Action: "more"}, http.StatusOK)
+				if err := f.advance(t); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: numbers, Destination: "Backlog"}, http.StatusOK)
+			if test.concurrent {
+				f.backend.beforeFetch = func(request GitHubImportRequest) {
+					if request.Stage == "issue" {
+						f.backend.beforeFetch = nil
+						f.command(t, tracker.GitHubBatchCommand{Action: "cancel"}, http.StatusOK)
 					}
 				}
-				if strings.HasPrefix(query, "UPDATE onboarding_issue_intake") {
-					writes++
-				}
-			}})
-			if err := f.service.maintainGitHubBatches(ctx); err != nil {
-				t.Fatal(err)
 			}
-			batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
-			if err != nil || batch == nil {
-				t.Fatalf("read batch: %v", err)
+			if test.authority {
+				f.backend.beforeFetch = func(request GitHubImportRequest) {
+					if request.Stage != "issue" {
+						return
+					}
+					f.backend.beforeFetch = nil
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+						project, err := writer.ProjectRecord(t.Context(), f.project.ID)
+						if err != nil {
+							return err
+						}
+						project.Settings.Repository, project.Settings.CheckoutRepository = "other/repository", "other/repository"
+						_, err = writer.UpdateProjectRecord(t.Context(), project)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			err := f.advance(t)
+			if test.authority {
+				if err == nil || f.batch.Status != "importing" || f.batch.Items[0].Status != "pending" || f.batch.Items[1].Status != "pending" || f.itemCount(t) != 1 {
+					t.Fatalf("owner failure reported partial success: batch=%+v error=%v count=%d", f.batch, err, f.itemCount(t))
+				}
+				var source eventstore.LinkedSource
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					var err error
+					source, err = reader.LinkedSourceByURL(t.Context(), f.project.ID, previewIssue(1, false).URL)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if source.SnapshotObjectKey != "" {
+					t.Fatal("changed repository authority published source content")
+				}
+				return
 			}
 			if test.concurrent {
-				if probes != 1 || batch.Revision != f.batch.Revision || batch.Items[1].Status != "failed" || batch.Items[1].Error != "Source unavailable" {
-					t.Fatalf("overwrote concurrent result: probes=%d batch=%+v", probes, batch)
+				if !errors.Is(err, corestore.ErrRevisionConflict) || f.batch.Status != "cancelled" || f.itemCount(t) != 1 {
+					t.Fatalf("concurrent command overwritten: %+v error=%v count=%d", f.batch, err, f.itemCount(t))
 				}
-			} else {
-				if probes != githubBatchMaintenanceLimit || writes != githubBatchMaintenanceLimit || batch.Revision != f.batch.Revision+githubBatchMaintenanceLimit || batch.Items[test.items-1].Status != "pending" {
-					t.Fatalf("exceeded item budget: probes=%d writes=%d batch=%+v", probes, writes, batch)
+				var source eventstore.LinkedSource
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					var err error
+					source, err = reader.LinkedSourceByURL(t.Context(), f.project.ID, previewIssue(1, false).URL)
+					return err
+				}); err != nil {
+					t.Fatal(err)
 				}
+				if source.SnapshotObjectKey != "" {
+					t.Fatal("cancelled batch published an in-flight snapshot")
+				}
+				return
 			}
-			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+			if err != nil {
 				t.Fatal(err)
 			}
-			batch, err = readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
-			if err != nil || batch == nil || batch.Status != "finished" {
-				t.Fatalf("next tick did not finish: batch=%+v error=%v", batch, err)
+			if f.batch.Status != "importing" || f.itemCount(t) != githubBatchMaintenanceLimit || f.batch.Items[100].Status != "pending" {
+				t.Fatalf("item budget exceeded: status=%s count=%d last=%+v", f.batch.Status, f.itemCount(t), f.batch.Items[100])
+			}
+			if err := f.advance(t); err != nil {
+				t.Fatal(err)
+			}
+			if f.batch.Status != "finished" || f.itemCount(t) != 101 {
+				t.Fatalf("next tick lost progress: %+v count=%d", f.batch, f.itemCount(t))
 			}
 		})
 	}
+	t.Run("resume after source commit before batch checkpoint", func(t *testing.T) {
+		f := newBatchFixture(t)
+		f.preview(t, false)
+		f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13}, Destination: "Backlog"}, http.StatusOK)
+		revision := f.batch.Revision
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		f.backend.beforeFetch = func(request GitHubImportRequest) {
+			if request.Stage == "issue" && request.IssueNumber == 13 {
+				cancel()
+			}
+		}
+		scope, err := f.service.gitHubIntegrationScope(t.Context(), f.project.OrganizationID, f.project.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.advanceGitHubBatchRecord(ctx, scope); !errors.Is(err, context.Canceled) {
+			t.Fatalf("interrupted source read=%v", err)
+		}
+		f.refresh(t)
+		if f.batch.Revision != revision || f.batch.Items[0].Status != "pending" {
+			t.Fatalf("interruption wrote an incomplete batch checkpoint: %+v", f.batch)
+		}
+		f.backend.beforeFetch = nil
+		if err := f.advance(t); err != nil {
+			t.Fatal(err)
+		}
+		if f.batch.Status != "finished" || f.itemCount(t) != 2 || f.batch.Items[0].Status != "completed" || f.batch.Items[1].Status != "completed" {
+			t.Fatalf("receipt-backed recovery duplicated or skipped owned imports: %+v count=%d", f.batch, f.itemCount(t))
+		}
+		reads := 0
+		for _, request := range f.backend.calls {
+			if request.Stage == "issue" && request.IssueNumber == 12 {
+				reads++
+			}
+		}
+		if reads != 1 {
+			t.Fatalf("committed source fetched again: reads=%d", reads)
+		}
+	})
+
 }
 
 func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
-		plan    string
-		cap     int
-		refused bool
-	}{{plan: "free", cap: 10000}, {plan: "starter", cap: 10000}} {
+		plan string
+		cap  int
+	}{{"free", 10000}, {"starter", 10000}} {
 		t.Run(test.plan, func(t *testing.T) {
-			t.Parallel()
 			f := newBatchFixture(t)
-			d := f.service.database
-			d.hostedOrganization = f.project.OrganizationID
 			plans := capacityHostedPlans()
-			if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+			if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
 			if test.plan != "free" {
-				if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "paid-plan", Action: "base", ExpectedRevision: 1, Plan: PlanReference{ID: test.plan, Version: 1}, Reason: "fixture paid plan"}); err != nil {
+				if err := f.service.database.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "paid-plan", Action: "base", ExpectedRevision: 1, Plan: PlanReference{ID: test.plan, Version: 1}, Reason: "fixture paid plan"}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			reads := 0
 			f.service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
 				reads++
+				if request.Stage != "batch" || request.Discovery == nil {
+					t.Fatalf("unexpected source request=%+v", request)
+				}
 				offset := 0
 				if request.Discovery.Cursor != "" {
 					var err error
@@ -1273,76 +1991,205 @@ func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
 			if f.batch.Limit != test.cap {
 				t.Fatalf("job cap=%d want=%d", f.batch.Limit, test.cap)
 			}
-			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			batch, err := readGitHubBatch(t.Context(), d.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var count int
-			if err := d.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
-				t.Fatal(err)
-			}
-			if test.refused {
-				if count != 0 || batch.Status != "discovery_failed" || reads != 1 {
-					t.Fatalf("free cap: count=%d status=%s reads=%d", count, batch.Status, reads)
+			for tick := range 3 {
+				if err := f.advance(t); err != nil {
+					t.Fatal(err)
 				}
-			} else if count != 201 || batch.Status != "finished" || reads != 3 {
-				t.Fatalf("paid cap: count=%d status=%s reads=%d", count, batch.Status, reads)
+				if f.itemCount(t) != min((tick+1)*100, 201) || reads != tick+1 {
+					t.Fatalf("bounded progress tick=%d count=%d reads=%d", tick, f.itemCount(t), reads)
+				}
+			}
+			if f.itemCount(t) != 201 || f.batch.Status != "finished" || reads != 3 {
+				t.Fatalf("catalog job count=%d status=%s reads=%d", f.itemCount(t), f.batch.Status, reads)
 			}
 		})
 	}
 }
 
 func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
-	t.Parallel()
 	for _, closed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("source_closed=%t", closed), func(t *testing.T) {
-			t.Parallel()
 			f := newBatchFixture(t)
 			f.preview(t, closed)
 			f.command(t, tracker.GitHubBatchCommand{Action: "close_source"}, http.StatusUnprocessableEntity)
 			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}}, http.StatusOK)
-			snapshot := batchSnapshot(12)
-			f.report(t, tracker.GitHubBatchResult{Number: 12, Snapshot: &snapshot}, http.StatusOK)
+			if err := f.advance(t); err != nil {
+				t.Fatal(err)
+			}
 			f.preview(t, closed)
 			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13, 14}}, http.StatusOK)
-			snapshot = batchSnapshot(13)
-			f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: &snapshot}, http.StatusOK)
-			f.report(t, tracker.GitHubBatchResult{Number: 14, Error: "Source context incomplete"}, http.StatusOK)
-			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&count); err != nil || count != 0 {
-				t.Fatalf("source write without opt-in: count=%d error=%v", count, err)
+			f.backend.failures[14] = githubconnector.ErrNotFound
+			if err := f.advance(t); err != nil {
+				t.Fatal(err)
+			}
+			readOutbound := func(id tracker.NativeWorkItemID) (projectstore.GitHubOutbound, error) {
+				var row projectstore.GitHubOutbound
+				err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					var err error
+					row, err = reader.(projectstore.GitHubOutboxWriter).GitHubOutbound(t.Context(), "native:"+string(id)+":intake")
+					return err
+				})
+				return row, err
+			}
+			for _, item := range f.batch.Items {
+				if _, err := readOutbound(item.WorkItemID); !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("source write without opt-in: item=%+v error=%v", item, err)
+				}
 			}
 			f.command(t, tracker.GitHubBatchCommand{Action: "close_source"}, http.StatusUnprocessableEntity)
 			f.service.database.linkedSourceBase = "https://cloud.example"
 			f.service.config.OutboxBackend = &recordingOutboxBackend{}
 			f.command(t, tracker.GitHubBatchCommand{Action: "close_source"}, http.StatusOK)
 			f.command(t, tracker.GitHubBatchCommand{Action: "close_source"}, http.StatusOK)
-			expected := 1
-			if closed {
-				expected = 0
-			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&count); err != nil || count != expected {
-				t.Fatalf("close requests=%d want=%d error=%v", count, expected, err)
-			}
 			if f.batch.Items[0].SourceCloseRequested || f.batch.Items[2].SourceCloseRequested || f.batch.Items[1].SourceCloseRequested == closed {
 				t.Fatalf("incorrect close selection: %+v", f.batch.Items)
 			}
-			if !closed {
-				var raw string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT desired_json FROM github_outbox WHERE json_extract(desired_json, '$.close_source')=1").Scan(&raw); err != nil {
+			for index, item := range f.batch.Items {
+				row, err := readOutbound(item.WorkItemID)
+				if index != 1 || closed {
+					if !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("nonselected source closed: %+v error=%v", item, err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, err := eventstore.NewContent(f.service.runDetailStore()).Receipt(t.Context(), row.Payload)
+				if err != nil {
 					t.Fatal(err)
 				}
 				var desired WorkpadDesired
-				if err := json.Unmarshal([]byte(raw), &desired); err != nil {
+				if err := json.Unmarshal(raw, &desired); err != nil {
 					t.Fatal(err)
 				}
-				if desired.Body != "Tracked in Detent: https://cloud.example/local-organization/linked/issues/2" || !desired.CloseSource || desired.StateReason != "" || desired.IssueNumber != 13 {
-					t.Fatalf("close payload=%+v", desired)
+				var slug string
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					organization, err := reader.AccessOrganization(t.Context())
+					slug = organization.Slug
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				want := "Tracked in Detent: https://cloud.example" + issueBrowserPath(slug, f.project.Slug, 2)
+				if desired.Body != want || !desired.CloseSource || desired.StateReason != "" || desired.IssueNumber != 13 || row.ProjectID != f.project.ID || row.WorkItemID != item.WorkItemID {
+					t.Fatalf("close payload=%+v row=%+v want body=%s", desired, row, want)
 				}
 			}
 		})
 	}
+}
+
+func newHostedBatchFixture(t *testing.T) *batchFixture {
+	t.Helper()
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	provider := newHostedSecurityProvider()
+	for _, org := range []string{"org_first", "org_first_second"} {
+		member := auth.Membership{ID: "membership_" + org, UserID: "user_" + org, OrganizationID: "provider_" + org, Status: "active"}
+		member.Role.Slug = "owner"
+		provider.members[member.ID] = member
+	}
+	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, Clock: clock.Now, Hosted: &HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", PublicURL: "https://hub.example.test", Provider: provider}})
+	f := newBatchFixtureForProject(t, newNativeFixture(t, service, "org_first", "Example hosted batch"))
+	f.clock, f.provider = clock, provider
+	return f
+}
+
+func seedBatchServiceKey(t *testing.T, f *batchFixture, ttl ...time.Duration) string {
+	t.Helper()
+	credential := f.scope(t).credential
+	token := newNativeID("service_token")
+	id := "service_" + string(f.project.ID)
+	now := f.service.config.now()
+	lifetime := 24 * time.Hour
+	if len(ttl) != 0 {
+		lifetime = ttl[0]
+	}
+	expires := now.Add(lifetime)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+		if err := writer.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: id, Name: "Example intake service", Hash: apikey.HashToken(token), Scope: "operator", Kind: "service", KeyScope: "admin", UserID: credential.Hosted.Subject, MembershipID: credential.HostedMembership, NativeOnly: true, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+			return err
+		}
+		return writer.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: id, ProjectID: f.project.ID})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func testGitHubBatchIssuer(t *testing.T, service *Service, organization tracker.OrganizationID, project tracker.ProjectID) nativeScope {
+	t.Helper()
+	credential, _, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(testHubAdminToken), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: organization, project: project, credential: credential}
+	issuer := operatorChatIdentity{Identity: operatorIdentity(credential, string(organization))}
+	authority := scope
+	scope.githubIntakeRevision = &githubIntakeRevision{issuer: &issuer, authority: &authority}
+	return scope
+}
+
+func (f *batchFixture) report(t *testing.T, request tracker.GitHubBatchResult, status int) tracker.GitHubBatchReceipt {
+	t.Helper()
+	f.sequence++
+	if request.IdempotencyKey == "" {
+		request.IdempotencyKey = fmt.Sprint("worker-result-", f.sequence)
+	}
+	request.BatchID, request.Revision = f.batch.ID, f.batch.Revision
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", f.runner.redemption.Credential, request)
+	requireNativeStatus(t, response, status)
+	var receipt tracker.GitHubBatchReceipt
+	if status == http.StatusOK {
+		decodeHubResponse(t, response, &receipt)
+		f.refresh(t)
+		if receipt.Revision != f.batch.Revision || receipt.Status != f.batch.Status {
+			t.Fatalf("worker receipt lost batch checkpoint: %+v batch=%+v", receipt, f.batch)
+		}
+	}
+	return receipt
+}
+
+func (f *batchFixture) workerPreview(t *testing.T) {
+	t.Helper()
+	f.service.config.ImportBackend = nil
+	f.command(t, tracker.GitHubBatchCommand{Action: "discover", RunnerID: f.runner.binding.RunnerID}, http.StatusOK)
+	task := f.heartbeat(t)
+	if task == nil || task.Discovery == nil || task.BatchID != f.batch.ID {
+		t.Fatalf("worker discovery missing: %+v", task)
+	}
+	f.report(t, tracker.GitHubBatchResult{Page: &tracker.GitHubDiscoveryPage{Total: 3, Issues: []tracker.GitHubIssuePreview{previewIssue(12, false), previewIssue(13, false), previewIssue(14, false)}}}, http.StatusOK)
+}
+
+func seedBatchExpiringKey(t *testing.T, f *batchFixture, ttl time.Duration) string {
+	t.Helper()
+	credential := f.scope(t).credential
+	token := newNativeID("expiring_token")
+	id := "expiring_" + string(f.project.ID)
+	now := f.service.config.now()
+	expires := now.Add(ttl)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+		if err := writer.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: id, Name: "Example expiring intake key", Hash: apikey.HashToken(token), Scope: "operator", Kind: "service", KeyScope: "admin", UserID: credential.Hosted.Subject, MembershipID: credential.HostedMembership, NativeOnly: true, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+			return err
+		}
+		return writer.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: id, ProjectID: f.project.ID})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func createBatchSession(t *testing.T, f *batchFixture) string {
+	t.Helper()
+	credential := f.scope(t).credential
+	now := f.service.config.now()
+	identity := auth.Identity{Subject: credential.Hosted.Subject, Email: "operator@example.test", EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: credential.Hosted.Subject, OrganizationID: f.service.config.Hosted.WorkOSOrganizationID, SessionID: "session_" + string(f.project.ID), CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour)}}
+	f.provider.mu.Lock()
+	f.provider.sessions[identity.Hosted.SessionID] = *identity.Hosted
+	f.provider.mu.Unlock()
+	cookie, _, err := f.service.hostedSessions.CreateIdentitySession(t.Context(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cookie
 }

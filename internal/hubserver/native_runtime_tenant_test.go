@@ -92,13 +92,13 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, runnerID, tracker.MachineID(machineID), startedAt); err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: machineID, Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: machineID, Hostname: "example-host", Capacity: 2, Version: "example"}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: startedAt, ExpiresAt: expires, LastHeartbeatAt: startedAt}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, DisplayName: "Example runner", CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: startedAt, ExpiresAt: expires, LastHeartbeatAt: startedAt}); err != nil {
 			return err
 		}
-		return w.UpdateRunnerCapacityConfig(t.Context(), runnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: startedAt})
+		return w.UpdateRunnerCapacityConfig(t.Context(), runnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: startedAt})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -173,13 +173,6 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 		t.Fatalf("fixture did not retain a current lease: now=%s renewed=%s expires=%s released=%v", clock.Now(), claimedLease.RenewedAt, claimedLease.ExpiresAt, claimedLease.ReleasedAt)
 	}
 
-	legacyDB, legacyReader := service.database.db, service.database.reader
-	legacyAuthReader, legacyClaimReader := service.database.authReader, service.database.claimReader
-	service.database.db, service.database.reader, service.database.authReader, service.database.claimReader = nil, nil, nil, nil
-	t.Cleanup(func() {
-		service.database.db, service.database.reader = legacyDB, legacyReader
-		service.database.authReader, service.database.claimReader = legacyAuthReader, legacyClaimReader
-	})
 	runtimePath := itemPath + "/" + string(issue.WorkItemID) + "/runtime?native_attempt_id=" + started.Data.AttemptID
 	response = performHubAPIRequest(t, service, http.MethodGet, runtimePath, token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -301,6 +294,22 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	if evidence.Attempt == nil || evidence.Attempt.Current || evidence.CurrentLease != nil {
 		t.Fatalf("expired lease remained current in runtime evidence: attempt=%#v lease=%#v", evidence.Attempt, evidence.CurrentLease)
 	}
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		expired, err := r.Lease(t.Context(), lease.LeaseID)
+		if err == nil && (expired.ReleasedAt != nil || clock.Now().Before(expired.ExpiresAt)) {
+			t.Fatalf("capacity fixture is not expired and unreleased: %+v", expired)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = performHubAPIRequest(t, service, http.MethodGet, itemPath+"/"+string(issue.WorkItemID)+"/runtime", token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var capacity tracker.NativeRuntimeEvidence
+	decodeHubResponse(t, response, &capacity)
+	if capacity.CurrentLease != nil || len(capacity.Capacity) != 1 || capacity.Capacity[0].RunnerID != runnerID || capacity.Capacity[0].Available != 2 {
+		t.Fatalf("expired lease occupied capacity: %+v", capacity)
+	}
 	snapshots, _, _, err := service.readOperatorAttemptSnapshots(t.Context(), scope, string(issue.WorkItemID))
 	if err != nil || len(snapshots) != 1 {
 		t.Fatalf("load attempt hook: %v snapshots=%d", err, len(snapshots))
@@ -365,7 +374,8 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 func TestPostgresOperatorReadsRejectRoleChanges(t *testing.T) {
 	for _, tool := range []string{operatortool.WorkConfig, operatortool.ExplainItem} {
 		t.Run(tool, func(t *testing.T) {
-			repository, f, owner, _ := newExportPostgresFixture(t)
+			var details *memoryRunDetails
+			repository, f, owner, _ := newExportPostgresFixtureInOrganization(t, postgresStartupTemplate.Database(t), "org_security", func(cfg *Config) { details = cfg.RunDetails.(*memoryRunDetails) })
 			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "explain-role"}, Title: "Example issue", Body: workItemRecordBody, State: "Todo"})
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
@@ -390,7 +400,6 @@ func TestPostgresOperatorReadsRejectRoleChanges(t *testing.T) {
 				}}, nil
 			}})
 			changed := false
-			details := f.service.config.RunDetails.(*memoryRunDetails)
 			details.beforeRead = func(ctx context.Context) error {
 				details.beforeRead = nil
 				changed = true

@@ -17,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubgithub"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 )
 
@@ -101,17 +100,15 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 	cmd := &cobra.Command{
 		Use:     "hub",
 		Short:   "Run the shared Detent Hub service",
-		Example: "detent hub serve --database /var/lib/detent/hub.db",
+		Example: "detent hub serve --hosted-config /etc/detent/hub.yaml",
 		Args:    NoArgs,
 	}
 	cmd.AddCommand(newHubServeCommand(version, commit, lookupEnv, run))
 	cmd.AddCommand(newHubRunnerCommand(version, lookupEnv))
 	cmd.AddCommand(newHubPolicyCommand(lookupEnv))
 	cmd.AddCommand(newHubIssueCommand(lookupEnv))
-	cmd.AddCommand(newHubRecoveryCommands(lookupEnv)...)
 	cmd.AddCommand(newHubPostgresMigrationCommand(lookupEnv, hubserver.MigratePostgres))
-	cmd.AddCommand(newHubPostgresImportCommand(lookupEnv))
-	cmd.AddCommand(newHubSecretsCommand(lookupEnv))
+	cmd.AddCommand(newHubSecretsCommand())
 	return cmd
 }
 
@@ -135,7 +132,7 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 	cmd := &cobra.Command{
 		Use:          "serve",
 		Short:        "Serve the Detent Hub API",
-		Example:      "detent hub serve --database /var/lib/detent/hub.db --listen 127.0.0.1:7777",
+		Example:      "detent hub serve --hosted-config /etc/detent/hub.yaml --listen 127.0.0.1:7777",
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -157,33 +154,25 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 			if err != nil {
 				return err
 			}
-			hosted, _, err := readHostedConfig(hostedConfigPath, lookupEnv)
+			hosted, postgresConfig, err := readHubServeConfig(hostedConfigPath, lookupEnv)
 			if err != nil {
 				return err
 			}
-			databaseBackend := hubserver.DatabaseSQLite
-			var postgresConfig = (*postgres.Config)(nil)
-			if hosted != nil && hosted.Postgres != nil {
-				databaseBackend = hubserver.DatabasePostgres
-				postgresConfig = hosted.Postgres
+			if postgresConfig == nil {
+				return NewValidationError("PostgreSQL Hub configuration is required", "Set postgres in the file passed to --hosted-config.", nil)
 			}
-			if databaseBackend == hubserver.DatabasePostgres && strings.TrimSpace(databasePath) != "" {
-				return NewValidationError("PostgreSQL Hub cannot use a SQLite database path", "Remove --database when the hosted configuration selects PostgreSQL.", nil)
-			}
-			if databaseBackend == hubserver.DatabaseSQLite && strings.TrimSpace(databasePath) == "" {
-				return NewValidationError("hub database path is required", "Run detent hub serve --database /path/to/hub.db.", nil)
+			if strings.TrimSpace(databasePath) != "" {
+				return NewValidationError("PostgreSQL Hub cannot use a SQLite database path", "Remove --database and use the PostgreSQL configuration.", nil)
 			}
 			var adminToken string
-			if databaseBackend == hubserver.DatabaseSQLite {
+			if hosted == nil {
 				adminTokenEnv = strings.TrimSpace(adminTokenEnv)
 				if !validEnvName(adminTokenEnv) {
 					return NewValidationError("Hub administrator token environment variable name is invalid", "Use an environment variable name such as DETENT_HUB_ADMIN_TOKEN.", nil)
 				}
 				adminToken = strings.TrimSpace(lookupEnv(adminTokenEnv))
-				if adminToken == "" {
-					return NewValidationError("Hub administrator token is required", "Set "+adminTokenEnv+" to a high-entropy API token.", nil)
-				}
 			}
+
 			marker := os.Getenv(entryauthority.BootstrapEnvironment)
 			if marker != "" {
 				if err := os.Unsetenv(entryauthority.BootstrapEnvironment); err != nil {
@@ -266,7 +255,7 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 				BusyTimeout:                busyTimeout,
 				ShutdownTimeout:            shutdownTimeout,
 				GitHubWebhookSecret:        []byte(strings.TrimSpace(lookupEnv(githubWebhookSecretEnv))),
-				DatabaseBackend:            databaseBackend,
+				DatabaseBackend:            hubserver.DatabasePostgres,
 				Postgres:                   postgresConfig,
 				WebhookPayloadRetention:    webhookPayloadRetention,
 				WebhookMaintenanceInterval: webhookMaintenanceInterval,
@@ -280,7 +269,7 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 	}
 	cmd.Flags().BoolVar(&credentialMaintenance, "credential-maintenance", false, "serve only authenticated credential administration for the bound hosted tenant on private loopback")
 	cmd.Flags().StringVar(&databasePath, "database", "", "local filesystem path to the Hub SQLite database")
-	cmd.Flags().StringVar(&hostedConfigPath, "hosted-config", "", "hosted organization and WorkOS configuration file")
+	cmd.Flags().StringVar(&hostedConfigPath, "hosted-config", "", "PostgreSQL Hub configuration file with hosted identity settings when applicable")
 	cmd.Flags().StringVar(&listenAddress, "listen", hubserver.DefaultListenAddress, "Hub listen address: host:port, or unix:/absolute/path in a private directory")
 	cmd.Flags().StringVar(&tlsCertificateFile, "tls-cert", "", "TLS certificate file")
 	cmd.Flags().StringVar(&tlsKeyFile, "tls-key", "", "TLS private key file")

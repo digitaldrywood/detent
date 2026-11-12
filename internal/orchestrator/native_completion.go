@@ -201,6 +201,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 	humanReview = humanReview || reported && report != nil && report.Invalid == nil && report.HumanAction != ""
 	blocked := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusBlocked
 	clearedBlockers := false
+	dependencyWait := false
+	completionObserved := false
 	if blocked {
 		blocked = len(report.Blockers) > 0 && report.HumanAction == "" && report.ReasonCode == ""
 		for _, blocker := range report.Blockers {
@@ -209,8 +211,22 @@ func (o *Orchestrator) completeNativeChangeRun(
 		if blocked {
 			reportedIssue := cloneIssue(issue)
 			reportedIssue.DependencySource = connector.BlockedRefSourceWorkpad
-			evidence := o.evaluateRecordedBlockerSignal(ctx, state, reportedIssue, report, nil, event.CompletedAt)
+			resolved := o.resolveBlockerPredicateReferences(ctx, reportedIssue, report.Blockers, nil, false)
+			evidence := o.evaluateRecordedBlockerSignal(ctx, state, reportedIssue, report, resolved, event.CompletedAt, true)
 			clearedBlockers = evidence.Found && !evidence.Holds && !evidence.Unverifiable && !evidence.HumanOwned
+			if evidence.Found && evidence.Holds && !evidence.Unverifiable && !evidence.HumanOwned && issue.DependencySource == connector.BlockedRefSourceNative && event.Request.Execution != nil {
+				o.observeNativeCompletion(ctx, event, false)
+				completionObserved = true
+				if err := event.Request.Execution.Finish(ctx, "succeeded"); err != nil {
+					return handoff(fmt.Errorf("persist dependency completion: %w", err))
+				}
+				refreshed, err := o.refreshCompletionLane(ctx, running)
+				if err != nil {
+					return handoff(fmt.Errorf("read completed dependencies: %w", err))
+				}
+				issue = refreshed
+				dependencyWait = nativeDependencyWaitOwned(issue, evidence, resolved)
+			}
 			blocked = !clearedBlockers
 		}
 	}
@@ -293,11 +309,16 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 	}
 	if blocked {
-		target, ok = nativeRetryLane(states, issue.State, cfg.ReworkState)
-		if !ok {
-			target, ok = nativeRetryLane(states, issue.State, "Todo")
+		if dependencyWait {
+			target, ok = nativeDependencyWaitLane(states, issue, cfg.ReworkState)
+		} else {
+			target, ok = nativeRetryLane(states, issue.State, cfg.ReworkState)
+			if !ok {
+				target, ok = nativeRetryLane(states, issue.State, "Todo")
+			}
 		}
 	}
+
 	if clearedBlockers {
 		target, ok = connector.CompletionLane(states, issue.State, normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock).TargetState, true)
 	}
@@ -466,10 +487,10 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
 		o.warnNativeCompletion(issue, fmt.Errorf("comment on the completed run: %w", err))
 	}
-	if !changed || needsReview {
+	if !completionObserved && (!changed || needsReview) {
 		o.observeNativeCompletion(ctx, event, !needsReview && !unfinished)
 	}
-	machineRetry := explicitHumanAction(issue) == "" && dispatchableState(states, target) && (blocked || needsReview || unfinished || staleRework || unaddressedRefusal != "")
+	machineRetry := !dependencyWait && explicitHumanAction(issue) == "" && dispatchableState(states, target) && (blocked || needsReview || unfinished || staleRework || unaddressedRefusal != "")
 	if !machineRetry {
 		if err := o.abandonClaim(ctx, issueID); err != nil {
 			return handoff(err)
@@ -500,6 +521,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if !machineRetry {
 		delete(state.Retry, issueID)
 		o.recordCompletedActiveReviewTransition(state, issue, completed, target)
+		if dependencyWait {
+			delete(state.Completed, issueID)
+		}
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
@@ -814,4 +838,46 @@ func nativeSourceReviewWait(event runpkg.Completion) bool {
 		return false
 	}
 	return errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || change.ImplementationReviewError != "" || change.ImplementationReview != nil && change.ImplementationReview.VersionID == change.VersionID && change.ImplementationReview.HeadSHA == change.HeadSHA && change.ImplementationReview.Verdict == gate.ValidatorVerdictWait
+}
+
+func nativeDependencyWaitOwned(issue connector.Issue, evidence recordedBlockerEvaluation, resolved map[string]connector.Issue) bool {
+	if issue.DependencySource != connector.BlockedRefSourceNative || !evidence.Found || !evidence.Holds || evidence.Unverifiable || evidence.HumanOwned {
+		return false
+	}
+	native := make(map[string]struct{}, len(issue.BlockedBy))
+	for _, ref := range issue.BlockedBy {
+		if ref.Source == connector.BlockedRefSourceNative && ref.ID != "" {
+			native[ref.ID] = struct{}{}
+		}
+	}
+	holding := false
+	for _, item := range evidence.Evidence {
+		if item.Status != blockerEvidenceStatusHolds {
+			continue
+		}
+		holding = true
+		if item.Type != workpad.PredicateIssueState || item.Owner != workpad.BlockerOwnerOrchestrator || item.Unverifiable {
+			return false
+		}
+		referenced, ok := resolved[normalizedIssueIdentifier(item.Reference)]
+		if !ok || referenced.ID == "" {
+			return false
+		}
+		if _, ok := native[referenced.ID]; !ok {
+			return false
+		}
+	}
+	return holding
+}
+
+func nativeDependencyWaitLane(states []connector.WorkflowState, issue connector.Issue, rework string) (string, bool) {
+	if mergeWorkerIssue(issue) {
+		if target, ok := nativeRetryLane(states, issue.State, issue.State); ok {
+			return target, true
+		}
+	}
+	if target, ok := nativeRetryLane(states, issue.State, rework); ok {
+		return target, true
+	}
+	return nativeRetryLane(states, issue.State, "Todo")
 }

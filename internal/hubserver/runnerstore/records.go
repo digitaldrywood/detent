@@ -224,6 +224,22 @@ type LeaseAssignment struct {
 	AssignedAt     time.Time
 }
 
+type LeaseProjectPage struct {
+	Projects     []tracker.ProjectID
+	AfterLeaseID string
+	Examined     int
+	Exhausted    bool
+}
+
+type LeaseProjectPageReader interface {
+	RunnerUnreleasedLeaseProjects(context.Context, string, string, int) (LeaseProjectPage, error)
+}
+
+type UnreleasedMembershipReader interface {
+	RunnerHasUnreleasedLease(context.Context, string) (bool, error)
+	RunnerHasUnreleasedProjectLease(context.Context, string, tracker.ProjectID) (bool, error)
+}
+
 type ProviderAccountKey struct {
 	RunnerID           string
 	Provider           string
@@ -312,6 +328,16 @@ type ProjectWorkspaceReader interface {
 	ProjectWorkspaceAvailability(context.Context, []tracker.ProjectID, time.Time) ([]ProjectWorkspaceAvailability, error)
 }
 
+type ProviderCatalogModel struct {
+	ID       string
+	Provider string
+	Detail   *providercapacity.ModelDetail
+}
+
+type ProviderCatalogReader interface {
+	RunnerProviderCatalog(context.Context, []tracker.ProjectID, time.Time) ([]ProviderCatalogModel, error)
+}
+
 type Reader interface {
 	RunnerEnrollmentByTokenHash(context.Context, string) (Enrollment, error)
 	RunnerEnrollment(context.Context, string) (Enrollment, error)
@@ -339,6 +365,7 @@ type Reader interface {
 	RunnerWorkspaceReport(context.Context, string) (workspacesession.Capabilities, string, error)
 	RunnerProjectSkills(context.Context, tracker.ProjectID, string, time.Time, int) ([]ProjectSkill, error)
 	RunnerCheckoutVerified(context.Context, tracker.ProjectID, string, time.Time) (bool, error)
+	RunnerCheckoutReport(context.Context, string, tracker.ProjectID) (CheckoutReport, error)
 	RunnerUpdateState(context.Context, string) (UpdateState, error)
 	RunnerUpdateRequest(context.Context, string) (UpdateRequestRecord, error)
 	RunnerUrgentUpdate(context.Context) (UrgentUpdate, error)

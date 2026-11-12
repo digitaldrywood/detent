@@ -381,13 +381,13 @@ func (o *Orchestrator) retryMachineFailure(ctx context.Context, state *State, is
 			return fmt.Errorf("persist machine retry: %w", err)
 		}
 	}
-	o.releaseTerminalAttemptClaim(ctx, state, issue, at)
-	delete(state.Blocked, issue.ID)
-	delete(state.Completed, issue.ID)
 	if state.Retry == nil {
 		state.Retry = make(map[string]Retry)
 	}
 	state.Retry[issue.ID] = retry
+	o.releaseTerminalAttemptClaim(ctx, state, issue, at)
+	delete(state.Blocked, issue.ID)
+	delete(state.Completed, issue.ID)
 	return nil
 }
 

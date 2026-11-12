@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -22,14 +24,13 @@ type spriteTokenPromotion struct {
 	Fingerprint string            `json:"fingerprint"`
 }
 
-func firstProjectSpritesToken(ctx context.Context, q nativeQueryer, scope nativeScope) (spriteTokenPromotion, string, hubsecrets.Envelope, error) {
-	var change spriteTokenPromotion
-	var slug string
-	var envelope hubsecrets.Envelope
-	err := q.QueryRowContext(ctx, `SELECT s.project_id,s.organization_slug,s.ciphertext,s.nonce,s.wrapped_data_key,s.master_key_version FROM project_secrets s JOIN projects p ON p.id=s.project_id AND p.organization_id=s.organization_id WHERE s.organization_id=? AND s.kind=? AND p.deleted_at IS NULL ORDER BY p.scheduling_rank,p.id LIMIT 1`, scope.organization, flySpritesToken).Scan(&change.ProjectID, &slug, &envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
-	digest := sha256.Sum256(envelope.Ciphertext)
-	change.Fingerprint = hex.EncodeToString(digest[:])
-	return change, slug, envelope, err
+func firstProjectSpritesToken(ctx context.Context, r accessstore.Reader) (spriteTokenPromotion, accessstore.Secret, error) {
+	secret, err := r.FirstProjectAccessSecret(ctx, flySpritesToken)
+	if err != nil {
+		return spriteTokenPromotion{}, secret, err
+	}
+	digest := sha256.Sum256(secret.Envelope.Ciphertext)
+	return spriteTokenPromotion{ProjectID: secret.ProjectID, Fingerprint: hex.EncodeToString(digest[:])}, secret, nil
 }
 
 func (t *coordinatorToolset) promoteSpritesTokenTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -50,17 +51,23 @@ func (t *coordinatorToolset) promoteSpritesTokenTool(ctx context.Context, record
 	if err != nil {
 		return nil, err
 	}
-	existing, err := readSecretStatus(ctx, s.database.reader, scope)
-	if err != nil {
-		return nil, err
-	}
-	if existing.Present {
-		return nil, nativePublicInvalid("An organization Sprites token is already configured")
-	}
-	change, _, _, err := firstProjectSpritesToken(ctx, s.database.reader, scope)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nativePublicInvalid("No existing project Sprites token is available")
-	}
+	var change spriteTokenPromotion
+	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		if _, err := r.AccessSecret(ctx, "", flySpritesToken); err == nil {
+			return nativePublicInvalid("An organization Sprites token is already configured")
+		} else if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		var err error
+		change, _, err = firstProjectSpritesToken(ctx, r)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nativePublicInvalid("No existing project Sprites token is available")
+		}
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -83,38 +90,40 @@ func (s *Service) executePromoteSpritesToken(ctx context.Context, action chat.Ac
 	if s.config.SecretKeys == nil {
 		return chat.ActionExecution{}, hubsecrets.ErrUnavailable
 	}
-	err = s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
-		if err := requireCredentialAuthority(ctx, tx, scope.credential, s.config.now()); err != nil {
-			return err
-		}
-		existing, err := readSecretStatus(ctx, tx, scope)
-		if err != nil {
-			return err
-		}
-		if existing.Present {
+	err = s.accessSecretWrite(ctx, scope, func(w tenantstore.Writer) error {
+		if _, err := w.AccessSecret(ctx, "", flySpritesToken); err == nil {
 			return nativePublicInvalid("An organization Sprites token is already configured")
+		} else if !errors.Is(err, corestore.ErrNotFound) {
+			return err
 		}
-		current, slug, envelope, err := firstProjectSpritesToken(ctx, tx, scope)
+		current, source, err := firstProjectSpritesToken(ctx, w)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nativePublicInvalid("The source Sprites token changed; request a new preview")
+		}
 		if err != nil {
 			return err
 		}
 		if current != change {
 			return nativePublicInvalid("The source Sprites token changed; request a new preview")
 		}
-		token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(scope.organization), string(change.ProjectID), flySpritesToken))
+		token, err := s.config.SecretKeys.Open(source.Envelope, accessstore.SecretAAD(scope.organization, source.ProjectID, flySpritesToken))
 		if err != nil {
 			return err
 		}
 		defer clear(token)
-		promoted, err := s.config.SecretKeys.Seal(token, secretAAD(string(scope.organization), "", flySpritesToken))
+		promoted, err := s.config.SecretKeys.Seal(token, accessstore.SecretAAD(scope.organization, "", flySpritesToken))
 		if err != nil {
 			return err
 		}
-		now := formatHubTime(s.config.now())
-		if _, err := tx.ExecContext(ctx, `INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES(?,?,?,?,?,?,?,?)`, scope.organization, flySpritesToken, slug, promoted.Ciphertext, promoted.Nonce, promoted.WrappedKey, promoted.Version, now); err != nil {
-			return err
+		secret := accessstore.Secret{OrganizationID: scope.organization, Kind: flySpritesToken, OrganizationSlug: source.OrganizationSlug, Envelope: promoted, UpdatedAt: s.config.now()}
+		err = w.PromoteAccessSecret(ctx, source, secret, s.accessSecretAudit(scope, "set", promoted.Version))
+		if errors.Is(err, corestore.ErrUniqueViolation) {
+			return nativePublicInvalid("An organization Sprites token is already configured")
 		}
-		return secretAudit(ctx, tx, string(scope.organization), "", secretActor(scope), flySpritesToken, "set", promoted.Version, now)
+		if errors.Is(err, corestore.ErrRevisionConflict) {
+			return nativePublicInvalid("The source Sprites token changed; request a new preview")
+		}
+		return err
 	})
 	if err != nil {
 		return chat.ActionExecution{}, err

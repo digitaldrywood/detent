@@ -11,6 +11,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -18,9 +21,6 @@ import (
 )
 
 func TestCoordinatorRunnerTools(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	for _, test := range []struct {
 		name, role, tool, tier string
 		preview, execute       bool
@@ -87,7 +87,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
 			}
 			postHeartbeat()
-			before, err := readRunnerWithClock(t.Context(), f.service.database.db, "org_security", r.binding.RunnerID, f.service.config.now)
+			before, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -105,7 +105,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 			}
 			decodeHubResponse(t, response, &created)
 			c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
-			messages, err := c.service.store.listMessages(t.Context(), f.service.database.db, created.Conversation.ID, 0, 100)
+			messages, err := c.coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: created.Conversation.ID, Limit: 100})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +144,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				}
 			}
 			if test.execute {
-				messages, err = c.service.store.listMessages(t.Context(), f.service.database.db, created.Conversation.ID, 0, 100)
+				messages, err = c.coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: created.Conversation.ID, Limit: 100})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -164,11 +164,25 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				}
 				switch test.name {
 				case "sprite detected after preview":
-					operatorSQL(t, f, "UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID)
+					coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+						machine, err := w.Machine(t.Context(), string(r.binding.MachineID))
+						if err != nil {
+							return err
+						}
+						machine.SpriteName = machine.Hostname
+						return w.RegisterMachine(t.Context(), machine)
+					})
 				case "stale preview":
-					operatorSQL(t, f, "UPDATE runner_identities SET revision=revision+1 WHERE id=?", r.binding.RunnerID)
+					coordinatorFixtureRouting(t, f.service, "org_security", r.binding.RunnerID, func(*runnerstore.Identity) {})
 				case "role revoked after preview":
-					operatorSQL(t, f, "UPDATE hosted_members SET role='member' WHERE user_id=?", user.identity.Subject)
+					coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+						member, err := w.AccessMember(t.Context(), user.identity.Subject)
+						if err != nil {
+							return err
+						}
+						member.Role = "member"
+						return w.UpdateAccessMember(t.Context(), member)
+					})
 				case "project grant revoked":
 					f.grant(t, user, false, false)
 				}
@@ -179,7 +193,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				heartbeat["problems"] = []runnerauth.Problem{}
 				postHeartbeat()
 			}
-			after, err := readRunnerWithClock(t.Context(), f.service.database.db, "org_security", r.binding.RunnerID, f.service.config.now)
+			after, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.now())
 			if err != nil {
 				t.Fatal(err)
 			}

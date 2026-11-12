@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -696,10 +695,6 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 }
 
 func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	const (
@@ -715,8 +710,7 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 		createErr: connector.NewRetryableError("github rate limited"),
 	}
 	cfg := completionDeferralConfig()
-	path := filepath.Join(t.TempDir(), "attempts.db")
-	runtimeStore := openCompletionDeferralStoreWithoutCleanup(t, path)
+	runtimeStore := newRuntimeFixture()
 	attemptID := startCompletionDeferralAttempt(t, runtimeStore, issue, now)
 	orch := &Orchestrator{
 		cfg: cfg, connector: tracker, workAttempts: runtimeStore, now: func() time.Time { return now },
@@ -804,16 +798,7 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 	if _, deferred := state.deferredCompletions[issue.ID]; !deferred {
 		t.Fatal("draft creation rate limit did not defer completion")
 	}
-	if err := runtimeStore.Close(); err != nil {
-		t.Fatal(err)
-	}
 
-	runtimeStore = openCompletionDeferralStoreWithoutCleanup(t, path)
-	t.Cleanup(func() {
-		if err := runtimeStore.Close(); err != nil {
-			t.Error(err)
-		}
-	})
 	tracker.createErr = nil
 	tracker.created = &connector.PullRequest{Number: 19, BranchName: branch, State: "OPEN", HeadSHA: headSHA, Draft: true}
 	restartedAt := now.Add(time.Second)
@@ -1273,10 +1258,6 @@ func terminalRetryMetadataPushed(raw string) bool {
 }
 
 func TestStartupDoesNotReclaimLiveWorkAttempts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, count := range []int{1, 2} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
@@ -1310,10 +1291,6 @@ func TestStartupDoesNotReclaimLiveWorkAttempts(t *testing.T) {
 }
 
 func TestRetainedWorkAttemptsExpireOnTick(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name         string
@@ -1800,11 +1777,7 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 
 func TestMachineRetrySurvivesStoreRestart(t *testing.T) {
 	ctx := t.Context()
-	dbConfig := store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "retry.db")}
-	db, err := store.Open(ctx, dbConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := newRuntimeFixture()
 	issue := terminalRetryTestIssue("durable-retry")
 	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, FailureRetryBaseDelay: time.Second, MaxRetryBackoff: time.Minute, OutputTruncationMaxBytes: 100})
 	tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
@@ -1819,13 +1792,6 @@ func TestMachineRetrySurvivesStoreRestart(t *testing.T) {
 		if len(want.Error) > cfg.OutputTruncationMaxBytes || !utf8.ValidString(want.Error) || want.Error == "" {
 			t.Fatalf("invalid bounded error: %q", want.Error)
 		}
-		if err := db.Close(); err != nil {
-			t.Fatal(err)
-		}
-		db, err = store.Open(ctx, dbConfig)
-		if err != nil {
-			t.Fatal(err)
-		}
 		o = &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: db, workAttempts: db}
 		state = newState(cfg)
 		o.restoreWorkAttemptRetryIntents(ctx, &state, []connector.Issue{issue}, now)
@@ -1837,8 +1803,5 @@ func TestMachineRetrySurvivesStoreRestart(t *testing.T) {
 			t.Fatal("retry escaped cap")
 		}
 		now = got.DueAt
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
 	}
 }

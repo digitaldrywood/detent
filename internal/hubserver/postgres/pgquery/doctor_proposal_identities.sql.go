@@ -177,6 +177,69 @@ func (q *Queries) LookupDoctorProposalIdentity(ctx context.Context, arg LookupDo
 	return i, err
 }
 
+const lookupEarliestDoctorProposalIdentity = `-- name: LookupEarliestDoctorProposalIdentity :one
+WITH scope AS MATERIALIZED (
+ SELECT p.organization_id,p.id,(p.duplicate_source_sequence+p.content_settings_revision)::bigint AS source_sequence,
+ NOT EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=p.organization_id AND i.project_id=p.id AND NOT i.archived AND i.doctor_identity_revision IS DISTINCT FROM i.revision) AS complete
+ FROM projects p WHERE p.organization_id=$1 AND p.id=$2 AND p.deleted_at IS NULL AND p.profile='native'
+), states AS MATERIALIZED (
+ SELECT true AS has_state,w.name AS state_name,w.terminal FROM project_workflow_states w JOIN scope s ON s.organization_id=w.organization_id AND s.id=w.project_id
+ UNION ALL SELECT false,'',false FROM scope
+), candidates AS MATERIALIZED (
+ SELECT hit.work_item_id, hit.item_number, hit.source_revision, hit.version_sha256,w.terminal FROM scope s CROSS JOIN states w CROSS JOIN LATERAL (
+  SELECT d.work_item_id,d.item_number,d.source_revision,d.version_sha256 FROM doctor_proposal_identities d
+  WHERE s.complete AND d.organization_id=s.organization_id AND d.project_id=s.id AND d.kind=$3 AND d.kind<>'complete'
+   AND d.identity_hash=$4 AND d.identity_value=$5
+   AND d.has_state=w.has_state AND d.state_name=w.state_name AND NOT d.archived
+  ORDER BY d.item_number ASC,d.work_item_id DESC LIMIT 1
+ ) hit WHERE NOT $6::boolean OR NOT w.terminal
+)
+SELECT s.source_sequence,s.complete,coalesce(hit.work_item_id,'')::text AS work_item_id,coalesce(hit.item_number,0)::bigint AS item_number,
+ coalesce(hit.source_revision,0)::bigint AS source_revision,coalesce(hit.version_sha256,'')::text AS version_sha256,coalesce(hit.terminal,false)::boolean AS terminal
+FROM scope s LEFT JOIN LATERAL (SELECT work_item_id, item_number, source_revision, version_sha256, terminal FROM candidates ORDER BY terminal,item_number ASC,work_item_id DESC LIMIT 1) hit ON true
+`
+
+type LookupEarliestDoctorProposalIdentityParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Kind           string
+	IdentityHash   string
+	IdentityValue  []byte
+	OpenOnly       bool
+}
+
+type LookupEarliestDoctorProposalIdentityRow struct {
+	SourceSequence int64
+	Complete       bool
+	WorkItemID     string
+	ItemNumber     int64
+	SourceRevision int64
+	VersionSha256  string
+	Terminal       bool
+}
+
+func (q *Queries) LookupEarliestDoctorProposalIdentity(ctx context.Context, arg LookupEarliestDoctorProposalIdentityParams) (LookupEarliestDoctorProposalIdentityRow, error) {
+	row := q.db.QueryRow(ctx, lookupEarliestDoctorProposalIdentity,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.Kind,
+		arg.IdentityHash,
+		arg.IdentityValue,
+		arg.OpenOnly,
+	)
+	var i LookupEarliestDoctorProposalIdentityRow
+	err := row.Scan(
+		&i.SourceSequence,
+		&i.Complete,
+		&i.WorkItemID,
+		&i.ItemNumber,
+		&i.SourceRevision,
+		&i.VersionSha256,
+		&i.Terminal,
+	)
+	return i, err
+}
+
 const nextDoctorProposalIdentityHead = `-- name: NextDoctorProposalIdentityHead :one
 SELECT p.id AS project_id,head.native_id FROM projects p
 CROSS JOIN LATERAL (

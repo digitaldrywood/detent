@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,41 +23,52 @@ func TestNativeConnectorCurrentLaneEntry(t *testing.T) {
 		return tracker.CollaborationEvent{ID: id, Type: "workflow.transitioned", RecordedAt: at, Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, Data: tracker.CollaborationData{ToState: to}}
 	}
 	comment := tracker.CollaborationEvent{ID: "comment", Type: "comment.created", RecordedAt: todo.Add(time.Minute)}
+	boundary := make([][]tracker.CollaborationEvent, nativeLaneEntryHistoryPages)
+	for index := range boundary {
+		boundary[index] = []tracker.CollaborationEvent{comment}
+	}
+	incomplete := append(append([][]tracker.CollaborationEvent(nil), boundary...), []tracker.CollaborationEvent{transition("older", "Todo", blocked)})
+	boundary[len(boundary)-1] = []tracker.CollaborationEvent{transition("boundary", "Todo", todo)}
 	tests := []struct {
-		name        string
-		state       string
-		revision    string
-		pages       [][]tracker.CollaborationEvent
-		calls       int
-		wantFound   bool
-		wantEntered time.Time
-		wantReads   int
+		name              string
+		state             string
+		revision          string
+		pages             [][]tracker.CollaborationEvent
+		calls             int
+		wantFound         bool
+		wantEntered       time.Time
+		wantReads         int
+		wantError         bool
+		advanceRevision   bool
+		secondPages       [][]tracker.CollaborationEvent
+		wantSecondEntered time.Time
+		wantSecondError   bool
 	}{
 		{
 			name:        "latest transition into current lane",
 			state:       "Todo",
 			revision:    "7",
-			pages:       [][]tracker.CollaborationEvent{{transition("blocked", "Blocked", blocked), transition("todo", "Todo", todo), comment}},
+			pages:       [][]tracker.CollaborationEvent{{comment, transition("todo", "Todo", todo), transition("blocked", "Blocked", blocked)}},
 			calls:       1,
 			wantFound:   true,
 			wantEntered: todo,
 			wantReads:   1,
 		},
 		{
-			name:        "transition on a later page wins",
+			name:        "newest transition follows newer comments",
 			state:       "todo",
 			revision:    "7",
-			pages:       [][]tracker.CollaborationEvent{{transition("todo-old", "Todo", blocked.Add(-time.Hour))}, {transition("blocked", "Blocked", blocked)}, {transition("todo", "Todo", todo)}},
+			pages:       [][]tracker.CollaborationEvent{{comment}, {transition("todo", "Todo", todo), transition("blocked", "Blocked", blocked)}, {transition("todo-old", "Todo", blocked.Add(-time.Hour))}},
 			calls:       1,
 			wantFound:   true,
 			wantEntered: todo,
-			wantReads:   3,
+			wantReads:   2,
 		},
 		{
 			name:      "latest transition names another lane",
 			state:     "Todo",
 			revision:  "7",
-			pages:     [][]tracker.CollaborationEvent{{transition("todo", "Todo", blocked), transition("blocked", "Blocked", todo)}},
+			pages:     [][]tracker.CollaborationEvent{{transition("blocked", "Blocked", todo), transition("todo", "Todo", blocked)}},
 			calls:     1,
 			wantFound: false,
 			wantReads: 1,
@@ -80,28 +92,46 @@ func TestNativeConnectorCurrentLaneEntry(t *testing.T) {
 			wantEntered: todo,
 			wantReads:   2,
 		},
+		{name: "no workflow transition", state: "Todo", revision: "7", pages: [][]tracker.CollaborationEvent{{comment}}, calls: 1, wantReads: 1},
+		{name: "transition at last allowed page", state: "Todo", revision: "7", pages: boundary, calls: 1, wantFound: true, wantEntered: todo, wantReads: nativeLaneEntryHistoryPages},
+		{name: "incomplete history refuses older matching lane", state: "Todo", revision: "7", pages: incomplete, calls: 2, wantError: true, wantReads: 2 * nativeLaneEntryHistoryPages},
+		{name: "new revision replaces cached lane entry", state: "Todo", revision: "7", pages: [][]tracker.CollaborationEvent{{transition("first", "Todo", blocked)}}, secondPages: [][]tracker.CollaborationEvent{{transition("second", "Todo", todo)}}, calls: 3, advanceRevision: true, wantFound: true, wantEntered: blocked, wantSecondEntered: todo, wantReads: 2},
+		{name: "incomplete new revision leaves prior cache intact", state: "Todo", revision: "7", pages: [][]tracker.CollaborationEvent{{transition("first", "Todo", blocked)}}, secondPages: incomplete, calls: 2, advanceRevision: true, wantFound: true, wantEntered: blocked, wantSecondError: true, wantReads: 1 + nativeLaneEntryHistoryPages},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var mu sync.Mutex
-			reads := 0
+			reads, pass := 0, 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if !strings.HasSuffix(r.URL.Path, "/work-items/wi_lane/history") {
 					t.Errorf("unexpected read: %s %s", r.Method, r.URL.Path)
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
+				if r.URL.Query().Get("direction") != "newest" || r.URL.Query().Get("view") != "timeline" || r.URL.Query().Get("limit") != "200" {
+					t.Errorf("history read did not use the bounded newest timeline: %s", r.URL.RawQuery)
+				}
 				mu.Lock()
 				reads++
+				pages := tt.pages
+				if pass > 0 && tt.secondPages != nil {
+					pages = tt.secondPages
+				}
 				mu.Unlock()
 				index := 0
 				if cursor := r.URL.Query().Get("cursor"); cursor != "" {
-					index = int(cursor[0] - '0')
+					parsed, err := strconv.Atoi(cursor)
+					if err != nil {
+						t.Error(err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					index = parsed
 				}
-				page := tracker.Page[tracker.CollaborationEvent]{Items: tt.pages[index]}
-				if index+1 < len(tt.pages) {
-					page.NextCursor = string(rune('0' + index + 1))
+				page := tracker.Page[tracker.CollaborationEvent]{Items: pages[index]}
+				if index+1 < len(pages) {
+					page.NextCursor = strconv.Itoa(index + 1)
 				}
 				w.Header().Set("Content-Type", "application/json")
 				if err := json.NewEncoder(w).Encode(page); err != nil {
@@ -125,16 +155,40 @@ func TestNativeConnectorCurrentLaneEntry(t *testing.T) {
 			if tt.revision != "" {
 				issue.Metadata["hub_revision"] = tt.revision
 			}
-			for range tt.calls {
+			for call := range tt.calls {
+				mu.Lock()
+				pass = call
+				mu.Unlock()
+				if call > 0 && tt.advanceRevision {
+					issue.Metadata["hub_revision"] = "8"
+				}
+				wantError, wantEntered := tt.wantError, tt.wantEntered
+				if call > 0 && tt.secondPages != nil {
+					wantError = tt.wantSecondError
+					wantEntered = tt.wantSecondEntered
+				}
 				entry, found, err := c.CurrentLaneEntry(context.Background(), issue)
-				if err != nil {
-					t.Fatal(err)
+				if (err != nil) != wantError {
+					t.Fatalf("history error=%v, wantError=%t", err, wantError)
+				}
+				if wantError {
+					if found || !entry.EnteredAt.IsZero() {
+						t.Fatalf("incomplete history established an entry: %+v found=%t", entry, found)
+					}
+					if tt.advanceRevision {
+						issue.Metadata["hub_revision"] = "7"
+						prior, priorFound, priorErr := c.CurrentLaneEntry(context.Background(), issue)
+						if priorErr != nil || !priorFound || !prior.EnteredAt.Equal(tt.wantEntered) {
+							t.Fatalf("incomplete read replaced the earlier cache: %+v, %t, %v", prior, priorFound, priorErr)
+						}
+					}
+					continue
 				}
 				if found != tt.wantFound {
 					t.Fatalf("found = %v, want %v", found, tt.wantFound)
 				}
-				if !entry.EnteredAt.Equal(tt.wantEntered) {
-					t.Fatalf("entered = %s, want %s", entry.EnteredAt, tt.wantEntered)
+				if !entry.EnteredAt.Equal(wantEntered) {
+					t.Fatalf("entered = %s, want %s", entry.EnteredAt, wantEntered)
 				}
 			}
 			mu.Lock()

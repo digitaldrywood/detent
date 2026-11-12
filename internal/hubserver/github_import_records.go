@@ -58,7 +58,7 @@ func (s *Service) decodeGitHubImportRecord(ctx context.Context, row projectstore
 	if err := json.Unmarshal(raw, &record); err != nil {
 		return record, err
 	}
-	if record.SourceKey != row.SourceKey || record.Kind != row.Kind || record.DependencyID != row.DependencyID || record.Provenance.ExternalID != row.ProvenanceExternalID {
+	if record.SourceKey != row.SourceKey || record.Kind != row.Kind || row.DependencyID != "" && record.DependencyID != row.DependencyID || row.ProvenanceExternalID != "" && record.Provenance.ExternalID != row.ProvenanceExternalID {
 		return GitHubImportRecord{}, artifact.ErrIntegrity
 	}
 	if record.Kind == "dependency" {

@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -51,4 +53,28 @@ func (s *session) UpdateAccessKeyAudit(ctx context.Context, id int64, key, opera
 	}
 	n := result.RowsAffected()
 	return affected(ctx, n, err)
+}
+
+func (s *session) PruneAccessAuditReads(ctx context.Context, limit int) (int, error) {
+	if limit < 1 || limit > accessstore.MaxAuditPruneBatch {
+		return 0, corestore.ErrInvalidPage
+	}
+	if s.readOnly {
+		return 0, accessstore.ErrTransactionRequired
+	}
+	var count int
+	err := s.db.QueryRow(ctx, `SELECT public.prune_legacy_access_audits($1)`, limit).Scan(&count)
+	return count, mapError(ctx, err)
+}
+
+func (s *session) PruneAccessAuditsBefore(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	if cutoff.IsZero() || cutoff.UnixNano() <= 0 || limit < 1 || limit > accessstore.MaxAuditPruneBatch {
+		return 0, corestore.ErrInvalidPage
+	}
+	if s.readOnly {
+		return 0, accessstore.ErrTransactionRequired
+	}
+	var count int
+	err := s.db.QueryRow(ctx, `SELECT public.prune_expired_access_audits($1,$2)`, cutoff.UnixNano(), limit).Scan(&count)
+	return count, mapError(ctx, err)
 }

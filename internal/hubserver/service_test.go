@@ -3,11 +3,9 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -139,8 +137,12 @@ func TestServeShutsDownGracefully(t *testing.T) {
 	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("Serve() did not return after Shutdown()")
 	}
-	if err := service.Backup(t.Context(), filepath.Join(t.TempDir(), "backup.db")); !errors.Is(err, ErrNotReady) {
-		t.Fatalf("Backup() after Shutdown error = %v, want ErrNotReady", err)
+	afterShutdown := performHubAPIRequest(t, service, http.MethodGet, "/health", testHubAdminToken, nil)
+	requireNativeStatus(t, afterShutdown, http.StatusServiceUnavailable)
+	var health healthResponse
+	decodeHubResponse(t, afterShutdown, &health)
+	if health.Status != "unavailable" {
+		t.Fatalf("health after shutdown = %q, want unavailable", health.Status)
 	}
 }
 
@@ -161,6 +163,14 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 	cfg := startupConfig(connection)
 	cfg.ListenAddress = "127.0.0.1:0"
 	cfg.Logger = discardLogger()
+	store, err := openDatabase(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedStartupOrganization(t, store.postgres, "org_startup", cfg.Hosted)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
 	expectedVersion, err := postgres.LatestSchemaVersion()
 	if err != nil {
 		t.Fatal(err)

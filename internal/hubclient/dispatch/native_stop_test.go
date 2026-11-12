@@ -47,7 +47,7 @@ func (w *stoppedFinalizationWorkspace) RunReviewCommand(ctx context.Context, inf
 
 func TestNativeStopDuringHostFinalization(t *testing.T) {
 	isolateNativeChangeGit(t)
-	for _, mode := range []string{"stop", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
+	for _, mode := range []string{"stop", "stop with scheduler restart", "stop prioritized Todo", "stop prioritized Todo with scheduler restart", "stop prioritized Todo at default rank three", "stop prioritized Todo at default rank three with scheduler restart", "stop prioritized Todo with custom priority map with scheduler restart", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			testNativeStopDuringHostFinalization(t, mode)
@@ -156,7 +156,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	}
 	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Merging", "Blocked"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Merging", "Blocked", "Todo"}},
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}},
 		{Name: "In Review", Transitions: []string{"In Progress"}},
 		{Name: "Blocked", Transitions: []string{"Todo"}},
@@ -167,7 +167,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := current.Body + issueContractTestSections
+	body := current.Body
 	if _, err := h.admin.UpdateIssue(t.Context(), current.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, Body: &body}); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 			case <-publicationRelease:
 			}
 		}
-		if mode == "stop" && strings.HasSuffix(request.URL.Path, "/events") {
+		if strings.HasPrefix(mode, "stop") && strings.HasSuffix(request.URL.Path, "/events") {
 			raw, err := io.ReadAll(request.Body)
 			if err != nil {
 				return nil, err
@@ -274,13 +274,31 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "In Review"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	priority, priorityName := 2, "High"
+	var priorityNames map[int]string
+	if strings.Contains(mode, "rank three") {
+		priority, priorityName = 3, "Medium"
+	}
+	if strings.Contains(mode, "custom priority map") {
+		priority, priorityName = 1, "Release blocker"
+		priorityNames = map[int]string{1: priorityName, 2: "Next", 3: "Later", 4: "Whenever"}
+	}
+	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "In Review"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked", StopRunPriorityNames: priorityNames}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- orch.Run(ctx) }()
+	var stopped sync.Once
+	stopRunning := func() {
+		stopped.Do(func() {
+			cancel()
+			if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+				t.Error(err)
+			}
+		})
+	}
 	t.Cleanup(func() {
 		select {
 		case <-backend.resume:
@@ -292,10 +310,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		default:
 			close(publicationRelease)
 		}
-		cancel()
-		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
-			t.Error(err)
-		}
+		stopRunning()
 	})
 	var info workspace.Info
 	select {
@@ -313,7 +328,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode != "stop" {
+	if !strings.HasPrefix(mode, "stop") {
 		h.scheduler.mu.Lock()
 		originalClaim := h.scheduler.nativeClaims[issue.ID]
 		h.scheduler.mu.Unlock()
@@ -410,11 +425,20 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		}
 		return
 	}
+	todo := strings.Contains(mode, "Todo")
+	if todo {
+		if err := orch.Drain(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	running := state.Running[issue.ID]
 	request := orchestrator.StopRunRequest{ProjectID: "local", IssueID: issue.ID, Attempt: running.Attempt, WorkAttemptID: running.WorkAttemptID, DetentSessionID: running.DetentSessionID, ProviderSessionID: running.SessionID, Destination: "Blocked"}
+	if todo {
+		request.Destination, request.Priority, request.Reason = "Todo", priority, "Prioritize the next dispatch"
+	}
 	for attempt := range 2 {
 		result, err := orch.StopRun(t.Context(), request)
-		if err != nil || result.Outcome != "pending" || !result.CompletedAt.IsZero() || result.AlreadyStopped != (attempt == 1) {
+		if err != nil || result.Outcome != "pending" || !result.CompletedAt.IsZero() || result.AlreadyStopped != (attempt == 1) || todo && (result.Priority != priority || result.PriorityName != priorityName) {
 			t.Fatalf("stop acknowledgement = %+v, %v", result, err)
 		}
 	}
@@ -427,6 +451,9 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		_, active := state.Running[issue.ID]
 		blocked, held := state.Blocked[issue.ID]
 		pending := held && blocked.Source == orchestrator.BlockedSourceOperatorStop
+		if !active && pending && strings.HasPrefix(blocked.Reason, "run stopped; retry the transition") {
+			t.Fatalf("stop transition failed: %+v", blocked)
+		}
 		if active || pending {
 			return fmt.Errorf("stop did not settle after host check success: running=%+v blocked=%+v", state.Running, state.Blocked)
 		}
@@ -435,21 +462,23 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if _, err := orch.RequestRefresh(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	testenv.WaitUntil(t, t.Context(), func() error {
-		state, err = orch.State(t.Context())
-		if err != nil {
-			return err
-		}
-		blocked, held := state.Blocked[issue.ID]
-		if !held || blocked.Source != orchestrator.BlockedSourceProjectStatus {
-			return fmt.Errorf("completed stop has no projected operator hold: %+v", blocked)
-		}
-		return nil
-	})
+	if !todo {
+		testenv.WaitUntil(t, t.Context(), func() error {
+			state, err = orch.State(t.Context())
+			if err != nil {
+				return err
+			}
+			blocked, held := state.Blocked[issue.ID]
+			if !held || blocked.Source != orchestrator.BlockedSourceProjectStatus {
+				return fmt.Errorf("completed stop has no projected operator hold: %+v", blocked)
+			}
+			return nil
+		})
+	}
 	if _, active := state.Running[issue.ID]; active {
 		t.Fatal("completed stop remained active after project refresh")
 	}
-	if lane, changes := h.state(t, issue.ID), h.changes(t, issue.ID); lane != "Blocked" || len(changes) != 1 {
+	if lane, changes := h.state(t, issue.ID), h.changes(t, issue.ID); lane != request.Destination || len(changes) != 1 {
 		t.Fatalf("stopped host check published source or lost its destination: lane=%s changes=%+v", lane, changes)
 	}
 	detail, err := h.admin.Change(t.Context(), current.WorkItemID, change.ID)
@@ -478,6 +507,35 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	result, err := orch.StopRun(t.Context(), request)
 	if err != nil || result.Outcome != "succeeded" || !result.AlreadyStopped || result.CompletedAt.IsZero() {
 		t.Fatalf("settled stop retry = %+v, %v", result, err)
+	}
+	stopRunning()
+	if strings.HasSuffix(mode, "with scheduler restart") {
+		saved, ok := schedulerFixtures.Load(h.scheduler)
+		if !ok {
+			t.Fatal("scheduler configuration missing")
+		}
+		reopened, err := newTestScheduler(h.native.Transport(), saved.(SchedulerConfig))
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.scheduler = reopened
+	}
+	if todo {
+		next := h.claim(t, issue.ID)
+		if next.State != "Todo" || next.Priority == nil || *next.Priority != priority || next.PriorityName != api.QueuePriorityName(priority-1) {
+			t.Fatalf("redispatch lost the stop priority: %+v", next)
+		}
+		h.scheduler.mu.Lock()
+		successor := h.scheduler.nativeClaims[issue.ID].lease
+		h.scheduler.mu.Unlock()
+		if successor.ID == recovery.Attempts[0].LeaseID || successor.FencingToken <= recovery.Attempts[0].FencingToken {
+			t.Fatalf("redispatch reused stopped authority: %+v", successor)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
+			t.Fatal(err)
+		}
+	} else if candidates := h.candidates(t); len(candidates) != 0 {
+		t.Fatalf("stopped item became claimable: %+v", candidates)
 	}
 }
 

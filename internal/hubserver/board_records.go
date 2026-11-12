@@ -5,14 +5,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -108,11 +112,34 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 }
 
 func (s *Service) readBoardRecordsFor(ctx context.Context, scope nativeScope, params url.Values, legacy bool) (tracker.NativeIssuePage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+		return tracker.NativeIssuePage{}, workItemStorageUnavailable()
+	}
+	var compatible bool
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		compatible = project.Profile == "github_compatible"
+		return nil
+	}); err != nil {
+		return tracker.NativeIssuePage{}, projectRecordError(err)
+	}
+	if compatible {
+		return s.readQueueWorkItems(ctx, scope, params)
+	}
 	if err := validateNativeIssueQuery(params); err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
 	var page tracker.NativeIssuePage
 	read := func(ctx context.Context) error {
 		var err error
@@ -440,9 +467,11 @@ func boardModelCard(scope nativeScope, row viewstore.BoardRecord) (tracker.Nativ
 		issue.DependencyReady, issue.BlockedReason, issue.UnblocksReason = facts.DependencyReady, facts.BlockedReason, facts.UnblocksReason
 	}
 	issue = boardIssueCollections(issue)
-	card := tracker.NativeBoardCard{Issue: issue, StatusLine: row.Display.StatusLine, Attempt: row.Display.Attempt, Execution: row.Display.Execution, Change: row.Display.Change}
+	card := tracker.NativeBoardCard{Issue: issue, Attempt: row.Display.Attempt, Execution: row.Display.Execution, Change: row.Display.Change}
+	card.StatusLine = nativeBoardStatusLine(card)
 	if !scope.reporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
 		card.Change = nil
+		card.Issue.Change, card.Issue.ListChange, card.Issue.PullRequest = nil, nil, nil
 	}
 	return card, nil
 }
@@ -491,4 +520,292 @@ func (s *Service) boardAccessVersion(ctx context.Context, r tenantstore.Reader, 
 	}
 	digest := sha256.Sum256(raw)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}, Total: -1}
+	ctx = s.runDetailContext(ctx)
+	ctx = context.WithValue(ctx, runtimeAdmissionPageKey{}, &runtimeAdmissionPage{})
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	allowed := map[string]bool{"limit": true, "cursor": true, "queue_scope": true, "readiness": true, "sort": true, "state": true, "label": true, "assignee": true, "priority": true, "repository": true}
+	for name, values := range params {
+		multi := name == "state" || name == "label" || name == "assignee" || name == "priority" || name == "repository"
+		if !allowed[name] || len(values) == 0 || len(values) > 32 || !multi && len(values) != 1 || len(strings.Join(values, "\x00")) > 4096 {
+			return page, nativePublicInvalid("Query contains an unsupported field or value")
+		}
+	}
+	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, "/api/v2/organizations/"+string(scope.organization)+"/projects/"+string(scope.project)+"/work-items", params, corestore.MaxPageSize, defaultAPIPageLimit)
+	if err != nil {
+		return page, err
+	}
+	defer clear(key)
+	query := claimstore.QueueListQuery{ProjectID: scope.project, Scope: "fleet", States: params["state"], Labels: params["label"], Assignees: params["assignee"], Repositories: params["repository"], Limit: corestore.MaxPageSize + 1}
+	if params.Get("queue_scope") == "project" || params.Get("queue_scope") == string(scope.project) {
+		query.Scope = string(scope.project)
+	} else if value := params.Get("queue_scope"); value != "" && value != "fleet" {
+		return page, nativePublicInvalid("queue_scope supports fleet or project")
+	}
+	switch params.Get("sort") {
+	case "", "priority":
+	case "identifier":
+		query.IdentifierOrder = true
+	default:
+		return page, nativePublicInvalid("sort supports priority or identifier")
+	}
+	readiness := params.Get("readiness")
+	if readiness != "" && readiness != "ready" && readiness != "waiting" {
+		return page, nativePublicInvalid("readiness supports ready or waiting")
+	}
+	for _, value := range params["priority"] {
+		priority, ok := map[string]int64{"urgent": 0, "high": 1, "normal": 2, "low": 3, "unset": -1}[value]
+		if !ok {
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || parsed < 0 || parsed > 3 {
+				return page, nativePublicInvalid("priority is invalid")
+			}
+			priority = parsed
+		}
+		query.Priorities = append(query.Priorities, priority)
+	}
+	if scope.credential.HostedRole == "reporter" {
+		query.Principal = scope.actor().PrincipalID
+	}
+	if cursor.After != "" {
+		var envelope hubsecrets.Envelope
+		if json.Unmarshal([]byte(cursor.After), &envelope) != nil || s.config.SecretKeys == nil {
+			return page, nativePublicInvalid("Queue cursor is invalid")
+		}
+		raw, err := s.config.SecretKeys.Open(envelope, []byte(cursor.Scope))
+		if err != nil {
+			return page, nativePublicInvalid("Queue cursor is invalid")
+		}
+		err = json.Unmarshal(raw, &query.After)
+		clear(raw)
+		if err != nil || query.After.WorkItemID == "" || query.After.Stage < 0 || query.After.Stage > 1 {
+			return page, nativePublicInvalid("Queue cursor is invalid")
+		}
+		if query.After.Stage == 1 {
+			query.IdentifierOrder, query.Unqueued = true, true
+		}
+	}
+	type selected struct {
+		row     claimstore.QueueListRow
+		item    corestore.WorkItem
+		version eventstore.CollaborationVersion
+	}
+	var rows []claimstore.QueueListRow
+	fallbackPending := false
+	selectedRows := map[tracker.NativeWorkItemID]selected{}
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return page, workItemStorageUnavailable()
+	}
+	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil || project.Profile != "github_compatible" {
+			return corestore.ErrNotFound
+		}
+		rows, err = r.QueueListPage(ctx, query)
+		if err != nil {
+			return err
+		}
+		if !query.IdentifierOrder && len(rows) <= corestore.MaxPageSize {
+			remaining := corestore.MaxPageSize - len(rows)
+			if remaining == 0 {
+				fallbackPending = true
+			} else {
+				tail := query
+				tail.IdentifierOrder, tail.Unqueued = true, true
+				tail.After = claimstore.QueueListCursor{}
+				tail.Limit = remaining + 1
+				unqueued, err := r.QueueListPage(ctx, tail)
+				if err != nil {
+					return err
+				}
+				rows = append(rows, unqueued...)
+			}
+		}
+		var candidates []claimstore.Candidate
+		var matched []claimstore.QueueListRow
+		for _, row := range rows[:min(corestore.MaxPageSize, len(rows))] {
+			if row.Matches {
+				candidates = append(candidates, claimstore.Candidate{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: row.Entry.WorkItemID, ID: row.ID, Revision: row.Revision})
+				matched = append(matched, row)
+			}
+		}
+		batch, ok := r.(tenantstore.ClaimPreviewPlanRowsReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		metadata, err := batch.ClaimPreviewPlanRows(ctx, scope.project, candidates)
+		if err != nil {
+			return err
+		}
+		if len(metadata) != len(candidates) {
+			return corestore.ErrRevisionConflict
+		}
+		for index, source := range metadata {
+			if source.Err != nil {
+				return source.Err
+			}
+			if source.Item.NativeID != candidates[index].WorkItemID || source.Item.Revision != candidates[index].Revision {
+				return corestore.ErrRevisionConflict
+			}
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(source.Item.ActorPrincipalID)}) {
+				continue
+			}
+			selectedRows[source.Item.NativeID] = selected{row: matched[index], item: source.Item, version: source.Version}
+		}
+		return nil
+	})
+	if err != nil {
+		return page, projectRecordError(err)
+	}
+	more := len(rows) > corestore.MaxPageSize || fallbackPending
+	budgetExhausted, lookahead, byteClipped := more, false, false
+	last := query.After
+	size := 8192
+	for _, row := range rows[:min(corestore.MaxPageSize, len(rows))] {
+		selected, found := selectedRows[row.Entry.WorkItemID]
+		if !found {
+			last = row.Position
+			continue
+		}
+		issue, err := s.hydrateWorkItemRecord(ctx, selected.item, selected.version)
+		if err != nil {
+			return page, err
+		}
+		if readiness != "" {
+			evidence := tracker.NativeRuntimeEvidence{}
+			if err := s.readRuntimeAdmissionTenant(ctx, scope, issue, &evidence, nil); err != nil {
+				return page, err
+			}
+			ready := slices.ContainsFunc(evidence.Admission, func(value tracker.NativeRuntimeAdmission) bool { return value.Outcome == "ready" })
+			if readiness == "ready" && !ready || readiness == "waiting" && ready {
+				last = row.Position
+				continue
+			}
+		}
+		issue = relationshipOmittedIssue(issue)
+		issue.Change, issue.ListChange, issue.PullRequest = nil, nil, nil
+		issue.Queue, issue.Workpad = nil, nil
+		for _, field := range []string{"change", "list_change", "pull_request"} {
+			if !slices.Contains(issue.OmittedFields, field) {
+				issue.OmittedFields = append(issue.OmittedFields, field)
+			}
+		}
+		if len(page.Items) == limit {
+			more, lookahead = true, true
+			break
+		}
+		if row.Entry.Scope != "" {
+			issue.Queue = &tracker.QueueSummary{Scope: row.Entry.Scope, State: row.Entry.State, Rank: row.Entry.Rank}
+			if row.Entry.Priority != nil {
+				priority := int(*row.Entry.Priority)
+				issue.Queue.PriorityRank = &priority
+			}
+		}
+		encoded, err := json.Marshal(issue)
+		if err != nil {
+			return page, err
+		}
+		if size+len(encoded) > operatortool.MaxResultBytes {
+			if len(page.Items) == 0 {
+				return page, nativePublicInvalid("A single issue exceeds the page budget; use work_bulk_export")
+			}
+			more, byteClipped = true, true
+			break
+		}
+		size += len(encoded)
+		page.Items = append(page.Items, s.nativeIssueResponse(scope.reporterIssue(issue)))
+		last = row.Position
+	}
+	if len(page.Items) > 0 {
+		var current []tenantstore.ClaimPreviewPlanRow
+		err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+				return err
+			}
+			project, err := r.Project(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			if project.DeletedAt != nil || project.Profile != "github_compatible" {
+				return corestore.ErrNotFound
+			}
+			batch, ok := r.(tenantstore.ClaimPreviewPlanRowsReader)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			candidates := make([]claimstore.Candidate, 0, len(page.Items))
+			for _, issue := range page.Items {
+				selected := selectedRows[issue.WorkItemID]
+				candidates = append(candidates, claimstore.Candidate{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, ID: selected.item.ID, Revision: selected.item.Revision})
+			}
+			current, err = batch.ClaimPreviewPlanRows(ctx, scope.project, candidates)
+			return err
+		})
+		if err != nil {
+			return page, projectRecordError(err)
+		}
+		if len(current) != len(page.Items) {
+			return page, corestore.ErrRevisionConflict
+		}
+		kept := page.Items[:0]
+		for index, issue := range page.Items {
+			row := current[index]
+			if row.Item.NativeID == "" && errors.Is(row.Err, corestore.ErrNotFound) || row.Item.NativeID == issue.WorkItemID && (row.Item.Revision != int64(issue.Revision) || row.Item.Archived || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.Item.ActorPrincipalID)})) {
+				page.Partial = true
+				continue
+			}
+			if row.Err != nil {
+				return page, row.Err
+			}
+			if row.Item.NativeID != issue.WorkItemID || row.Version.PayloadObjectKey != selectedRows[issue.WorkItemID].version.PayloadObjectKey || row.Version.PayloadSHA256 != selectedRows[issue.WorkItemID].version.PayloadSHA256 {
+				return page, corestore.ErrRevisionConflict
+			}
+			kept = append(kept, issue)
+		}
+		page.Items = kept
+	}
+	if more {
+		if fallbackPending && !lookahead && !byteClipped {
+			last.Stage, last.Number = 1, 0
+		}
+		page.Partial = page.Partial || budgetExhausted && !lookahead || byteClipped
+		if s.config.SecretKeys == nil {
+			page.Partial = true
+			page.ContinuationUnavailable = true
+			return page, nil
+		}
+		raw, err := json.Marshal(last)
+		if err != nil {
+			return page, err
+		}
+		envelope, err := s.config.SecretKeys.Seal(raw, []byte(cursor.Scope))
+		clear(raw)
+		if err != nil {
+			return page, err
+		}
+		encoded, err := json.Marshal(envelope)
+		if err != nil {
+			return page, err
+		}
+		cursor.After = string(encoded)
+		page.NextCursor, err = encodeNativeCursor(cursor, key)
+		if err != nil {
+			return page, err
+		}
+		if len(page.NextCursor) > 4096 {
+			return page, nativePublicInvalid("Queue cursor exceeds its page bound")
+		}
+	}
+	return page, nil
 }

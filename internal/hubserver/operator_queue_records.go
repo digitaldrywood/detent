@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -39,6 +40,61 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
+	var outbound *projectstore.GitHubOutbound
+	var source corestore.WorkItem
+	var sourceProject projectstore.Record
+	var orderEvent *eventstore.Event
+	if name == operatortool.SetQueuePriority || name == operatortool.OrderItem {
+		var version eventstore.CollaborationVersion
+		source, version, err = s.readWorkItemRecord(ctx, scope, request.Identifier)
+		if err != nil {
+			return nil, err
+		}
+		if name == operatortool.OrderItem {
+			raw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: source.NativeID, ID: newNativeID("evt"), Type: "queue.order_changed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: s.config.now().UTC(), Data: tracker.CollaborationData{Revision: tracker.Revision(source.Revision), Operation: "order", Fields: []string{"queue_order"}}})
+			if err != nil {
+				return nil, err
+			}
+			event, err := eventstore.NewContent(s.runDetailStore()).PrepareEvent(ctx, scope.organization, raw)
+			if err != nil {
+				return nil, err
+			}
+			orderEvent = &event
+		} else {
+			sourceProject, err = s.readProjectRecord(ctx, scope)
+			if err != nil {
+				return nil, err
+			}
+			issue, err := s.hydrateCanonicalWorkItemRecord(ctx, source, version)
+			if err != nil {
+				return nil, err
+			}
+			repository, number, err := cutoverSourceReference(issue)
+			if err == nil && sourceProject.Settings.RepositoryEnabled && strings.EqualFold(repository, strings.TrimSpace(sourceProject.Settings.Repository)) {
+				desired := WorkflowLabelDesired{ManagedPrefix: "priority:", Clear: request.QueuePriority == "none"}
+				if !desired.Clear {
+					if _, valid := queuePriority(request.QueuePriority); !valid {
+						return nil, operatortool.ErrInvalidArguments
+					}
+					desired.Label = "priority:" + request.QueuePriority
+				}
+				raw, err := json.Marshal(desired)
+				if err != nil {
+					return nil, err
+				}
+				payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
+				if err != nil {
+					return nil, err
+				}
+				key, err := nativeCommandHash(struct{ Operation, ActorID, CommandKey string }{operation, scope.credential.ID, command.IdempotencyKey})
+				if err != nil {
+					return nil, err
+				}
+				outbound = &projectstore.GitHubOutbound{ProjectID: scope.project, WorkItemID: source.NativeID, Key: "queue-priority:" + key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkflowLabel), CreatedAt: s.config.now().UTC(), Payload: payload, CoalesceKey: "managed-label:" + repository + ":" + string(source.NativeID) + ":priority:"}
+			}
+		}
+	}
+
 	content := eventstore.NewContent(s.runDetailStore())
 	raw, err := json.Marshal(struct {
 		WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
@@ -56,6 +112,9 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 	var replay *eventstore.Receipt
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
+			return err
+		}
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
 		}
 		project, err := w.ProjectRecord(ctx, scope.project)
@@ -82,6 +141,9 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
+		}
+		if row.Revision != source.Revision || name == operatortool.SetQueuePriority && project.Settings.Revision != sourceProject.Settings.Revision {
+			return nativeConflict(tracker.Revision(row.Revision))
 		}
 		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
 			return err
@@ -116,6 +178,20 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 		}
 		if err := w.PutQueueEntry(ctx, entry); err != nil {
 			return err
+		}
+		if orderEvent != nil {
+			if _, err := w.AppendEvent(ctx, *orderEvent); err != nil {
+				return err
+			}
+		}
+		if outbound != nil {
+			owner, ok := w.(projectstore.GitHubOutboxWriter)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			if err := owner.EnqueueGitHubOutbound(ctx, *outbound); err != nil {
+				return err
+			}
 		}
 		if err := s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK); err != nil {
 			return err

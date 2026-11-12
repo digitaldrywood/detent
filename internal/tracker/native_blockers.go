@@ -34,7 +34,7 @@ func RecordedNativeBlockers(issue NativeIssue, attempts []NativeAttempt, history
 		if event.AggregateID != issue.WorkItemID || event.ProjectID != issue.ProjectID || event.OrganizationID != issue.OrganizationID {
 			continue
 		}
-		if event.Data.Revision > reportRevision && event.Data.Revision <= issue.Revision && (event.Type != "workflow.transitioned" || event.Actor.Kind != "runner" || event.Data.Reason != "worker_progress") {
+		if event.Type != "scheduler.decision" && event.Data.Revision > reportRevision && event.Data.Revision <= issue.Revision && (event.Type != "workflow.transitioned" || event.Actor.Kind != "runner" || event.Data.Reason != "worker_progress") {
 			return NativeAttempt{}, "", false
 		}
 		if event.Type == "workflow.transitioned" && event.AggregateSequence > lane.AggregateSequence {

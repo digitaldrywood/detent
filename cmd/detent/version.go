@@ -10,7 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cli"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
-	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
@@ -44,20 +43,6 @@ func newVersionCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			info := currentVersionInfo()
 			var err error
-			info.HubSchemaVersion, err = hubserver.LatestSchemaVersion()
-			if err != nil {
-				return err
-			}
-			info.HubSchemaFingerprint, err = hubserver.LatestSchemaFingerprint()
-			if err != nil {
-				return err
-			}
-			entrySchemas, err := cloudentry.LatestSchemaVersions()
-			if err != nil {
-				return err
-			}
-			info.RegistrySchemaVersion, info.AuthSchemaVersion = entrySchemas.Registry, entrySchemas.Auth
-			info.RegistrySchemaFingerprint, info.AuthSchemaFingerprint = entrySchemas.RegistryFingerprint, entrySchemas.AuthFingerprint
 			info.PlatformSchemaVersion, err = postgres.LatestSchemaVersion()
 			if err != nil {
 				return err
@@ -66,6 +51,13 @@ func newVersionCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			info.HubSchemaVersion, info.HubSchemaFingerprint = info.PlatformSchemaVersion, info.PlatformSchemaFingerprint
+			entrySchemas, err := cloudentry.LatestSchemaVersions()
+			if err != nil {
+				return err
+			}
+			info.RegistrySchemaVersion, info.AuthSchemaVersion = entrySchemas.Registry, entrySchemas.Auth
+			info.RegistrySchemaFingerprint, info.AuthSchemaFingerprint = entrySchemas.RegistryFingerprint, entrySchemas.AuthFingerprint
 			out, err := cli.OutputForCommand(cmd)
 			if err != nil {
 				return err

@@ -815,7 +815,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	completedSource := data.Disposition != nil && data.Disposition.Status == "complete" && finalization != nil &&
 		finalization.Settled && finalization.Changed && finalization.ChangeID != "" && finalization.VersionID != "" && finalization.HeadSHA != "" &&
 		finalization.VersionError == "" && finalization.Error == ""
-	retain := data.Identity != nil && rejection == nil && e.scheduler.client.Enrolled() && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
+	retain := reason != runner.FinalStateOperatorStopped && data.Identity != nil && rejection == nil && e.scheduler.client.Enrolled() && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
 	if !retain {
 		if err := e.claim.source.NativeClient().Release(ctx, e.claim.lease, "released"); err != nil && !claimLost(err) {
 			return errors.Join(finishErr, err)

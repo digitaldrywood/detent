@@ -4,27 +4,43 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
+	"strings"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type runtimeAdmissionPageKey struct{}
+
+type runtimeAdmissionPage struct {
+	capacity     *runnerstore.RuntimeCapacitySnapshot
+	observations map[string]tracker.NativeAdmissionObservation
+}
+
 func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeScope, issue tracker.NativeIssue, evidence *tracker.NativeRuntimeEvidence, supplied []tracker.NativeAdmissionContext) error {
-	const limit = 100
 	now := s.config.now().UTC()
-	var records []runnerstore.FleetRecord
-	var leases []runnerstore.FleetLease
+	var records []runnerstore.RuntimeCapacityRunner
+	var capacity runnerstore.RuntimeCapacitySnapshot
+	var currentLease *tracker.NativeLease
 	var observations map[string]tracker.NativeAdmissionObservation
 	var revision policystore.Revision
 	var candidates claimstore.CandidatePage
-	var urgent runnerstore.UrgentUpdate
+	var sourceCandidate claimstore.Candidate
+	var unresolved []tracker.NativeDependency
+	dependencyPartial := false
+	plan := nativeClaimPlan{issue: issue}
 	truncated := false
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
@@ -34,7 +50,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		fleet, ok := r.(runnerstore.FleetReader)
+		fleet, ok := r.(runnerstore.RuntimeCapacityReader)
 		if !ok {
 			return nativeRunEventStorageUnavailable()
 		}
@@ -47,34 +63,69 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		if err != nil {
 			return err
 		}
-		records, err = fleet.FleetRecords(ctx, limit+1)
-		if err != nil {
-			return err
+		shared, _ := ctx.Value(runtimeAdmissionPageKey{}).(*runtimeAdmissionPage)
+		if shared != nil && shared.capacity != nil {
+			capacity = *shared.capacity
+		} else {
+			capacity, err = fleet.RuntimeCapacitySnapshot(ctx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.project, RunnerID: scope.credential.Runner.RunnerID, At: now, Explanation: explanationRead(ctx)})
+			if err != nil {
+				return err
+			}
+			if shared != nil {
+				selected := capacity
+				shared.capacity = &selected
+			}
 		}
-		truncated = len(records) > limit
-		if truncated {
-			records = records[:limit]
+		records, truncated = capacity.Records, capacity.Truncated
+		if evidence.CurrentLease == nil {
+			item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			lease, err := r.ActiveLeaseForIssue(ctx, item.ID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt) {
+				binding, err := r.LeasePolicy(ctx, tracker.LeaseID(lease.LeaseID))
+				if err != nil {
+					return err
+				}
+				currentLease = &tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), WorkItemID: issue.WorkItemID, MachineID: tracker.MachineID(lease.MachineID), SessionID: lease.SessionID, FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt, PolicyID: binding.PolicyID, ServerTime: now}
+			}
 		}
-		leases, err = fleet.FleetLeases(ctx, now, limit+1)
-		if err != nil {
-			return err
-		}
-		truncated = truncated || len(leases) > limit
 		ids := make([]string, 0, len(records))
 		for _, record := range records {
-			ids = append(ids, record.Identity.RunnerID)
+			ids = append(ids, record.Runner.RunnerID)
 		}
-		observations, err = admission.RunnerAdmissionObservations(ctx, scope.project, ids)
-		if err != nil {
-			return err
-		}
-		urgent, err = r.RunnerUrgentUpdate(ctx)
-		if err != nil {
-			return err
+		if shared != nil && shared.observations != nil {
+			observations = shared.observations
+		} else {
+			observations, err = admission.RunnerAdmissionObservations(ctx, scope.project, ids)
+			if err != nil {
+				return err
+			}
+			if shared != nil {
+				shared.observations = observations
+			}
 		}
 		project, err := r.ProjectRecord(ctx, scope.project)
 		if err != nil {
 			return err
+		}
+		plan.project = project
+		if issue.IssueContract != nil && issue.IssueContract.ReleaseDelivery != nil {
+			item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if item.Revision != int64(issue.Revision) {
+				return corestore.ErrRevisionConflict
+			}
+			plan.releaseDelivery, err = readReleaseDeliveryContractFacts(ctx, r, scope, issue.WorkItemID, project.States)
+			if err != nil {
+				return err
+			}
 		}
 		var states []string
 		for _, state := range project.States {
@@ -83,6 +134,26 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			}
 		}
 		candidates, err = r.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: scope.project, Scope: string(scope.project), WorkItemID: issue.WorkItemID, States: states, AvailableAt: now, Limit: 1})
+		if err != nil {
+			return err
+		}
+		if project.Core.Profile == "github_compatible" {
+			item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if item.Revision != int64(issue.Revision) {
+				return corestore.ErrRevisionConflict
+			}
+			facts, err := r.WorkItemFacts(ctx, scope.project, item.NativeID)
+			if err != nil {
+				return err
+			}
+			sourceCandidate = claimstore.Candidate{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item.NativeID, Revision: item.Revision, Repository: facts.Repository}
+		}
+		if len(candidates.Items) == 0 && project.Core.RequireDependencies {
+			unresolved, dependencyPartial, err = s.readRuntimeUnresolvedDependencies(ctx, r, scope, issue, project)
+		}
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -100,21 +171,56 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 	if err != nil {
 		return err
 	}
-	evidence.Unavailable = slices.DeleteFunc(evidence.Unavailable, func(value string) bool { return value == "native_admission_projection" })
-	providers := tenantFleetProviderViews(records, leases, now)
-	for _, record := range records {
-		runner := runnerFromFleetRecord(record, now, urgent)
-		runner.ProjectUsed = make(map[tracker.ProjectID]int)
-		for _, lease := range leases {
-			if lease.MachineID == runner.MachineID {
-				runner.HostUsed++
-			}
-			if lease.RunnerID == runner.RunnerID {
-				runner.Used++
-				runner.ProjectUsed[lease.Lease.ProjectID]++
-			}
+	plan.descriptor = descriptor
+	contract, err := nativeRuntimeIssueContractEvaluation(plan)
+	if err != nil {
+		return err
+	}
+	if plan.project.Core.Profile == "github_compatible" && !nativeCompatibleClaimSource(plan.project, issue, sourceCandidate) {
+		contract = nativeContractEvaluation{ReasonCode: "no_claimable_work", Reason: "Current issue source must match the enabled project repository"}
+	}
+	evidence.Unavailable = slices.DeleteFunc(evidence.Unavailable, func(value string) bool {
+		return value == "native_admission_projection" || value == "runner_capacity_projection"
+	})
+	if truncated {
+		evidence.Unavailable = append(evidence.Unavailable, "capacity_projection_truncated")
+	}
+	if currentLease == nil && evidence.Scheduling.Outcome == "unknown" {
+		evidence.Scheduling.Reason = "Current runner admission has not established a dispatch decision"
+	}
+	if currentLease != nil {
+		evidence.CurrentLease = currentLease
+		evidence.Scheduling.Outcome = "claimed"
+		evidence.Scheduling.Reason = "A current fenced lease owns this item"
+	}
+	if evidence.CurrentLease == nil && !contract.Allowed {
+		evidence.Scheduling.Outcome, evidence.Scheduling.Reason = "skipped", contract.Reason
+	}
+	landingReady, landingLimit := runtimeLandingCapacity(capacity.Providers, scope.project)
+	if !explanationRead(ctx) && capacity.Truncated {
+		landingReady, landingLimit = false, nativeLandingCapacityUnknown
+	}
+	landingRequired := stringsEqualFold(issue.State, "Merging") || issue.ListChange != nil && issue.ListChange.LandingPending
+	if landingRequired && !landingReady {
+		if landingLimit == nativeLandingCapacityUnknown {
+			evidence.Unavailable = append(evidence.Unavailable, "project_landing_capacity")
 		}
-		runner.ProviderCapacity = providers[runner.RunnerID]
+	}
+	runners := runtimeRunnersFromSnapshot(capacity, scope, now)
+	for index, record := range records {
+		runner := runners[index]
+		view := tracker.NativeRuntimeCapacity{ProviderCapacity: runner.ProviderCapacity, RunnerID: runner.RunnerID, ObservedAt: runner.LastHeartbeatAt, Health: runner.Health, Available: max(0, min(runner.HostCapacity-runner.HostUsed, runner.RemainingCapacity(scope.project))), Exclusions: []string{}}
+		for _, exclusion := range runner.Exclusions(scope.project, descriptor.Requirements, false) {
+			view.Exclusions = append(view.Exclusions, exclusion.Code)
+		}
+		if landingRequired && !landingReady {
+			code := "landing_capacity"
+			if landingLimit == nativeLandingCapacityUnknown {
+				code = "landing_capacity_unknown"
+			}
+			view.Exclusions = append(view.Exclusions, code)
+		}
+		evidence.Capacity = append(evidence.Capacity, view)
 		entry := tracker.NativeRuntimeAdmission{RunnerID: runner.RunnerID, RunnerRevision: runner.Revision, PolicyID: descriptor.ID, Source: "native_claim_candidate_snapshot", ObservedAt: now, Outcome: "unknown", Reason: "Current runner selectors are unavailable", Unavailable: []string{}}
 		observation, found := observations[runner.RunnerID]
 		selected := observation.Context
@@ -133,18 +239,33 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		switch {
 		case len(exclusions) > 0:
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", exclusions[0].Code, exclusions[0].Message
-		case runnerVersionError(minimumRunnerVersion(s.config.Version), record.Machine.Version) != nil:
+		case runnerVersionError(minimumRunnerVersion(s.config.Version), record.MachineVersion) != nil:
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "runner_version_unsupported", "Runner update is required"
 		case truncated:
 			entry.Unavailable = append(entry.Unavailable, "capacity_projection_truncated")
-		case !nativeClaimIssueContractAllowed(nativeClaimPlan{issue: issue, descriptor: descriptor}):
-			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "issue_contract", "The current issue contract does not permit dispatch"
+		case !contract.Allowed:
+			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", contract.ReasonCode, contract.Reason
 		case !found:
 			entry.Unavailable = append(entry.Unavailable, "runner_specific_candidate_selection")
-		case len(candidates.Items) == 0 || !runtimeAdmissionSelects(selected, candidates.Items[0]):
+		case len(candidates.Items) == 0:
+			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", "Current native candidate facts exclude this item"
+			entry.UnresolvedDependencies = unresolved
+			if len(unresolved) > 0 {
+				entry.Unavailable = append(entry.Unavailable, "other_native_candidate_exclusions")
+			} else {
+				entry.Unavailable = append(entry.Unavailable, "native_candidate_exclusion")
+			}
+			if dependencyPartial {
+				entry.Unavailable = append(entry.Unavailable, "unresolved_dependencies")
+			}
+		case !runtimeAdmissionSelects(selected, candidates.Items[0]):
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", "Current claim selectors do not select this item"
 		case workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered:
 			entry.Unavailable = append(entry.Unavailable, "monthly_budget_admission")
+		case landingRequired && !landingReady && landingLimit == nativeLandingCapacityUnknown:
+			entry.Unavailable = append(entry.Unavailable, "project_landing_capacity")
+		case landingRequired && !landingReady:
+			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "landing_capacity", "Project landing capacity is full"
 		case stringsEqualFold(issue.State, "Merging"):
 			entry.Unavailable = append(entry.Unavailable, "current_change_landing_readiness")
 		default:
@@ -171,4 +292,126 @@ func runtimeAdmissionSelects(selected tracker.NativeAdmissionContext, item claim
 		}
 	}
 	return !slices.ContainsFunc(item.Labels, func(value string) bool { return contains(selected.LabelExclude, value) })
+}
+
+func nativeRuntimeIssueContractEvaluation(plan nativeClaimPlan) (nativeContractEvaluation, error) {
+	allowed := nativeContractEvaluation{Allowed: true}
+	if strings.Contains(strings.ToLower(plan.issue.Body), "detent:no-dispatch") {
+		return nativeContractEvaluation{ReasonCode: "no_claimable_work", Reason: "The issue contains detent:no-dispatch; remove the marker to permit dispatch"}, nil
+	}
+	if plan.issue.LinkedSource != nil && plan.issue.LinkedSource.Status != "complete" || strings.EqualFold(plan.issue.State, "Triage") || plan.issue.IssueContract != nil && plan.issue.IssueContract.Exempt {
+		return allowed, nil
+	}
+	contract, err := config.ResolvePolicyIssueContract(plan.descriptor)
+	if err != nil {
+		return nativeContractEvaluation{}, err
+	}
+	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, plan.descriptor)
+	if err != nil {
+		return nativeContractEvaluation{}, err
+	}
+	target := workflow.Config.BacklogAdmission.TargetState
+	if target == "" {
+		target = "Todo"
+	}
+	if !strings.EqualFold(plan.issue.State, target) {
+		return allowed, nil
+	}
+	if plan.issue.IssueContract != nil && plan.issue.IssueContract.ReleaseDelivery != nil && !releaseDeliveryContractFactsCurrent(plan, contract) {
+		return nativeContractEvaluation{ReasonCode: "issue_contract_unsatisfied", Reason: "The verified release delivery contract changed; current approved policy and exact associated delivery are required"}, nil
+	}
+	evaluation := contract.Evaluate(nativeContractIssue(plan.issue))
+	if evaluation.Satisfied() {
+		return allowed, nil
+	}
+	var reasons []string
+	if len(evaluation.Missing) > 0 {
+		reasons = append(reasons, "Add or complete these required issue sections: "+strings.Join(evaluation.Missing, ", "))
+	}
+	if evaluation.NeedsConfirmation {
+		reasons = append(reasons, "A human must confirm the success criteria by editing or saving the issue body")
+	}
+	return nativeContractEvaluation{ReasonCode: "issue_contract_unsatisfied", Reason: strings.Join(reasons, "; "), Missing: evaluation.Missing}, nil
+}
+
+func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenantstore.Reader, scope nativeScope, issue tracker.NativeIssue, project projectstore.Record) ([]tracker.NativeDependency, bool, error) {
+	const limit = 100
+	anchor, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+	if err != nil {
+		return nil, false, err
+	}
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(anchor.ActorPrincipalID)}) {
+		return nil, false, corestore.ErrNotFound
+	}
+	if anchor.Revision != int64(issue.Revision) {
+		return nil, false, corestore.ErrRevisionConflict
+	}
+	rows, err := r.WorkItemBlockers(ctx, scope.project, issue.WorkItemID, corestore.WorkItemBlockerCursor{}, limit)
+	if err != nil {
+		return nil, false, err
+	}
+	type targetProject struct {
+		record  projectstore.Record
+		visible bool
+	}
+	projects := map[tracker.ProjectID]targetProject{scope.project: {record: project, visible: true}}
+	var unresolved []tracker.NativeDependency
+	organizationSlug := ""
+	if s.config.Hosted != nil && len(rows) > 0 {
+		organization, err := r.AccessOrganization(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		organizationSlug = organization.Slug
+	}
+	for _, edge := range rows {
+		target, found := projects[edge.ProjectID]
+		if !found {
+			targetScope := scope
+			targetScope.project = edge.ProjectID
+			err := s.authorizeAccessScope(ctx, r, targetScope, false)
+			if err != nil && !errors.Is(err, accessstore.ErrDenied) && !errors.Is(err, auth.ErrHostedIdentity) && !errors.Is(err, operatortool.ErrAccessDenied) && !isNativeNotFound(err) && !errors.Is(err, corestore.ErrNotFound) {
+				return nil, false, err
+			}
+			if err == nil {
+				target.record, err = r.ProjectRecord(ctx, edge.ProjectID)
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return nil, false, err
+				}
+				target.visible = err == nil && target.record.Core.DeletedAt == nil && (target.record.Core.Profile == "native" || target.record.Core.Profile == "github_compatible")
+			}
+			projects[edge.ProjectID] = target
+		}
+		if !target.visible {
+			continue
+		}
+		item, err := r.WorkItemByID(ctx, edge.ProjectID, edge.IssueID)
+		if err != nil {
+			return nil, false, err
+		}
+		if item.NativeID != edge.WorkItemID {
+			return nil, false, corestore.ErrRevisionConflict
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+			continue
+		}
+		stateName := stringValue(item.WorkflowStateName)
+		var state tracker.NativeState
+		for _, candidate := range target.record.States {
+			if candidate.Name == stateName {
+				state = candidate
+				break
+			}
+		}
+		if state.Terminal {
+			continue
+		}
+		dependency := tracker.NativeDependency{ID: item.NativeID, ProjectID: item.ProjectID, Number: int(item.Number), Title: item.Title, Identifier: string(item.ProjectID) + "#" + strconv.FormatInt(item.Number, 10), State: stateName, Dispatchable: state.Dispatchable}
+		if organizationSlug != "" && target.record.Core.Slug != "" {
+			dependency.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(organizationSlug, target.record.Core.Slug, int(item.Number))}).WebURL
+		}
+		unresolved = append(unresolved, dependency)
+	}
+	slices.SortFunc(unresolved, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
+	return unresolved[:min(limit, len(unresolved))], len(rows) > limit, nil
 }

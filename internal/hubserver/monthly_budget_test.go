@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"os"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -22,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -33,6 +33,138 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func monthlyBudgetRunner(t *testing.T, f nativeFixture, name, account string, sprite bool, capacity int, models ...string) runnerFixture {
+	t.Helper()
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	r.redemption.Hostname, r.redemption.Capacity = name, capacity
+	if sprite {
+		r.redemption.SpriteName = name
+	}
+	r.enroll(t)
+	report := capacityReport(f.service.config.now())
+	report.Models, report.MaxConcurrent, report.SharedAccountAlias = models, capacity, account
+	publishCapacity(t, f, r, report)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, Manageable: true, ObservedAt: f.service.config.now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func monthlyBudgetAdmission(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID) bool {
+	t.Helper()
+	var admitted bool
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.WorkItem(t.Context(), f.project.ID, item)
+		if err != nil {
+			return err
+		}
+		_, err = r.BillingMonthlyAdmission(t.Context(), tracker.WorkItemID(row.ID))
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		admitted = err == nil
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return admitted
+}
+
+func monthlyBudgetQueuePriority(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		row, err := w.QueueEntry(t.Context(), f.project.ID, item, string(f.project.ID))
+		if err != nil {
+			return err
+		}
+		row.Priority = new(int64)
+		return w.PutQueueEntry(t.Context(), row)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func monthlyBudgetState(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID, state string) tracker.NativeIssue {
+	t.Helper()
+	snapshot := readWorkItem(t, f, item, "")
+	var updated corestore.WorkItem
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		current, err := w.WorkItem(t.Context(), f.project.ID, item)
+		if err != nil {
+			return err
+		}
+		current.WorkflowStateName = &state
+		updated, err = w.UpdateWorkItem(t.Context(), current)
+		if err != nil {
+			return err
+		}
+		queue, err := w.QueueEntry(t.Context(), f.project.ID, item, string(f.project.ID))
+		if err != nil {
+			return err
+		}
+		queue.State = state
+		return w.PutQueueEntry(t.Context(), queue)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.State, snapshot.Revision, snapshot.UpdatedAt, snapshot.LastActivityAt = state, tracker.Revision(updated.Revision), updated.NativeUpdatedAt, updated.LastActivityAt
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: item, RecordID: string(item), Revision: updated.Revision}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateCollaborationVersion(t.Context(), version)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func monthlyBudgetDrainPolicy(t *testing.T, f nativeFixture) policy.Descriptor {
+	t.Helper()
+	var states []tracker.NativeState
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		for _, name := range []string{"In Review", "Rework", "Merging", "Blocked", "Backlog"} {
+			exists := false
+			for _, state := range project.States {
+				exists = exists || strings.EqualFold(state.Name, name)
+			}
+			if !exists {
+				project.States = append(project.States, tracker.NativeState{Name: name, Dispatchable: name != "Blocked" && name != "Backlog"})
+			}
+		}
+		for i := range project.States {
+			project.States[i].Transitions = nil
+			for _, target := range project.States {
+				if target.Name != project.States[i].Name {
+					project.States[i].Transitions = append(project.States[i].Transitions, target.Name)
+				}
+			}
+		}
+		project, err = w.UpdateProjectRecord(t.Context(), project)
+		states = project.States
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := hubTestPolicy()
+	descriptor.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: descriptor.SourceRevision, States: states}
+	descriptor = descriptor.WithID()
+	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	return descriptor
+}
 
 func setMonthlyBudgetFixture(t *testing.T, f nativeFixture, organization bool, p budget.MonthlyPolicy) {
 	t.Helper()
@@ -52,48 +184,34 @@ func TestSelectedBillingLeaseAllowsDisabledPolicyAndFailsClosedWhenEnabled(t *te
 	t.Parallel()
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
-	r := placementFixtureRunner(t, f, "selected-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
-	scope := setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
+	f.service.registerCostUsageRoutes(f.service.echo)
+	r := monthlyBudgetRunner(t, f, "selected-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
 	issue := f.create(t, "selected-budget")
-	var lease tracker.NativeLease
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "selected-budget"))
 	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
 	decodeHubResponse(t, response, &lease)
-	repository := projectRecordPostgres(t)
-	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
-		return writer.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: scope.organization, Name: "Example organization", CreatedAt: now})
-	}); err != nil {
+	result, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), `DELETE FROM monthly_budget_leases WHERE organization_id=$1 AND lease_id=$2`, f.project.OrganizationID, lease.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		t.Fatalf("missing exposure fixture removed=%d error=%v", count, err)
+	}
 	check := func() error {
-		t.Helper()
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		record, found, err := readLeaseByID(t.Context(), tx, lease.ID)
-		if err != nil || !found {
-			return errors.Join(err, errors.New("claimed lease was not found"))
-		}
-		return checkMonthlyLease(t.Context(), tx, record, now, repository)
+		return f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			return checkMonthlyLeasePG(t.Context(), r, f.project.ID, string(lease.ID), now)
+		})
 	}
 	if err := check(); err != nil {
 		t.Fatalf("disabled selected policy refused existing lease: %v", err)
 	}
-	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
-		return writer.SetBillingMonthlyPolicy(t.Context(), billingstore.MonthlyPolicy{
-			OrganizationID: scope.organization,
-			Policy:         budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, TotalMicros: new(int64(1000))},
-			Actor:          "example-operator",
-			UpdatedAt:      now,
-		}, tracker.Revision(0))
-	}); err != nil {
-		t.Fatal(err)
-	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+	setMonthlyBudgetFixture(t, f, true, budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, TotalMicros: new(int64(1000))})
 	if err := check(); !errors.Is(err, ErrBillingBudgetUnavailable) {
 		t.Fatalf("enabled selected policy error = %v", err)
 	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusServiceUnavailable)
 }
 
 func monthlyPolicyFixture(t *testing.T, f nativeFixture, subscription bool) policy.Descriptor {
@@ -121,7 +239,6 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 		policy                             budget.MonthlyPolicy
 		allowed                            bool
 		directBeforePolicy                 bool
-		legacySprite                       bool
 	}{
 		{name: "org Sprite blocks Sprite", organization: true, sprite: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}},
 		{name: "project Sprite allows local subscription", subscription: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}, allowed: true},
@@ -133,64 +250,80 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 		{name: "existing direct subscription remains free", directBeforePolicy: true, subscription: true, policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, RunnerMicros: new(int64), TotalMicros: new(int64)}, allowed: true},
 		{name: "existing direct paid API is stopped", directBeforePolicy: true, policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, RunnerMicros: new(int64)}},
 		{name: "existing direct Sprite is stopped", directBeforePolicy: true, sprite: true, policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, SpriteMicros: new(int64)}},
-		{name: "unknown Sprite fact retains infrastructure refusal", sprite: true, legacySprite: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}},
-		{name: "unknown local fact preserves subscription admission", subscription: true, legacySprite: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}, allowed: true},
+		{name: "project Sprite blocks Sprite", sprite: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
+			f := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))})
+			f.service.registerCostUsageRoutes(f.service.echo)
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 				t.Fatal(err)
 			}
 			descriptor := monthlyPolicyFixture(t, f, test.subscription)
-			r := placementFixtureRunner(t, f, "budget-runner", "budget", test.sprite, 2, "test-model", "gpt-6.1-sol")
-			if test.legacySprite {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET sprite_name=NULL,machine_facts_ready=NULL WHERE id=?`, r.binding.MachineID); err != nil {
-					t.Fatal(err)
+			r := monthlyBudgetRunner(t, f, "budget-runner", "budget", test.sprite, 2, "test-model", "gpt-6.1-sol")
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+				machine, err := reader.Machine(t.Context(), string(r.binding.MachineID))
+				if err != nil {
+					return err
 				}
-			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			if !test.legacySprite {
-				opaque := ""
-				if !test.sprite {
-					if err := tx.QueryRowContext(t.Context(), `SELECT hostname FROM machines WHERE id=?`, r.binding.MachineID).Scan(&opaque); err != nil {
-						t.Fatal(err)
+				runnerAPI := true
+				if descriptor.Configuration != nil {
+					workflow, err := projectPolicyWorkflow(t.Context(), string(f.project.OrganizationID)+"/"+string(f.project.ID), descriptor)
+					if err != nil {
+						return err
+					}
+					runnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
+				}
+				for _, workspace := range []bool{false, true} {
+					exposure := monthlyCostExposure(machine, workspace, runnerAPI)
+					if exposure.SpriteInfrastructure != test.sprite || exposure.RunnerAPI != (!workspace && !test.subscription) {
+						t.Fatalf("workspace=%v exposure=%+v", workspace, exposure)
 					}
 				}
-				if _, err := tx.ExecContext(t.Context(), `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name',?) WHERE id=?`, opaque, r.binding.MachineID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			for _, workspace := range []bool{false, true} {
-				exposure, err := monthlyClaimExposure(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, r.binding.MachineID, workspace)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if exposure.SpriteInfrastructure != test.sprite || exposure.RunnerAPI != (!workspace && !test.subscription) {
-					t.Fatalf("workspace=%v legacy=%v exposure=%+v", workspace, test.legacySprite, exposure)
-				}
-			}
-			if _, err := monthlyClaimExposure(t.Context(), tx, nativeScope{organization: "other-organization", project: f.project.ID}, r.binding.MachineID, true); err == nil {
-				t.Fatal("cross-organization machine exposed budget facts")
-			}
-			if err := tx.Rollback(); err != nil {
+				return nil
+			}); err != nil {
 				t.Fatal(err)
 			}
-			setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID+"_second", corestore.Serving, func(reader tenantstore.Reader) error {
+				_, err := reader.Machine(t.Context(), string(r.binding.MachineID))
+				return err
+			}); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("cross-organization machine exposed budget facts: %v", err)
+			}
+			workspace := f.createIndependent(t, "monthly workspace exposure")
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+				return writer.PutWorkspaceItem(t.Context(), claimstore.WorkspaceItem{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: workspace.WorkItemID, WorkspaceID: newNativeID("workspace"), CreatedAt: f.service.config.now()})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			workspaceRequest := providerClaim(r, workspace, "workspace-exposure")
+			workspaceRequest.PolicyID, workspaceRequest.ProviderCandidates = descriptor.ID, nil
+			workspaceRequest.Capabilities = append(workspaceRequest.Capabilities, tracker.NativeWorkspaceCapability)
+			workspaceResponse := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, workspaceRequest)
+			requireNativeStatus(t, workspaceResponse, http.StatusOK)
+			var workspaceLease tracker.NativeLease
+			decodeHubResponse(t, workspaceResponse, &workspaceLease)
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+				exposure, err := reader.BillingMonthlyLease(t.Context(), workspaceLease.ID)
+				if err != nil {
+					return err
+				}
+				if exposure.RunnerAPI || exposure.LunaAPI || exposure.SpriteInfrastructure != test.sprite {
+					t.Fatalf("persisted workspace exposure=%+v", exposure)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(workspaceLease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: workspaceLease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			monthlyBudgetState(t, f, workspace.WorkItemID, "Done")
 			issue := f.create(t, "budget issue")
-			var directLease tracker.Lease
+			var directLease tracker.NativeLease
 			if test.directBeforePolicy {
-				_, id, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(issue.WorkItemID))
-				if err != nil {
-					t.Fatal(err)
-				}
-				directLease, err = f.service.database.Claim(t.Context(), tracker.ClaimRequest{WorkItemID: id, MachineID: r.binding.MachineID, SessionID: "direct-before-budget", TTL: time.Minute})
-				if err != nil {
-					t.Fatal(err)
-				}
+				request := providerClaim(r, issue, "direct-before-budget")
+				request.PolicyID, request.ProviderCandidates = descriptor.ID, nil
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, request)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &directLease)
 			}
 			setMonthlyBudgetFixture(t, f, test.organization, test.policy)
 			if test.organization {
@@ -202,17 +335,34 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 			if test.allowed {
 				status = http.StatusOK
 			}
+			var claimed tracker.NativeLease
 			if test.directBeforePolicy {
-				_, err := f.service.database.Renew(t.Context(), tracker.RenewRequest{LeaseID: directLease.ID, FencingToken: directLease.FencingToken, TTL: 90 * time.Second})
-				if test.allowed && err != nil || !test.allowed && !errors.Is(err, tracker.ErrLeaseConflict) {
-					t.Fatalf("direct renewal allowed=%t err=%v", test.allowed, err)
-				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(directLease.ID)+"/renew", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: directLease.FencingToken, TTLSeconds: 90})
+				requireNativeStatus(t, response, status)
+				claimed = directLease
 			} else {
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, request)
 				requireNativeStatus(t, response, status)
+				if test.allowed {
+					decodeHubResponse(t, response, &claimed)
+				}
+			}
+			if claimed.ID != "" {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					exposure, err := reader.BillingMonthlyLease(t.Context(), claimed.ID)
+					if err != nil {
+						return err
+					}
+					if exposure.SpriteInfrastructure != test.sprite || exposure.RunnerAPI != !test.subscription || exposure.LunaAPI {
+						t.Fatalf("persisted claim exposure=%+v", exposure)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			var admissions int
-			if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM monthly_budget_admissions`).Scan(&admissions); err != nil {
+			if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM monthly_budget_admissions WHERE organization_id=$1`, f.project.OrganizationID).Scan(&admissions); err != nil {
 				t.Fatal(err)
 			}
 			want := 0
@@ -237,7 +387,7 @@ func TestMonthlyBudgetHistoricalAdmissionsCannotFundNewClaims(t *testing.T) {
 				for i, f := range []nativeFixture{first, second} {
 					t.Run(fmt.Sprint("tenant-", i), func(t *testing.T) {
 						monthlyPolicyFixture(t, f, false)
-						r := placementFixtureRunner(t, f, fmt.Sprint("example-budget-", i), "budget", true, 2, "test-model", "gpt-6.1-sol")
+						r := monthlyBudgetRunner(t, f, fmt.Sprint("example-budget-", i), "budget", true, 2, "test-model", "gpt-6.1-sol")
 						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 							return w.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: now})
 						}); err != nil {
@@ -337,17 +487,17 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 		}
 	})
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
-	monthlyPolicyFixture(t, f, false)
-	for _, state := range []string{"In Review", "Rework", "Merging", "Blocked", "Backlog"} {
-		dispatchable := state != "Blocked" && state != "Backlog"
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,0,?,?,?)`, f.project.ID, state, state, dispatchable, formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
-			t.Fatal(err)
-		}
+	f.service.registerCostUsageRoutes(f.service.echo)
+	descriptor := monthlyBudgetDrainPolicy(t, f)
+	claimRequest := func(r runnerFixture, issue tracker.NativeIssue, session string) tracker.NativeClaim {
+		request := providerClaim(r, issue, session)
+		request.PolicyID = descriptor.ID
+		return request
 	}
-	r := placementFixtureRunner(t, f, "sprite-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
-	scope := setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
+	r := monthlyBudgetRunner(t, f, "sprite-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	admitted := f.create(t, "admitted")
-	request := providerClaim(r, admitted, "first-admission")
+	request := claimRequest(r, admitted, "first-admission")
 	var lease tracker.NativeLease
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, request)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -358,26 +508,20 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 	}
 	release()
-	restartConfig := f.service.config
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.service = openTestService(t, restartConfig)
-	var persistent int
-	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM monthly_budget_admissions WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)`, admitted.WorkItemID).Scan(&persistent); err != nil {
-		t.Fatal(err)
-	}
-	if persistent != 1 {
-		t.Fatalf("restart lost cohort: %d", persistent)
+	f.service = reopenPostgresNativeService(t, f.service)
+	f.service.registerCostUsageRoutes(f.service.echo)
+	if !monthlyBudgetAdmission(t, f, admitted.WorkItemID) {
+		t.Fatal("restart lost cohort")
 	}
 	fresh := f.create(t, "new Todo")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, fresh, "fresh")), http.StatusConflict)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE queue_entries SET priority_override=0 WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)`, fresh.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	request = providerClaim(r, admitted, "ranked-drain")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claimRequest(r, fresh, "fresh")), http.StatusConflict)
+	monthlyBudgetQueuePriority(t, f, fresh.WorkItemID)
+	request = claimRequest(r, admitted, "ranked-drain")
 	request.WorkItemID = ""
-	request.ProviderCandidates = append(request.ProviderCandidates, providerClaim(r, fresh, "fresh-candidate").ProviderCandidates...)
+	request.ProviderCandidates = append(request.ProviderCandidates, claimRequest(r, fresh, "fresh-candidate").ProviderCandidates...)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, request)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &lease)
@@ -386,74 +530,49 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 	}
 	release()
 	for i := range 100 {
-		f.create(t, fmt.Sprintf("closed admission %d", i))
+		item := f.create(t, fmt.Sprintf("closed admission %d", i))
+		monthlyBudgetQueuePriority(t, f, item.WorkItemID)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE queue_entries SET priority_override=0 WHERE issue_id IN (SELECT id FROM issues WHERE project_id=? AND native_id<>?)`, f.project.ID, admitted.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	allowed, err := monthlySpriteAllowed(t.Context(), f.service.database.db, scope, f.service.config.now())
+	allowed, err := monthlySpriteAllowed(t.Context(), nil, scope, f.service.config.now(), f.service.config.TenantRepository)
 	if err != nil || !allowed {
 		t.Fatalf("ranked cohort beyond first page lost Sprite continuation: %t %v", allowed, err)
 	}
-	allowed, err = monthlySpriteAllowed(t.Context(), f.service.database.db, nativeScope{organization: scope.organization}, f.service.config.now())
+	allowed, err = monthlySpriteAllowed(t.Context(), nil, nativeScope{organization: scope.organization}, f.service.config.now(), f.service.config.TenantRepository)
 	if err != nil || !allowed {
 		t.Fatalf("organization Sprite lifecycle lost the admitted cohort: %t %v", allowed, err)
 	}
 	backlog := f.create(t, "untouched Backlog")
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Backlog') WHERE native_id=?`, f.project.ID, backlog.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, backlog, "backlog")), http.StatusConflict)
-	savedBacklog, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(backlog.WorkItemID))
-	if err != nil {
-		t.Fatal(err)
-	}
+	backlog = monthlyBudgetState(t, f, backlog.WorkItemID, "Backlog")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claimRequest(r, backlog, "backlog")), http.StatusConflict)
+	savedBacklog := readWorkItem(t, f, backlog.WorkItemID, "")
 	if savedBacklog.State != "Backlog" {
 		t.Fatal("budget promoted Backlog")
 	}
 	for _, state := range []string{"In Progress", "In Review", "Rework", "Merging"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state=?),revision=revision+1 WHERE native_id=?`, f.project.ID, state, admitted.WorkItemID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE queue_entries SET state=? WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)`, state, admitted.WorkItemID); err != nil {
-			t.Fatal(err)
-		}
-		var id tracker.WorkItemID
-		var err error
-		admitted, id, err = readNativeIssue(t.Context(), f.service.database.db, scope, string(admitted.WorkItemID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		retained, err := monthlyBudgetRetainsRunner(t.Context(), f.service.database.db, scope, r.binding.MachineID)
+		admitted = monthlyBudgetState(t, f, admitted.WorkItemID, state)
+		retained, err := monthlyBudgetRetainsRunner(t.Context(), nil, scope, r.binding.MachineID, f.service.config.TenantRepository)
 		if err != nil || !retained {
 			t.Fatalf("%s lost retained Sprite workspace: %t %v", state, retained, err)
 		}
 		if state == "Merging" {
-			retained, err := monthlyIssueAdmitted(t.Context(), f.service.database.db, id)
-			if err != nil || !retained {
-				t.Fatalf("merge cohort=%t err=%v", retained, err)
+			if !monthlyBudgetAdmission(t, f, admitted.WorkItemID) {
+				t.Fatal("merge cohort was lost")
 			}
-			decision, _, err := checkMonthlyClaim(t.Context(), f.service.database.db, scope, r.binding.MachineID, id, false, f.service.config.now())
+			decision, err := checkMonthlyBudget(t.Context(), nil, scope, budget.CostExposure{SpriteInfrastructure: true, RunnerAPI: true}, true, f.service.config.now(), f.service.config.TenantRepository)
 			if err != nil || !decision.Allowed {
 				t.Fatalf("merge drain=%+v err=%v", decision, err)
 			}
 			continue
 		}
-		request = providerClaim(r, admitted, "continue-"+state)
+		request = claimRequest(r, admitted, "continue-"+state)
 		response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, request)
 		requireNativeStatus(t, response, http.StatusOK)
 		decodeHubResponse(t, response, &lease)
 		release()
 	}
 	for _, state := range []string{"Blocked", "Done"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state=?) WHERE native_id=?`, f.project.ID, state, admitted.WorkItemID); err != nil {
-			t.Fatal(err)
-		}
-		var count int
-		if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM monthly_budget_admissions WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)`, admitted.WorkItemID).Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		if count != 0 {
+		admitted = monthlyBudgetState(t, f, admitted.WorkItemID, state)
+		if monthlyBudgetAdmission(t, f, admitted.WorkItemID) {
 			t.Fatalf("%s retained admission", state)
 		}
 	}
@@ -462,33 +581,34 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 func TestMonthlyBudgetConcurrentAndDirectClaims(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
+	f.service.registerCostUsageRoutes(f.service.echo)
 	monthlyPolicyFixture(t, f, false)
-	r := placementFixtureRunner(t, f, "concurrent-budget", "budget", false, 8, "test-model", "gpt-6.1-sol")
+	r := monthlyBudgetRunner(t, f, "concurrent-budget", "budget", false, 8, "test-model", "gpt-6.1-sol")
 	setMonthlyBudgetFixture(t, f, true, budget.MonthlyPolicy{Enabled: true, RunnerMicros: new(int64)})
 	issue := f.create(t, "concurrent")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	_, id, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(issue.WorkItemID))
-	if err != nil {
-		t.Fatal(err)
+	requests := make([]*http.Request, 8)
+	for i := range requests {
+		input := providerClaim(r, issue, fmt.Sprint("direct-", i))
+		input.ProviderCandidates = nil
+		requests[i] = newHubAPIRequest(t, http.MethodPost, f.base+"/claims", r.redemption.Credential, input)
 	}
 	var wg sync.WaitGroup
-	outcomes := make(chan error, 8)
-	for i := range 8 {
+	outcomes := make(chan *httptest.ResponseRecorder, len(requests))
+	for _, request := range requests {
 		wg.Go(func() {
-			_, err := f.service.database.Claim(t.Context(), tracker.ClaimRequest{WorkItemID: id, MachineID: r.binding.MachineID, SessionID: fmt.Sprint("direct-", i), TTL: time.Minute})
-			outcomes <- err
+			response := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(response, request)
+			outcomes <- response
 		})
 	}
 	wg.Wait()
 	close(outcomes)
-	for err := range outcomes {
-		if !isProviderWait(err) {
-			t.Fatalf("direct bypass error=%v", err)
-		}
+	for response := range outcomes {
+		requireNativeCode(t, response, http.StatusConflict, "provider_capacity")
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "native-next")), http.StatusConflict)
+	requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "native-next")), http.StatusConflict, "provider_capacity")
 	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM leases`).Scan(&count); err != nil {
+	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM leases WHERE organization_id=$1`, f.project.OrganizationID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -500,9 +620,10 @@ func TestMonthlyBudgetHardStopAndRecovery(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f.service.registerCostUsageRoutes(f.service.echo)
 	monthlyPolicyFixture(t, f, false)
-	r := placementFixtureRunner(t, f, "hard-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
-	scope := setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
+	r := monthlyBudgetRunner(t, f, "hard-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	issue := f.create(t, "hard-stop")
 	var lease tracker.NativeLease
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "hard-first"))
@@ -515,21 +636,15 @@ func TestMonthlyBudgetHardStopAndRecovery(t *testing.T) {
 	}
 	renewal(http.StatusOK)
 	o := costTestObservation("cpu", now.Add(-time.Hour), now)
-	if _, err := recordTestCost(t, f.service.database.db, string(scope.organization), string(scope.project), o, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM monthly_budget_leases WHERE lease_id=?`, lease.ID); err != nil {
+	if _, err := recordPostgresTestCost(t, f.service.database, string(scope.organization), string(scope.project), o, now); err != nil {
 		t.Fatal(err)
 	}
 	renewal(http.StatusConflict)
-	allowed, err := monthlySpriteAllowed(t.Context(), f.service.database.db, scope, now)
+	allowed, err := monthlySpriteAllowed(t.Context(), nil, scope, now, f.service.config.TenantRepository)
 	if err != nil || allowed {
 		t.Fatalf("hard-stop wake=%t err=%v", allowed, err)
 	}
-	current, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(issue.WorkItemID))
-	if err != nil {
-		t.Fatal(err)
-	}
+	current := readWorkItem(t, f, issue.WorkItemID, "")
 	if current.State != issue.State || current.Revision != issue.Revision || current.Body != issue.Body {
 		t.Fatal("hard stop changed issue evidence")
 	}
@@ -538,16 +653,9 @@ func TestMonthlyBudgetHardStopAndRecovery(t *testing.T) {
 	setMonthlyBudgetFixture(t, f, true, budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, SpriteMicros: new(int64(20000))})
 	renewal(http.StatusConflict)
 	next := now.AddDate(0, 1, 0)
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	record, found, err := readLeaseByID(t.Context(), tx, lease.ID)
-	if err != nil || !found {
-		t.Fatalf("lease=%t err=%v", found, err)
-	}
-	if err := checkMonthlyLease(t.Context(), tx, record, next); err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		return checkMonthlyLeasePG(t.Context(), reader, scope.project, string(lease.ID), next)
+	}); err != nil {
 		t.Fatalf("rollover did not recover: %v", err)
 	}
 }
@@ -602,14 +710,8 @@ func TestMonthlyBudgetCorrectionsAndSettingsAuthority(t *testing.T) {
 		}
 	})
 	t.Run("negative cap is rejected", func(t *testing.T) {
-		settingsErr := func() error {
-			_, err := updateMonthlyBudgetOperation(monthlyBudgetRequest{ExpectedRevision: 1, Policy: budget.MonthlyPolicy{Enabled: true, RunnerMicros: new(int64(-1))}})(t.Context(), nil, nativeScope{organization: scope.organization}, now)
-			return err
-		}()
-		var invalid *nativeError
-		if !errors.As(settingsErr, &invalid) || invalid.Code != "invalid_request" {
-			t.Fatalf("negative cap=%v", settingsErr)
-		}
+		request := monthlyBudgetRequest{Mutation: tracker.Mutation{IdempotencyKey: "negative-cap"}, ExpectedRevision: 1, Policy: budget.MonthlyPolicy{Enabled: true, RunnerMicros: new(int64(-1))}}
+		requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPut, "/api/v2/organizations/"+string(scope.organization)+"/monthly-budget", testHubAdminToken, request), http.StatusUnprocessableEntity, "invalid_request")
 	})
 }
 
@@ -660,7 +762,7 @@ func TestMonthlyBudgetClaimsApplyCorrectionsAcrossTenants(t *testing.T) {
 	issues := make([][]tracker.NativeIssue, len(fixtures))
 	for i, f := range fixtures {
 		monthlyPolicyFixture(t, f, false)
-		runners[i] = placementFixtureRunner(t, f, fmt.Sprint("example-budget-", i), "budget", true, 8, "test-model", "gpt-6.1-sol")
+		runners[i] = monthlyBudgetRunner(t, f, fmt.Sprint("example-budget-", i), "budget", true, 8, "test-model", "gpt-6.1-sol")
 		if err := measured.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.UpdateRunnerCapacityConfig(t.Context(), runners[i].binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: now})
 		}); err != nil {

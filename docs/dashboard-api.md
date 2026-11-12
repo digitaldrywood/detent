@@ -2,25 +2,17 @@
 
 [Back to README](../README.md#documentation)
 
-Each enrolled runner serves a local health and telemetry API on its configured
-listener; the board, issues, and Change Requests live in the Hub (see
-[Hub API](hub-api.md)). The runner's state snapshot reports live counts,
-running issues, retry queue, blocked work, completed sessions, token totals,
-budget status, and provider rate-limit snapshots.
+Each enrolled runner serves a local health endpoint on its configured listener.
+The board, issues, Changes, telemetry and reports live in the Hub (see
+[Hub API](hub-api.md)).
 
-Host memory, IO, and CPU PSI appear in `detent state`, `/api/v1/state`, and
-`/health` as `memory_pressure`, `io_pressure`, and `cpu_pressure`. Each entry
-includes the current governing average, configured threshold, support or
-read-error state, configured and effective pressure capacity, constraint
-duration, and whether Detent is holding new dispatches. A pressure constraint
+Host memory, IO, and CPU PSI constrain admission. A pressure constraint
 is admission backpressure, not a worker failure: existing agents continue while
 new starts wait for available degraded capacity or pressure recovery.
 
 When an agent backend reports `model_context_window`, Detent also surfaces
 context pressure for running and recent sessions. Context pressure is the
-session's `total_tokens` divided by the model context window. The JSON snapshot
-includes `context_pressure.total_tokens`, `context_limit_tokens`,
-`percent_used`, and `threshold_state`. Thresholds are `normal` below 70%, `watch` at
+session's `total_tokens` divided by the model context window. Thresholds are `normal` below 70%, `watch` at
 70%, `warning` at 85%, and `critical` at 95%. Unknown context windows omit the
 derived fields instead of reporting a misleading zero.
 
@@ -91,9 +83,7 @@ and overridden per project with `agent.rate_window_pacing`. The default
 scaling, and `floor` keeps full concurrency until remaining capacity falls
 below `floor_percent`. Missing buckets, buckets without an observation
 timestamp, and buckets older than `stale_after_seconds` fail open to
-`agent.max_concurrent_agents`. Both `/health` and board-state responses expose
-the resolved mode, bucket freshness, observed remaining percentage, and
-effective permit ceiling at `dispatch.rate_window_pacing`.
+`agent.max_concurrent_agents`.
 
 Duration limits stop a single overlong turn or session regardless of message
 volume. Per-issue progress, token-window, spend-window and lifetime brakes are
@@ -146,107 +136,10 @@ The exporter posts OTLP HTTP/JSON traces to `/v1/traces` with linked
 `detent.dispatch`, `detent.session`, `detent.gate`, and `detent.merge` spans.
 Static collector headers may be supplied with `observability.otlp.headers`.
 
-Useful endpoints:
+Local endpoints:
 
 | Route | Purpose |
 | --- | --- |
-| `/health` | Server health, startup readiness, and configured dependency checks. |
-| `/api/v1/openapi.yaml` | Public OpenAPI 3 catalog for the stable JSON API. HTML, HTMX, and SSE routes are excluded. |
-| `/api/v1/state` | JSON telemetry snapshot. `projection=cli` bounds collections and response bytes with explicit truncation metadata; `fields=update,counts` retains the updater projection. |
-| `/api/v1/timeseries?window=10m&bucket=1m` | Fleet chart samples for running agents, tokens/sec, and completions. |
-| `/api/v1/operator-tools/<name>` | Invoke one shared read-only operator tool with a JSON object via `POST`; requires read scope and rejects mutation tools. |
-| `/api/v1/projects/<id>/state` | Project-scoped JSON telemetry snapshot; supports the same `projection=cli` after project scoping. |
-| `/api/v1/projects/<id>/timeseries?window=10m&bucket=1m` | Project chart samples for running agents, token spend, and board flow. |
-| `/api/v1/projects/<id>/issues/explanation?reference=<issue>` | Versioned JSON explanation of an issue's current lane, runtime state, evidence, and degraded sources. |
-| `/api/v1/refresh` | Request an orchestrator refresh with `POST`. |
-| `/api/v1/<issue>` | JSON detail for a known board, pipeline, running, retrying, or blocked issue. |
-
-State responses calculate `snapshot_age_seconds` when the request is served,
-so counts remain attributable to their producer timestamp even if snapshot
-publication stops. Refresh objects include `next_refresh_overdue`; an explicit
-`ready` status becomes `behind` once `next_refresh_at` is in the past. `behind`
-is a pacing state and keeps successful tracker data operational. The refresh
-object reports `behind_by_seconds`, each project reports
-`last_duration_seconds`, and the fleet reports `observed_sweep_seconds`.
-`stale_after_seconds` expands with the observed multi-project sweep and includes
-headroom. A refresh becomes `degraded` only after that window is exceeded or a
-refresh source reaches its failure threshold.
-`/health` returns HTTP `503` with `status: "not_ready"`, `ready: false`, and a
-`lifecycle` of `starting` until running-mode startup succeeds. A fatal startup
-changes `lifecycle` to `failed` before serving stops. Other API routes
-remain available during startup for diagnostics. After startup,
-`ready: true` and `lifecycle: "ready"` distinguish process readiness from
-project degradation and other operational health details.
-
-`/health` also reports `snapshot_generated_at`, `snapshot_age_seconds`, the
-current refresh object, per-project `tick_liveness`, and
-`orphaned_agent_processes` with process and session counts, total RSS, age, and
-recorded session identity. Orphaned agent processes make health report
-`needs_attention`; `detent doctor` lists them and recommends
-`detent fix worker-processes --yes` for a confirmed reap. A tick loop that misses
-two effective polling intervals reports `needs_attention`, its last tick,
-overdue next refresh, missed interval count, and `frozen_at` timestamp. A loop
-that continues ticking while tracker refreshes fail reports separate
-`refresh_failures` entries with the project, reason, threshold, streak, and last
-error. A failed first refresh is reported immediately because dispatch has
-never observed the project.
-
-Project state scopes workflow metrics from the fleet snapshot enrichment cache
-instead of rerunning historical database reports for each request.
-
-The wildcard issue route accepts an issue ID, canonical identifier, issue URL,
-bare number, or `#number`. Add `?project=<id>` when a number or other reference
-exists in more than one project; an unscoped collision returns
-`ambiguous_issue_reference`. The response reports the board `lane` separately
-from runtime `activity` (`idle`, `running`, `retrying`, or `blocked`). Board data
-takes precedence over pipeline and runtime copies for lane and identity, while
-runtime activity uses running, retrying, then blocked precedence. Completed and
-tracker-drift-only items are not part of this route.
-
-### API Authentication
-
-Configure a top-level `api_token` in `global.yaml`, or set
-`DETENT_API_TOKEN` to override it at runtime. Use a high-entropy value; the
-recommended shape is a `detent_` prefix followed by a random secret. Mutating
-API routes require `Authorization: Bearer <token>` or `X-API-Key: <token>`.
-When a token is configured, read-only `GET /api/v1/*` routes require it too.
-`GET /health` stays unauthenticated.
-
-If Detent binds a non-loopback host such as `0.0.0.0` without an `api_token`,
-API routes fail closed and mutating routes return `403` until a token is
-configured. With no token on loopback, read-only API routes remain open for
-local development.
-
-For a non-loopback bind that still needs tokenless same-host reads, opt in with
-`trust_loopback_peer_read: true` in `global.yaml`. Detent then grants a
-read-only credential to `GET` requests whose raw TCP peer address is loopback,
-even when `api_token` is configured. A supplied invalid, expired, or revoked
-token still fails authentication. `X-Forwarded-For`, `Forwarded`,
-`X-Real-IP`, and other forwarded-client metadata never affect this decision.
-The setting hot-reloads.
-
-Do not enable `trust_loopback_peer_read` behind a reverse proxy on the same
-host. Every remote request relayed by that proxy appears to Detent to have a
-loopback direct peer and would receive read access.
-
-## Work attempt recovery
-
-`POST /api/v1/projects/{project}/work-attempts/{attempt}/recovery` accepts
-`retry_fresh` or `retry_resume` for the latest failed attempt. Recovery validates
-the current tracker issue and model selection, records retry intent in the
-workflow journal, reconciles the matching corrected configuration failure, and
-wakes the scheduler. Duplicate requests reuse that intent; a newer attempt
-supersedes it. The intent survives restart.
-
-The response distinguishes `queued`, `blocked`, and `running`. `queued` means
-the durable intent awaits scheduler admission. `blockers` lists the current
-holds observed during reconciliation, and `next_action` describes the recheck.
-`current_attempt_id` identifies the running or superseding attempt when known.
-Inspect the receipt again to follow recovery through worker dispatch.
-
-Recovery preserves independent dependencies, approvals, ownership, budget
-limits, and service outages. A `Blocked` issue is returned to a dispatchable
-lane by recovery only when it holds no current human question, permission
-request or operator stop. Invalid issue configuration is reported as an
-`issue_configuration` blocker on the receipt, rather than as project-outage
-evidence.
+| `/health` | Process health, build version and commit, and the runner's `PATH`. Unauthenticated. |
+| `/api/v1/openapi.yaml` | OpenAPI 3 document. Unauthenticated. |
+| `/static/*` | Fingerprinted static assets. |

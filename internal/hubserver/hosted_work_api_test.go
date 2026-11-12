@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -50,7 +52,9 @@ func TestHostedWorkAccess(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "grant":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ?", user.identity.Subject); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+					return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, f.project)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			case "tenant":

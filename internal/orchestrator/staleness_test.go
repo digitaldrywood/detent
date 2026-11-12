@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -77,9 +76,8 @@ func TestRefreshStalenessWarningLifecycle(t *testing.T) {
 	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name    string
-		durable bool
-		run     func(*testing.T, *Orchestrator, *State, store.StalenessWarningStore)
+		name string
+		run  func(*testing.T, *Orchestrator, *State, store.StalenessWarningStore)
 	}{
 		{
 			name: "human review age remains visible as a review queue condition",
@@ -124,8 +122,7 @@ func TestRefreshStalenessWarningLifecycle(t *testing.T) {
 			},
 		},
 		{
-			name:    "acknowledgement survives recompute and clears on lane reentry",
-			durable: true,
+			name: "acknowledgement survives recompute and clears on lane reentry",
 			run: func(t *testing.T, orch *Orchestrator, state *State, backend store.StalenessWarningStore) {
 				firstEntry := now.Add(-4 * time.Hour)
 				issue := connector.Issue{ID: "issue-ack", Identifier: "detent#1926", State: "Merging"}
@@ -164,17 +161,6 @@ func TestRefreshStalenessWarningLifecycle(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var backend store.StalenessWarningStore = &stalenessReminderRecorder{}
-			if tt.durable {
-				if testing.Short() {
-					t.Skip("durable SQLite integration")
-				}
-				opened, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
-				if err != nil {
-					t.Fatalf("store.Open() error = %v", err)
-				}
-				t.Cleanup(func() { _ = opened.Close() })
-				backend = opened
-			}
 			cfg := normalizeConfig(Config{
 				Staleness: staleness.Config{
 					Enabled:        true,
@@ -613,6 +599,23 @@ func (r *stalenessReminderRecorder) ListStalenessWarningStates(ctx context.Conte
 
 func (r *stalenessReminderRecorder) ReconcileStalenessWarningStates(ctx context.Context, projectID string, _ []string, _, _ time.Time) ([]store.StalenessWarningState, error) {
 	return r.ListStalenessWarningStates(ctx, projectID)
+}
+
+func (r *stalenessReminderRecorder) AcknowledgeStalenessWarning(ctx context.Context, projectID, warningID string, at time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for index := range r.states {
+		if r.states[index].ProjectID == projectID && r.states[index].WarningID == warningID {
+			if r.states[index].AcknowledgedAt == nil {
+				r.states[index].AcknowledgedAt = &at
+			}
+			r.states[index].LastSeenAt = &at
+			return nil
+		}
+	}
+	r.states = append(r.states, store.StalenessWarningState{ProjectID: projectID, WarningID: warningID, AcknowledgedAt: &at, LastSeenAt: &at})
+	return nil
 }
 
 func (r *stalenessReminderRecorder) RecordStalenessWarningReminder(ctx context.Context, projectID, warningID string, at time.Time) error {

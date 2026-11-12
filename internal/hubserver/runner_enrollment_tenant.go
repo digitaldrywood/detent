@@ -79,6 +79,9 @@ func (s *Service) redeemRunnerEnrollmentTenant(ctx context.Context, organization
 				return err
 			}
 		}
+		if err := s.checkRunnerAdmission(ctx, w, now, 0, "registered_runners", "connected_runners"); err != nil {
+			return err
+		}
 		tags := []string{}
 		if request.SpriteName != "" {
 			member, err := w.RunnerSpriteMembershipByEnrollment(ctx, enrollment.ID)

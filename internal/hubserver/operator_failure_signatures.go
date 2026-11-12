@@ -3,15 +3,23 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -55,6 +63,7 @@ type nativeFailureSignature struct {
 }
 
 type nativeFailure struct {
+	signature string
 	attemptID string
 	workItem  string
 	at        time.Time
@@ -152,120 +161,6 @@ func nativeFailureClass(f tracker.NativeTerminalFailure) string {
 	return "attempt"
 }
 
-const analyticsRollupFailures = `SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
-a.data_json,
-(SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
-(SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
-FROM (SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id,r.lease_id,r.status,
-r.started_at,r.updated_at,COALESCE(NULLIF(r.payload_object_key,''),NULLIF(r.data_json,'{}'),n.data_json) AS data_json,r.failed_at,r.failed_day,n.runner_id,n.role,n.report_requested_model,n.report_resolved_model
-FROM analytics_hourly_rollups r CROSS JOIN report_attempts n ON n.id=r.dimension AND n.organization_id=r.organization_id AND n.project_id=r.project_id WHERE r.metric='attempt' AND r.failed_at IS NOT NULL) a WHERE a.organization_id=? AND a.project_id=?`
-
-func readNativeFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string, w *operatortool.AnalyticsWindow) ([]nativeFailure, bool, error) {
-	q, err := prepareReportsQuery(ctx, q, scope, "report_attempts")
-	if err != nil {
-		return nil, false, err
-	}
-	query := `SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.report_failed_at,
-a.data_json,
-(SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
-(SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
-FROM report_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.report_failed_at IS NOT NULL`
-	failedAt := "a.report_failed_at"
-	_, projected := q.(analyticsRollupReader)
-	if projected {
-		query, failedAt = analyticsRollupFailures, "a.failed_day"
-	}
-	args := []any{scope.organization, scope.project}
-	if item != "" {
-		query += " AND a.work_item_id=?"
-		args = append(args, item)
-	}
-	if w != nil {
-		if projected {
-			query += " AND " + failedAt + ">=julianday(?) AND " + failedAt + "<julianday(?)"
-			args = append(args, formatHubTime(w.From), formatHubTime(w.To))
-		} else {
-			query += " AND " + failedAt + ">=? AND " + failedAt + "<?"
-			args = append(args, changeColumnTime(w.From), changeColumnTime(w.To))
-		}
-	}
-	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
-	if err != nil {
-		return nil, false, err
-	}
-	query += scoped
-	args = append(args, scopedArgs...)
-	query += " ORDER BY " + failedAt + " DESC,a.id DESC LIMIT ? OFFSET ?"
-	rows, err := queryAnalyticsPopulation(ctx, q, "failures", query, args...)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	type failureRow struct {
-		failure                   nativeFailure
-		status, from, to, at, raw string
-	}
-	var batch []failureRow
-	partial := false
-	for rows.Next() {
-		if len(batch) == maxAnalyticsPopulation {
-			partial = true
-			break
-		}
-		var row failureRow
-		if err := rows.Scan(&row.failure.attemptID, &row.failure.workItem, &row.status, &row.from, &row.to, &row.at, &row.raw, &row.failure.cost, &row.failure.tokens); err != nil {
-			return nil, false, err
-		}
-		batch = append(batch, row)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	failures := []nativeFailure{}
-	for _, row := range batch {
-		f, status, from, to, at, raw := row.failure, row.status, row.from, row.to, row.at, row.raw
-		var stored struct {
-			Detail          *runDetailReference            `json:"detail"`
-			TerminalFailure *tracker.NativeTerminalFailure `json:"terminal_failure"`
-			Finalization    *tracker.NativeFinalization    `json:"finalization"`
-			Runtime         *struct {
-				Landing    *tracker.NativeLandingReceipt `json:"landing"`
-				Validation *gate.CommandResult           `json:"validation"`
-			} `json:"runtime"`
-		}
-		if err := decodeStorageJSON(payloadQueryContext(ctx, q), []byte(raw), &stored); err != nil {
-			return nil, false, err
-		}
-		data := tracker.NativeRunData{TerminalFailure: stored.TerminalFailure, Finalization: stored.Finalization}
-		if stored.Detail != nil {
-			if err := decodeRunDetail(ctx, q, raw, &data); err != nil {
-				return nil, false, err
-			}
-		} else if stored.Runtime != nil {
-			data.Runtime = &tracker.NativeRuntimeObservation{Landing: stored.Runtime.Landing, Validation: stored.Runtime.Validation}
-		}
-		f.example, f.class = failureFromAttempt(data, status)
-		if f.example == "" {
-			continue
-		}
-		f.started, err = parseTimeValue(from)
-		if err != nil {
-			return nil, false, err
-		}
-		f.finished, err = parseTimeValue(to)
-		if err != nil {
-			return nil, false, err
-		}
-		f.at, err = parseTimeValue(at)
-		if err != nil {
-			return nil, false, err
-		}
-		failures = append(failures, f)
-	}
-	return failures, partial, nil
-}
-
 func groupNativeFailures(failures []nativeFailure) []nativeFailureSignature {
 	type group struct {
 		value nativeFailureSignature
@@ -273,7 +168,10 @@ func groupNativeFailures(failures []nativeFailure) []nativeFailureSignature {
 	}
 	groups := map[string]*group{}
 	for _, f := range failures {
-		signature := normalizeFailureSignature(f.example)
+		signature := f.signature
+		if signature == "" {
+			signature = normalizeFailureSignature(f.example)
+		}
 		g := groups[signature]
 		if g == nil {
 			g = &group{value: nativeFailureSignature{Signature: signature, Class: f.class, FirstSeen: f.at, LastSeen: f.at}, items: map[string][]time.Time{}}
@@ -369,4 +267,143 @@ func nativeFailureSignaturePage(signatures []nativeFailureSignature, offset, lim
 		size += len(raw) + 1
 	}
 	return page
+}
+
+func diagnosticNativeFailures(snapshot diagnosticstore.Snapshot, values map[string]tracker.NativeRunData, w operatortool.AnalyticsWindow) []nativeFailure {
+	usage := make(map[string]diagnosticstore.Usage)
+	for _, row := range snapshot.Usage {
+		sum := usage[row.AttemptID]
+		sum.Cost += row.Cost
+		sum.Tokens += row.Tokens
+		usage[row.AttemptID] = sum
+	}
+	failures := []nativeFailure{}
+	for _, attempt := range snapshot.AttemptRecords {
+		value, ok := values[attempt.ID]
+		if !ok {
+			continue
+		}
+		example, class := failureFromAttempt(value, attempt.Status)
+		if example == "" {
+			continue
+		}
+		at := attempt.Event.RecordedAt
+		if attempt.FailureAt != nil {
+			at = *attempt.FailureAt
+		}
+		if at.Before(w.From) || !at.Before(w.To) {
+			continue
+		}
+		cost := usage[attempt.ID]
+		failures = append(failures, nativeFailure{attemptID: attempt.ID, workItem: string(attempt.WorkItemID), at: at, started: attempt.StartedAt, finished: attempt.UpdatedAt, example: example, class: class, cost: cost.Cost, tokens: cost.Tokens})
+	}
+	return failures
+}
+
+func (s *Service) readNativeFailuresTenant(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, w operatortool.AnalyticsWindow) ([]nativeFailure, bool, []string, error) {
+	out := []nativeFailure{}
+	unavailable := []string{}
+	after, cursor, key, err := s.analyticsFactSeek(ctx, scope, w, "failures")
+	if err != nil {
+		return out, false, nil, err
+	}
+	defer clear(key)
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return out, false, nil, workItemStorageUnavailable()
+	}
+	var page diagnosticstore.AnalyticsFailurePage
+	var usage reportstore.AnalyticsUsagePage
+	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
+		if err != nil {
+			return err
+		}
+		owner, ok := r.(diagnosticstore.AnalyticsFailureReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		usageOwner, ok := r.(reportstore.AnalyticsUsageReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		page, err = owner.ReadAnalyticsFailurePage(ctx, diagnosticstore.AnalyticsFailureQuery{ProjectID: scope.project, WorkItemID: item, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: after.Failure})
+		if err != nil {
+			return err
+		}
+		page.Attempts = slices.DeleteFunc(page.Attempts, func(row diagnosticstore.Attempt) bool {
+			return !analyticsCohortAllows(ctx, row.WorkItemID) || !analyticsCohortRunnerAllows(ctx, row.RunnerID)
+		})
+		if len(page.Attempts) == 0 {
+			return nil
+		}
+		usage, err = usageOwner.ReadAnalyticsUsagePage(ctx, reportstore.AnalyticsUsageQuery{ProjectID: scope.project, Principal: principal, From: time.Time{}, To: time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC), Limit: maxAnalyticsPopulation})
+		return err
+	})
+	if err != nil {
+		return out, false, nil, err
+	}
+	partial := page.Partial || usage.Partial
+	if usage.Partial {
+		unavailable = append(unavailable, "failure_cost_complete_population")
+	}
+	if page.ProjectionMissing {
+		unavailable = append(unavailable, "recorded_failure_projection_unavailable")
+	}
+	totals := map[string]diagnosticstore.Usage{}
+	for _, row := range usage.Items {
+		sum := totals[row.AttemptID]
+		sum.Cost += row.Cost
+		sum.Tokens += row.Input + row.Output
+		totals[row.AttemptID] = sum
+	}
+	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	for _, attempt := range page.Attempts {
+		if attempt.Event.ID == "" {
+			partial = true
+			continue
+		}
+		value, _, err := content.AnalyticsEvent(ctx, attempt.Event)
+		if errors.Is(err, artifact.ErrMissing) {
+			partial = true
+			unavailable = append(unavailable, "recorded_failure_detail_unavailable")
+			continue
+		}
+		if err != nil {
+			return out, false, nil, err
+		}
+		if value.Data.Run == nil || value.Data.Run.AttemptID != attempt.ID || value.ProjectID != scope.project || value.AggregateID != attempt.WorkItemID {
+			return out, false, nil, artifact.ErrIntegrity
+		}
+		example, class := failureFromAttempt(*value.Data.Run, attempt.Status)
+		if example == "" {
+			partial = true
+			unavailable = append(unavailable, "recorded_failure_reason_unavailable")
+			continue
+		}
+		at := attempt.Event.RecordedAt
+		if runtime := value.Data.Run.Runtime; runtime != nil && runtime.Landing != nil && ((runtime.Landing.RefusalKind == "conflict" || runtime.Landing.RefusalKind == "base_protected") && !runtime.Landing.Landed || runtime.Landing.GateFailed) && !runtime.Landing.ObservedAt.IsZero() {
+			at = runtime.Landing.ObservedAt
+		}
+		if at.Before(w.From) || !at.Before(w.To) {
+			continue
+		}
+		cost := totals[attempt.ID]
+		out = append(out, nativeFailure{signature: strings.Clone(normalizeFailureSignature(example)), attemptID: attempt.ID, workItem: string(attempt.WorkItemID), at: at, started: attempt.StartedAt, finished: attempt.UpdatedAt, example: strings.Clone(boundedFailureText(failureFirstLine(example), maxFailureExampleLength)), class: class, cost: cost.Cost, tokens: cost.Tokens})
+	}
+	if page.Next.ID != "" {
+		if len(key) == 0 {
+			partial = true
+			unavailable = append(unavailable, "failures_continuation_requires_secret_keys")
+		} else {
+			token, err := s.encodeAnalyticsFactCursor(cursor, key, analyticsFactCursor{Failure: page.Next}, "failures")
+			if err != nil {
+				return out, false, nil, err
+			}
+			if paging := analyticsPagingFromContext(ctx); paging != nil {
+				paging.next["failures"] = token
+			}
+		}
+	}
+	return out, partial, slices.Compact(unavailable), nil
 }

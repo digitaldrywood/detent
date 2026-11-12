@@ -46,6 +46,12 @@ func artifactServiceBinding(row pgquery.ArtifactService) artifact.Binding {
 	return artifact.Binding{ServiceID: row.ID, Origin: row.Origin, Mode: row.BindingMode, HostedOptIn: row.HostedOptIn, PublisherTokenID: row.PublisherTokenID}
 }
 
+func (s *session) HostedArtifactUsage(ctx context.Context) (artifact.Usage, error) {
+	var usage artifact.Usage
+	err := s.db.QueryRow(ctx, `SELECT observed_at,retained_bytes,reserved_bytes FROM hosted_artifact_usage WHERE organization_id=$1`, s.organization).Scan(&usage.ObservedAt, &usage.RetainedBytes, &usage.ReservedBytes)
+	return usage, mapError(ctx, err)
+}
+
 func (s *session) RecordHostedArtifactUsage(ctx context.Context, service, publisher string, usage artifact.Usage, now time.Time, windowSeconds int64) error {
 	if now.IsZero() || windowSeconds <= 0 || usage.ObservedAt.After(now.Add(time.Minute)) {
 		return corestore.ErrInvalidCursor

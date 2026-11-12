@@ -13,7 +13,6 @@ import (
 type DatabaseBackend string
 
 const (
-	DatabaseSQLite   DatabaseBackend = "sqlite"
 	DatabasePostgres DatabaseBackend = "postgres"
 )
 
@@ -21,16 +20,7 @@ var ErrDatabaseBackend = errors.New("hub database backend configuration is inval
 var ErrPostgresServingUnavailable = errors.New("PostgreSQL Hub serving requires the remaining storage owners to be ported")
 
 func validateDatabaseBackend(cfg Config) error {
-	switch cfg.DatabaseBackend {
-	case "", DatabaseSQLite:
-		if cfg.Postgres != nil {
-			return ErrDatabaseBackend
-		}
-	case DatabasePostgres:
-		if cfg.Postgres == nil || cfg.DatabasePath != "" || cfg.Hosted == nil || cfg.hostedBindingMigration {
-			return ErrDatabaseBackend
-		}
-	default:
+	if cfg.DatabaseBackend != DatabasePostgres || cfg.Postgres == nil || cfg.DatabasePath != "" || cfg.hostedBindingMigration {
 		return ErrDatabaseBackend
 	}
 	return nil
@@ -53,7 +43,18 @@ func openPostgresDatabase(ctx context.Context, cfg postgres.Config) (*database, 
 	if err != nil {
 		return nil, errors.Join(err, repository.Close())
 	}
-	return &database{postgres: repository, schemaVersion: version, schemaFingerprint: fingerprint}, nil
+	return &database{postgres: repository, schemaVersion: version, schemaFingerprint: fingerprint, dashboardCommitted: boardCommitChannel(repository)}, nil
+}
+
+func boardCommitChannel(repository *postgres.Repository) chan struct{} {
+	committed := make(chan struct{}, 1)
+	repository.SetBoardCommitNotifier(func() {
+		select {
+		case committed <- struct{}{}:
+		default:
+		}
+	})
+	return committed
 }
 
 func MigratePostgres(ctx context.Context, connection pgtransport.Connection) error {

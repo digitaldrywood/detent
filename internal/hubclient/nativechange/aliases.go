@@ -63,6 +63,4 @@ func WithMutationAuthority(ctx context.Context, scope string, lease tracker.Nati
 	return api.WithMutationAuthority(ctx, scope, lease, cancellation)
 }
 
-type WorkItem = api.WorkItem
-
 type FleetClient = api.FleetClient

@@ -36,7 +36,7 @@ func TestNativeLabelCatalogue(t *testing.T) {
 		organization := nativeOrganization{ID: tracker.OrganizationID("org_" + key), Name: name, Slug: key}
 		if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 			now := service.config.now()
-			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, Local: true, CreatedAt: now}); err != nil {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, CreatedAt: now}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization.ID, ProviderID: "provider_" + key, AllocationGeneration: 1}); err != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -21,21 +20,13 @@ import (
 const operatorStopIntegrationWaitTimeout = 10 * time.Second
 
 func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	issue := testIssue("issue-stop", "digitaldrywood/detent#1311", "In Progress")
 	other := testIssue("issue-other", "digitaldrywood/detent#1312", "In Progress")
 	tracker := newFakeConnector(issue, other)
 	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 4)}
 	reaper := &fakeWorkspaceReaper{}
-	runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = runtimeStore.Close() })
-	completionStore := &operatorStopCompletionStore{Store: runtimeStore, completed: make(chan store.WorkflowPhaseEvent)}
+	runtimeStore := orchestrator.NewRuntimeFixtureForTest()
+	completionStore := &operatorStopCompletionStore{RuntimeFixtureForTest: runtimeStore, completed: make(chan store.WorkflowPhaseEvent)}
 	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
 	orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 2, MaxRetryBackoff: time.Hour, FailureRetryBaseDelay: time.Hour, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkspaceReaper: reaper, WorkAttempts: completionStore, WorkflowMetrics: completionStore, GlobalDispatchGate: gate})
 	if err != nil {
@@ -195,18 +186,10 @@ func TestStopRunPreservesConfiguredCustomDefault(t *testing.T) {
 }
 
 func TestStopRunAppliesTodoPriorityBeforeRedispatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	issue := testIssue("issue-stop-priority", "digitaldrywood/detent#1354", "In Progress")
 	tracker := newOperatorStopAtomicConnector(issue)
 	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 2)}
-	runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = runtimeStore.Close() })
+	runtimeStore := orchestrator.NewRuntimeFixtureForTest()
 	orch, err := orchestrator.New(orchestrator.Config{PollInterval: 5 * time.Millisecond, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunPriorityNames: map[int]string{2: "High"}}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkAttempts: runtimeStore, WorkflowMetrics: runtimeStore})
 	if err != nil {
 		t.Fatalf("orchestrator.New() error = %v", err)
@@ -304,19 +287,11 @@ func TestStopRunAcknowledgesBeforeTrackerTransitionCompletes(t *testing.T) {
 }
 
 func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	synctest.Test(t, func(t *testing.T) {
 		issue := testIssue("issue-stop-recovery", "digitaldrywood/detent#1311", "In Progress")
 		tracker := &operatorStopRecoveryConnector{fakeConnector: newFakeConnector(issue), stateUpdated: make(chan struct{}), releaseStateUpdate: make(chan struct{})}
 		runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}
-		runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-		if err != nil {
-			t.Fatalf("store.Open() error = %v", err)
-		}
-		t.Cleanup(func() { _ = runtimeStore.Close() })
+		runtimeStore := orchestrator.NewRuntimeFixtureForTest()
 		now := time.Date(2026, 7, 14, 18, 0, 0, 0, time.UTC)
 		attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL, WorkerType: "agent", Lane: issue.State, AttemptNumber: 0, StartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Minute)})
 		if err != nil {
@@ -388,19 +363,11 @@ func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
 }
 
 func TestStopRunRecoveryAppliesTodoPriorityBeforeDispatch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	issue := testIssue("issue-stop-todo-recovery", "digitaldrywood/detent#1354", "Todo")
 	tracker := newOperatorStopAtomicConnector(issue)
 	close(tracker.releasePriority)
 	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}
-	runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = runtimeStore.Close() })
+	runtimeStore := orchestrator.NewRuntimeFixtureForTest()
 	now := time.Now().UTC()
 	attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL, WorkerType: "agent", Lane: "In Progress", AttemptNumber: 0, StartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Minute)})
 	if err != nil {
@@ -433,18 +400,10 @@ func TestStopRunRecoveryAppliesTodoPriorityBeforeDispatch(t *testing.T) {
 }
 
 func TestStopRunHoldsItemWhenTrackerTransitionFails(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	issue := testIssue("issue-stop-failure", "digitaldrywood/detent#1311", "In Progress")
 	tracker := &operatorStopFailingConnector{fakeConnector: newFakeConnector(issue), err: errors.New("tracker unavailable")}
 	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}
-	runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = runtimeStore.Close() })
+	runtimeStore := orchestrator.NewRuntimeFixtureForTest()
 	orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkAttempts: runtimeStore})
 	if err != nil {
 		t.Fatalf("orchestrator.New() error = %v", err)
@@ -534,12 +493,12 @@ func (r *operatorStopBlockingRunner) Run(ctx context.Context, request orchestrat
 }
 
 type operatorStopCompletionStore struct {
-	store.Store
+	*orchestrator.RuntimeFixtureForTest
 	completed chan store.WorkflowPhaseEvent
 }
 
 func (s *operatorStopCompletionStore) RecordWorkflowPhaseEvent(ctx context.Context, event store.WorkflowPhaseEvent) (int64, error) {
-	eventID, err := s.Store.RecordWorkflowPhaseEvent(ctx, event)
+	eventID, err := s.RuntimeFixtureForTest.RecordWorkflowPhaseEvent(ctx, event)
 	if err != nil {
 		return eventID, err
 	}

@@ -197,8 +197,8 @@ func TestOperatorBillingUsagePostgres(t *testing.T) {
 		}
 		t.Run(string(organization), func(t *testing.T) {
 			call := runner.AgentToolCall{Name: "get_billing_usage", Arguments: json.RawMessage(`{}`)}
-			if f.service.database.reader != nil {
-				t.Fatal("PG billing fixture has a legacy reader")
+			if f.service.database.postgres == nil || f.service.config.TenantRepository == nil {
+				t.Fatal("required PostgreSQL fixture owners are not configured")
 			}
 			value, err := tools.screenRead(ctx, record, call)
 			if err != nil {

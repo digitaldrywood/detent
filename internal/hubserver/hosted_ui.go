@@ -2,9 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"errors"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -13,7 +11,6 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/staticasset"
@@ -214,37 +211,25 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		return c.NoContent(status)
 	}
 	initialScope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(c.Param("project")), credential: initial}
-	if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), initialScope, false); err != nil {
+	if err := s.requireHostedProject(c.Request().Context(), nil, initialScope, false); err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "Project access is required for events")
 	}
-	if s.config.TenantRepository != nil {
-		if err := s.requireBoardRecordProject(c.Request().Context(), initialScope); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	} else if err := requireDashboardProject(c.Request().Context(), s.database.reader, initialScope); err != nil {
+	if err := s.requireBoardRecordProject(c.Request().Context(), initialScope); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	workspaceID := c.QueryParam("workspace")
 	workItemID := c.QueryParam("work_item")
 	if workItemID != "" {
 		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-		var err error
-		if s.config.TenantRepository != nil {
-			err = s.config.TenantRepository.ReadTenant(readCtx, initialScope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				return requireDashboardRecordItem(readCtx, r, initialScope, workItemID)
-			})
-		} else {
-			_, _, err = readNativeIssue(readCtx, s.database.reader, initialScope, workItemID)
-		}
+		err := s.config.TenantRepository.ReadTenant(readCtx, initialScope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			return requireDashboardRecordItem(readCtx, r, initialScope, workItemID)
+		})
 		cancelRead()
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
 	if workspaceID != "" {
-		if s.config.TenantRepository != nil {
-			return s.nativeAPIError(c, workItemStorageUnavailable())
-		}
 		if _, err := s.readWorkspace(c.Request().Context(), initialScope, workspaceID); err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -286,37 +271,15 @@ func (s *Service) hostedMetadata(c echo.Context) error {
 		}
 	} else {
 		session, _, err := s.hostedSession(c.Request().Context(), c)
-		if err != nil || session.Identity.SupportActor != "" || !hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+		if err != nil || session.Identity == nil || session.Identity.SupportActor != "" || !hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
 			return s.hostedJSONError(c, http.StatusForbidden, "Staff access is required for service metadata")
 		}
 	}
-	report, err := s.database.hostedMetadata(c.Request().Context())
+	report, err := s.readHostedMetadata(c.Request().Context())
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "metadata_unavailable", Message: "Service metadata is temporarily unavailable"})
 	}
-	usage, err := s.hostedUsage(c.Request().Context(), report)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, usage)
-}
-
-type hostedUsageReport struct {
-	CostDrivers hostedCostDrivers `json:"cost_drivers"`
-	Entitlement HostedEntitlement `json:"entitlement"`
-	HostedMetadata
-	PlanID            string `json:"plan_id"`
-	StorageQuotaBytes int64  `json:"storage_quota_bytes,omitempty"`
-	EventQuota        int64  `json:"event_quota,omitempty"`
-}
-
-func (s *Service) hostedUsage(ctx context.Context, report HostedMetadata) (hostedUsageReport, error) {
-	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now())
-	if err != nil {
-		return hostedUsageReport{}, err
-	}
-	drivers, err := s.hostedCostDrivers(ctx, entitlement)
-	return hostedUsageReport{CostDrivers: drivers, HostedMetadata: report, Entitlement: entitlement, PlanID: entitlement.EffectiveBase.ID, StorageQuotaBytes: entitlement.Allowances["collaboration_bytes"], EventQuota: entitlement.Allowances["ingested_events"]}, err
+	return c.JSON(http.StatusOK, report)
 }
 
 func (s *Service) hostedBilling(c echo.Context) error {
@@ -327,88 +290,15 @@ func (s *Service) hostedBilling(c echo.Context) error {
 	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "billing_viewed", "GET /api/cloud/billing", "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	report, err := s.database.hostedMetadata(c.Request().Context())
+	report, err := s.readHostedMetadata(c.Request().Context())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	usage, err := s.hostedUsage(c.Request().Context(), report)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, usage)
+	return c.JSON(http.StatusOK, report)
 }
 
 func hostedFormTrue(c echo.Context, key string) bool {
 	return strings.EqualFold(c.FormValue(key), "true")
-}
-
-type hostedCostDrivers struct {
-	ActiveIssues          int64            `json:"active_issues"`
-	ArchivedIssues        int64            `json:"archived_issues"`
-	DatabaseBytes         *int64           `json:"database_bytes"`
-	WALBytes              *int64           `json:"wal_bytes"`
-	Requests              *int64           `json:"requests"`
-	RequestBytes          *int64           `json:"request_bytes"`
-	ResponseBytes         *int64           `json:"response_bytes"`
-	ArtifactRetainedBytes *int64           `json:"artifact_retained_bytes"`
-	ArtifactReservedBytes *int64           `json:"artifact_reserved_bytes"`
-	RelayBytes            *int64           `json:"relay_bytes"`
-	WindowEndsAt          time.Time        `json:"window_ends_at"`
-	OperatorAI            chatUsageSummary `json:"operator_ai"`
-	OperatorAICostUSD     *float64         `json:"operator_ai_cost_usd"`
-}
-
-func (s *Service) hostedCostDrivers(ctx context.Context, entitlement HostedEntitlement) (hostedCostDrivers, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	d := s.database
-	result := hostedCostDrivers{WindowEndsAt: entitlement.WindowEndsAt}
-	if err := d.reader.QueryRowContext(ctx, `SELECT coalesce(sum(CASE WHEN i.archived=0 THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN i.archived=1 THEN 1 ELSE 0 END),0) FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.organization_id=? AND p.profile='native'`, d.hostedOrganization).Scan(&result.ActiveIssues, &result.ArchivedIssues); err != nil {
-		return result, err
-	}
-	for _, file := range []struct {
-		suffix string
-		value  **int64
-	}{{"", &result.DatabaseBytes}, {"-wal", &result.WALBytes}} {
-		info, err := os.Stat(d.path + file.suffix)
-		if err == nil {
-			bytes := info.Size()
-			*file.value = &bytes
-		} else if file.suffix == "-wal" && errors.Is(err, os.ErrNotExist) {
-			zero := int64(0)
-			*file.value = &zero
-		}
-	}
-	if requests, known := entitlement.Usage["http_requests"]; known {
-		result.Requests = &requests
-		response := entitlement.Usage["http_response_bytes"]
-		result.ResponseBytes = &response
-		if entitlement.Usage["http_request_bytes_known"] == requests {
-			bytes := entitlement.Usage["http_request_bytes"]
-			result.RequestBytes = &bytes
-		}
-	}
-	var artifacts int64
-	if err := d.reader.QueryRowContext(ctx, "SELECT count(*) FROM hosted_artifact_usage WHERE observed_at > 0").Scan(&artifacts); err != nil {
-		return result, err
-	}
-	if artifacts > 0 {
-		retained, reserved := entitlement.Usage["artifact_retained_bytes"], entitlement.Usage["artifact_reserved_bytes"]
-		result.ArtifactRetainedBytes, result.ArtifactReservedBytes = &retained, &reserved
-	}
-	if relay, known := entitlement.Usage["relay_bytes"]; known {
-		result.RelayBytes = &relay
-	}
-	var err error
-	result.OperatorAI, err = d.chatUsageSummary(ctx, d.hostedOrganization, chatBillingWindow(s.config.now(), billing.Snapshot{}), nil)
-	if err != nil {
-		return result, err
-	}
-	if result.OperatorAI.UnpricedTurns == 0 {
-		cost := result.OperatorAI.CostUSD
-		result.OperatorAICostUSD = &cost
-	}
-	return result, nil
 }
 
 // hostedAccountSetupFor shares account/onboarding facts with the typed session

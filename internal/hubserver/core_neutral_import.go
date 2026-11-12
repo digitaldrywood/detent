@@ -173,43 +173,48 @@ func (s *coreNeutralImport) one(ctx context.Context, table string, filters map[s
 }
 
 func readCoreNeutralObject(ctx context.Context, source *coreNeutralImport, organization tracker.OrganizationID, objects attachment.DetailStore, key string) ([]byte, error) {
+	_, raw, err := readCoreNeutralObjectWithReference(ctx, source, organization, objects, key)
+	return raw, err
+}
+
+func readCoreNeutralObjectWithReference(ctx context.Context, source *coreNeutralImport, organization tracker.OrganizationID, objects attachment.DetailStore, key string) (attachment.ArchiveReference, []byte, error) {
 	row, err := source.one(ctx, "change_content_objects", map[string]string{"organization_id": string(organization), "object_key": key}, []string{"object_key"})
 	ref := contentReference()
 	if errors.Is(err, sql.ErrNoRows) {
 		row, err = source.one(ctx, "attachments", map[string]string{"organization_id": string(organization), "object_key": key, "kind": "archive", "customer_owned": "0", "storage_binding_id": ""}, []string{"object_key"})
 		if err != nil {
-			return nil, err
+			return attachment.ArchiveReference{}, nil, err
 		}
 		err = row.Decode(map[string]any{"object_key": &ref.Key, "sha256": &ref.SHA256, "size": &ref.CompressedSize, "uncompressed_size": &ref.UncompressedSize})
 	} else if err == nil {
 		err = row.Decode(map[string]any{"object_key": &ref.Key, "object_sha256": &ref.SHA256, "object_bytes": &ref.CompressedSize, "content_bytes": &ref.UncompressedSize})
 	}
 	if err != nil {
-		return nil, err
+		return attachment.ArchiveReference{}, nil, err
 	}
 	if err := ref.Validate(string(organization)); err != nil {
-		return nil, err
+		return attachment.ArchiveReference{}, nil, err
 	}
 	raw, err := objects.ReadDetail(ctx, string(organization), ref)
 	if err == nil && int64(len(raw)) == ref.UncompressedSize {
-		return raw, nil
+		return ref, raw, nil
 	}
 	if err == nil {
 		err = artifact.ErrIntegrity
 	}
 	cell, ok := row.Values["pending_content"]
 	if !ok || cell.Null || len(cell.Data) == 0 {
-		return nil, err
+		return attachment.ArchiveReference{}, nil, err
 	}
 	pending, decodeErr := coreNeutralBytes(row, "pending_content")
 	if decodeErr != nil {
-		return nil, decodeErr
+		return attachment.ArchiveReference{}, nil, decodeErr
 	}
 	prepared, _, prepareErr := attachment.PrepareArchive(string(organization), ref.SchemaVersion, bytes.NewReader(pending))
 	if prepareErr != nil || prepared != ref {
-		return nil, errors.Join(artifact.ErrIntegrity, prepareErr)
+		return attachment.ArchiveReference{}, nil, errors.Join(artifact.ErrIntegrity, prepareErr)
 	}
-	return pending, nil
+	return ref, pending, nil
 }
 
 func (s *coreNeutralImport) each(ctx context.Context, table string, filters map[string]string, order []string, read func(postgres.NeutralImportRow) error) error {

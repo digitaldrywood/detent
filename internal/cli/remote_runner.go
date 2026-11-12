@@ -48,10 +48,18 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	}
 	scheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
 		hubProcessReceipts: true,
-		providerUsage:      usage,
-		logger:             logger,
-		applyProjects:      applyProjects,
-		runtimeConfig:      selected.get,
+		applyProjectConfiguration: func(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
+			if manager == nil {
+				view := project.MissingConfigurationOwner(desired.ProjectID)
+				view.Authority = "hub_configuration"
+				return view
+			}
+			return manager.ApplyHubConfiguration(ctx, id, desired)
+		},
+		providerUsage: usage,
+		logger:        logger,
+		applyProjects: applyProjects,
+		runtimeConfig: selected.get,
 		releasedStopped: func(ctx context.Context, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (bool, error) {
 			return remoteReleasedStopped(ctx, item, attempt)
 		},

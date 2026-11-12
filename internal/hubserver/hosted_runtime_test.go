@@ -7,6 +7,9 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func TestHostedPlanVersionCreatedAndGrantedWithoutRestart(t *testing.T) {
@@ -51,9 +54,36 @@ func TestHostedPlanVersionCreatedAndGrantedWithoutRestart(t *testing.T) {
 	if err != nil || usage.Allowances["collaboration_bytes"] != 1<<34 || usage.Base != config.Base {
 		t.Fatalf("allowance did not apply: %+v %v", usage, err)
 	}
+	var rows []billingstore.PlanAudit
+	if err := f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+		var err error
+		rows, err = r.BillingPlanAudits(t.Context(), 0, 100)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) == 100 {
+		t.Fatal("creation/grant audit population was clipped")
+	}
 	var audits int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_audit WHERE actor_id='test-operator' AND reason='runtime capacity' AND action IN ('create_plan','grant')").Scan(&audits); err != nil || audits != 2 {
-		t.Fatalf("creation/grant audit=%d %v", audits, err)
+	for _, row := range rows {
+		if row.ActorID != "test-operator" || row.Action != "create_plan" && row.Action != "grant" {
+			continue
+		}
+		raw, err := f.service.database.billingAuditStore.ReadDetail(t.Context(), string(f.service.accessOrganization()), row.Reference.ArchiveReference())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var command hostedPlanCommand
+		if err := json.Unmarshal(raw, &command); err != nil {
+			t.Fatal(err)
+		}
+		if command.Reason == "runtime capacity" {
+			audits++
+		}
+	}
+	if audits != 2 {
+		t.Fatalf("creation/grant audit=%d %v", audits, nil)
 	}
 }
 
@@ -125,11 +155,17 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 				}
 				return
 			}
+			readPlan := func() error {
+				return f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+					_, err := f.service.database.readHostedPlanRecord(t.Context(), r, plan.PlanReference)
+					return err
+				})
+			}
 			if test.prepare {
 				if f.service.database.hostedRuntime.Load() != before || len(f.service.hostedBillingConfig().Prices) != 1 {
 					t.Fatal("preparation exposed policy or prices")
 				}
-				if _, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, plan.PlanReference); err == nil {
+				if err := readPlan(); err == nil {
 					t.Fatal("preparation exposed a plan version")
 				}
 				if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", update.StageID); err != nil {
@@ -139,7 +175,7 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				if _, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, plan.PlanReference); err != nil {
+				if err := readPlan(); err != nil {
 					t.Fatal(err)
 				}
 				audits = runtimeAuditCount(t, f.service, "prepare_reload", update.Reason)
@@ -152,7 +188,12 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			if err := f.service.database.applyHostedPlanCommand(t.Context(), "test-operator", command); err != nil {
 				t.Fatal(err)
 			}
-			entitlement, err := f.service.database.hostedEntitlement(t.Context(), f.service.database.db, time.Now())
+			var entitlement HostedEntitlement
+			err := f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+				var err error
+				entitlement, err = f.service.database.hostedEntitlementRecord(t.Context(), r, time.Now())
+				return err
+			})
 			if err != nil || entitlement.Allowances["collaboration_bytes"] != 1<<34 {
 				t.Fatalf("reloaded allowance=%+v %v", entitlement, err)
 			}
@@ -166,7 +207,11 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			if f.service.database.plans().WindowSeconds != before.Plans.WindowSeconds || !slices.Equal(f.service.hostedBillingConfig().Prices, previous.Prices) {
 				t.Fatal("rollback did not restore the prior policy and active price list")
 			}
-			entitlement, err = f.service.database.hostedEntitlement(t.Context(), f.service.database.db, time.Now())
+			err = f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+				var err error
+				entitlement, err = f.service.database.hostedEntitlementRecord(t.Context(), r, time.Now())
+				return err
+			})
 			if err != nil || entitlement.Base != plan.PlanReference || entitlement.Allowances["collaboration_bytes"] != 1<<34 {
 				t.Fatalf("rollback changed an independently assigned version: %+v %v", entitlement, err)
 			}

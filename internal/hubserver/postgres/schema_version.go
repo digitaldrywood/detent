@@ -14,6 +14,17 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
+//go:embed roles.sql
+var rolesSQL string
+
+func MigrationFiles() (fs.FS, error) {
+	return fs.Sub(migrationFiles, "migrations")
+}
+
+func RolesSQL() string {
+	return rolesSQL
+}
+
 func LatestSchemaVersion() (int64, error) {
 	versions, err := schemaVersions()
 	if err != nil {

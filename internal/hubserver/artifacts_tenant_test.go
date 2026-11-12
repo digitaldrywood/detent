@@ -44,6 +44,7 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 			cfg.Clock = func() time.Time { return now }
 			cfg.Hosted.OrganizationID = string(organization)
 			cfg.SecretKeys = secretTestKeys(t, "1", "1")
+			seedHostedStartup(t, cfg)
 			service, err := Open(t.Context(), cfg)
 			if err != nil {
 				t.Fatal(err)
@@ -53,14 +54,13 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			if service.database.db != nil || service.database.reader != nil {
-				t.Fatal("legacy database is not nil")
+			if service.database.postgres == nil || service.config.TenantRepository == nil {
+				t.Fatal("required PostgreSQL fixture owners are not configured")
 			}
 			repository := service.config.TenantRepository
-			seedStartupOrganization(t, repository, organization)
 			const tokenID = "credential_runner"
-			const runnerID = "runner_example"
-			const machineID tracker.MachineID = "machine_example"
+			runnerID := "runner_" + strings.Repeat("e", 32)
+			machineID := tracker.MachineID("machine_" + strings.Repeat("f", 32))
 			workerToken := "example_runner_token_" + suffix
 			workerHash := apikey.HashToken(workerToken)
 			expires := now.Add(time.Hour)
@@ -615,41 +615,30 @@ type postgresArtifactFixture struct {
 	admin *sql.DB
 }
 
-func newPostgresArtifactFixture(t *testing.T) postgresArtifactFixture {
+func newPostgresArtifactFixture(t *testing.T, configure ...func(*Config)) postgresArtifactFixture {
 	t.Helper()
-	admin := postgresStartupTemplate.Database(t)
-	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
-	cfg.Hosted.OrganizationID = "org_" + strings.Repeat("a", 32)
-	cfg.Hosted.WorkOSOrganizationID = "org_provider"
-	cfg.Hosted.BootstrapSubject = "user_owner"
-	cfg.Hosted.StaffEmails = []string{"staff@example.test", "support@example.test"}
-	cfg.Hosted.SupportActors = []string{"support@example.test"}
-	cfg.SecretKeys = secretTestKeys(t, "1", "1")
-	service, err := Open(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
+	cfg := Config{RunDetails: &memoryRunDetails{}, Hosted: &HostedConfig{
+		OrganizationID:       "org_" + strings.Repeat("a", 32),
+		WorkOSOrganizationID: "org_provider",
+		BootstrapSubject:     "user_owner",
+		PublicURL:            "https://hub.example.test",
+		StaffEmails:          []string{"staff@example.test", "support@example.test"},
+		SupportActors:        []string{"support@example.test"},
+		Provider:             newHostedSecurityProvider(),
+	}, SecretKeys: secretTestKeys(t, "1", "1")}
+	for _, apply := range configure {
+		apply(&cfg)
 	}
-	t.Cleanup(func() {
-		if err := service.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	org := tracker.OrganizationID(cfg.Hosted.OrganizationID)
+	service := openHostedPostgresService(t, cfg)
+	org := service.accessOrganization()
 	project := tracker.ProjectID("prj_" + strings.Repeat("b", 32))
-	err = service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", Slug: "example", CreatedAt: time.Now()}); err != nil {
-			return err
-		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "org_provider", AllocationGeneration: 1}); err != nil {
-			return err
-		}
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()})
 		return err
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
-	return postgresArtifactFixture{hostedSecurityFixture: hostedSecurityFixture{service: service, provider: cfg.Hosted.Provider.(*hostedSecurityProvider), project: project, base: "/api/v2/organizations/" + string(org) + "/projects/" + string(project)}, admin: admin}
+	return postgresArtifactFixture{hostedSecurityFixture: hostedSecurityFixture{service: service, provider: cfg.Hosted.Provider.(*hostedSecurityProvider), project: project, base: "/api/v2/organizations/" + string(org) + "/projects/" + string(project)}, admin: hostedPostgresAdmin(t, service)}
 }
 
 func (f postgresArtifactFixture) user(t *testing.T, name, role, email, grant, support string) hostedSecurityUser {
@@ -677,25 +666,35 @@ func (f postgresArtifactFixture) user(t *testing.T, name, role, email, grant, su
 	return user
 }
 
+func (f postgresArtifactFixture) grant(t *testing.T, user hostedSecurityUser, write, runner bool) {
+	t.Helper()
+	org := f.service.accessOrganization()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(t.Context(), user.identity.Subject)
+		if err != nil {
+			return err
+		}
+		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: member.UserID, ProjectID: f.project, CanWrite: write, ManageRunner: runner}); err != nil {
+			return err
+		}
+		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: member.PrincipalID, ProjectID: f.project})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func seedPostgresHostedArtifact(t *testing.T, f postgresArtifactFixture) (artifact.Reference, string, string) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	org := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
-	item := tracker.NativeWorkItemID(artifact.NewID("wi"))
+	item := f.seedIssue(t, 1)
 	publisher := "artifact-publisher-token"
 	binding := artifact.Binding{ServiceID: artifact.NewID("service"), Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: "artifact-publisher"}
 	ref := artifact.Reference{SchemaVersion: 1, Scope: artifact.Scope{OrganizationID: string(org), ProjectID: string(f.project), WorkItemID: string(item), RunID: artifact.NewID("run"), AttemptID: artifact.NewID("attempt")}, ServiceID: binding.ServiceID, ArtifactID: artifact.NewID("artifact"), ManifestID: artifact.NewID("manifest"), Revision: 1, SHA256: artifact.Digest([]byte("manifest")), Kind: "log", State: "partial", Availability: "available", Bytes: 100, Objects: 1, ExpiresAt: now.Add(time.Hour), ObservedAt: now}
-	version, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: f.project, WorkItemID: item, RecordID: string(item), Revision: 1}, []byte(`{}`))
-	if err != nil {
+	if err := ref.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	err = f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: f.project, NativeID: item, Number: 1, Revision: 1, Title: "private-issue-sentinel"}); err != nil {
-			return err
-		}
-		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
-			return err
-		}
+	err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: binding.PublisherTokenID, Name: "Example publisher", Hash: apikey.HashToken(publisher), Scope: "worker", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}

@@ -13,7 +13,6 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/project"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 var errMissingGlobalConfigManager = errors.New("global config reload manager is required")
@@ -32,7 +31,6 @@ type globalConfigReloader struct {
 	resolveGitHubToken func(context.Context, globalconfig.Config) (string, error)
 	applyRuntime       func(globalconfig.Config) error
 	onReload           func(globalconfig.Config)
-	settings           store.LocalConfigurationStore
 }
 
 type globalConfigChange struct {
@@ -50,7 +48,6 @@ func startGlobalConfigWatcher(
 	githubToken *runtimeGitHubTokenState,
 	applyRuntime func(globalconfig.Config) error,
 	onReload func(globalconfig.Config),
-	settings ...store.LocalConfigurationStore,
 ) <-chan struct{} {
 	if ctx == nil {
 		ctx = context.Background()
@@ -85,9 +82,6 @@ func startGlobalConfigWatcher(
 		applyRuntime: applyRuntime,
 		onReload:     onReload,
 	}
-	if len(settings) > 0 && !current.Client.Configured() {
-		reloader.settings = settings[0]
-	}
 	syncLatestGlobalConfig(ctx, path, reloader)
 	go func() {
 		defer close(done)
@@ -115,9 +109,6 @@ func syncLatestGlobalConfig(ctx context.Context, path string, reloader *globalCo
 		return
 	}
 	latest, err := readRunnerConfiguration(path)
-	if reloader.settings != nil {
-		latest, err = readRuntimeConfiguration(ctx, reloader.settings, path, reloader.current)
-	}
 	update := configwatcher.FileUpdate[globalconfig.Config]{
 		Path:  path,
 		Value: latest,
@@ -170,14 +161,6 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 			Value: candidate,
 			At:    time.Now(),
 		})
-		if r.settings != nil {
-			candidate = r.current
-			latest.Value, latest.Err = readRuntimeConfiguration(ctx, r.settings, update.Path, r.current)
-			if latest.Err != nil {
-				logger.Warn("local configuration reload failed", "error", latest.Err)
-				return
-			}
-		}
 		if reflect.DeepEqual(candidate, latest.Value) {
 			break
 		}
@@ -254,26 +237,17 @@ func (r *globalConfigReloader) applyCandidate(
 	ctx context.Context,
 	update configwatcher.FileUpdate[globalconfig.Config],
 ) (project.ReconcileResult, error) {
-	if r.settings != nil {
-		latest, err := readRuntimeConfiguration(ctx, r.settings, update.Path, r.current)
-		if err != nil {
-			return project.ReconcileResult{}, err
-		}
-		update.Value, update.Err = latest, nil
-	}
 	if update.Err != nil {
 		return project.ReconcileResult{}, update.Err
 	}
 	if r.manager == nil {
 		return project.ReconcileResult{}, errMissingGlobalConfigManager
 	}
-	if r.settings == nil {
-		resolved, err := resolveRunnerProjects(ctx, update.Value, r.current)
-		if err != nil {
-			return project.ReconcileResult{}, err
-		}
-		update.Value = resolved
+	resolved, err := resolveRunnerProjects(ctx, update.Value, r.current)
+	if err != nil {
+		return project.ReconcileResult{}, err
 	}
+	update.Value = resolved
 
 	previousGitHubToken := ""
 	nextGitHubToken := ""

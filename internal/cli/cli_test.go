@@ -3,7 +3,6 @@ package cli_test
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/cli"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestRootCommandHelpListsAdminCommands(t *testing.T) {
@@ -55,8 +53,6 @@ func TestCommandHelpLeadsWithExample(t *testing.T) {
 	}{
 		{name: "pause", args: []string{"pause"}, example: "detent pause api", flags: []string{"--config", "--reason"}},
 		{name: "migration Hub", args: []string{"hub", "serve"}, example: "detent hub serve", flags: []string{"--database", "--listen"}},
-		{name: "migration backup", args: []string{"hub", "backup"}, example: "detent hub backup", flags: []string{"--database", "--output"}},
-		{name: "migration verification", args: []string{"hub", "verify"}, example: "detent hub verify", flags: []string{"--database"}},
 		{name: "migration registration", args: []string{"hub", "runner", "register"}, example: "detent hub runner register", flags: []string{"--url", "--organization", "--name", "--capacity", "--config", "--workspace-root"}},
 		{name: "migration foreground runner", example: "detent", flags: []string{"--config", "--headless"}},
 	} {
@@ -1283,15 +1279,7 @@ func writeCLIInstallConfig(t *testing.T, path string, projects []globalconfig.Pr
 
 func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {
 	t.Helper()
-	cfg := writeCLIInstallConfig(t, path, projects)
-	backend, err := store.Open(context.Background(), store.Config{Path: filepath.Join(filepath.Dir(path), "detent.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer backend.Close()
-	if _, err := backend.InitializeLocalConfiguration(context.Background(), cfg, nil); err != nil {
-		t.Fatal(err)
-	}
+	writeCLIInstallConfig(t, path, projects)
 }
 
 func assertProject(t *testing.T, configPath string, id string, assert func(globalconfig.Project)) {
@@ -1342,22 +1330,5 @@ func assertHintedError(t *testing.T, err error, wantErr error, wantMessage strin
 
 func readStoredCLIConfiguration(t *testing.T, path string) (globalconfig.Config, error) {
 	t.Helper()
-	cfg, err := globalconfig.Read(path, globalconfig.WithoutProjectConfiguration(), globalconfig.WithProjectPathLiterals())
-	if err != nil {
-		return cfg, err
-	}
-	dbPath := filepath.Join(filepath.Dir(path), "detent.db")
-	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
-		return globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
-	}
-	db, err := store.Open(context.Background(), store.Config{Path: dbPath})
-	if err != nil {
-		return cfg, err
-	}
-	defer db.Close()
-	cfg, err = db.LocalConfiguration(context.Background(), cfg)
-	if errors.Is(err, sql.ErrNoRows) {
-		return globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
-	}
-	return cfg, err
+	return globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
 }

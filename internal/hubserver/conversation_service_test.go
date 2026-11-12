@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -115,6 +116,7 @@ func TestTranslateConversationError(t *testing.T) {
 	}{
 		{name: "linked", err: &errConversationLinked{ExistingConversationID: "conv_x"}, code: "conversation_already_linked", status: http.StatusConflict},
 		{name: "revision", err: &errConversationRevision{}, code: "revision_conflict", status: http.StatusConflict},
+		{name: "typed missing", err: corestore.ErrNotFound, code: "not_found", status: http.StatusNotFound},
 		{name: "stale", err: conversation.ErrStaleExecution, code: "stale_execution", status: http.StatusConflict},
 	}
 	for _, test := range tests {
@@ -213,17 +215,15 @@ func TestConversationServiceWakesPendingWorkAfterRestart(t *testing.T) {
 			linked = f.create(t, linked)
 			idle := f.create(t, f.record(f.owner, "Idle", now))
 
-			tx := f.tx(t)
 			for _, seed := range []struct {
 				record   conversationRecord
 				delivery conversation.Delivery
 			}{{unlinked, conversation.DeliverySaved}, {linked, conversation.DeliveryQueued}, {idle, conversation.DeliveryCompleted}} {
 				message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: seed.record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "hello", Data: json.RawMessage("{}"), Delivery: seed.delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
-				if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
+				if err := f.appendMessage(t, t.Context(), &message); err != nil {
 					t.Fatalf("appendMessage() error = %v", err)
 				}
 			}
-			f.commit(t, tx)
 
 			if err := service.wakePending(t.Context()); err != nil {
 				t.Fatalf("wakePending() error = %v", err)

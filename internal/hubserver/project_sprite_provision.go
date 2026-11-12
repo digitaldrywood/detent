@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +16,14 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -31,29 +37,49 @@ func spriteShellQuote(value string) string {
 func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name string) ([]byte, error) {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	actor, err := s.spritePoolAuthority(readCtx, s.database.reader, scope)
+	var secret accessstore.Secret
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, workItemStorageUnavailable()
+	}
+	err := repository.ReadTenantSnapshot(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		owner, ok := r.(postgres.SpriteReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		actor, err := owner.SpritePoolAuthority(readCtx, s.config.now())
+		if err != nil {
+			return err
+		}
+		scope.credential.ID = actor
+		member, err := owner.SpriteMember(readCtx, name)
+		if err != nil {
+			return err
+		}
+		if member.State == "deleted" {
+			return corestore.ErrNotFound
+		}
+		scope.project = tracker.ProjectID(member.TokenProjectID)
+		secret, err = r.AccessSecret(readCtx, scope.project, flySpritesToken)
+		if errors.Is(err, corestore.ErrNotFound) && scope.project != "" {
+			secret, err = r.AccessSecret(readCtx, "", flySpritesToken)
+		}
+		if err != nil {
+			return err
+		}
+		if secret.OrganizationSlug != member.ProviderOrganization {
+			return errSpritesValidation
+		}
+		scope.project = secret.ProjectID
+		return accessstore.VerifySecret(s.config.SecretKeys, secret)
+	})
 	if err != nil {
 		return nil, err
 	}
-	scope.credential.ID = actor
-	var project tracker.ProjectID
-	var provider string
-	err = s.database.reader.QueryRowContext(readCtx, `SELECT token_project_id,provider_organization FROM organization_sprite_members WHERE organization_id=? AND name=? AND state<>'deleted'`, scope.organization, name).Scan(&project, &provider)
-	if err != nil {
+	if err := s.auditSecretUse(ctx, scope, secret.Envelope.Version); err != nil {
 		return nil, err
 	}
-	scope.project = project
-	scope, slug, envelope, err := s.resolveSpritesSecret(readCtx, s.database.reader, scope)
-	if err != nil {
-		return nil, err
-	}
-	if slug != provider {
-		return nil, errSpritesValidation
-	}
-	if err := s.auditSecretUse(ctx, scope, envelope.Version); err != nil {
-		return nil, err
-	}
-	return s.config.SecretKeys.Open(envelope, secretAAD(string(scope.organization), string(scope.project), flySpritesToken))
+	return s.config.SecretKeys.Open(secret.Envelope, secretAAD(string(scope.organization), string(scope.project), flySpritesToken))
 }
 
 func (s *Service) spritePoolClient() *http.Client {
@@ -68,7 +94,7 @@ func (s *Service) spritePoolClient() *http.Client {
 
 func (s *Service) poolSpriteRequest(ctx context.Context, scope nativeScope, name, method, path string, body []byte) (*http.Response, error) {
 	if method != http.MethodDelete && method != http.MethodGet {
-		allowed, err := monthlySpriteAllowed(ctx, s.database.reader, scope, s.config.now(), s.database.billingRepository)
+		allowed, err := monthlySpriteAllowed(ctx, nil, scope, s.config.now(), s.database.billingRepository)
 		if err != nil {
 			return nil, err
 		}
@@ -112,7 +138,18 @@ func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeSco
 			readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 			defer cancel()
 			var exists bool
-			err := s.database.reader.QueryRowContext(readCtx, `SELECT EXISTS(SELECT 1 FROM organization_sprite_members WHERE organization_id=? AND name=?)`, scope.organization, name).Scan(&exists)
+			err := s.accessRead(readCtx, scope.organization, func(r tenantstore.Reader) error {
+				owner, ok := r.(postgres.SpriteReader)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				_, err := owner.SpriteMember(readCtx, name)
+				exists = err == nil
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
+				return err
+			})
 			return exists, err
 		})
 		if err != nil {
@@ -128,128 +165,184 @@ func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeSco
 
 func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool, name string) (bool, error) {
 	scope.project = ""
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	actor, err := s.spritePoolAuthority(ctx, tx, scope)
-	if err != nil {
-		return false, err
-	}
-	scope.credential = apiCredential{ID: actor}
-	var ceiling, count int
-	var revision int64
-	if err := tx.QueryRowContext(ctx, `SELECT max_runners,revision,(SELECT count(*) FROM organization_sprite_members m WHERE m.organization_id=p.organization_id AND m.state<>'deleted') FROM organization_sprite_pools p WHERE organization_id=?`, scope.organization).Scan(&ceiling, &revision, &count); err != nil {
-		return false, err
-	}
-	if ceiling <= count || revision != settings.Revision {
-		return false, nil
-	}
 	now := s.config.now()
-	allowed, err := monthlySpriteAllowed(ctx, tx, scope, now, s.database.billingRepository)
-	if err != nil || !allowed {
-		return false, err
-	}
-	placement, err := readOrganizationPlacementSnapshot(ctx, tx, scope, now, s.database.billingRepository)
+	placement, err := s.readOrganizationPlacementSnapshot(ctx, scope, now)
 	if err != nil {
 		return false, err
 	}
-	projects, err := readSpriteAllocationProjects(ctx, tx, scope)
+	projects, err := s.readSpriteAllocationProjects(ctx, scope)
 	if err != nil {
 		return false, err
 	}
-	var allocationRevision tracker.Revision
+	allocationRevision := tracker.Revision(0)
 	for _, project := range projects {
-		allocationScope := scope
-		allocationScope.project = project
-		allocation, err := readProjectSpriteAllocation(ctx, tx, allocationScope)
+		selected := scope
+		selected.project = project
+		allocation, err := s.readSpriteAllocationController(ctx, selected)
 		if err != nil {
 			return false, err
 		}
-		if allocation.Shortfall > 0 && allocation.ProvisionFailures < spriteProvisionAttempts {
-			valid, err := s.projectSpriteAllocationAuthority(ctx, tx, allocationScope)
-			if err != nil {
-				return false, err
-			}
-			if !valid {
-				continue
-			}
-			decision, err := checkMonthlyBudget(ctx, tx, allocationScope, budget.CostExposure{SpriteInfrastructure: true}, false, now, s.database.billingRepository)
-			if err != nil {
-				return false, err
-			}
-			if !decision.Allowed {
-				continue
-			}
-			scope.project = project
-			settings.MinRunners = allocation.DesiredCount
-			allocationRevision = allocation.Revision
-			break
+		if allocation.Shortfall <= 0 {
+			continue
 		}
+		valid := false
+		err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+			var err error
+			valid, err = s.projectSpriteAllocationAuthority(ctx, r, selected)
+			return err
+		})
+		if err != nil {
+			return false, err
+		}
+		if !valid {
+			continue
+		}
+		decision, err := checkMonthlyBudget(ctx, nil, selected, budget.CostExposure{SpriteInfrastructure: true}, false, now, s.config.TenantRepository)
+		if err != nil {
+			return false, err
+		}
+		if !decision.Allowed {
+			continue
+		}
+		scope.project = project
+		settings.MinRunners = allocation.DesiredCount
+		allocationRevision = allocation.Revision
+		break
 	}
 	if scope.project == "" && !allowOrganization {
 		return false, nil
 	}
-	ownerCount := 0
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM organization_sprite_members WHERE organization_id=? AND allocation_project_id=? AND state<>'deleted'`, scope.organization, scope.project).Scan(&ownerCount); err != nil {
-		return false, err
-	}
-	input := spriteScaleInput{Depth: placement.SpriteTarget, Free: placement.SpriteFree, Pending: placement.Pending, Floor: settings.MinRunners, Ceiling: ceiling, Count: ownerCount, CreateLimit: placement.ProviderFree}
-	decision, err := checkMonthlyBudget(ctx, tx, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now, s.database.billingRepository)
+	token, err := s.config.generateToken()
 	if err != nil {
 		return false, err
 	}
-	if !decision.Allowed {
-		input.CreateLimit = new(placement.Provisionable)
-	}
-	providerFree, providerKnown, err := spritePoolProviderFree(ctx, tx, scope, count, now)
-	if err != nil {
-		return false, err
-	}
-	if scope.project != "" {
-		input.CreateLimit = nil
-		input.Depth, input.Free, input.Pending = 0, 0, 0
-	} else if placement.Policy.Mode == "local_first" {
-		input.Floor = min(input.Floor, placement.Policy.OverflowSlots)
-	}
-	if providerKnown && (input.CreateLimit == nil || providerFree < *input.CreateLimit) {
-		input.CreateLimit = new(providerFree)
-	}
-	if !decision.Allowed && scope.project != "" {
-		input.CreateLimit = new(0)
-	}
-	input.Ceiling = min(input.Ceiling, ownerCount+ceiling-count)
-	if decideSpriteScale(input).Create == 0 {
-		return false, nil
-	}
-	before, err := s.database.hostedConsumption(ctx, tx, now)
-	if err != nil {
-		return false, err
-	}
-	request := runnerauth.EnrollmentRequest{Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, TTLSeconds: int64(runnerauth.MaxEnrollmentTTL / time.Second)}
-	if scope.project != "" {
-		request.Scope, request.ProjectIDs = "projects", []tracker.ProjectID{scope.project}
-	}
-	enrollment, err := s.createRunnerEnrollmentInTx(ctx, tx, scope, request, now)
-	if err != nil {
-		return false, err
-	}
-	inserted, err := tx.ExecContext(ctx, `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at,allocation_project_id,allocation_revision) SELECT ?,?,organization_slug,?,'bootstrapping',?,?,?,? FROM organization_secrets WHERE organization_id=? AND kind=? ON CONFLICT(organization_id,name) DO NOTHING`, scope.organization, name, enrollment.ID, formatHubTime(now), formatHubTime(now), scope.project, allocationRevision, scope.organization, flySpritesToken)
-	if err == nil {
-		if count, countErr := inserted.RowsAffected(); countErr == nil && count == 0 {
-			return false, errSpriteNameTaken
+	enrollment := runnerauth.Enrollment{ID: newNativeID("enrollment"), Token: token, ExpiresAt: now.Add(runnerauth.MaxEnrollmentTTL)}
+	reserved := false
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(ctx); err != nil {
+			return err
 		}
-	}
-	if err := requireRunnerUpdate(inserted, err); err != nil {
+		owner, ok := w.(postgres.SpriteWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		actor, err := owner.SpritePoolAuthority(ctx, s.config.now())
+		if err != nil {
+			return err
+		}
+		scope.credential.ID = actor
+		pool, err := owner.SpritePool(ctx)
+		if err != nil {
+			return err
+		}
+		if pool.Revision != settings.Revision {
+			return nil
+		}
+		members, err := readSpriteMembers(ctx, owner)
+		if err != nil {
+			return err
+		}
+		count, ownerCount := 0, 0
+		for _, member := range members {
+			if member.State != "deleted" {
+				count++
+				if member.AllocationProjectID == string(scope.project) {
+					ownerCount++
+				}
+			}
+		}
+		ceiling := int(pool.MaxRunners)
+		if count >= ceiling {
+			return nil
+		}
+		if _, err := owner.SpriteMember(ctx, name); err == nil {
+			return errSpriteNameTaken
+		} else if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if scope.project != "" {
+			allocation, _, err := projectSpriteAllocationRecord(ctx, w, scope)
+			if err != nil {
+				return err
+			}
+			if allocation.Revision != allocationRevision {
+				return corestore.ErrRevisionConflict
+			}
+			valid, err := s.projectSpriteAllocationAuthority(ctx, w, scope)
+			if err != nil {
+				return err
+			}
+			if !valid {
+				return nil
+			}
+			settings.MinRunners = allocation.DesiredCount
+		}
+		allowed, err := spriteMonthlyAllowedRecord(ctx, w, scope, s.config.now())
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return nil
+		}
+		input := spriteScaleInput{Depth: placement.SpriteTarget, Free: placement.SpriteFree, Pending: placement.Pending, Floor: settings.MinRunners, Ceiling: ceiling, Count: ownerCount, CreateLimit: placement.ProviderFree}
+		decision, err := spriteMonthlyDecisionRecord(ctx, w, scope, false, s.config.now())
+		if err != nil {
+			return err
+		}
+		if !decision.Allowed {
+			input.CreateLimit = new(placement.Provisionable)
+		}
+		providerFree, known, err := spritePoolProviderFree(ctx, w, scope, count, s.config.now())
+		if err != nil {
+			return err
+		}
+		if scope.project != "" {
+			input.CreateLimit = nil
+			input.Depth, input.Free, input.Pending = 0, 0, 0
+		} else if placement.Policy.Mode == "local_first" {
+			input.Floor = min(input.Floor, placement.Policy.OverflowSlots)
+		}
+		if known && (input.CreateLimit == nil || providerFree < *input.CreateLimit) {
+			input.CreateLimit = new(providerFree)
+		}
+		if !decision.Allowed && scope.project != "" {
+			input.CreateLimit = new(0)
+		}
+		input.Ceiling = min(input.Ceiling, ownerCount+ceiling-count)
+		if decideSpriteScale(input).Create == 0 {
+			return nil
+		}
+		secret, err := w.AccessSecret(ctx, "", flySpritesToken)
+		if err != nil {
+			return err
+		}
+		if err := accessstore.VerifySecret(s.config.SecretKeys, secret); err != nil {
+			return err
+		}
+		enrollmentScope := "organization"
+		var projectIDs []tracker.ProjectID
+		if scope.project != "" {
+			enrollmentScope = "projects"
+			projectIDs = []tracker.ProjectID{scope.project}
+		}
+		if err := w.CreateRunnerEnrollment(ctx, runnerstore.Enrollment{OrganizationID: scope.organization, ID: enrollment.ID, TokenHash: apikey.HashToken(token), Scope: enrollmentScope, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, ProjectIDs: projectIDs, CreatedAt: now, ExpiresAt: enrollment.ExpiresAt, CreatedBy: actor}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerSpriteMembership(ctx, runnerstore.SpriteMembership{OrganizationID: scope.organization, Name: name, ProviderOrganization: secret.OrganizationSlug, EnrollmentID: enrollment.ID, State: "bootstrapping", IdleSince: now, CreatedAt: now, AllocationProjectID: scope.project, AllocationRevision: int64(allocationRevision)}); errors.Is(err, corestore.ErrUniqueViolation) {
+			return errSpriteNameTaken
+		} else if err != nil {
+			return err
+		}
+		if err := s.applyRunnerTenantUsage(ctx, w, now, enrollment.ID, false, false); err != nil {
+			return err
+		}
+		reserved = true
+		return nil
+	})
+	if err != nil || !reserved {
 		return false, err
 	}
-	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
+
 	member := spritePoolMember{AllocationProjectID: scope.project, Name: name, State: "bootstrapping", EnrollmentID: enrollment.ID}
 	if err := s.requireSpriteMemberWanted(ctx, scope, name); err != nil {
 		return true, s.cancelPoolSpriteReservation(ctx, scope, member, err)
@@ -288,9 +381,14 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 func (s *Service) requireSpriteMemberWanted(ctx context.Context, scope nativeScope, name string) error {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	wanted, err := spriteMemberWanted(ctx, s.database.reader, scope.organization, name)
+	var wanted bool
+	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		var err error
+		wanted, err = spriteMemberWantedRecord(ctx, r, name)
+		return err
+	})
 	if err == nil && !wanted {
-		err = errSpriteReservationStale
+		return errSpriteReservationStale
 	}
 	return err
 }
@@ -299,51 +397,84 @@ func (s *Service) cancelPoolSpriteReservation(ctx context.Context, scope nativeS
 	if !errors.Is(cause, errSpriteReservationStale) && !errors.Is(cause, errSpriteNameTaken) {
 		return errors.Join(cause, s.retirePoolSpriteReservation(ctx, scope, member.Name, "Sprite provisioning did not start\n", false))
 	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE runner_enrollments SET revoked_at=? WHERE id=? AND organization_id=? AND revoked_at IS NULL`, formatHubTime(s.config.now()), member.EnrollmentID, scope.organization); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE organization_sprite_members SET state='deleted',bootstrap_log=bootstrap_log || ? WHERE organization_id=? AND name=? AND state IN ('bootstrapping','deleting')`, cause.Error()+" before paid creation; its reservation was cancelled\n", scope.organization, member.Name); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(ctx); err != nil {
+			return err
+		}
+		owner, ok := w.(postgres.SpriteReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		row, err := owner.SpriteMember(ctx, member.Name)
+		if err != nil {
+			return err
+		}
+		if row.EnrollmentID != member.EnrollmentID {
+			return corestore.ErrRevisionConflict
+		}
+		if row.State != "bootstrapping" && row.State != "deleting" {
+			return nil
+		}
+		enrollment, err := w.RunnerEnrollment(ctx, row.EnrollmentID)
+		if err != nil {
+			return err
+		}
+		if enrollment.RedeemedAt == nil && enrollment.RevokedAt == nil {
+			if err := w.RevokeRunnerEnrollment(ctx, enrollment.ID, s.config.now()); err != nil {
+				return err
+			}
+		}
+		updated := spriteMembershipRecord(row)
+		updated.State = "deleted"
+		updated.BootstrapLog += cause.Error() + " before paid creation; its reservation was cancelled\n"
+		return w.UpdateRunnerSpriteMembership(ctx, updated)
+	})
 }
 
 func (s *Service) retirePoolSpriteReservation(ctx context.Context, scope nativeScope, name, log string, failed bool) error {
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE organization_sprite_members SET state='deleting',bootstrap_log=bootstrap_log || ? WHERE organization_id=? AND name=? AND state IN ('bootstrapping','enrolled')`, log, scope.organization, name)
-	if err != nil {
-		return err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if changed > 0 && failed {
-		if _, err := tx.ExecContext(ctx, `UPDATE project_sprite_allocations SET provision_failures=provision_failures+1 WHERE organization_id=? AND EXISTS(SELECT 1 FROM organization_sprite_members m WHERE m.organization_id=project_sprite_allocations.organization_id AND m.name=? AND m.allocation_project_id=project_sprite_allocations.project_id AND m.allocation_revision=project_sprite_allocations.revision)`, scope.organization, name); err != nil {
+	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
-	}
-	return tx.Commit()
+		owner, ok := w.(postgres.SpriteWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		row, err := owner.SpriteMember(ctx, name)
+		if err != nil {
+			return err
+		}
+		if row.State != "bootstrapping" && row.State != "enrolled" {
+			return nil
+		}
+		updated := spriteMembershipRecord(row)
+		updated.State = "deleting"
+		updated.BootstrapLog += log
+		if err := w.UpdateRunnerSpriteMembership(ctx, updated); err != nil {
+			return err
+		}
+		if !failed || row.AllocationProjectID == "" {
+			return nil
+		}
+		allocation, err := owner.SpriteAllocation(ctx, tracker.ProjectID(row.AllocationProjectID))
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if allocation.Revision != row.AllocationRevision {
+			return nil
+		}
+		return owner.RecordSpriteProvisionFailure(ctx, tracker.ProjectID(row.AllocationProjectID), row.AllocationRevision)
+	})
 }
 
 func (s *Service) poolSpriteTokenAvailable(ctx context.Context, scope nativeScope) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	var count int
-	err := s.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, flySpritesToken).Scan(&count)
-	if err == nil && count == 0 {
-		err = sql.ErrNoRows
-	}
-	return count != 0, err
+	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { _, err := r.AccessSecret(ctx, "", flySpritesToken); return err })
+	return err == nil, err
 }
 
 func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, member spritePoolMember, settings spritePoolSettings, enrollment runnerauth.Enrollment) error {
@@ -395,27 +526,51 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	if execErr != nil {
 		log += "Bootstrap did not complete\n"
 	}
-	if _, err := s.database.db.ExecContext(ctx, `UPDATE organization_sprite_members SET bootstrap_log=? WHERE organization_id=? AND name=?`, log, scope.organization, member.Name); err != nil {
+	if err := s.updateSpritePoolMember(ctx, scope, member.Name, func(current *runnerstore.SpriteMembership) error {
+		if current.EnrollmentID != member.EnrollmentID {
+			return corestore.ErrRevisionConflict
+		}
+		current.BootstrapLog = log
+		return nil
+	}); err != nil {
 		return errors.Join(execErr, err)
 	}
 	if execErr != nil {
 		return execErr
 	}
-	var runner string
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
-	var facts machineSpriteFacts
-	var legacy sql.NullString
-	if err := s.database.reader.QueryRowContext(readCtx, `SELECT r.id,m.sprite_name,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END FROM runner_identities r JOIN machines m ON m.id=r.machine_id JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL WHERE r.enrollment_id=? AND r.organization_id=? AND m.hostname=? AND (m.sprite_name=? OR m.machine_facts_ready IS NULL)`, member.EnrollmentID, scope.organization, member.Name, member.Name).Scan(&runner, &facts.Name, &legacy); err != nil {
+	if err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		enrollment, err := r.RunnerEnrollment(ctx, member.EnrollmentID)
+		if err != nil {
+			return err
+		}
+		if enrollment.RunnerID == "" || enrollment.RevokedAt != nil {
+			return corestore.ErrNotFound
+		}
+		runner, err := r.RunnerIdentity(ctx, enrollment.RunnerID)
+		if err != nil {
+			return err
+		}
+		if runner.EnrollmentID != member.EnrollmentID || runner.RemovedAt != nil {
+			return corestore.ErrNotFound
+		}
+		credential, err := r.AccessCredential(ctx, runner.TokenID)
+		if err != nil {
+			return err
+		}
+		now := s.config.now()
+		if credential.RevokedAt != nil || credential.ExpiresAt != nil && !credential.ExpiresAt.After(now) {
+			return corestore.ErrNotFound
+		}
+		machine, err := r.Machine(ctx, string(runner.MachineID))
+		if err != nil {
+			return err
+		}
+		if machine.SpriteName != member.Name || machine.Hostname != member.Name {
+			return corestore.ErrNotFound
+		}
+		return nil
+	}); err != nil {
 		return err
-	}
-
-	facts, err = resolveMachineSpriteFacts(facts, legacy)
-	if err != nil {
-		return err
-	}
-	if facts.Name == nil || *facts.Name != member.Name {
-		return sql.ErrNoRows
 	}
 	if err := s.requireSpriteMemberWanted(ctx, scope, member.Name); err != nil {
 		return err
@@ -447,22 +602,37 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	if !complete {
 		return errSpritesValidation
 	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	wanted, err := spriteMemberWanted(ctx, tx, scope.organization, member.Name)
-	if err != nil {
-		return err
-	}
-	if !wanted {
-		return errSpriteReservationStale
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE organization_sprite_members SET state='enrolled',bootstrap_log=bootstrap_log || ?,idle_since=? WHERE organization_id=? AND name=? AND state='bootstrapping'`, "Checkpoint completed\n", formatHubTime(s.config.now()), scope.organization, member.Name); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(ctx); err != nil {
+			return err
+		}
+		wanted, err := spriteMemberWantedRecord(ctx, w, member.Name)
+		if err != nil {
+			return err
+		}
+		if !wanted {
+			return errSpriteReservationStale
+		}
+		owner, ok := w.(postgres.SpriteReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		row, err := owner.SpriteMember(ctx, member.Name)
+		if err != nil {
+			return err
+		}
+		if row.EnrollmentID != member.EnrollmentID {
+			return corestore.ErrRevisionConflict
+		}
+		if row.State != "bootstrapping" {
+			return errSpriteReservationStale
+		}
+		updated := spriteMembershipRecord(row)
+		updated.State = "enrolled"
+		updated.BootstrapLog += "Checkpoint completed\n"
+		updated.IdleSince = s.config.now()
+		return w.UpdateRunnerSpriteMembership(ctx, updated)
+	})
 }
 
 func spritePoolBootstrapScript(organization tracker.OrganizationID, hubURL, setup, command, version string) string {
@@ -630,65 +800,98 @@ func spriteBootstrapDiagnostic(line string) string {
 }
 
 func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, member spritePoolMember) error {
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	actor, err := s.spritePoolAuthority(ctx, tx, scope)
-	if err != nil {
-		return err
-	}
-	scope.credential.ID = actor
-	var state string
-	if err := tx.QueryRowContext(ctx, `SELECT state FROM organization_sprite_members WHERE organization_id=? AND name=? AND enrollment_id=? AND allocation_project_id=?`, scope.organization, member.Name, member.EnrollmentID, scope.project).Scan(&state); err != nil {
-		return err
-	}
-	if state == "deleted" {
-		return nil
-	}
-	if state == "enrolled" {
-		var count, floor, ceiling, otherMembers int
-		var idle string
-		var threshold int
-		var busy bool
-		if err := tx.QueryRowContext(ctx, `SELECT p.min_runners,p.max_runners,p.idle_seconds,m.idle_since,(SELECT count(*) FROM organization_sprite_members a WHERE a.organization_id=p.organization_id AND a.allocation_project_id=m.allocation_project_id AND a.state NOT IN ('deleted','deleting')),(SELECT count(*) FROM organization_sprite_members a WHERE a.organization_id=p.organization_id AND a.allocation_project_id<>m.allocation_project_id AND a.state NOT IN ('deleted','deleting')),EXISTS(SELECT 1 FROM leases l JOIN runner_identities r ON r.machine_id=l.machine_id WHERE r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)) FROM organization_sprite_pools p JOIN organization_sprite_members m ON m.organization_id=p.organization_id WHERE p.organization_id=? AND m.name=?`, formatHubTime(s.config.now()), scope.organization, member.Name).Scan(&floor, &ceiling, &threshold, &idle, &count, &otherMembers, &busy); err != nil {
+	ready := false
+	actor := ""
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
-		if scope.project != "" {
-			allocation, err := readProjectSpriteAllocation(ctx, tx, scope)
-			if err != nil {
-				return err
-			}
-			floor, threshold, busy = allocation.DesiredCount, 0, false
+		owner, ok := w.(postgres.SpriteWriter)
+		if !ok {
+			return workItemStorageUnavailable()
 		}
-		floor = min(floor, max(ceiling-otherMembers, 0))
-		at, err := parseTimeValue(idle)
+		var err error
+		actor, err = owner.SpritePoolAuthority(ctx, s.config.now())
 		if err != nil {
 			return err
 		}
-		if busy || count <= floor || s.config.now().Sub(at) < time.Duration(threshold)*time.Second {
+		current, err := owner.SpriteMember(ctx, member.Name)
+		if err != nil {
+			return err
+		}
+		if current.EnrollmentID != member.EnrollmentID || current.AllocationProjectID != string(scope.project) {
+			return corestore.ErrRevisionConflict
+		}
+		if current.State == "deleted" {
 			return nil
 		}
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET state='draining',revision=revision+1 WHERE enrollment_id=? AND organization_id=? AND state='active'`, member.EnrollmentID, scope.organization); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runner_enrollments SET revoked_at=? WHERE id=? AND organization_id=? AND revoked_at IS NULL`, formatHubTime(s.config.now()), member.EnrollmentID, scope.organization); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE organization_sprite_members SET state='deleting' WHERE organization_id=? AND name=? AND state<>'deleted'`, scope.organization, member.Name); err != nil {
-		return err
-	}
-	unrecovered, err := spriteMemberHoldsWork(ctx, tx, scope.organization, member.EnrollmentID)
-	if err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if unrecovered {
+		enrollment, err := w.RunnerEnrollment(ctx, current.EnrollmentID)
+		if err != nil {
+			return err
+		}
+		var identity runnerstore.Identity
+		if enrollment.RunnerID != "" {
+			identity, err = w.RunnerIdentity(ctx, enrollment.RunnerID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+		}
+		now := s.config.now()
+		if current.State == "enrolled" {
+			pool, err := owner.SpritePool(ctx)
+			if err != nil {
+				return err
+			}
+			count, others, _, err := owner.SpriteMemberPlacementCounts(ctx, current.Name)
+			if err != nil {
+				return err
+			}
+			floor, threshold := int(pool.MinRunners), time.Duration(pool.IdleSeconds)*time.Second
+			busy := false
+			if identity.RunnerID != "" {
+				usage, err := w.ClaimCapacityUsage(ctx, string(identity.MachineID), identity.RunnerID, scope.project, "", now)
+				if err != nil {
+					return err
+				}
+				busy = usage.Host > 0
+			}
+			if scope.project != "" {
+				allocation, _, err := projectSpriteAllocationRecord(ctx, w, scope)
+				if err != nil {
+					return err
+				}
+				floor, threshold, busy = allocation.DesiredCount, 0, false
+			}
+			floor = min(floor, max(int(pool.MaxRunners)-others, 0))
+			if busy || count <= floor || now.Sub(current.IdleSince) < threshold {
+				return nil
+			}
+		}
+		if identity.RunnerID != "" && identity.State == "active" {
+			identity.State = "draining"
+			if err := w.UpdateRunnerRouting(ctx, identity.Revision, identity); err != nil {
+				return err
+			}
+		}
+		if enrollment.RevokedAt == nil && enrollment.RedeemedAt == nil {
+			if err := w.RevokeRunnerEnrollment(ctx, enrollment.ID, now); err != nil {
+				return err
+			}
+		}
+		replacement := spriteMembershipRecord(current)
+		replacement.State = "deleting"
+		if err := w.UpdateRunnerSpriteMembership(ctx, replacement); err != nil {
+			return err
+		}
+		held, err := owner.SpriteMemberHoldsWork(ctx, current.EnrollmentID)
+		if err != nil {
+			return err
+		}
+		ready = !held
 		return nil
+	})
+	if err != nil || !ready {
+		return err
 	}
 	response, err := s.poolSpriteRequest(ctx, scope, member.Name, http.MethodDelete, "/"+member.Name, nil)
 	if err != nil {
@@ -699,29 +902,74 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 	if readErr != nil || response.StatusCode != http.StatusNotFound && (response.StatusCode < 200 || response.StatusCode > 299) {
 		return errSpritesValidation
 	}
-	finished, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer finished.Rollback()
-	if _, err := finished.ExecContext(ctx, `UPDATE organization_sprite_members SET state='deleted' WHERE organization_id=? AND name=?`, scope.organization, member.Name); err != nil {
-		return err
-	}
-	var runnerID string
-	err = finished.QueryRowContext(ctx, `SELECT r.id FROM runner_identities r JOIN api_tokens t ON t.id=r.token_id WHERE r.enrollment_id=? AND r.organization_id=? AND t.revoked_at IS NULL`, member.EnrollmentID, scope.organization).Scan(&runnerID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if err == nil {
-		if err := revokeRunnerIdentityInTx(ctx, finished, scope, runnerID, s.config.now()); err != nil {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubReadTimeout)
+	defer cancel()
+	return s.config.TenantRepository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(cleanup); err != nil {
 			return err
 		}
-	}
-	return finished.Commit()
+		owner, ok := w.(postgres.SpriteWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		currentActor, err := owner.SpritePoolAuthority(cleanup, s.config.now())
+		if err != nil {
+			return err
+		}
+		if currentActor != actor {
+			return corestore.ErrRevisionConflict
+		}
+		current, err := owner.SpriteMember(cleanup, member.Name)
+		if err != nil {
+			return err
+		}
+		if current.EnrollmentID != member.EnrollmentID || current.AllocationProjectID != string(scope.project) {
+			return corestore.ErrRevisionConflict
+		}
+		held, err := owner.SpriteMemberHoldsWork(cleanup, current.EnrollmentID)
+		if err != nil {
+			return err
+		}
+		if held {
+			return tracker.ErrLeaseConflict
+		}
+		enrollment, err := w.RunnerEnrollment(cleanup, current.EnrollmentID)
+		if err != nil {
+			return err
+		}
+		if enrollment.RunnerID != "" {
+			if err := s.revokeRunnerIdentityTenant(cleanup, w, scope.organization, enrollment.RunnerID, actor, s.config.now()); err != nil {
+				return err
+			}
+		}
+		replacement := spriteMembershipRecord(current)
+		replacement.State = "deleted"
+		return w.UpdateRunnerSpriteMembership(cleanup, replacement)
+	})
 }
 
-func spriteMemberHoldsWork(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, enrollment string) (bool, error) {
-	var held bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM leases l JOIN runner_identities r ON r.machine_id=l.machine_id WHERE r.enrollment_id=? AND r.organization_id=? AND l.released_at IS NULL AND (r.removed_at IS NULL OR EXISTS(SELECT 1 FROM native_attempts a WHERE a.lease_id=l.lease_id AND a.worker_cleanup_required=1 AND a.cleanup_acknowledged_at IS NULL)))`, enrollment, organization).Scan(&held)
-	return held, err
+func spriteMembershipRecord(row postgres.SpriteMember) runnerstore.SpriteMembership {
+	return runnerstore.SpriteMembership{OrganizationID: row.OrganizationID, Name: row.Name, ProviderOrganization: row.ProviderOrganization, TokenProjectID: tracker.ProjectID(row.TokenProjectID), EnrollmentID: row.EnrollmentID, State: row.State, BootstrapLog: row.BootstrapLog, IdleSince: row.IdleSince, CreatedAt: row.CreatedAt, AllocationProjectID: tracker.ProjectID(row.AllocationProjectID), AllocationRevision: row.AllocationRevision}
+}
+
+func spriteMonthlyDecisionRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, admitted bool, now time.Time) (budget.MonthlyDecision, error) {
+	input, err := readBillingMonthlyBudgetInput(ctx, r, scope, now)
+	if err != nil {
+		return budget.MonthlyDecision{}, err
+	}
+	input.Exposure = budget.CostExposure{SpriteInfrastructure: true}
+	input.Admitted = admitted
+	return billingstore.EvaluateMonthlyBudget(input)
+}
+
+func spriteMonthlyAllowedRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, now time.Time) (bool, error) {
+	decision, err := spriteMonthlyDecisionRecord(ctx, r, scope, false, now)
+	if err != nil || decision.Allowed {
+		return decision.Allowed, err
+	}
+	decision, err = spriteMonthlyDecisionRecord(ctx, r, scope, true, now)
+	if err != nil || !decision.Allowed {
+		return false, err
+	}
+	return r.BillingMonthlyAdmittedCandidate(ctx, scope.project, now)
 }

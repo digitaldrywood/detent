@@ -166,6 +166,10 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	versionLanding, err := eventstore.VersionLandingFromChange(changeRecord)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	var landingAttempt leasestore.Attempt
 	if scope.credential.Scope == apiScopeWorker {
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -323,6 +327,9 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 				}
 			}
 			if _, err := w.UpdateChange(ctx, changeRecord); err != nil {
+				return err
+			}
+			if err := w.RecordVersionLanding(ctx, versionLanding); err != nil {
 				return err
 			}
 			if nextIssue != nil {

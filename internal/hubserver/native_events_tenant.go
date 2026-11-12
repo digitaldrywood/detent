@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -39,6 +42,7 @@ type NativeRunEventAuthority struct {
 	ReplayPrefix       bool
 	Publication        *preparedNativePRPublication
 	UsageCosts         []billingstore.CostObservation
+	UsageReport        reportstore.AttemptUsage
 	UsageFacts         *runnerUsageFacts
 	Landing            *nativeLandingAuthority
 	Event              tracker.NativeRunEvent
@@ -142,11 +146,13 @@ type NativeLeaseResponseDetails struct {
 
 type preparedNativeRunEvent struct {
 	dependencies     *preparedRunnerDependencies
+	independent      *preparedIndependentRepairs
 	claimDisposition string
 	completion       *attachmentEvidencePublication
 	authority        NativeRunEventAuthority
 	attempt          leasestore.AttemptEvent
 	history          eventstore.Event
+	artifactList     attachment.ArchiveReference
 	previousAttempt  leasestore.Attempt
 	previousEvent    eventstore.Event
 }
@@ -161,10 +167,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		}
 
 	}()
+	if request.Data.Sequence <= 0 {
+		return nil, nativePublicInvalid("Current run events require a positive sequence")
+	}
 	if s.config.NativeRunEvents == nil {
 		return nil, nativeRunEventStorageUnavailable()
 	}
-	if s.config.TenantRepository == nil || scope.project == "" || item == "" || request.Data.Sequence <= 0 || request.IdempotencyKey == "" {
+	if s.config.TenantRepository == nil || scope.project == "" || item == "" || request.IdempotencyKey == "" {
 		return nil, nativeRunEventStorageUnavailable()
 	}
 	if len(request.IdempotencyKey) > 128 {
@@ -174,6 +183,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	if store == nil {
 		return nil, nativeRunEventStorageUnavailable()
 	}
+	store = runEventDetailStore{DetailStore: store}
 	requestHash, err := nativeCommandHash(request)
 	if err != nil {
 		return nil, err
@@ -184,6 +194,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		actorID = scope.actor().PrincipalID
 	}
 	content := eventstore.NewContent(store)
+	contentRefs := map[string]attachment.ArchiveReference{}
 
 	events := append(append([]tracker.NativeRunEvent{}, request.PriorEvents...), request)
 	events[len(events)-1].PriorEvents = nil
@@ -386,6 +397,11 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		}
 		previousData := *previous.Data.Run
 		previousRunData = &previousData
+		if request.Data.Runtime != nil && previousData.Runtime != nil {
+			copy := *request.Data.Runtime
+			copy.RepairDependencies = append([]tracker.NativeWorkItemID(nil), previousData.Runtime.RepairDependencies...)
+			request.Data.Runtime = &copy
+		}
 		if request.OccurredAt.IsZero() {
 			request.OccurredAt = nativeUsageIntervalEnd(previousData.Usage)
 			if request.OccurredAt.IsZero() {
@@ -504,6 +520,29 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				dependencies = prepared
 			}
 		}
+		var independent *preparedIndependentRepairs
+		if event.Data.Runtime != nil {
+			copy := *event.Data.Runtime
+			copy.RepairDependencies = nil
+			if usageCorrection && i == len(events)-1 && previousRunData != nil && previousRunData.Runtime != nil {
+				copy.RepairDependencies = append([]tracker.NativeWorkItemID(nil), previousRunData.Runtime.RepairDependencies...)
+			}
+			event.Data.Runtime = &copy
+		}
+		if !termination && !usageCorrection && event.Type == "run.finished" && event.Data.Outcome == "failed" && event.Data.Runtime != nil && event.Data.Runtime.Validation != nil && event.Data.Runtime.Validation.ExitCode != 0 && event.Data.Runtime.Validation.BaseReproduction != nil && event.Data.Runtime.Landing == nil {
+			issue, err := s.readWorkItem(ctx, scope, item)
+			if err != nil {
+				return nil, err
+			}
+			failures := independentRunFailures(issue, event.Data, effectiveCheckpoint)
+			independent, err = s.prepareIndependentRepairs(ctx, scope, issue.WorkItemID, failures, event.Data.AttemptID, s.config.now().UTC())
+			if err != nil {
+				return nil, err
+			}
+			if independent != nil && event.Data.Runtime != nil {
+				event.Data.Runtime.RepairDependencies = independent.dependencies
+			}
+		}
 		data, err := json.Marshal(event.Data)
 		if err != nil {
 			return nil, err
@@ -524,16 +563,25 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if err := validateNativeDetailReference(ctx, store, scope.organization, ref, data); err != nil {
 			return nil, err
 		}
+		contentRefs[ref.Key] = ref
 		status, err := nativeRunAttemptStatus(event)
 		if err != nil {
 			return nil, err
 		}
 		attemptEvent := leasestore.AttemptEvent{
-			Usage: event.Data.Usage,
-			ID:    event.Data.AttemptID,
-			Fence: leasestore.Fence{LeaseID: string(event.Data.LeaseID), FencingToken: int64(event.Data.FencingToken)},
-			RunID: event.Data.RunID, Sequence: event.Data.Sequence, Status: status,
+			Usage:                 event.Data.Usage,
+			WorkerCleanupRequired: new(nativeRunCleanupRequired(event.Data)),
+			ID:                    event.Data.AttemptID,
+			Fence:                 leasestore.Fence{LeaseID: string(event.Data.LeaseID), FencingToken: int64(event.Data.FencingToken)},
+			RunID:                 event.Data.RunID, Sequence: event.Data.Sequence, Status: status,
 			DispatchGeneration: 0, PayloadObjectKey: ref.Key, PayloadReference: ref, UsageCorrection: i == len(events)-1 && usageCorrection, Termination: termination, RuntimeOrdered: true,
+		}
+		if !attemptEvent.UsageCorrection {
+			if disposition := event.Data.Disposition; disposition != nil && disposition.HumanAction {
+				attemptEvent.HumanActionStatus = new(disposition.Status)
+			} else if predecessor != nil && predecessor.Disposition != nil && predecessor.Disposition.HumanAction {
+				attemptEvent.HumanActionStatus = new("")
+			}
 		}
 		if event.Data.Runtime != nil {
 			attemptEvent.LocalAttemptID = event.Data.Runtime.LocalAttemptID
@@ -543,6 +591,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if event.Data.Sequence == 1 && event.Type == "run.started" && batchStartIndex == i {
 			attemptEvent.StartedAt = event.OccurredAt
 		}
+		var artifactList attachment.ArchiveReference
 		if event.Data.Handoff != nil && !termination {
 			checkpoint, err := json.Marshal(checkpointPayload{Checkpoint: event.Data.Handoff, ArtifactIDs: event.Data.ArtifactIDs})
 			if err != nil {
@@ -555,6 +604,8 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			if err := validateNativeDetailReference(ctx, store, scope.organization, checkpointRef, checkpoint); err != nil {
 				return nil, err
 			}
+			contentRefs[checkpointRef.Key] = checkpointRef
+			attemptEvent.CheckpointPreservesSource = new(event.Data.Handoff.PreservesSource())
 			attemptEvent.CheckpointObjectKey = &checkpointRef.Key
 			attemptEvent.CheckpointReference = checkpointRef
 		}
@@ -570,6 +621,8 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			if err := validateNativeDetailReference(ctx, store, scope.organization, artifactRef, artifacts); err != nil {
 				return nil, err
 			}
+			contentRefs[artifactRef.Key] = artifactRef
+			artifactList = artifactRef
 			attemptEvent.ArtifactsObjectKey = &artifactRef.Key
 		}
 		dataRecord := tracker.CollaborationData{Run: &event.Data}
@@ -590,23 +643,42 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		collaboration := tracker.CollaborationEvent{
 			ID: nativeAttemptHistoryID(event.Type, event.Data), OrganizationID: scope.organization, ProjectID: scope.project,
 			AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: event.Type,
-			SchemaVersion: 1, RecordedAt: s.config.now().UTC(), Actor: scope.actor(), Data: dataRecord,
+			SchemaVersion: 1, RecordedAt: s.config.now().UTC().Truncate(time.Microsecond), Actor: scope.actor(), Data: dataRecord,
+		}
+		var usageReport *reportstore.AttemptUsage
+		if termination || len(event.Data.Usage) > 0 {
+			prepared := prepareAttemptUsage(scope, workItem.NativeID, event, s.usagePrices(), collaboration.RecordedAt)
+			if termination {
+				prepared.Termination, prepared.Totals = true, nil
+			}
+			usageReport = &prepared
 		}
 		raw, err := json.Marshal(collaboration)
 		if err != nil {
 			return nil, err
 		}
-		history, err := eventstore.NewContent(store).PrepareEvent(ctx, scope.organization, raw)
+		history, err := eventstore.NewContent(store).PrepareEvent(ctx, scope.organization, raw, usageReport)
 		if err != nil {
 			return nil, err
 		}
 		history.HistoryHidden = i == len(events)-1 && usageCorrection || event.Type == "run.observed" && predecessor != nil && !nativeRuntimeHistoryChanged(predecessor.Runtime, event.Data.Runtime)
 		authority := NativeRunEventAuthority{BatchThrough: events[len(events)-1].Data.Sequence, Termination: termination, Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, UsageCorrection: attemptEvent.UsageCorrection, Event: event}
+		contentRefs[history.PayloadObjectKey] = eventstore.Reference(history.PayloadObjectKey, history.PayloadSHA256, history.PayloadBytes, history.PayloadContentBytes)
 		authority.Landing = landingProof
+		if !termination && len(event.Data.Usage) > 0 {
+			authority.UsageReport = *usageReport
+			if cleanupPredecessor != nil && cleanupPredecessor.attempt.Status != "running" {
+				historical, err := s.prepareAttemptUsageHistory(ctx, scope, workItem.NativeID, event, cleanupPredecessor.attempt)
+				if err != nil {
+					return nil, err
+				}
+				authority.UsageReport.Historical = historical
+			}
+		}
 		if i == len(events)-1 && usageFactsFound && !termination {
 			facts := usageFacts
 			authority.UsageFacts = &facts
-			costs, err := s.prepareRunnerCostRecords(ctx, scope, event, usageFacts, s.config.now().UTC())
+			costs, err := s.prepareRunnerCostRecords(ctx, scope, event, usageFacts, s.config.now().UTC(), authority.UsageReport.Historical...)
 			if err != nil {
 				return nil, err
 			}
@@ -622,7 +694,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if event.Data.Handoff != nil && !termination && (cleanupPredecessor == nil || event.Data.Sequence > cleanupPredecessor.attempt.Sequence) {
 			effectiveCheckpoint = event.Data.Handoff
 		}
-		preparedEvent := preparedNativeRunEvent{dependencies: dependencies, authority: authority, attempt: attemptEvent, history: history, claimDisposition: nativeAttemptClaimDisposition(event.Data, effectiveCheckpoint, scope.project)}
+		preparedEvent := preparedNativeRunEvent{artifactList: artifactList, independent: independent, dependencies: dependencies, authority: authority, attempt: attemptEvent, history: history, claimDisposition: nativeAttemptClaimDisposition(event.Data, effectiveCheckpoint, scope.project)}
 		if i == len(events)-1 && usageCorrection {
 			preparedEvent.previousAttempt, preparedEvent.previousEvent = previousAttempt, previousRunEvent
 		}
@@ -678,12 +750,20 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
+	contentRefs[receipt.PayloadObjectKey] = eventstore.Reference(receipt.PayloadObjectKey, receipt.PayloadSHA256, receipt.PayloadBytes, receipt.PayloadContentBytes)
 	writeCommand := s.writeNativeRunCommand
 	for _, event := range prepared {
 		if event.dependencies != nil {
 			dependencies := event.dependencies
 			writeCommand = func(ctx context.Context, scope nativeScope, command eventstore.RunCommand, write func(context.Context, tenantstore.Writer) error) error {
 				return s.writeRunnerDependenciesCommand(ctx, scope, command, dependencies, write)
+			}
+		}
+	}
+	for _, event := range prepared {
+		if event.independent != nil {
+			writeCommand = func(ctx context.Context, scope nativeScope, command eventstore.RunCommand, write func(context.Context, tenantstore.Writer) error) error {
+				return s.writeNativeClaimCommand(ctx, scope, write)
 			}
 		}
 	}
@@ -707,6 +787,25 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		limit := int64(math.MaxInt64)
+		if request.Type != "run.finished" && request.Type != "run.checkpointed" {
+			var err error
+			limit, err = s.attachmentQuotaLimit(ctx, w)
+			if err != nil {
+				return err
+			}
+		}
+		for _, event := range prepared {
+			if event.independent != nil {
+				refusal, err := s.checkIndependentRepairs(ctx, w, scope, event.independent)
+				if err != nil {
+					return err
+				}
+				if refusal != event.independent.refusal {
+					return corestore.ErrSerializationFailure
+				}
+			}
+		}
 		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
 		}
@@ -721,6 +820,18 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if workItem.ID != prepared[0].authority.WorkItem.ID || lease.IssueID != workItem.ID || lease.MachineID != prepared[0].authority.Lease.MachineID || lease.SessionID != prepared[0].authority.Lease.SessionID {
 			return &leasestore.FenceError{Check: "mutation_identity"}
 		}
+		if err := w.LockArchiveAccounting(ctx); err != nil {
+			return err
+		}
+		for _, event := range prepared {
+			if event.completion != nil {
+				if err := w.LockArchiveAccounting(ctx); err != nil {
+					return err
+				}
+				break
+			}
+		}
+		unpublished := map[string]struct{}{}
 		for _, event := range prepared {
 			authority := event.authority
 			authority.WorkItem, authority.Lease = workItem, lease
@@ -749,6 +860,11 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 					return err
 				}
 			}
+			if ref := event.artifactList; ref.Key != "" {
+				if _, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: s.config.now().UTC()}); err != nil {
+					return err
+				}
+			}
 			attemptEvent := event.attempt
 			attemptEvent.DispatchGeneration = authority.DispatchGeneration
 			attempt, duplicate, err := w.RecordAttemptEvent(ctx, attemptEvent)
@@ -760,6 +876,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				return leasestore.ErrAttemptConflict
 			}
 			if duplicate {
+				unpublished[event.history.PayloadObjectKey] = struct{}{}
 				continue
 			}
 			if err := w.SetAttemptClaimFacts(ctx, attemptClaimFacts(attempt, event.claimDisposition, false)); err != nil {
@@ -785,15 +902,68 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				}
 			}
 
-			if _, err := w.AppendEvent(ctx, event.history); err != nil {
+			if err := s.applyIndependentRepairs(ctx, w, scope, event.independent); err != nil {
 				return err
 			}
+			ref := eventstore.Reference(event.history.PayloadObjectKey, event.history.PayloadSHA256, event.history.PayloadBytes, event.history.PayloadContentBytes)
+			if _, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: s.config.now().UTC()}); err != nil {
+				return err
+			}
+			writtenHistory, err := w.AppendEvent(ctx, event.history)
+			if err != nil {
+				return err
+			}
+			authority.UsageReport.EventSequence = writtenHistory.Sequence
 			if err := s.config.NativeRunEvents.ApplyNativeRunEvent(ctx, w, authority); err != nil {
 				return err
 			}
 		}
-		_, err = w.PutReceipt(ctx, receipt)
-		return err
+		if _, err := w.PutReceipt(ctx, receipt); err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(contentRefs))
+		for key := range contentRefs {
+			if _, skipped := unpublished[key]; !skipped {
+				keys = append(keys, key)
+			}
+		}
+		slices.Sort(keys)
+		if owner, ok := w.(interface {
+			ChargeRunEventArchives(context.Context, []attachment.ArchiveReference, int64) (billingstore.UsageResult, error)
+		}); ok {
+			refs := make([]attachment.ArchiveReference, 0, len(keys))
+			for _, key := range keys {
+				refs = append(refs, contentRefs[key])
+			}
+			usage, err := owner.ChargeRunEventArchives(ctx, refs, limit)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return attachmentAccountingUnavailable()
+			}
+			if err != nil {
+				return err
+			}
+			if !usage.Allowed {
+				return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+			}
+			return nil
+		}
+		for _, key := range keys {
+			object, err := w.ArchiveObjectByReference(ctx, contentRefs[key])
+			if err != nil {
+				return err
+			}
+			usage, err := w.ChargeArchiveObject(ctx, object.ID, limit)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return attachmentAccountingUnavailable()
+			}
+			if err != nil {
+				return err
+			}
+			if !usage.Allowed {
+				return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -904,7 +1074,7 @@ func (s *Service) reconcileNativeRunEventReplay(ctx context.Context, scope nativ
 	}
 	rows, attempts := snapshot.rows, snapshot.attempts
 
-	store := s.runDetailStore()
+	store := runEventDetailStore{DetailStore: s.runDetailStore()}
 	refs := make([]attachment.ArchiveReference, len(rows))
 	for i, row := range rows {
 		value, err := eventstore.NewContent(store).Event(ctx, row)
@@ -919,7 +1089,7 @@ func (s *Service) reconcileNativeRunEventReplay(ctx context.Context, scope nativ
 		if err != nil {
 			return err
 		}
-		ref, err := store.StoreDetail(ctx, string(scope.organization), raw)
+		ref, err := store.restore(ctx, string(scope.organization), raw)
 		if err != nil {
 			return err
 		}

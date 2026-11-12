@@ -3,177 +3,261 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
-	hubmigrations "github.com/digitaldrywood/detent/internal/hubserver/migrations"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeVersionRoundTrip(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
 	for _, kind := range []string{"issue", "comment"} {
 		t.Run(kind, func(t *testing.T) {
-			issue := f.create(t, "history "+kind)
-			related := f.create(t, "dependency "+kind)
-			recordID := string(issue.WorkItemID)
+			const count = 2*nativeVersionSnapshotInterval + 7
+			const organization tracker.OrganizationID = "org_version_history"
+			const project tracker.ProjectID = "prj_history"
+			const item tracker.NativeWorkItemID = "wi_history"
+			const related tracker.NativeWorkItemID = "wi_related"
+			recordID := string(item)
 			if kind == "comment" {
 				recordID = "comment-" + recordID
 			}
-			const count = 2*nativeVersionSnapshotInterval + 7
-			expected := make(map[int64][]byte)
 			now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
+			expected := map[int64][]byte{}
 			for revision := int64(1); revision <= count; revision++ {
-				if revision == 1 && kind == "issue" {
-					var raw []byte
-					if err := tx.QueryRowContext(t.Context(), "SELECT record_json FROM collaboration_versions WHERE organization_id=? AND record_id=? AND revision=1", scope.organization, recordID).Scan(&raw); err != nil {
-						t.Fatal(err)
-					}
-					var original tracker.NativeIssue
-					if err := json.Unmarshal(raw, &original); err != nil {
-						t.Fatal(err)
-					}
-					original.WebURL = ""
-					expected[revision], err = json.Marshal(original)
-					if err != nil {
-						t.Fatal(err)
-					}
-					continue
-				}
 				stamp := now.Add(time.Duration(revision) * time.Second)
 				var record any
-				data := tracker.CollaborationData{Revision: tracker.Revision(revision)}
 				if kind == "issue" {
-					value := issue
-					value.Revision, value.UpdatedAt = tracker.Revision(revision), stamp
-					value.Body = strings.Repeat("Retained body content. ", 256) + fmt.Sprintf("body generation %d <>& 雪", revision/4)
-					value.Labels, value.Assignees = []string{fmt.Sprintf("label-%d", revision%3)}, []string{fmt.Sprintf("member-%d", revision%2)}
-					value.IssueContract = &issuecontract.State{ConfirmedSections: map[string]string{"acceptance criteria": strconv.FormatInt(revision, 10)}, RecordedAt: stamp}
-					if revision%2 == 0 {
-						value.Dependencies = []tracker.NativeWorkItemID{related.WorkItemID}
-						value.Blockers = []tracker.NativeDependency{{ID: related.WorkItemID}}
-						value.Verification = &tracker.NativeVerification{State: tracker.VerificationPending}
+					value := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: item, Number: 1, Revision: tracker.Revision(revision), Profile: "native"}, Title: "history issue", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "version_author"}, CreatedAt: now, UpdatedAt: stamp, LastActivityAt: stamp}
+					if revision > 1 {
+						value.Body = strings.Repeat("Retained body content. ", 256) + fmt.Sprintf("body generation %d <>& 雪", revision/4)
+						value.Labels, value.Assignees = []string{fmt.Sprintf("label-%d", revision%3)}, []string{fmt.Sprintf("member-%d", revision%2)}
+						value.IssueContract = &issuecontract.State{ConfirmedSections: map[string]string{"acceptance criteria": strconv.FormatInt(revision, 10)}, RecordedAt: stamp}
+						if revision%2 == 0 {
+							value.Dependencies = []tracker.NativeWorkItemID{related}
+							value.Blockers = []tracker.NativeDependency{{ID: related}}
+							value.Verification = &tracker.NativeVerification{State: tracker.VerificationPending}
+						}
 					}
 					record = value
 				} else {
-					record = tracker.NativeComment{ID: recordID, OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, Revision: tracker.Revision(revision), Sequence: 1, Body: fmt.Sprintf("comment revision %d <>& 雪", revision), CreatedAt: now, UpdatedAt: stamp}
-					data.CommentID = recordID
+					record = tracker.NativeComment{ID: recordID, OrganizationID: organization, ProjectID: project, WorkItemID: item, Revision: tracker.Revision(revision), Sequence: 1, Body: fmt.Sprintf("comment revision %d <>& 雪", revision), CreatedAt: now, UpdatedAt: stamp}
 				}
 				raw, err := json.Marshal(record)
 				if err != nil {
 					t.Fatal(err)
 				}
 				expected[revision] = raw
-				var versionReads int
-				ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-					if strings.Contains(query, "SELECT") && strings.Contains(query, "collaboration_versions") {
-						versionReads++
-					}
-				}})
-				if err := recordNativeChange(ctx, tx, scope, record, string(issue.WorkItemID), tracker.Revision(revision), "issue.edited", data, stamp); err != nil {
-					t.Fatal(err)
-				}
-				if versionReads > 1 {
-					t.Fatalf("revision %d read history %d times", revision, versionReads)
-				}
 			}
-			if err := f.service.database.commit(t.Context(), tx); err != nil {
-				t.Fatal(err)
-			}
-			for revision := int64(1); revision <= count; revision++ {
-				raw, err := reconstructNativeVersion(t.Context(), f.service.database.reader, string(scope.organization), string(scope.project), string(issue.WorkItemID), recordID, revision)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var expectedStored []byte
-				if kind == "issue" && revision == 1 {
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM collaboration_versions WHERE organization_id=? AND record_id=? AND revision=1", scope.organization, recordID).Scan(&expectedStored); err != nil {
+			for _, archived := range []bool{false, true} {
+				t.Run(fmt.Sprintf("archived=%v", archived), func(t *testing.T) {
+					repository, admin := projectRecordPostgresWithAdmin(t, 3)
+					details := &memoryRunDetails{}
+					service := &Service{database: &database{}, secretRewrapReady: make(chan struct{}), config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}}
+					token := string(organization) + "_reader"
+					deniedToken := string(organization) + "_denied"
+					if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+						if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Version history", Slug: "version-history", CreatedAt: now}); err != nil {
+							return err
+						}
+						if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_history"}); err != nil {
+							return err
+						}
+						if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "History", Slug: "history", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+							return err
+						}
+						for index, id := range []tracker.NativeWorkItemID{item, related} {
+							revision := int64(1)
+							if id == item {
+								revision = count
+							}
+							row, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: id, Number: int64(index + 1), Revision: revision, Title: "history " + kind, WorkflowStateName: new("Todo"), ActorKind: new("human"), ActorPrincipalID: new("version_author"), CreatedAt: now, UpdatedAt: now, NativeCreatedAt: now, NativeUpdatedAt: now})
+							if err != nil {
+								return err
+							}
+							if row.NativeID != id || row.Number != int64(index+1) {
+								t.Fatal("version history fixture lost a scoped issue identity")
+							}
+						}
+						for _, key := range []struct {
+							id, token, scope string
+							native           bool
+						}{{"reader", token, "admin", false}, {"denied", deniedToken, "operator", true}} {
+							if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: key.id, Name: "Example version reader " + key.id, Hash: apikey.HashToken(key.token), Scope: key.scope, NativeOnly: key.native, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+								return err
+							}
+						}
+						return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "reader", ProjectID: project})
+					}); err != nil {
 						t.Fatal(err)
 					}
-				} else {
-					expectedStored = expected[revision]
-				}
-				if !bytes.Equal(raw, expectedStored) {
-					t.Fatalf("revision %d did not reconstruct exact snapshot bytes", revision)
-				}
-				comment := ""
-				if kind == "comment" {
-					comment = recordID
-				}
-				read, err := f.service.readVersion(t.Context(), scope, string(issue.WorkItemID), comment, revision)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(read, expected[revision]) {
-					t.Fatalf("revision %d response mismatch\ngot %s\nwant %s", revision, read, expected[revision])
-				}
-				var encoding string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT encoding FROM collaboration_versions WHERE organization_id=? AND record_id=? AND revision=?", scope.organization, recordID, revision).Scan(&encoding); err != nil {
-					t.Fatal(err)
-				}
-				if (revision == 1 || revision%nativeVersionSnapshotInterval == 0) && encoding != "snapshot" {
-					t.Fatalf("revision %d did not store a checkpoint snapshot", revision)
-				}
-				var stored int
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT length(CAST(record_json AS BLOB)) FROM collaboration_versions WHERE organization_id=? AND record_id=? AND revision=?", scope.organization, recordID, revision).Scan(&stored); err != nil {
-					t.Fatal(err)
-				}
-				if stored > len(expectedStored) {
-					t.Fatalf("revision %d encoding grew the record", revision)
-				}
+					credential, status, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(token), "", "")
+					if err != nil {
+						t.Fatalf("version reader status=%d error=%v", status, err)
+					}
+					scope := nativeScope{organization: organization, project: project, credential: credential}
+					content := eventstore.NewContent(details)
+					comment := ""
+					if kind == "comment" {
+						comment = recordID
+					}
+					if !archived {
+						for revision := int64(1); revision <= count; revision++ {
+							version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: project, WorkItemID: item, RecordID: recordID, Revision: revision}, expected[revision])
+							if err != nil {
+								t.Fatal(err)
+							}
+							versionReads := 0
+							ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
+								if strings.Contains(query, "SELECT") && strings.Contains(query, "collaboration_versions") {
+									versionReads++
+								}
+							})
+							if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.CreateCollaborationVersion(ctx, version); return err }); err != nil {
+								t.Fatal(err)
+							}
+							if versionReads > 1 {
+								t.Fatalf("revision %d read history %d times", revision, versionReads)
+							}
+						}
+						for revision := int64(1); revision <= count; revision++ {
+							var version eventstore.CollaborationVersion
+							if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+								var err error
+								version, err = r.CollaborationVersion(t.Context(), recordID, revision)
+								return err
+							}); err != nil {
+								t.Fatal(err)
+							}
+							before := details.reads
+							raw, err := content.CollaborationVersion(t.Context(), version)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if !bytes.Equal(raw, expected[revision]) {
+								t.Fatalf("revision %d did not reconstruct exact snapshot bytes", revision)
+							}
+							if details.reads != before+1 {
+								t.Fatalf("revision %d did not read one independent immutable snapshot", revision)
+							}
+							read, err := service.readVersion(t.Context(), scope, string(item), comment, revision)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if !bytes.Equal(read, expected[revision]) {
+								t.Fatalf("revision %d response mismatch\ngot %s\nwant %s", revision, read, expected[revision])
+							}
+							if version.PayloadBytes > int64(len(expected[revision])) {
+								t.Fatalf("revision %d encoding grew the record", revision)
+							}
+						}
+					} else {
+						table := attachment.ArchiveTable{Name: "collaboration_versions", Columns: []string{"rowid", "organization_id", "project_id", "work_item_id", "record_id", "revision", "record_json", "encoding"}}
+						for revision := int64(1); revision <= count; revision++ {
+							values := []any{revision, organization, project, item, recordID, revision, string(expected[revision]), "snapshot"}
+							row := make([]json.RawMessage, len(values))
+							for index, value := range values {
+								raw, err := json.Marshal(value)
+								if err != nil {
+									t.Fatal(err)
+								}
+								row[index] = raw
+							}
+							table.Rows = append(table.Rows, row)
+						}
+						const sectionID = "historical_versions"
+						raw, err := json.Marshal(attachment.ArchiveSection{SchemaVersion: 1, OrganizationID: string(organization), ProjectID: string(project), WorkItemID: string(item), SectionID: sectionID, Tables: []attachment.ArchiveTable{table}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						ref, section, err := attachment.PrepareArchive(string(organization), 1, bytes.NewReader(raw))
+						if err != nil {
+							t.Fatal(err)
+						}
+						const attachmentID = "version_section_archive"
+						record := attachmentstore.ArchiveRecord{OrganizationID: organization, ProjectID: project, ID: attachmentID, Uploader: "reader", Reference: ref, CreatedAt: now}
+						if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+							if _, err := w.PrepareAttachmentArchive(t.Context(), record); err != nil {
+								return err
+							}
+							if err := w.PublishAttachmentArchive(t.Context(), record, item); err != nil {
+								return err
+							}
+							object, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: attachmentID, Reference: ref, CreatedAt: now})
+							if err != nil {
+								return err
+							}
+							return w.AddArchiveOwner(t.Context(), artifactstore.ArchiveOwner{OrganizationID: organization, ArchiveID: object.ID, Kind: "issue-storage-archive", ID: attachmentID, CreatedAt: now})
+						}); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := admin.ExecContext(t.Context(), `INSERT INTO issue_archive_sections (organization_id,project_id,work_item_id,archive_revision,section_id,attachment_id,kind,subject_id,first_sequence,last_sequence,retirement_complete) VALUES ($1,$2,$3,$4,$5,$6,'revision',$7,1,$4,true)`, organization, project, item, count, sectionID, attachmentID, recordID); err != nil {
+							t.Fatal(err)
+						}
+						fetches := 0
+						service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+							fetches++
+							if repository.Stats().AcquiredConns() != 0 {
+								t.Fatal("archive read holds a PostgreSQL connection")
+							}
+							if got != ref {
+								t.Fatal("wrong revision archive")
+							}
+							return entryauthority.ArchiveResponse{Data: section}, nil
+						}
+						deniedCredential, status, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(deniedToken), "", "")
+						if err != nil {
+							t.Fatalf("denied version reader status=%d error=%v", status, err)
+						}
+						denied := scope
+						denied.credential = deniedCredential
+						if _, err := service.readVersion(t.Context(), denied, string(item), comment, 1); err == nil || fetches != 0 {
+							t.Fatalf("unauthorized historical read error=%v fetches=%d", err, fetches)
+						}
+						for _, revision := range []int64{1, 2, nativeVersionSnapshotInterval - 1, nativeVersionSnapshotInterval, nativeVersionSnapshotInterval + 1, count} {
+							ctx := service.archiveContext(t.Context(), scope, false)
+							before := fetches
+							got, err := service.readVersion(ctx, scope, string(item), comment, revision)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if !bytes.Equal(got, expected[revision]) || fetches != before+1 {
+								t.Fatalf("archived %s revision %d changed or fetched more than one section", kind, revision)
+							}
+						}
+						var versions int
+						if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND record_id=$2`, organization, recordID).Scan(&versions); err != nil || versions != 0 {
+							t.Fatalf("historical read materialized live versions=%d error=%v", versions, err)
+						}
+					}
+					if _, err := service.readVersion(t.Context(), scope, string(item), comment, count+1); !isNativeNotFound(err) {
+						t.Fatalf("missing revision error=%v", err)
+					}
+				})
 			}
-			if _, err := f.service.readVersion(t.Context(), scope, string(issue.WorkItemID), "", count+1); !errors.Is(err, sql.ErrNoRows) {
-				t.Fatalf("missing revision error=%v", err)
-			}
-			ref, section := publishTestSection(t, f, string(issue.WorkItemID), "revision", recordID, 1, count, archiveTestTable(t, f.service, "collaboration_versions", "record_id=?", recordID))
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER IF EXISTS collaboration_versions_no_delete"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_versions WHERE record_id=?", recordID); err != nil {
-				t.Fatal(err)
-			}
-			fetches := 0
-			f.service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
-				fetches++
-				if got != ref {
-					t.Fatal("wrong revision archive")
-				}
-				return entryauthority.ArchiveResponse{Data: section}, nil
-			}
-			for _, revision := range []int64{1, 2, nativeVersionSnapshotInterval - 1, nativeVersionSnapshotInterval, nativeVersionSnapshotInterval + 1, count} {
-				comment := ""
-				if kind == "comment" {
-					comment = recordID
-				}
-				ctx := f.service.archiveContext(t.Context(), scope, false)
-				before := fetches
-				got, err := f.service.readVersion(ctx, scope, string(issue.WorkItemID), comment, revision)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(got, expected[revision]) || fetches != before+1 {
-					t.Fatalf("archived %s revision %d changed or fetched more than one section", kind, revision)
-				}
-			}
-
 		})
 	}
 }
@@ -181,60 +265,62 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 func TestNativeTransitionHistoryBytes(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "transition history")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+	scope := nativeBoardFixtureScope(t, f)
 	now := time.Now().UTC()
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	issue, _, err = readNativeIssue(t.Context(), tx, scope, string(issue.WorkItemID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	issue.Body = strings.Repeat("Large unchanged issue body. 雪\n", 1024) + issueContractTestSections
-	issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: []string{"body"}}, now)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.service.config.now = func() time.Time { return now }
+	path := f.base + "/work-items/" + string(issue.WorkItemID)
+	body := strings.Repeat("Large unchanged issue body. 雪\n", 1024) + issueContractTestSections
+	response := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "history-body"}, ExpectedRevision: issue.Revision, Body: &body})
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &issue)
 	snapshots := make(map[tracker.Revision]string)
 	for i := range 513 {
-		from := issue.State
-		issue.State = "In Progress"
-		if from == issue.State {
-			issue.State = "Todo"
+		now = now.Add(24 * time.Second)
+		state := "In Progress"
+		if issue.State == state {
+			state = "Todo"
 		}
-		issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State}, now.Add(time.Duration(i+1)*24*time.Second))
+		response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("history-transition-%d", i)}, ExpectedRevision: issue.Revision, State: state, Reason: "user_requested"})
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &issue)
+		raw, err := json.Marshal(issue)
 		if err != nil {
 			t.Fatal(err)
 		}
-		snapshots[issue.Revision], err = marshalNative(issue)
-		if err != nil {
-			t.Fatal(err)
-		}
+		snapshots[issue.Revision] = string(raw)
 	}
-	if err := f.service.database.commit(t.Context(), tx); err != nil {
-		t.Fatal(err)
-	}
-	var fullBytes, storedBytes int
+	var fullBytes, storedBytes int64
+	content := eventstore.NewContent(f.service.runDetailStore())
 	for revision, expected := range snapshots {
-		actual, err := reconstructNativeVersion(t.Context(), f.service.database.reader, string(scope.organization), string(scope.project), string(issue.WorkItemID), string(issue.WorkItemID), int64(revision))
+		var version eventstore.CollaborationVersion
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			version, err = r.CollaborationVersion(t.Context(), string(issue.WorkItemID), int64(revision))
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		actual, err := content.CollaborationVersion(t.Context(), version)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(actual) != expected {
+		var original tracker.NativeIssue
+		if err := json.Unmarshal(actual, &original); err != nil {
+			t.Fatal(err)
+		}
+		original.WebURL = issue.WebURL
+		canonical, err := json.Marshal(original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(canonical) != expected {
 			t.Fatalf("transition revision %d changed", revision)
 		}
-		var size int
-		var encoding string
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT length(CAST(record_json AS BLOB)),encoding FROM collaboration_versions WHERE organization_id=? AND record_id=? AND revision=?", scope.organization, issue.WorkItemID, revision).Scan(&size, &encoding); err != nil {
-			t.Fatal(err)
+		if version.PayloadBytes >= 4096 {
+			t.Fatalf("compressed version repeated body: %d bytes", version.PayloadBytes)
 		}
-		if encoding == "patch" && size >= 4096 {
-			t.Fatalf("patch repeated body: %d bytes", size)
-		}
-		storedBytes += size
-		fullBytes += len(expected)
+		storedBytes += version.PayloadBytes
+		fullBytes += int64(len(expected))
 	}
 	if storedBytes >= fullBytes/8 {
 		t.Fatalf("transition history=%d bytes, full snapshots=%d", storedBytes, fullBytes)
@@ -245,69 +331,26 @@ func TestNativeTransitionHistoryBytes(t *testing.T) {
 func TestNativeNoOpRevisions(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "no-op edits")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
-	tests := []struct {
-		name, event string
-		data        tracker.CollaborationData
-	}{
-		{"identical edit", "issue.edited", tracker.CollaborationData{Fields: []string{"title", "body", "type", "labels", "assignees", "priority"}}},
-		{"same release reference", "issue.edited", tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: "change-example", VersionID: "version-example"}}},
-		{"same state", "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Todo"}},
-		{"same related issues", "issue.edited", tracker.CollaborationData{Fields: []string{"related"}}},
-		{"same dependencies", "dependency.changed", tracker.CollaborationData{Operation: "remove"}},
-		{"same source intake", "github.imported", tracker.CollaborationData{Operation: "source_intake"}},
-		{"same verification", "issue.edited", tracker.CollaborationData{Fields: []string{"verification"}}},
-		{"same archive", "issue.edited", tracker.CollaborationData{Fields: []string{"archived"}}},
-		{"same preferences", "issue.edited", tracker.CollaborationData{Fields: []string{"body"}}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			current, _, err := readNativeIssue(t.Context(), tx, scope, string(issue.WorkItemID))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var beforeVersions, beforeEvents int
-			if err := tx.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions),(SELECT count(*) FROM collaboration_events)").Scan(&beforeVersions, &beforeEvents); err != nil {
-				t.Fatal(err)
-			}
-			var updates int
-			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-				if strings.HasPrefix(query, "UPDATE issues") {
-					updates++
-				}
-			}})
-			result, err := persistNativeIssue(ctx, tx, scope, current, test.event, test.data, time.Now().Add(time.Hour))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var versions, events int
-			if err := tx.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions),(SELECT count(*) FROM collaboration_events)").Scan(&versions, &events); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(result, current) || versions != beforeVersions || events != beforeEvents || updates != 0 {
-				t.Fatalf("no-op changed record or history: versions %d/%d events %d/%d updates %d", versions, beforeVersions, events, beforeEvents, updates)
-			}
-		})
-	}
+	scope := nativeBoardFixtureScope(t, f)
+	admin := conversationTestAdmin(t, f.service)
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	states := nativeFixtureStates()
 	states[0].Transitions = append(states[0].Transitions, "Todo")
-	rawStates, err := json.Marshal(states)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", string(rawStates), f.project.ID); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), scope.project)
+		if err != nil {
+			return err
+		}
+		project.States = states
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, reason := range []string{"worker_progress", "dependency_ready", "user_requested"} {
 		t.Run("same state command "+reason, func(t *testing.T) {
 			var beforeVersions, beforeEvents int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
 				t.Fatal(err)
 			}
 			for index := range 2 {
@@ -320,7 +363,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 				}
 			}
 			var versions, events int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&versions, &events); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
 				t.Fatal(err)
 			}
 			if versions != beforeVersions || events != beforeEvents {
@@ -329,26 +372,66 @@ func TestNativeNoOpRevisions(t *testing.T) {
 		})
 	}
 	var beforeVersions, beforeEvents int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
+	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
 		t.Fatal(err)
 	}
 	for _, field := range []string{"title", "body", "labels", "assignees", "priority"} {
 		request := map[string]any{"expected_revision": fmt.Sprint(issue.Revision), "idempotency_key": "identical-" + field, field: map[string]any{"title": issue.Title, "body": issue.Body, "labels": issue.Labels, "assignees": issue.Assignees, "priority": issue.Priority}[field]}
-		response := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, request)
+		before, beforeVersion, err := f.service.readWorkItemRecord(t.Context(), scope, string(issue.WorkItemID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var updates int
+		ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, statement string) {
+			if strings.Contains(strings.ToUpper(statement), "UPDATE ISSUES") {
+				updates++
+			}
+		})
+		raw, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPatch, path, bytes.NewReader(raw)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+f.token)
+		response := httptest.NewRecorder()
+		f.service.echo.ServeHTTP(response, req)
 		requireNativeStatus(t, response, http.StatusOK)
 		var result tracker.NativeIssue
 		decodeHubResponse(t, response, &result)
-		if result.Revision != issue.Revision {
-			t.Fatalf("identical %s bumped revision", field)
+		after, afterVersion, err := f.service.readWorkItemRecord(t.Context(), scope, string(issue.WorkItemID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var versions, events int
+		if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
+			t.Fatal(err)
+		}
+		if result.Revision != issue.Revision || !result.UpdatedAt.Equal(issue.UpdatedAt) || !reflect.DeepEqual(before, after) || !reflect.DeepEqual(beforeVersion, afterVersion) || versions != beforeVersions || events != beforeEvents || updates != 0 {
+			t.Fatalf("identical %s changed record or history: versions %d/%d events %d/%d updates %d", field, versions, beforeVersions, events, beforeEvents, updates)
 		}
 	}
 	changed := "real title change"
-	response := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "real-edit"}, ExpectedRevision: issue.Revision, Title: &changed})
+	var realUpdates int
+	ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, statement string) {
+		if strings.Contains(strings.ToUpper(statement), "UPDATE ISSUES") {
+			realUpdates++
+		}
+	})
+	raw, err := json.Marshal(tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "real-edit"}, ExpectedRevision: issue.Revision, Title: &changed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPatch, path, bytes.NewReader(raw)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	response := httptest.NewRecorder()
+	f.service.echo.ServeHTTP(response, req)
 	requireNativeStatus(t, response, http.StatusOK)
 	var result tracker.NativeIssue
 	decodeHubResponse(t, response, &result)
-	if result.Revision != issue.Revision+1 {
-		t.Fatal("real edit did not advance once")
+	if result.Revision != issue.Revision+1 || realUpdates == 0 {
+		t.Fatalf("real edit revision=%d want=%d issue updates=%d", result.Revision, issue.Revision+1, realUpdates)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "stale-identical"}, ExpectedRevision: issue.Revision, Title: &changed}), http.StatusConflict)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "no-op-comment"}, Body: "comment content"})
@@ -371,7 +454,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path+"/comments/"+comment.ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "stale-comment"}, ExpectedRevision: 1, Body: comment.Body}), http.StatusConflict)
 	var versions, events int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&versions, &events); err != nil {
+	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
 		t.Fatal(err)
 	}
 	if versions != beforeVersions+3 || events != beforeEvents+3 {
@@ -385,7 +468,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 		t.Fatalf("real transition did not advance once: %+v", transitioned)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "stale-transition"}, ExpectedRevision: result.Revision, State: "In Progress", Reason: "user_requested"}), http.StatusConflict)
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&versions, &events); err != nil {
+	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
 		t.Fatal(err)
 	}
 	if versions != beforeVersions+4 || events != beforeEvents+4 {
@@ -395,20 +478,20 @@ func TestNativeNoOpRevisions(t *testing.T) {
 		now := time.Now().UTC().Add(time.Hour)
 		states[1].Transitions = append(states[1].Transitions, "Blocked")
 		states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Blocked", "Todo"}})
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(t.Context(), scope.project)
+			if err != nil {
+				return err
+			}
+			project.States = states
+			_, err = w.UpdateProjectRecord(t.Context(), project)
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback()
-		if err := applyNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
-			t.Fatal(err)
-		}
-		if err := f.service.database.commit(t.Context(), tx); err != nil {
-			t.Fatal(err)
-		}
-		clock := f.service.database.now
-		f.service.database.now = func() time.Time { return now }
-		t.Cleanup(func() { f.service.database.now = clock })
+		clock := f.service.config.now
+		f.service.config.now = func() time.Time { return now }
+		t.Cleanup(func() { f.service.config.now = clock })
 		request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "enter-blocked"}, ExpectedRevision: transitioned.Revision, State: "Blocked", Reason: "user_requested"}
 		response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, request)
 		requireNativeStatus(t, response, http.StatusOK)
@@ -428,7 +511,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 			}
 		}
 		var holdVersions, holdEvents int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&holdVersions, &holdEvents); err != nil {
+		if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&holdVersions, &holdEvents); err != nil {
 			t.Fatal(err)
 		}
 		if holdVersions != versions+1 || holdEvents != events+2 {
@@ -441,122 +524,181 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(fmt.Sprintf("verification_failure_%t", fail), func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
-			original := map[string]map[int64]string{}
-			owners := map[string]string{}
-			for _, name := range []string{"first", "second"} {
-				issue := f.create(t, "migration "+name)
-				original[string(issue.WorkItemID)] = map[int64]string{}
-				owners[string(issue.WorkItemID)] = string(issue.WorkItemID)
-				for revision := int64(2); revision <= 2*nativeVersionSnapshotInterval+3; revision++ {
-					issue.Revision = tracker.Revision(revision)
-					issue.Body = strings.Repeat("Large retained body. 雪\n", 100) + fmt.Sprintf("\n## Migration context\nhttps://github.com/example-org/example-project/issues/%d", issue.Number)
-					issue.State = "Todo"
+			org, project := f.project.OrganizationID, f.project.ID
+			admin := conversationTestAdmin(t, f.service)
+			const revisions = 2*nativeVersionSnapshotInterval + 3
+			source := coreWorkItemNeutralFixture(t, org, project, false)
+			source.records["collaboration_versions"] = nil
+			var creation []postgres.NeutralImportRow
+			for _, row := range source.records["collaboration_events"] {
+				var kind string
+				if err := row.Decode(map[string]any{"type": &kind}); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "issue.created" {
+					creation = append(creation, row)
+				}
+			}
+			source.records["collaboration_events"] = creation
+			original := map[string]map[int64][]byte{}
+			owners, urls := map[string]string{}, map[string]string{}
+			var rawBytes, versionCount int64
+			for index, name := range []string{"first", "second"} {
+				suffix := ""
+				if index > 0 {
+					suffix = "_second"
+				}
+				item, commentID := "wi_core_import"+suffix, "comment_core_import"+suffix
+				owners[item], owners[commentID] = item, item
+				original[item], original[commentID] = map[int64][]byte{}, map[int64][]byte{}
+				previous := map[string][]byte{}
+				previousEncoding := map[string]string{}
+				urls[item] = fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", 1+index*2)
+				for revision := int64(1); revision <= revisions; revision++ {
+					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: tracker.NativeWorkItemID(item), Number: 1 + index*2, Revision: tracker.Revision(revision), Profile: "native"}, Title: "migration " + name, Body: coreImportBody(), State: "Todo", Labels: []string{"needs-review"}, Assignees: []string{"example-assignee"}, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: parseTestTime(t, "2026-10-01T00:00:00Z"), UpdatedAt: parseTestTime(t, "2026-10-02T00:00:00Z"), LastActivityAt: parseTestTime(t, "2026-10-02T00:00:00Z")}
+					if revision > 1 {
+						issue.Body = strings.Repeat("Large retained body. 雪\n", 100) + "\n## Migration context\n" + urls[item]
+					}
 					if revision%2 == 0 {
 						issue.State = "In Progress"
 					}
-					raw, err := marshalNative(issue)
-					if err != nil {
-						t.Fatal(err)
+					comment := tracker.NativeComment{ID: commentID, OrganizationID: org, ProjectID: project, WorkItemID: issue.WorkItemID, Revision: tracker.Revision(revision), Sequence: 1, Body: fmt.Sprintf("legacy comment %d 雪", revision), Actor: tracker.Actor{Kind: "human", PrincipalID: "example-commenter"}, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt}
+					for _, record := range []struct {
+						id    string
+						value any
+					}{{item, issue}, {commentID, comment}} {
+						raw := historyTestJSON(t, record.value)
+						if record.id == commentID && revision == 2 {
+							raw = append(append([]byte("  "), raw...), '\n')
+						}
+						original[record.id][revision] = raw
+						rawBytes, versionCount = rawBytes+int64(len(raw)), versionCount+1
+						encoded, encoding, err := encodeNativeVersion(previous[record.id], previousEncoding[record.id], raw, revision)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if (revision == 1 || revision%nativeVersionSnapshotInterval == 0) && encoding != "snapshot" || record.id == item && revision > 2 && revision%nativeVersionSnapshotInterval != 0 && encoding != "patch" {
+							t.Fatalf("source %s revision %d lost checkpoint/delta encoding: %s", record.id, revision, encoding)
+						}
+						previous[record.id], previousEncoding[record.id] = encoded, encoding
+						source.add("collaboration_versions", map[string]any{"organization_id": org, "project_id": project, "work_item_id": item, "record_id": record.id, "revision": revision, "encoding": encoding, "record_json": string(encoded)})
 					}
-					original[string(issue.WorkItemID)][revision] = raw
-					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO collaboration_versions(organization_id,project_id,work_item_id,record_id,revision,record_json) VALUES(?,?,?,?,?,?)", scope.organization, scope.project, issue.WorkItemID, issue.WorkItemID, revision, raw); err != nil {
-						t.Fatal(err)
+					if revision == revisions {
+						source.set("issues", map[string]string{"native_id": item}, map[string]any{"title": issue.Title, "body": issue.Body, "revision": revisions, "event_sequence": 1})
+						source.set("native_comments", map[string]string{"id": commentID}, map[string]any{"revision": revisions, "body": comment.Body, "updated_at": formatHubTime(comment.UpdatedAt)})
 					}
 				}
-				commentID := "legacy-comment-" + string(issue.WorkItemID)
-				owners[commentID] = string(issue.WorkItemID)
-				original[commentID] = map[int64]string{}
-				for revision := int64(1); revision <= 2*nativeVersionSnapshotInterval+3; revision++ {
-					comment := tracker.NativeComment{ID: commentID, OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, Revision: tracker.Revision(revision), Body: fmt.Sprintf("legacy comment %d 雪", revision)}
-					raw, err := marshalNative(comment)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if revision == 2 {
-						raw = "  " + raw + "\n"
-					}
-					original[commentID][revision] = raw
-					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO collaboration_versions(organization_id,project_id,work_item_id,record_id,revision,record_json) VALUES(?,?,?,?,?,?)", scope.organization, scope.project, issue.WorkItemID, commentID, revision, raw); err != nil {
-						t.Fatal(err)
-					}
-				}
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE collaboration_versions DROP COLUMN encoding"); err != nil {
-				t.Fatal(err)
-			}
-			var recordsBefore, bytesBefore int64
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT value FROM hosted_usage_counters WHERE name='history_records'),(SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes')").Scan(&recordsBefore, &bytesBefore); err != nil {
-				t.Fatal(err)
-			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			input := CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: org, ProjectID: project, Objects: f.service.runDetailStore()}
+			manifest, err := os.ReadFile(filepath.Join(input.BundlePath, "manifest.json"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback()
-			urlsBefore := map[string][]string{}
-			for record, item := range owners {
-				if record != item {
-					continue
-				}
-				urlsBefore[item], err = importedGitHubIssueURLs(t.Context(), tx, string(scope.project), item, "")
-				if err != nil {
+			type accounting struct{ records, versions, bytes, charged int64 }
+			readAccounting := func() accounting {
+				t.Helper()
+				var value accounting
+				if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='history_records'),count(*),COALESCE(sum(payload_bytes),0) FROM collaboration_versions WHERE organization_id=$1 AND project_id=$2", org, project).Scan(&value.records, &value.versions, &value.bytes); err != nil {
 					t.Fatal(err)
+				}
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					value.charged, err = r.CollaborationBytes(t.Context())
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return value
+			}
+			before := readAccounting()
+			assertEmpty := func() {
+				t.Helper()
+				var rows int
+				if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2)+(SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2)+(SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND project_id=$2)+(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2)", org, project).Scan(&rows); err != nil || rows != 0 {
+					t.Fatalf("failed conversion retained rows=%d error=%v", rows, err)
+				}
+				if after := readAccounting(); after != before {
+					t.Fatalf("failed conversion changed accounting: before=%+v after=%+v", before, after)
 				}
 			}
 			if fail {
-				err = hubmigrations.CollaborationDeltas(t.Context(), tx, encodeNativeVersion, func(context.Context, *sql.Tx, string, string, string, string, int64) ([]byte, error) {
-					return []byte("{}"), nil
-				}, recountCollaborationBytes)
-				if err == nil || !strings.Contains(err.Error(), "changed a revision") {
+				corrupt := source.clone(t)
+				corrupt.set("collaboration_versions", map[string]string{"record_id": "wi_core_import", "revision": strconv.FormatInt(revisions, 10)}, map[string]any{"encoding": "snapshot", "record_json": "{}"})
+				invalid := input
+				invalid.BundlePath = corrupt.write()
+				err := postgres.ReadNeutralImportBundle(t.Context(), invalid.BundlePath, org, func(bundle *postgres.VerifiedNeutralImport) error {
+					reader := newCoreNeutralImport(bundle)
+					rows, err := readCoreWorkItemImportPage(t.Context(), reader, invalid, 0)
+					if err != nil {
+						return err
+					}
+					if len(rows) != 2 {
+						t.Fatalf("corrupt source items=%d want2", len(rows))
+					}
+					_, err = prepareCoreWorkItemImport(t.Context(), reader, eventstore.NewContent(invalid.Objects), invalid, bundle.Identity().SourceSHA256, rows[0])
+					return err
+				})
+				if err == nil || !strings.Contains(err.Error(), "current issue row does not match immutable history") {
 					t.Fatalf("corrupt conversion error=%v", err)
 				}
-				if err := tx.Rollback(); err != nil {
+				assertEmpty()
+				if _, err := admin.ExecContext(t.Context(), fmt.Sprintf(`CREATE FUNCTION reject_test_collaboration_import() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.record_id='wi_core_import' AND NEW.revision=%d THEN RAISE EXCEPTION 'injected final version failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_test_collaboration_import BEFORE INSERT ON collaboration_versions FOR EACH ROW EXECUTE FUNCTION reject_test_collaboration_import()`, revisions)); err != nil {
 					t.Fatal(err)
 				}
-				var columns int
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM pragma_table_info('collaboration_versions') WHERE name='encoding'").Scan(&columns); err != nil || columns != 0 {
-					t.Fatalf("failed migration retained column: %d %v", columns, err)
+				if _, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err == nil || !strings.Contains(err.Error(), "injected final version failure") {
+					t.Fatalf("final persistence failure=%v", err)
 				}
-			} else {
-				if err := migrateCollaborationDeltas(t.Context(), tx); err != nil {
+				assertEmpty()
+				if _, err := admin.ExecContext(t.Context(), "DROP TRIGGER reject_test_collaboration_import ON collaboration_versions; DROP FUNCTION reject_test_collaboration_import()"); err != nil {
 					t.Fatal(err)
 				}
-				var columnType string
-				var required int
-				if err := tx.QueryRowContext(t.Context(), "SELECT type, [notnull] FROM pragma_table_info('collaboration_versions') WHERE name='encoding'").Scan(&columnType, &required); err != nil || columnType != "TEXT" || required != 1 {
-					t.Fatalf("encoding column type=%s required=%d: %v", columnType, required, err)
-				}
-				for record, revisions := range original {
-					item := owners[record]
-					for revision, expected := range revisions {
-						raw, err := reconstructNativeVersion(t.Context(), tx, string(scope.organization), string(scope.project), item, record, revision)
-						if err != nil || string(raw) != expected {
-							t.Fatalf("migration changed %s revision %d: %v", item, revision, err)
+			}
+			if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+				t.Fatalf("history conversion count=%d error=%v", count, err)
+			}
+			content := eventstore.NewContent(f.service.runDetailStore())
+			var payloadBytes int64
+			for record, revisions := range original {
+				for revision, expected := range revisions {
+					var version eventstore.CollaborationVersion
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						version, err = r.CollaborationVersion(t.Context(), record, revision)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					raw, err := content.CollaborationVersion(t.Context(), version)
+					if err != nil || !bytes.Equal(raw, expected) {
+						t.Fatalf("migration changed %s revision %d: %v", owners[record], revision, err)
+					}
+					payloadBytes += version.PayloadBytes
+					if record == owners[record] && revision > 1 {
+						var issue tracker.NativeIssue
+						if err := json.Unmarshal(raw, &issue); err != nil || githubMigrationSourceURL(issue.Body) != urls[record] {
+							t.Fatalf("migration changed imported URLs: %v", err)
 						}
 					}
-					if record != item {
-						continue
-					}
-					after, err := importedGitHubIssueURLs(t.Context(), tx, string(scope.project), item, "")
-					if err != nil || !reflect.DeepEqual(after, urlsBefore[item]) {
-						t.Fatalf("migration changed imported URLs: %v", err)
-					}
 				}
-				if err := f.service.database.commit(t.Context(), tx); err != nil {
-					t.Fatal(err)
-				}
-				var recordsAfter, bytesAfter, recount int64
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT value FROM hosted_usage_counters WHERE name='history_records'),(SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'),("+collaborationBytesRecount+")").Scan(&recordsAfter, &bytesAfter, &recount); err != nil {
-					t.Fatal(err)
-				}
-				if recordsAfter != recordsBefore || bytesAfter != recount || bytesAfter >= bytesBefore {
-					t.Fatalf("accounting records=%d/%d bytes=%d/%d recount=%d", recordsAfter, recordsBefore, bytesAfter, bytesBefore, recount)
-				}
-				t.Logf("migration fixture: %d -> %d collaboration bytes, %.1f%% reduction", bytesBefore, bytesAfter, 100*(1-float64(bytesAfter)/float64(bytesBefore)))
 			}
-			for _, statement := range []string{"UPDATE collaboration_versions SET record_json=record_json", "DELETE FROM collaboration_versions"} {
-				if _, err := f.service.database.db.ExecContext(t.Context(), statement); err == nil || !strings.Contains(err.Error(), "collaboration history is append-only") {
+			after := readAccounting()
+			if after.records-before.records != versionCount+2 || after.versions-before.versions != versionCount || after.bytes-before.bytes != payloadBytes || payloadBytes >= rawBytes {
+				t.Fatalf("accounting before=%+v after=%+v payload=%d raw=%d records=%d", before, after, payloadBytes, rawBytes, versionCount)
+			}
+			if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+				t.Fatalf("source replay count=%d error=%v", count, err)
+			}
+			if replay := readAccounting(); replay != after {
+				t.Fatalf("source replay changed accounting: before=%+v after=%+v", after, replay)
+			}
+			retainedManifest, err := os.ReadFile(filepath.Join(input.BundlePath, "manifest.json"))
+			if err != nil || !bytes.Equal(manifest, retainedManifest) {
+				t.Fatalf("conversion changed verified source manifest: %v", err)
+			}
+			for _, statement := range []string{"UPDATE collaboration_versions SET payload_object_key=payload_object_key WHERE organization_id=$1 AND project_id=$2", "DELETE FROM collaboration_versions WHERE organization_id=$1 AND project_id=$2"} {
+				_, err := admin.ExecContext(t.Context(), statement, org, project)
+				var state interface{ SQLState() string }
+				if !errors.As(err, &state) || state.SQLState() != "23514" {
 					t.Fatalf("history mutation result=%v", err)
 				}
 			}

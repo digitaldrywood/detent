@@ -84,7 +84,9 @@ func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	tenants := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, org := range tenants {
-		seedStartupOrganization(t, store.postgres, org)
+		binding := *cfg.Hosted
+		binding.OrganizationID, binding.WorkOSOrganizationID = string(org), "provider_"+string(org)
+		seedStartupOrganization(t, store.postgres, org, &binding)
 		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_example", Number: 1, Revision: 1}, Title: "Example", Body: string(org), State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now}
 		raw, err := json.Marshal(issue)
 		if err != nil {
@@ -329,7 +331,7 @@ func TestHostedMaintenanceCloseJoinsScheduler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedStartupOrganization(t, store.postgres, "org_startup")
+	seedStartupOrganization(t, store.postgres, "org_startup", cfg.Hosted)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +369,7 @@ func TestBodyBackfillDrainsWithinBoundedTicks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedStartupOrganization(t, store.postgres, "org_startup")
+	seedStartupOrganization(t, store.postgres, "org_startup", cfg.Hosted)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}

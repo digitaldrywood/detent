@@ -2,7 +2,7 @@ package hubserver
 
 import (
 	"bytes"
-	"database/sql"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -197,7 +198,7 @@ func TestConversationAttachmentDelete(t *testing.T) {
 	created := f.create(t, f.token, map[string]any{"title": "Delete"})
 	id := created.Conversation.ID
 	upload := f.upload(t, f.token, id, "notes.md", "text/markdown", []byte("# Notes\n"))
-	stored, err := f.service.conversations.store.readAttachment(t.Context(), f.service.database.reader, id, upload.ID)
+	stored, err := f.storedConversationAttachment(t.Context(), id, upload.ID)
 	if err != nil || stored.ContentID == "" {
 		t.Fatalf("uploaded attachment has no object reference: %v", err)
 	}
@@ -211,7 +212,7 @@ func TestConversationAttachmentDelete(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusNoContent)
 	response = performHubAPIRequest(t, f.service, http.MethodGet, upload.URL, f.token, nil)
 	requireNativeStatus(t, response, http.StatusNotFound)
-	if _, err := f.service.conversations.store.readAttachmentContent(t.Context(), f.service.database.reader, stored.ArtifactRef); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := f.storedConversationAttachmentContent(t.Context(), stored); !errors.Is(err, corestore.ErrNotFound) {
 		t.Fatalf("deleted attachment content remains readable: %v", err)
 	}
 	// Deleting twice is still not found.
@@ -243,12 +244,12 @@ func TestConversationAttachmentBindsToMessage(t *testing.T) {
 	}
 
 	// A bound attachment no longer expires and cannot be deleted or reused.
-	var expires sql.NullString
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT expires_at FROM conversation_attachments WHERE id = ?", upload.ID).Scan(&expires); err != nil {
+	stored, err := f.storedConversationAttachment(t.Context(), id, upload.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if expires.Valid {
-		t.Fatalf("expires_at after binding = %q, want NULL", expires.String)
+	if stored.ExpiresAt != nil {
+		t.Fatalf("expires_at after binding = %q, want NULL", stored.ExpiresAt.Format(time.RFC3339Nano))
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodDelete, upload.URL, f.token, nil)
 	requireNativeStatus(t, response, http.StatusForbidden)
@@ -341,7 +342,7 @@ func TestConversationAttachmentSweep(t *testing.T) {
 	bound := f.upload(t, f.token, id, "sent.txt", "text/plain", []byte("sent"))
 	requireNativeStatus(t, f.command(t, f.token, id, conversation.Command{Key: "cmd_sweep", Kind: conversation.CommandMessage, Text: "x", Attachments: []string{bound.ID}}), http.StatusOK)
 
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_attachments SET expires_at = ? WHERE id = ?", "2020-01-01T00:00:00Z", expired.ID); err != nil {
+	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversation_attachments SET expires_at=$3 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, expired.ID, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 	swept, err := f.service.conversations.sweepAttachments(t.Context())
@@ -358,11 +359,11 @@ func TestConversationAttachmentSweep(t *testing.T) {
 		upload conversation.AttachmentUpload
 		text   string
 	}{{kept, "new"}, {bound, "sent"}} {
-		stored, err := f.service.conversations.store.readAttachment(t.Context(), f.service.database.reader, id, live.upload.ID)
+		stored, err := f.storedConversationAttachment(t.Context(), id, live.upload.ID)
 		if err != nil || stored.ContentID == "" {
 			t.Fatalf("live attachment lost its object reference: %v", err)
 		}
-		content, err := f.service.conversations.store.readAttachmentContent(t.Context(), f.service.database.reader, stored.ArtifactRef)
+		content, err := f.storedConversationAttachmentContent(t.Context(), stored)
 		if err != nil || string(content) != live.text {
 			t.Fatalf("live attachment content=%q want=%q err=%v", content, live.text, err)
 		}
@@ -419,6 +420,10 @@ func TestConversationAttachmentUploadRefusesExtraParts(t *testing.T) {
 	f := newConversationAPIFixture(t, nil)
 	created := f.create(t, f.token, map[string]any{"title": "Parts"})
 	id := created.Conversation.ID
+	var initialBlobs int
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_objects WHERE organization_id=$1", f.project.OrganizationID).Scan(&initialBlobs); err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		name  string
@@ -485,9 +490,10 @@ func TestConversationAttachmentUploadRefusesExtraParts(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 
 	var blobs int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_attachment_blobs").Scan(&blobs); err != nil {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_objects WHERE organization_id=$1", f.project.OrganizationID).Scan(&blobs); err != nil {
 		t.Fatal(err)
 	}
+	blobs -= initialBlobs
 	if blobs != 0 {
 		t.Fatalf("blobs after refused uploads = %d, want 0", blobs)
 	}
@@ -531,15 +537,15 @@ func TestConversationAttachmentCommandRefusesExpiredOrDeleted(t *testing.T) {
 		update string
 		status int
 	}{
-		{name: "expired", update: "UPDATE conversation_attachments SET expires_at = ? WHERE id = ?", status: http.StatusUnprocessableEntity},
-		{name: "deleted", update: "UPDATE conversation_attachments SET deleted_at = ? WHERE id = ?", status: http.StatusUnprocessableEntity},
+		{name: "expired", update: "UPDATE conversation_attachments SET expires_at=$3 WHERE organization_id=$1 AND id=$2", status: http.StatusUnprocessableEntity},
+		{name: "deleted", update: "UPDATE conversation_attachments SET deleted_at=$3 WHERE organization_id=$1 AND id=$2", status: http.StatusUnprocessableEntity},
 		{name: "fresh", status: http.StatusOK},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			uploaded := f.upload(t, f.token, id, test.name+".md", "text/markdown", []byte("# "+test.name+"\n"))
 			if test.update != "" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), test.update, conversationTime(time.Now().UTC().Add(-time.Minute)), uploaded.ID); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), test.update, f.project.OrganizationID, uploaded.ID, time.Now().UTC().Add(-time.Minute)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -547,4 +553,28 @@ func TestConversationAttachmentCommandRefusesExpiredOrDeleted(t *testing.T) {
 			requireNativeStatus(t, response, test.status)
 		})
 	}
+}
+
+func (f conversationAPIFixture) storedConversationAttachment(ctx context.Context, conversationID, id string) (record conversationstore.Attachment, err error) {
+	err = f.service.config.TenantRepository.ReadTenant(ctx, f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		owner, ok := r.(conversationstore.AttachmentReader)
+		if !ok {
+			return conversationContentUnavailable()
+		}
+		record, err = owner.ConversationAttachment(ctx, f.project.ID, conversationID, id)
+		return err
+	})
+	return
+}
+
+func (f conversationAPIFixture) storedConversationAttachmentContent(ctx context.Context, record conversationstore.Attachment) ([]byte, error) {
+	var object conversationstore.ContentObject
+	if err := f.service.config.TenantRepository.ReadTenant(ctx, f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		object, err = r.ConversationContent(ctx, record.ContentID)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return f.service.conversations.store.contents.ReadContent(ctx, string(f.project.OrganizationID), object.Reference)
 }

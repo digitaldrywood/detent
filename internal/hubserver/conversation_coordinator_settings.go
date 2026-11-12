@@ -85,7 +85,11 @@ func (s *Service) coordinatorSettingsTarget(ctx context.Context, record conversa
 	if name != operatortool.UpdateRunnerCapacity && name != operatortool.UpdateRunnerRouting {
 		return nil
 	}
-	r, err := readRunnerWithClock(ctx, s.database.reader, record.OrganizationID, target.RunnerID, s.config.now)
+	credential, err := currentHubOperator(ctx)
+	if err != nil {
+		return coordinatorSettingsRefusal(name)
+	}
+	r, err := s.coordinatorRunner(ctx, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, target.RunnerID)
 	if err != nil || !r.AllowsProject(record.ProjectID) {
 		return coordinatorSettingsRefusal(name)
 	}

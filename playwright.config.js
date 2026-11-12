@@ -31,23 +31,5 @@ module.exports = defineConfig({
     viewport: { width: 1440, height: 1100 },
     reducedMotion: "reduce",
   },
-  projects: [
-    {
-      name: "chromium",
-      testIgnore: [
-        "**/mobile.spec.js",
-        "**/mobile-guard.mobile.spec.js",
-        "**/card-detail-async.mobile.spec.js",
-      ],
-    },
-    {
-      name: "mobile-chromium",
-      testMatch: /mobile\.spec\.js/,
-      use: {
-        viewport: { width: 390, height: 844 },
-        isMobile: true,
-        hasTouch: true,
-      },
-    },
-  ],
+  projects: [{ name: "chromium" }],
 });

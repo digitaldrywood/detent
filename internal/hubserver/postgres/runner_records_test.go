@@ -2,24 +2,31 @@ package postgres_test
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -124,7 +131,7 @@ func TestRunnerProviderAccountLockScopesCurrentReports(t *testing.T) {
 
 func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	repository, pool := repositoryFor(t, admin, smallPool())
 	const organization tracker.OrganizationID = "org_usage"
 	seedLeaseFamily(t, repository, organization)
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -179,6 +186,430 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	t.Run("unreleased membership examines pages before runner filtering", func(t *testing.T) {
+		at := historyAt()
+		for _, org := range []tracker.OrganizationID{"org_page_first", "org_page_second"} {
+			seedLeaseFamily(t, repository, org)
+			seedRunnerIdentity(t, repository, org, "runner_page", "machine_1", at, false)
+			seedRunnerIdentity(t, repository, org, "runner_other", "machine_1", at, false)
+			seedRunnerIdentity(t, repository, org, "runner_cross_only", "machine_1", at, false)
+			seedRunnerIdentity(t, repository, org, "runner_released_only", "machine_1", at, false)
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: "prj_cross", Name: "Example cross-machine", Profile: "native"}); err != nil {
+					return err
+				}
+				for index := int64(1); index <= 2; index++ {
+					if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 3000 + index, ProjectID: "prj_cross", NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_cross_%d", index)), Number: index, Title: "Example cross-machine"}); err != nil {
+						return err
+					}
+				}
+				_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 4001, ProjectID: "prj_1", NativeID: "wi_binding", Number: 4001, Title: "Example binding"})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,id,project_id,native_id,number,title)
+ SELECT $1,1000+n,CASE WHEN $2 OR n>=203 THEN 'prj_2' ELSE 'prj_1' END,'wi_page_'||n,1000+n,'Example'
+ FROM generate_series(1,206) n`, org, org == "org_page_second"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,project_id,runner_id)
+ SELECT $1,'page_'||lpad(n::text,4,'0'),1000+n,'machine_1','session_page_'||n,1,$2::timestamptz-interval '2 hours',$2::timestamptz-interval '2 hours',CASE WHEN n=205 THEN $2::timestamptz-interval '1 hour' ELSE $2::timestamptz+interval '1 hour' END,
+ (SELECT project_id FROM issues WHERE organization_id=$1 AND id=1000+n),CASE WHEN n=204 THEN NULL WHEN n<=200 OR n=203 THEN 'runner_other' ELSE 'runner_page' END
+ FROM generate_series(1,205) n`, org, at); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at)
+ SELECT $1,'page_'||lpad(n::text,4,'0'),CASE WHEN n<=200 OR n=203 THEN 'runner_other' ELSE 'runner_page' END,$2
+ FROM generate_series(1,205) n WHERE n<>204`, org, at); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at)
+ SELECT $1,'history_'||n,1,'machine_1','session_history_'||n,1,$2::timestamptz-interval '2 hours',$2::timestamptz-interval '2 hours',$2::timestamptz-interval '1 hour',$2::timestamptz
+ FROM generate_series(1,50000) n`, org, at); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,project_id,runner_id)
+ VALUES($1,'cross_machine',3001,'machine_2','session_cross_machine',1,$2,$2,$2::timestamptz+interval '1 hour','prj_cross','runner_page')`, org, at); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) VALUES($1,'cross_machine','runner_page',$2)`, org, at); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,project_id,runner_id)
+ VALUES($1,'cross_only',3002,'machine_2','session_cross_only',1,$2,$2,$2::timestamptz+interval '1 hour','prj_cross','runner_cross_only'),
+ ($1,'released_only',1,'machine_1','session_released_only',1,$2::timestamptz-interval '2 hours',$2::timestamptz-interval '2 hours',$2::timestamptz-interval '1 hour','prj_1','runner_released_only')`, org, at); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET released_at=$2 WHERE organization_id=$1 AND lease_id='released_only'`, org, at); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) SELECT organization_id,lease_id,runner_id,acquired_at FROM leases WHERE organization_id=$1 AND lease_id IN ('cross_only','released_only')`, org); err != nil {
+				t.Fatal(err)
+			}
+			seedRunnerIdentity(t, repository, org, "runner_bound", "machine_bound", at, true)
+			boundRequest := leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_bound", SessionID: "bound_session", LeaseID: "bound_lease", RunnerID: "runner_bound", TTL: time.Hour}
+			boundLease := claimLease(t, repository, org, boundRequest)
+			if boundLease.RunnerID == nil || *boundLease.RunnerID != "runner_bound" || boundLease.ProjectID == nil || *boundLease.ProjectID != "prj_1" {
+				t.Fatalf("claim did not derive canonical bindings: %+v", boundLease)
+			}
+			if err := repository.ReadLeases(t.Context(), org, corestore.Serving, func(r leasestore.Reader) error {
+				bySession, err := r.LeaseBySession(t.Context(), boundRequest.SessionID)
+				if err == nil && !reflect.DeepEqual(boundLease, bySession) {
+					t.Fatalf("session lookup lost bound lease fields: %+v", bySession)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			replayed := claimLease(t, repository, org, boundRequest)
+			if replayed.LeaseID != boundLease.LeaseID || replayed.FencingToken != boundLease.FencingToken {
+				t.Fatalf("bound claim replay changed fence: %+v", replayed)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				identity, err := r.RunnerForLease(t.Context(), boundLease.LeaseID)
+				if err == nil && identity.RunnerID != "runner_bound" {
+					t.Fatalf("claim did not atomically create assignment: %+v", identity)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var renewed leasestore.Lease
+			if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				var err error
+				renewed, err = w.Renew(t.Context(), leaseFence(boundLease), 2*time.Hour)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadLeases(t.Context(), org, corestore.Serving, func(r leasestore.Reader) error {
+				bySession, err := r.LeaseBySession(t.Context(), boundRequest.SessionID)
+				if err == nil && !reflect.DeepEqual(renewed, bySession) {
+					t.Fatalf("plain renewal lost bound lease fields: renewed=%+v stored=%+v", renewed, bySession)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			boundLease = renewed
+			seedRunnerIdentity(t, repository, org, "runner_bound_other", "machine_bound", at, false)
+			seedRunnerIdentity(t, repository, org, "runner_removed", "machine_bound", at, false)
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.RemoveRunnerIdentity(t.Context(), "runner_removed", at)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, check := range []struct{ name, runner string }{
+				{name: "wrong_machine", runner: "runner_other"},
+				{name: "removed_runner", runner: "runner_removed"},
+			} {
+				err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+					_, err := w.Claim(t.Context(), leasestore.Claim{IssueID: 4001, ExpectedRevision: 1, MachineID: "machine_bound", SessionID: check.name, LeaseID: check.name, RunnerID: check.runner, TTL: time.Hour})
+					return err
+				})
+				if !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("%s claim refusal=%v", check.name, err)
+				}
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					_, err := r.Lease(t.Context(), check.name)
+					if !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("%s refusal left a lease: %v", check.name, err)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			differentRunner := boundRequest
+			differentRunner.RunnerID = "runner_bound_other"
+			err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				_, err := w.Claim(t.Context(), differentRunner)
+				return err
+			})
+			if !errors.Is(err, tracker.ErrLeaseConflict) {
+				t.Fatalf("different runner replay accepted: %v", err)
+			}
+			unbound := claimLease(t, repository, org, leasestore.Claim{IssueID: 4001, ExpectedRevision: 1, MachineID: "machine_bound", SessionID: "unbound_session", LeaseID: "unbound_lease", TTL: time.Hour})
+			if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET project_id=NULL WHERE organization_id=$1 AND lease_id=$2`, org, unbound.LeaseID); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadLeases(t.Context(), org, corestore.Serving, func(r leasestore.Reader) error {
+				bySession, err := r.LeaseBySession(t.Context(), "unbound_session")
+				if err == nil && (bySession.ProjectID != nil || bySession.RunnerID != nil) {
+					t.Fatalf("session lookup fabricated nullable binding: %+v", bySession)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var renewedUnbound leasestore.Lease
+			if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				var err error
+				renewedUnbound, err = w.Renew(t.Context(), leaseFence(unbound), 2*time.Hour)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if renewedUnbound.ProjectID != nil || renewedUnbound.RunnerID != nil {
+				t.Fatalf("plain renewal fabricated nullable binding: %+v", renewedUnbound)
+			}
+			if err := repository.ReadLeases(t.Context(), org, corestore.Serving, func(r leasestore.Reader) error {
+				bySession, err := r.LeaseBySession(t.Context(), "unbound_session")
+				if err == nil && !reflect.DeepEqual(renewedUnbound, bySession) {
+					t.Fatalf("plain renewal changed nullable lease fields: renewed=%+v stored=%+v", renewedUnbound, bySession)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			assignment := runnerstore.LeaseAssignment{OrganizationID: org, LeaseID: unbound.LeaseID, RunnerID: "runner_bound", AssignedAt: unbound.AcquiredAt}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.AssignRunnerLease(t.Context(), assignment) }); err != nil {
+				t.Fatal(err)
+			}
+			readBinding := func() (leasestore.Lease, string, time.Time) {
+				t.Helper()
+				var lease leasestore.Lease
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					lease, err = r.Lease(t.Context(), unbound.LeaseID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				var runner string
+				var assignedAt time.Time
+				if err := admin.QueryRowContext(t.Context(), `SELECT runner_id,assigned_at FROM runner_lease_assignments WHERE organization_id=$1 AND lease_id=$2`, org, unbound.LeaseID).Scan(&runner, &assignedAt); err != nil {
+					t.Fatal(err)
+				}
+				return lease, runner, assignedAt
+			}
+			beforeLease, beforeRunner, beforeAssignedAt := readBinding()
+			if beforeLease.RunnerID == nil || *beforeLease.RunnerID != "runner_bound" || beforeLease.ProjectID == nil || *beforeLease.ProjectID != "prj_1" || beforeRunner != "runner_bound" || !beforeAssignedAt.Equal(unbound.AcquiredAt) {
+				t.Fatalf("unbound assignment did not bind canonical fields together: %+v %q %v", beforeLease, beforeRunner, beforeAssignedAt)
+			}
+			assignment.RunnerID = "runner_bound_other"
+			err = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.AssignRunnerLease(t.Context(), assignment) })
+			if !errors.Is(err, corestore.ErrUniqueViolation) {
+				t.Fatalf("different bound assignment accepted: %v", err)
+			}
+			content := eventstore.NewContent(newHistoryObjects())
+			receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "production-import", Operation: "core-runner-lease-assignment", CommandKey: unbound.LeaseID, RequestHash: artifact.Digest([]byte(string(org) + "/conflicting-binding")), CreatedAt: at}, []byte(`{}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = repository.ImportCoreRunnerLeaseAssignment(t.Context(), postgres.CoreRunnerLeaseAssignmentImport{Assignment: assignment, Receipt: receipt})
+			if !errors.Is(err, mutation.ErrConflict) {
+				t.Fatalf("different bound import accepted: %v", err)
+			}
+			afterLease, afterRunner, afterAssignedAt := readBinding()
+			if !reflect.DeepEqual(beforeLease, afterLease) || beforeRunner != afterRunner || !beforeAssignedAt.Equal(afterAssignedAt) {
+				t.Fatalf("refused binding changed canonical or assignment row: %+v %q %v", afterLease, afterRunner, afterAssignedAt)
+			}
+			var releaseReader leasestore.Reader
+			var cachedLease leasestore.Lease
+			var cachedErr error
+			releaseScanned := false
+			releaseCtx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
+				if releaseReader != nil && strings.Contains(query, "UPDATE leases l SET") {
+					cachedLease, cachedErr = releaseReader.Lease(t.Context(), boundLease.LeaseID)
+					releaseScanned = true
+				}
+			})
+			if err := repository.WriteRunnerEventCommand(releaseCtx, org, "runner_bound", "runner_bound", eventstore.RunCommand{Project: "prj_1", WorkItem: "wi_1", LeaseID: boundLease.LeaseID}, func(ctx context.Context, w tenantstore.Writer) error {
+				releaseReader = w
+				released, err := w.Release(ctx, leaseFence(boundLease), "example release")
+				if err == nil && (released.ProjectID == nil || *released.ProjectID != "prj_1" || released.RunnerID == nil || *released.RunnerID != "runner_bound") {
+					return fmt.Errorf("release lost canonical binding: %+v", released)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if !releaseScanned || cachedErr != nil || cachedLease.ProjectID == nil || *cachedLease.ProjectID != "prj_1" || cachedLease.RunnerID == nil || *cachedLease.RunnerID != "runner_bound" || cachedLease.ReleasedAt == nil || cachedLease.ReleaseReason != "example release" {
+				t.Fatalf("release row scan lost cached binding: scanned=%t lease=%+v error=%v", releaseScanned, cachedLease, cachedErr)
+			}
+			if err := repository.ReadLeases(t.Context(), org, corestore.Serving, func(r leasestore.Reader) error {
+				bySession, err := r.LeaseBySession(t.Context(), boundRequest.SessionID)
+				if err == nil && !reflect.DeepEqual(cachedLease, bySession) {
+					t.Fatalf("released session lookup changed lease fields: %+v", bySession)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var statement string
+			ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
+				if statement == "" && strings.Contains(query, "WITH examined AS MATERIALIZED") {
+					statement = query
+				}
+			})
+			if err := repository.ReadTenantSnapshot(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				reader := r.(runnerstore.LeaseProjectPageReader)
+				membership := r.(runnerstore.UnreleasedMembershipReader)
+				if cross, err := membership.RunnerHasUnreleasedProjectLease(ctx, "runner_page", "prj_cross"); err != nil || cross {
+					t.Fatalf("cross-machine project contributed membership: %t %v", cross, err)
+				}
+				for _, runner := range []string{"runner_cross_only", "runner_released_only"} {
+					if any, err := membership.RunnerHasUnreleasedLease(ctx, runner); err != nil || any {
+						t.Fatalf("runner=%s has only cross-machine or released leases: %t %v", runner, any, err)
+					}
+				}
+				if any, err := membership.RunnerHasUnreleasedLease(ctx, "runner_page"); err != nil || !any {
+					t.Fatalf("current unreleased membership=%t error=%v", any, err)
+				}
+				if expired, err := membership.RunnerHasUnreleasedProjectLease(ctx, "runner_page", "prj_2"); err != nil || !expired {
+					t.Fatalf("expired-unreleased membership=%t error=%v", expired, err)
+				}
+				if absent, err := membership.RunnerHasUnreleasedProjectLease(ctx, "runner_page", "missing_project"); err != nil || absent {
+					t.Fatalf("negative current membership=%t error=%v", absent, err)
+				}
+				if present, err := membership.RunnerHasUnreleasedProjectLease(ctx, "runner_page", "prj_1"); err != nil || present != (org == "org_page_first") {
+					t.Fatalf("tenant-specific current membership=%t error=%v", present, err)
+				}
+				first, err := reader.RunnerUnreleasedLeaseProjects(ctx, "runner_page", "", 200)
+				if err != nil {
+					return err
+				}
+				if first.Examined != 200 || first.AfterLeaseID != "page_0200" || first.Exhausted || len(first.Projects) != 0 {
+					t.Fatalf("other-runner page lost examined progress or emitted projects: %+v", first)
+				}
+				if org == "org_page_first" {
+					if _, err := admin.ExecContext(ctx, `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,project_id,runner_id)
+ VALUES($1,'page_0206',1206,'machine_1','session_page_206',1,$2,$2,$2::timestamptz+interval '1 hour','prj_2','runner_page')`, org, at); err != nil {
+						return err
+					}
+					if _, err := admin.ExecContext(ctx, `INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) VALUES($1,'page_0206','runner_page',$2)`, org, at); err != nil {
+						return err
+					}
+				}
+				second, err := reader.RunnerUnreleasedLeaseProjects(ctx, "runner_page", first.AfterLeaseID, 200)
+				if err != nil {
+					return err
+				}
+				want := []tracker.ProjectID{"prj_1", "prj_2"}
+				if org == "org_page_second" {
+					want = []tracker.ProjectID{"prj_2"}
+				}
+				if second.Examined != 5 || second.AfterLeaseID != "page_0205" || !second.Exhausted || !slices.Equal(second.Projects, want) {
+					t.Fatalf("snapshot membership omitted expired lease, included foreign/released rows, or lost deduplication: %+v", second)
+				}
+				for _, check := range []struct {
+					runner string
+					limit  int
+					want   error
+				}{
+					{runner: "runner_page", limit: 0, want: corestore.ErrInvalidPage},
+					{runner: "runner_page", limit: corestore.MaxPageSize + 1, want: corestore.ErrInvalidPage},
+					{runner: "", limit: 2, want: runnerstore.ErrInvalidRecord},
+					{runner: "missing", limit: 2, want: corestore.ErrNotFound},
+				} {
+					if _, err := reader.RunnerUnreleasedLeaseProjects(ctx, check.runner, "", check.limit); !errors.Is(err, check.want) {
+						t.Fatalf("runner=%q limit=%d error=%v, want %v", check.runner, check.limit, err, check.want)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if statement == "" {
+				t.Fatal("membership query was not observed")
+			}
+			if err := repository.ReadTenantSnapshot(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				page, err := r.(runnerstore.LeaseProjectPageReader).RunnerUnreleasedLeaseProjects(t.Context(), "runner_page", "page_0205", 200)
+				if err != nil {
+					return err
+				}
+				wantCount, wantAfter := 0, "page_0205"
+				if org == "org_page_first" {
+					wantCount, wantAfter = 1, "page_0206"
+				}
+				if page.Examined != wantCount || page.AfterLeaseID != wantAfter || !page.Exhausted || (wantCount == 1 && !slices.Equal(page.Projects, []tracker.ProjectID{"prj_2"})) {
+					t.Fatalf("next snapshot did not see the committed assignment or empty-page cursor: %+v", page)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), "ANALYZE leases; ANALYZE runner_lease_assignments; ANALYZE issues"); err != nil {
+				t.Fatal(err)
+			}
+			var raw []byte
+			if err := func() (result error) {
+				tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+				if err != nil {
+					return err
+				}
+				defer func() {
+					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+					defer cancel()
+					if err := tx.Rollback(cleanupCtx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+						result = errors.Join(result, fmt.Errorf("rollback membership plan snapshot: %w", err))
+					}
+				}()
+				var role, tenant string
+				var runtimeRLS bool
+				if err := tx.QueryRow(t.Context(), `SELECT current_user, set_config('detent.organization_id', $1, true),
+ pg_has_role(current_user, 'detent_runtime_v2', 'USAGE')
+ AND NOT (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user)
+ AND current_setting('row_security')='on'`, string(org)).Scan(&role, &tenant, &runtimeRLS); err != nil {
+					return err
+				}
+				if !runtimeRLS || tenant != string(org) {
+					return fmt.Errorf("membership plan role=%q tenant=%q runtime_rls=%t", role, tenant, runtimeRLS)
+				}
+				return tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, org, "machine_1", "runner_page", "", 200).Scan(&raw)
+			}(); err != nil {
+				t.Fatal(err)
+			}
+			var plans []struct{ Plan searchPlanNode }
+			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+				t.Fatalf("decode membership plan: %v", err)
+			}
+			var visits func(searchPlanNode) float64
+			visits = func(node searchPlanNode) float64 {
+				count := float64(0)
+				if node.Relation != "" {
+					count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+				}
+				for _, child := range node.Plans {
+					count += visits(child)
+				}
+				return count
+			}
+			if count := visits(plans[0].Plan); count > 800 {
+				t.Fatalf("200 examined leases visited %.0f relation rows with 50000 released leases", count)
+			}
+			if org == "org_page_first" {
+				tx, err := admin.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+						t.Error(err)
+					}
+				})
+				if _, err := tx.ExecContext(t.Context(), "SET LOCAL session_replication_role = replica"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `UPDATE leases SET issue_id=999999 WHERE organization_id=$1 AND lease_id='page_0205'`, org); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				err = repository.ReadTenantSnapshot(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					_, err := r.(runnerstore.LeaseProjectPageReader).RunnerUnreleasedLeaseProjects(t.Context(), "runner_page", "page_0204", 200)
+					return err
+				})
+				if !errors.Is(err, corestore.ErrInvalidRelationship) {
+					t.Fatalf("assigned lease with missing issue was accepted: %v", err)
+				}
+			}
+		}
+	})
+
 }
 
 func TestRunnerHasActiveLeaseIsBoundedAndTenantScoped(t *testing.T) {
@@ -651,7 +1082,7 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 	now := historyAt()
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), Local: true, CreatedAt: now}); err != nil {
+			if err := w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), CreatedAt: now}); err != nil {
 				return err
 			}
 			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project_shared", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {

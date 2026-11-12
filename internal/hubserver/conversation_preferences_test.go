@@ -11,6 +11,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentoverride"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -98,8 +100,13 @@ func TestConversationPreferences(t *testing.T) {
 		{name: "unknown access", preferences: map[string]any{"access": "write"}},
 	} {
 		t.Run(test.name+" is refused", func(t *testing.T) {
+			before := f.snapshot(t, f.token, record.ID).Conversation
 			response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": test.preferences})
 			requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+			after := f.snapshot(t, f.token, record.ID).Conversation
+			if after.Revision != before.Revision || after.Preferences != before.Preferences {
+				t.Fatalf("refused preferences changed conversation: before=%+v after=%+v", before, after)
+			}
 		})
 	}
 }
@@ -114,7 +121,12 @@ func TestConversationModelChoicesFallBackToTheDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	models, err := f.service.conversationModelChoices(t.Context(), f.service.database.db, f.project.OrganizationID, []string{string(f.project.ID)}, now)
+	var models []conversationModel
+	err = f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		models, err = f.service.conversationModelChoices(t.Context(), reader, []tracker.ProjectID{f.project.ID}, now)
+		return err
+	})
 	if err != nil {
 		t.Fatalf("conversationModelChoices() error = %v", err)
 	}
@@ -140,7 +152,12 @@ func TestConversationModelChoicesOfferLunaEfforts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	models, err := f.service.conversationModelChoices(t.Context(), f.service.database.db, f.project.OrganizationID, []string{string(f.project.ID)}, now)
+	var models []conversationModel
+	err = f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		models, err = f.service.conversationModelChoices(t.Context(), reader, []tracker.ProjectID{f.project.ID}, now)
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,8 +350,16 @@ func TestConversationSettleSweep(t *testing.T) {
 // a runner bind, so a sweep test can stage a running conversation.
 func setConversationExecution(t *testing.T, f conversationAPIFixture, id string, status conversation.ExecutionStatus) {
 	t.Helper()
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE conversations SET content_attachment_id='',execution_json = ?,execution_status=? WHERE id = ?", mustMarshalConversationExecution(t, f.service.conversations.store, id, func(execution *conversation.Execution) { execution.Status = status }), status, id); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.LockConversation(t.Context(), f.project.ID, id)
+		if err != nil {
+			return err
+		}
+		record.Execution.Status = status
+		record.ContentReference = ""
+		_, err = w.UpdateConversation(t.Context(), record, record.Revision)
+		return err
+	}); err != nil {
 		t.Fatalf("set execution: %v", err)
 	}
 }
@@ -347,21 +372,45 @@ func backdateConversation(t *testing.T, f conversationAPIFixture, id string, age
 	if err != nil {
 		t.Fatal(err)
 	}
-	stamp := conversationTime(now.Add(-age))
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE conversations SET updated_at = ?, last_message_at = NULL WHERE id = ?", stamp, id); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.LockConversation(t.Context(), f.project.ID, id)
+		if err != nil {
+			return err
+		}
+		record.UpdatedAt = now.Add(-age)
+		record.LastMessageAt = nil
+		_, err = w.UpdateConversation(t.Context(), record, record.Revision)
+		return err
+	}); err != nil {
 		t.Fatalf("backdate conversation: %v", err)
 	}
 }
 
 func conversationEmitted(t *testing.T, f conversationAPIFixture, id string, want conversation.EventType) bool {
 	t.Helper()
-	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT count(*) FROM conversation_events WHERE conversation_id = ? AND type = ?", id, want).Scan(&count); err != nil {
-		t.Fatalf("count events: %v", err)
+	found := false
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var after int64
+		for {
+			page, err := r.ConversationEvents(t.Context(), id, after, 100)
+			if err != nil {
+				return err
+			}
+			for _, event := range page.Items {
+				if event.Type == want {
+					found = true
+					return nil
+				}
+			}
+			if page.Next == 0 {
+				return nil
+			}
+			after = page.Next
+		}
+	}); err != nil {
+		t.Fatalf("read events: %v", err)
 	}
-	return count > 0
+	return found
 }
 
 // TestConversationDefaultSettleWindow proves the configuration default is the
@@ -455,8 +504,8 @@ func conversationRank1() *int {
 func TestConversationHandoffLaterUsesBacklog(t *testing.T) {
 	t.Parallel()
 	service := openTestService(t, Config{DatabasePath: t.TempDir() + "/hub.db", Conversation: &ConversationConfig{Enabled: true}})
-	var organization tracker.OrganizationID
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM organizations WHERE local = 1").Scan(&organization); err != nil {
+	organization, err := service.database.postgres.DesignatedLocalOrganization(t.Context())
+	if err != nil {
 		t.Fatal(err)
 	}
 	states := []tracker.NativeState{

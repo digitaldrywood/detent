@@ -26,6 +26,6 @@ func (s *session) RunnerRecoveryEligibility(ctx context.Context, project tracker
   AND (blocker_state.name IS NULL OR NOT blocker_state.terminal)))
  FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
  LEFT JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name
- WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3 AND p.profile='native' AND p.deleted_at IS NULL`, s.organization, project, item, now).Scan(&eligible)
+ WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3 AND (p.profile='native' OR (p.profile='github_compatible' AND EXISTS(SELECT 1 FROM project_settings settings JOIN issue_claim_facts facts ON facts.organization_id=settings.organization_id AND facts.project_id=settings.project_id AND facts.work_item_id=i.native_id WHERE settings.organization_id=p.organization_id AND settings.project_id=p.id AND settings.repository_enabled AND lower(facts.repository)=lower(settings.repository)))) AND p.deleted_at IS NULL`, s.organization, project, item, now).Scan(&eligible)
 	return eligible, mapError(ctx, err)
 }

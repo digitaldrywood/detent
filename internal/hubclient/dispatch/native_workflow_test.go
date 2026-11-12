@@ -7,9 +7,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -150,5 +153,105 @@ func TestNativeWorkflowWriteReleasesStaleFencing(t *testing.T) {
 				t.Fatal("workflow completion retained local claims")
 			}
 		})
+	}
+}
+
+func TestNativeLaneEntrySurvivesConnectorRestart(t *testing.T) {
+	var clock atomic.Int64
+	initial := time.Date(2026, 7, 10, 14, 0, 0, 0, time.UTC)
+	clock.Store(initial.UnixNano())
+	h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "In Review"}},
+		{Name: "In Review", Transitions: []string{"In Progress"}},
+	}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
+	reopen := func() *NativeConnector {
+		t.Helper()
+		client, err := newTestClient(t, fixtureClient(h.admin.Transport()).config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		native, err := client.Native(h.organization, h.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		connector, err := NewNativeConnector(native)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return connector
+	}
+	first := h.createInProgress(t, "First work item")
+	second := h.createInProgress(t, "Second work item")
+	for _, source := range []*NativeConnector{h.connector, reopen()} {
+		for _, issue := range []connector.Issue{first, second} {
+			entry, found, err := source.CurrentLaneEntry(t.Context(), issue)
+			if err != nil || found || !entry.EnteredAt.IsZero() {
+				t.Fatalf("creation invented a persisted lane transition: %+v, %t, %v", entry, found, err)
+			}
+		}
+	}
+	for _, issue := range []connector.Issue{first, second} {
+		history, err := h.admin.HistoryPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range history.Items {
+			if event.Type == "workflow.transitioned" {
+				t.Fatalf("lane observation wrote a workflow transition for %s: %+v", issue.ID, event)
+			}
+		}
+	}
+	transition := func(issue connector.Issue, state string, at time.Time) connector.Issue {
+		t.Helper()
+		clock.Store(at.UnixNano())
+		current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return issueFromNative(updated)
+	}
+	firstEntered := initial.Add(time.Hour)
+	first = transition(first, "Todo", firstEntered)
+	secondEntered := initial.Add(2 * time.Hour)
+	second = transition(second, "Todo", secondEntered)
+	assertEntry := func(conn *NativeConnector, issue connector.Issue, expected time.Time) {
+		t.Helper()
+		entry, found, err := conn.CurrentLaneEntry(t.Context(), issue)
+		if err != nil || !found || !entry.EnteredAt.Equal(expected) {
+			t.Fatalf("lane entry for %s = %+v, %t, %v; want %s", issue.ID, entry, found, err, expected)
+		}
+		if entry.Actor.Kind == "" || entry.Actor.Login == "" {
+			t.Fatalf("lane entry lost its persisted actor for %s: %+v", issue.ID, entry.Actor)
+		}
+	}
+	for range 2 {
+		assertEntry(h.connector, first, firstEntered)
+		assertEntry(h.connector, second, secondEntered)
+	}
+	first = transition(first, "In Progress", initial.Add(3*time.Hour))
+	firstEntered = initial.Add(4 * time.Hour)
+	first = transition(first, "Todo", firstEntered)
+	assertEntry(h.connector, first, firstEntered)
+	assertEntry(h.connector, second, secondEntered)
+	clock.Store(initial.Add(5 * time.Hour).UnixNano())
+	current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(first.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := "Updated first work item"
+	updated, err := h.admin.UpdateIssue(t.Context(), current.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, Title: &title})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first = issueFromNative(updated)
+	for range 2 {
+		reopened := reopen()
+		assertEntry(reopened, first, firstEntered)
+		assertEntry(reopened, second, secondEntered)
 	}
 }

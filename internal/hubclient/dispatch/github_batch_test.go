@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,11 +24,13 @@ func TestRunnerGitHubBatchReportsOneBoundedStep(t *testing.T) {
 
 	t.Parallel()
 	for _, test := range []struct {
-		name      string
-		discovery bool
-		failure   bool
-		project   bool
-	}{{name: "discovery", discovery: true}, {name: "ProjectV2 discovery", discovery: true, project: true}, {name: "complete snapshot"}, {name: "source throttled", failure: true}} {
+		name       string
+		discovery  bool
+		failure    bool
+		project    bool
+		incomplete bool
+		sourceErr  error
+	}{{name: "discovery", discovery: true}, {name: "ProjectV2 discovery", discovery: true, project: true}, {name: "complete snapshot"}, {name: "source throttled", failure: true}, {name: "incomplete inline discussion is fetched", incomplete: true}, {name: "discussion transport failure stays retryable", sourceErr: errors.New("temporary transport outage")}, {name: "provider5xx stays retryable", sourceErr: &githubconnector.StatusError{StatusCode: 503, Err: errors.New("temporary provider outage")}}, {name: "discovery transport failure stays retryable", discovery: true, sourceErr: errors.New("temporary discovery outage")}} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			reports := 0
@@ -54,6 +57,10 @@ func TestRunnerGitHubBatchReportsOneBoundedStep(t *testing.T) {
 					} else if test.project && (len(result.Page.Issues) != 1 || result.Page.Issues[0].ProjectStatus != "Ready") {
 						t.Errorf("runner lost ProjectV2 Status: %+v", result.Page)
 					}
+				} else if test.incomplete {
+					if len(result.Results) != 1 || result.Results[0].Number != 12 || result.Results[0].Snapshot == nil || len(result.Results[0].Snapshot.Comments) == 0 {
+						t.Errorf("incomplete discussion reported as complete: %+v", result)
+					}
 				} else if result.Snapshot == nil || result.Number != 12 {
 					t.Error("missing complete snapshot")
 				}
@@ -71,12 +78,18 @@ func TestRunnerGitHubBatchReportsOneBoundedStep(t *testing.T) {
 			}
 			scheduler := &Scheduler{githubIntake: func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
 				reads++
+				if test.sourceErr != nil {
+					return tracker.GitHubIssueSnapshot{}, test.sourceErr
+				}
 				if test.failure {
 					return tracker.GitHubIssueSnapshot{}, &githubconnector.StatusError{StatusCode: 429, Err: githubconnector.ErrRateLimited, RetryAfter: time.Hour}
 				}
 				return intakeSnapshot(), nil
 			}, githubDiscovery: func(_ context.Context, request tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error) {
 				reads++
+				if test.sourceErr != nil {
+					return tracker.GitHubDiscoveryPage{}, test.sourceErr
+				}
 				if test.project {
 					if request.ProjectV2 == nil || request.ProjectV2.ID != "PVT_source" || request.ProjectV2.StatusLanes["Ready"] != "Blocked" {
 						t.Fatalf("runner lost ProjectV2 source: %+v", request)
@@ -94,7 +107,20 @@ func TestRunnerGitHubBatchReportsOneBoundedStep(t *testing.T) {
 			} else {
 				task.Item = &tracker.GitHubIssuePreview{Number: 12, URL: "https://github.com/example-org/example-project/issues/12"}
 			}
-			if err := scheduler.processGitHubBatch(t.Context(), native, task); err != nil {
+			if test.incomplete {
+				incomplete := intakeSnapshot()
+				incomplete.Comments = nil
+				task.Items = []tracker.GitHubIssuePreview{{Number: 12, URL: "https://github.com/example-org/example-project/issues/12", Snapshot: &incomplete, NeedsDiscussion: true}}
+				task.Item = &task.Items[0]
+			}
+			err = scheduler.processGitHubBatch(t.Context(), native, task)
+			if test.sourceErr != nil {
+				if !errors.Is(err, test.sourceErr) || reads != 1 || reports != 0 {
+					t.Fatalf("provider outage became an item result: error=%v reads=%d reports=%d", err, reads, reports)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
 			if reads != 1 || reports != 1 {

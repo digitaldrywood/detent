@@ -1,9 +1,23 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"slices"
+	"strings"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 // reportsTrackingFingerprints maps the fingerprint a machine-filed issue would
@@ -26,39 +40,152 @@ func reportsTrackingFingerprints(failures []nativeFailure) map[string]string {
 // reportsTrackingIssues links each failure class to an open issue whose origin
 // fingerprint matches one of its signatures. A class with no match keeps no link.
 func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, classes []reportClassTotal, failures []nativeFailure) error {
+	if len(failures) > maxAnalyticsPopulation {
+		return nativePublicInvalid("Report failure tracking population exceeds the read limit")
+	}
 	fingerprints := reportsTrackingFingerprints(failures)
 	if len(fingerprints) == 0 {
 		return nil
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT i.native_id, i.body FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 AND ws.terminal = 0
-AND (instr(i.body, 'detent-origin') > 0 OR instr(i.body, 'detent-audit-fp') > 0)
-ORDER BY i.number LIMIT ?`, scope.organization, scope.project, maxAnalyticsPopulation)
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return workItemStorageUnavailable()
+	}
+	tracking := map[string]corestore.DoctorProposalIdentityResult{}
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(fingerprints))
+		for fingerprint := range fingerprints {
+			keys = append(keys, fingerprint)
+		}
+		slices.Sort(keys)
+		for _, fingerprint := range keys {
+			class := fingerprints[fingerprint]
+			result, err := r.LookupDoctorProposalIdentity(ctx, corestore.DoctorProposalIdentitySelection{ProjectID: scope.project, Identity: corestore.DoctorProposalIdentity{Kind: "fingerprint", Value: fingerprint}, OpenOnly: true, Earliest: true})
+			if err != nil {
+				return err
+			}
+			if result.WorkItemID == "" {
+				continue
+			}
+			current, found := tracking[class]
+			if !found || result.Number < current.Number || result.Number == current.Number && result.WorkItemID < current.WorkItemID {
+				tracking[class] = result
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	tracking := map[string]string{}
-	for rows.Next() {
-		var id, body string
-		if err := rows.Scan(&id, &body); err != nil {
-			return err
+	for i := range classes {
+		classes[i].TrackingWorkItemID = string(tracking[classes[i].Class].WorkItemID)
+	}
+	return nil
+}
+
+func (s *Service) populatePostgresReportTracking(ctx context.Context, credential apiCredential, projects []string, attempts []reportstore.AttemptFact, w operatortool.AnalyticsWindow, out *hostedReportsReport) (bool, error) {
+	selected := []reportstore.AttemptFact{}
+	for _, attempt := range attempts {
+		if attempt.Failed && !attempt.OutcomeAt.Before(w.From) && attempt.OutcomeAt.Before(w.To) {
+			selected = append(selected, attempt)
 		}
-		origin, ok := issueorigin.Parse(body)
+	}
+	if len(selected) == 0 {
+		return false, nil
+	}
+	slices.SortFunc(selected, func(a, b reportstore.AttemptFact) int {
+		return cmp.Or(b.OutcomeAt.Compare(a.OutcomeAt), strings.Compare(a.AttemptID, b.AttemptID))
+	})
+	partial := len(selected) > maxAnalyticsPopulation
+	selected = selected[:min(len(selected), maxAnalyticsPopulation)]
+	events := make([]eventstore.Event, len(selected))
+	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
+	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(nativeRunEventReader)
 		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		authorized := map[tracker.ProjectID]bool{}
+		for index, attempt := range selected {
+			if !authorized[attempt.ProjectID] {
+				if !slices.Contains(projects, string(attempt.ProjectID)) {
+					return nativeNotFound()
+				}
+				if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, project: attempt.ProjectID, credential: credential}, false); err != nil {
+					return err
+				}
+				authorized[attempt.ProjectID] = true
+			}
+			if !attempt.ProjectionKnown || attempt.EventID == "" {
+				partial = true
+				continue
+			}
+			event, err := reader.RunEvent(ctx, attempt.ProjectID, attempt.WorkItemID, attempt.EventID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				partial = true
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if event.AttemptID != attempt.AttemptID || event.ProjectID != attempt.ProjectID || event.WorkItemID != attempt.WorkItemID || event.OrganizationID != organization {
+				return artifact.ErrIntegrity
+			}
+			events[index] = event
+		}
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("read tracking failure events: %w", err)
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	values, readErrors := readDiagnosticObjects(events, func(event eventstore.Event) (tracker.CollaborationEvent, error) {
+		if event.ID == "" {
+			return tracker.CollaborationEvent{}, artifact.ErrMissing
+		}
+		return content.Event(ctx, event)
+	})
+	failures := map[tracker.ProjectID][]nativeFailure{}
+	for index, value := range values {
+		if err := readErrors[index]; errors.Is(err, fs.ErrNotExist) || errors.Is(err, artifact.ErrMissing) {
+			partial = true
+			continue
+		} else if err != nil {
+			return false, fmt.Errorf("read tracking failure object: %w", err)
+		}
+		attempt := selected[index]
+		if value.Data.Run == nil || value.Data.Run.AttemptID != attempt.AttemptID || value.AggregateID != attempt.WorkItemID || value.ProjectID != attempt.ProjectID || value.OrganizationID != organization {
+			return false, artifact.ErrIntegrity
+		}
+		example, class := failureFromAttempt(*value.Data.Run, attempt.Status)
+		if example == "" || classifyFailure(example).Name != attempt.FailureClass {
+			partial = true
 			continue
 		}
-		if class, match := fingerprints[origin.Fingerprint]; match {
-			if _, taken := tracking[class]; !taken {
-				tracking[class] = id
+		failures[attempt.ProjectID] = append(failures[attempt.ProjectID], nativeFailure{attemptID: attempt.AttemptID, workItem: string(attempt.WorkItemID), at: attempt.OutcomeAt, example: example, class: class})
+	}
+	for _, project := range projects {
+		projectFailures := failures[tracker.ProjectID(project)]
+		if len(projectFailures) == 0 {
+			continue
+		}
+		classes := reportFailureClasses(projectFailures)
+		if err := s.reportsTrackingIssues(ctx, nativeScope{organization: organization, project: tracker.ProjectID(project), credential: credential}, classes, projectFailures); errors.Is(err, postgres.ErrDoctorProposalIdentitiesPending) {
+			partial = true
+			continue
+		} else if err != nil {
+			return false, err
+		}
+		for _, class := range classes {
+			for i := range out.Failures {
+				if out.Failures[i].Class == class.Class && out.Failures[i].TrackingWorkItemID == "" {
+					out.Failures[i].TrackingWorkItemID = class.TrackingWorkItemID
+				}
 			}
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for i := range classes {
-		classes[i].TrackingWorkItemID = tracking[classes[i].Class]
-	}
-	return nil
+	return partial, nil
 }

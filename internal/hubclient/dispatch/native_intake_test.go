@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -460,6 +461,20 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	}
 	comments, err = native.CommentsPage(t.Context(), tracker.NativeWorkItemID(created.ID), "", 200)
 	if err != nil || len(comments.Items) != 3+len(reuseCases) {
+		h.seed(func(w tenantstore.Writer) error {
+			canonical, err := w.Comments(t.Context(), h.project, tracker.NativeWorkItemID(created.ID), 0, 200)
+			if err != nil {
+				return fmt.Errorf("read canonical intake comments: %w", err)
+			}
+			t.Logf("intake occurrence counts canonical=%d public=%d expected=%d", len(canonical), len(comments.Items), 3+len(reuseCases))
+			for _, comment := range canonical {
+				t.Logf("canonical intake comment id=%s sequence=%d revision=%d", comment.ID, comment.Sequence, comment.Revision)
+			}
+			for _, comment := range comments.Items {
+				t.Logf("public intake comment id=%s sequence=%d revision=%d", comment.ID, comment.Sequence, comment.Revision)
+			}
+			return nil
+		})
 		t.Fatalf("refused intake wrote occurrence: %#v, %v", comments, err)
 	}
 	origin.Fingerprint = "released-new-follow-up"

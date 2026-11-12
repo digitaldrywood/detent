@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,16 +16,22 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type nativeCompletionRunner struct {
 	*runner.Runner
+	retryStarted         chan nativeCompletionRun
 	prepared             *runner.RunResult
+	prepare              func(context.Context, runner.RunRequest) error
 	completed            chan nativeCompletionRun
+	landed               chan nativeCompletionRun
 	calls                atomic.Int32
 	gate                 gate.Config
 	expectPendingLanding bool
+	expectSourceRefusal  bool
+	expectedRecoverySite string
 }
 
 func runNativeCompletionOrchestrator(t *testing.T, h *nativeChangeHub, agent *runner.Runner, request runner.RunRequest, targets ...string) (runner.RunResult, error) {
@@ -39,14 +46,19 @@ func runNativeCompletionOrchestrator(t *testing.T, h *nativeChangeHub, agent *ru
 
 type nativeCompletionScheduling struct {
 	*Scheduler
-	issue    connector.Issue
-	fetched  atomic.Bool
-	released chan error
+	issue                  connector.Issue
+	fetched                atomic.Bool
+	released               chan error
+	wake                   <-chan struct{}
+	resumeCandidates       atomic.Bool
+	retryCandidatesChecked atomic.Bool
+	retryCandidates        chan error
 }
 
 type nativeCompletionRun struct {
-	result runner.RunResult
-	err    error
+	request runner.RunRequest
+	result  runner.RunResult
+	err     error
 }
 
 func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativeCompletionRunner, request runner.RunRequest, target string) (runner.RunResult, connector.Issue, error) {
@@ -82,7 +94,7 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	var completed nativeCompletionRun
 	select {
 	case completed = <-backend.completed:
-		if completed.err != nil {
+		if completed.err != nil && !backend.expectSourceRefusal {
 			t.Fatalf("native completion runner failed: result=%+v error=%v", completed.result, completed.err)
 		}
 	case <-testenv.WaitContext(t, t.Context()).Done():
@@ -99,7 +111,38 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	if err := orch.Drain(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	expectedRecoverySite := backend.expectedRecoverySite
+	if expectedRecoverySite == "" {
+		expectedRecoverySite = "recover native Change source"
+	}
+	if backend.expectSourceRefusal {
+		assertInstanceRecoveryRetry(t, h, orch, request.Issue.ID)
+		if err := h.scheduler.ReleaseClaim(t.Context(), request.Issue.ID, "released"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	state, err := orch.State(t.Context())
+	if backend.expectSourceRefusal {
+		if err != nil || !errors.Is(completed.err, runner.ErrNativeRecoveryRequired) || completed.result.TurnStarted || backend.calls.Load() != 1 || h.state(t, request.Issue.ID) != target || len(state.Retry) != 1 || len(state.Blocked) != 0 || len(state.Claimed) != 0 || len(state.Running) != 0 {
+			t.Fatalf("source refusal lost its instance retry: result=%+v completion=%v state=%+v error=%v", completed.result, completed.err, state, err)
+		}
+		if retry, ok := state.Retry[request.Issue.ID]; !ok || !strings.Contains(retry.Error, expectedRecoverySite) {
+			t.Fatalf("source refusal retry=%+v", state.Retry)
+		}
+		recovery, err := h.admin.Recovery(t.Context(), request.Execution.Recovery().Issue.WorkItemID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSetupRefusalReceipt(t, recovery.Attempts, false)
+		if failure := recovery.Attempts[len(recovery.Attempts)-1].TerminalFailure; failure == nil || !strings.Contains(failure.Error, expectedRecoverySite) {
+			t.Fatalf("source refusal came from another recovery stage: %+v", failure)
+		}
+		candidates := h.candidatesIn(t, target)
+		if len(candidates) != 1 || candidates[0].ID != request.Issue.ID {
+			t.Fatalf("source refusal is not reclaimable: %+v", candidates)
+		}
+		return completed.result, candidates[0], completed.err
+	}
 	landed := false
 	wantRetries := 0
 	if target == "Rework" || backend.expectPendingLanding {
@@ -116,7 +159,17 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	if change := completed.result.NativeChange; change != nil && change.Landing != nil {
 		landing = change.Landing
 	}
-	if completed.err != nil || target == "Done" && ((!noChange && (landing == nil || !landing.Landed)) || len(state.Blocked) != 0) || backend.calls.Load() != 1 {
+	wantCalls := int32(1)
+	select {
+	case turn := <-backend.landed:
+		wantCalls = 2
+		landing = turn.result.NativeLanding
+		if turn.err != nil {
+			t.Fatalf("native landing turn failed: result=%+v error=%v", turn.result, turn.err)
+		}
+	default:
+	}
+	if completed.err != nil || target == "Done" && ((!noChange && (landing == nil || !landing.Landed)) || len(state.Blocked) != 0) || backend.calls.Load() != wantCalls {
 		t.Fatalf("no-change settlement did not reconcile delivery: landing=%+v calls=%d error=%v", landing, backend.calls.Load(), completed.err)
 	}
 	if backend.expectPendingLanding {
@@ -149,12 +202,33 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 
 func (r *nativeCompletionRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
 	if r.calls.Add(1) != 1 {
+		if r.retryStarted != nil {
+			err := request.Execution.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "example-model"})
+			select {
+			case r.retryStarted <- nativeCompletionRun{request: request, err: err}:
+			case <-ctx.Done():
+				return runner.RunResult{}, ctx.Err()
+			}
+			if err != nil {
+				return runner.RunResult{}, err
+			}
+			<-ctx.Done()
+			return runner.RunResult{}, ctx.Err()
+		}
+		if r.landed != nil && request.Mode == runner.RunModeMerge && r.calls.Load() == 2 {
+			result, err := r.Runner.Run(ctx, request)
+			r.landed <- nativeCompletionRun{request: request, result: result, err: err}
+			return result, err
+		}
 		return runner.RunResult{}, errors.New("no-change settlement dispatched another runner turn")
 	}
 	var result runner.RunResult
 	var err error
 	if r.prepared != nil {
 		result = *r.prepared
+		if r.prepare != nil {
+			err = r.prepare(ctx, request)
+		}
 	} else {
 		result, err = r.Runner.Run(ctx, request)
 	}
@@ -162,15 +236,50 @@ func (r *nativeCompletionRunner) Run(ctx context.Context, request runner.RunRequ
 	return result, err
 }
 
-func (s *nativeCompletionScheduling) FetchCandidateIssues(context.Context, orchestrator.SchedulingRequest) ([]connector.Issue, error) {
-	if s.fetched.Swap(true) {
+func (s *nativeCompletionScheduling) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	if !s.fetched.Swap(true) {
+		return []connector.Issue{s.issue}, nil
+	}
+	if !s.resumeCandidates.Load() {
 		return nil, nil
 	}
-	return []connector.Issue{s.issue}, nil
+	firstResumedFetch := !s.retryCandidatesChecked.Swap(true)
+	issues, err := s.Scheduler.FetchCandidateIssues(ctx, request)
+	if !firstResumedFetch {
+		return issues, err
+	}
+	progressErr := err
+	if err == nil {
+		found := false
+		for _, issue := range issues {
+			found = found || issue.ID == s.issue.ID
+		}
+		if !found {
+			progressErr = errors.New("due native retry missing from canonical candidate page")
+		}
+	}
+	if progressErr != nil {
+		select {
+		case s.retryCandidates <- progressErr:
+		default:
+		}
+	}
+	return issues, err
 }
 
-func (*nativeCompletionScheduling) WaitCandidateChanges(ctx context.Context, _ string, _ chan<- struct{}) {
-	<-ctx.Done()
+func (s *nativeCompletionScheduling) WaitCandidateChanges(ctx context.Context, _ string, changes chan<- struct{}) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.wake:
+			select {
+			case changes <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
 }
 
 func (s *nativeCompletionScheduling) ReleaseClaim(ctx context.Context, id, reason string) error {

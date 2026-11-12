@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -28,16 +27,18 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
-	"github.com/digitaldrywood/detent/internal/attachment"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/logging"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -96,21 +97,35 @@ func TestOperatorChangePublication(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newChangeFixture(t, nil)
 			states := append(nativeFixtureStates(), tracker.NativeState{Name: "Human Review", Transitions: []string{"Merging"}}, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}})
-			raw, err := json.Marshal(states)
+			setChangeFixtureStates(t, f.nativeFixture, states)
+			snapshot := f.issue
+			snapshot.State = "Human Review"
+			snapshot.Revision++
+			revision, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, RecordID: string(f.issue.WorkItemID), Revision: int64(snapshot.Revision)}, historyTestJSON(t, snapshot))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", raw, f.project.ID); err != nil {
+			document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, ID: "issue:" + string(f.issue.WorkItemID), SourceID: string(f.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(snapshot.Revision), UpdatedAt: f.service.config.now().UTC()}, searchstore.Text{Title: snapshot.Title, Body: snapshot.Body, Labels: snapshot.Labels})
+			if err != nil {
 				t.Fatal(err)
 			}
-			for _, state := range states[3:] {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
-					t.Fatal(err)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				item, err := w.WorkItem(t.Context(), f.project.ID, f.issue.WorkItemID)
+				if err != nil {
+					return err
 				}
-			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Human Review') WHERE native_id=?", f.project.ID, f.issue.WorkItemID); err != nil {
+				item.WorkflowStateName = new("Human Review")
+				if _, err = w.UpdateWorkItem(t.Context(), item); err != nil {
+					return err
+				}
+				if _, err = w.CreateCollaborationVersion(t.Context(), revision); err != nil {
+					return err
+				}
+				return w.PutSearch(t.Context(), document, int64(snapshot.Revision)-1)
+			}); err != nil {
 				t.Fatal(err)
 			}
+			f.issue = snapshot
 			rules := f.rules
 			rules.RequireReview = test.review
 			if !test.checks {
@@ -156,7 +171,8 @@ func TestOperatorChangePublication(t *testing.T) {
 					}
 				})
 			}
-			foreign := changeOperatorContext(t, f.service, f.token, "org_foreign")
+			foreignFixture := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "foreign organization")
+			foreign := changeOperatorContext(t, f.service, foreignFixture.token, string(foreignFixture.project.OrganizationID))
 			if _, err := executor.Execute(foreign, changeToolCall(operatortool.PublishChangeVersion, args)); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("foreign organization: %v", err)
 			}
@@ -258,9 +274,7 @@ func TestOperatorChangePublication(t *testing.T) {
 				}
 			}
 
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", operatortool.ConnectionIdentity(ctx).CredentialID); err != nil {
-				t.Fatal(err)
-			}
+			operatorChangeRevokeGrant(t, f.nativeFixture)
 			if _, err := executor.Execute(ctx, call); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("lost authority replay: %v", err)
 			}
@@ -354,26 +368,8 @@ func TestOperatorChangeCommands(t *testing.T) {
 	scheduled := gate.ScheduledEvidence{Schema: 1, Repository: "example/repo", OccurrenceKey: strings.Repeat("f", 64), RunID: "123", RunAttempt: "2", JobID: "456", JobName: "Lint", RunURL: "https://github.com/example/repo/actions/runs/123/attempts/2", JobURL: "https://github.com/example/repo/actions/jobs/456", HeadSHA: scheduledCheck.HeadSHA, Conclusion: "failure", Checks: []gate.CheckObservation{scheduledCheck}}
 	report := f.create(t, "scheduled failure")
 	stamp := issueorigin.Stamp("Scheduled job failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: strings.TrimSuffix(scheduled.RunURL, "/attempts/2"), Fingerprint: strings.Repeat("a", 64)})
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", stamp, report.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	report.Body = stamp
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	registered := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
-	registered.enroll(t)
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nativeRunID := newNativeID("run")
-	nativeAttempt := seedHealthRateAttempt(t, tx, scope, f.issue, string(registered.binding.MachineID), "succeeded", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Phase: "completed", HeartbeatAt: at}}, at, -1)
-	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET run_id=?,data_json=json_set(data_json,'$.attempt_id',id,'$.run_id',?) WHERE id=?", nativeRunID, nativeRunID, nativeAttempt); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	report = operatorChangeSetBody(t, f.nativeFixture, report, stamp)
+	scope := analyticsTestScope(t, f.nativeFixture)
 	for _, test := range []struct {
 		name, want  string
 		diagnostics []string
@@ -422,6 +418,14 @@ func TestOperatorChangeCommands(t *testing.T) {
 		{name: "earlier Change is only a candidate", want: "local_pass_scheduled_failure", edit: func(r *tracker.NativeLandingReceipt) { r.MergeSHA = strings.Repeat("9", 40) }},
 	} {
 		t.Run("validation audit "+test.name, func(t *testing.T) {
+			f := newChangeFixture(t, f.service)
+			version := f.publish(t, "audit-version", "")
+			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+			executor := hubOperatorExecutor{f.service}
+			base := operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), ChangeID: f.change.ID}
+			report := f.create(t, "scheduled failure")
+			report = operatorChangeSetBody(t, f.nativeFixture, report, stamp)
+			scope := analyticsTestScope(t, f.nativeFixture)
 			receipt := tracker.NativeLandingReceipt{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: scheduled.HeadSHA, Landed: true, ObservedAt: at, Gate: &gate.CommandResult{Command: "make check-land", HeadSHA: checked.HeadSHA, TreeSHA: checked.TreeSHA, Output: "private prompt and credentials", Evidence: &gate.CommandEvidence{Environment: environment, Checks: []gate.CheckObservation{checked}}}}
 			if test.edit != nil {
 				test.edit(&receipt)
@@ -465,29 +469,9 @@ func TestOperatorChangeCommands(t *testing.T) {
 				public := tracker.PublicGateResult(*receipt.Gate)
 				receipt.Gate = &public
 			}
-			contentCtx := f.service.contentContext(t.Context())
-			if err := f.service.hubTransact(contentCtx, func(tx *sql.Tx, _ time.Time) error {
-				return persistAttemptLanding(contentCtx, tx, nativeAttempt, receipt)
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if len(test.diagnostics) > 0 {
-				raw, err := json.Marshal(receipt.Gate)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var payloadKey string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT payload_object_key FROM native_attempts WHERE id=?", nativeAttempt).Scan(&payloadKey); err != nil {
-					t.Fatal(err)
-				}
-				inline, err := readStoredPayload(contentCtx, payloadKey)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(?, '$.runtime.validation', json(?)),payload_object_key='' WHERE id=?", string(inline), raw, nativeAttempt); err != nil {
-					t.Fatal(err)
-				}
-			}
+			receipt.BaseRef = "develop"
+			attempt, nativeRunID := operatorChangeLandingAttempt(t, f, version, receipt, at, len(test.diagnostics) > 0)
+			nativeAttempt := attempt.ID
 			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, base))
 			var value operatortool.ChangeResult
 			if err != nil || json.Unmarshal(result.Content, &value) != nil || value.ValidationAudit != nil {
@@ -499,7 +483,16 @@ func TestOperatorChangeCommands(t *testing.T) {
 				if len(value.Detail.Versions) != 1 || value.Detail.Versions[0].Landing == nil || !reflect.DeepEqual(value.Detail.Versions[0].Landing.Gate, &want) {
 					t.Fatal("landing receipt lost identity or explicit output excerpt")
 				}
-				stored, err := readVersionLanding(f.service.contentContext(ctx), f.service.database.db, version.ID)
+				var storedRow eventstore.LandingReceipt
+				err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					storedRow, err = r.LandingReceipt(t.Context(), nativeAttempt)
+					return err
+				})
+				var stored tracker.NativeLandingReceipt
+				if err == nil {
+					stored, err = eventstore.NewContent(f.service.runDetailStore()).LandingReceipt(t.Context(), storedRow)
+				}
 				if err != nil || !reflect.DeepEqual(stored.Gate, receipt.Gate) {
 					t.Fatalf("bounded landing read changed canonical output: %v", err)
 				}
@@ -518,7 +511,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 					}
 				}
 			}
-			projectAudit, err := readValidationAudit(f.service.contentContext(ctx), f.service.database.db, scope, "", "", f.change.ID, "")
+			projectAudit, err := f.service.readValidationAuditTenant(ctx, scope, "", "", f.change.ID, "")
 			if err != nil || len(projectAudit.Occurrences) != 1 {
 				t.Fatalf("audit=%+v %v", projectAudit, err)
 			}
@@ -562,12 +555,14 @@ func TestOperatorChangeCommands(t *testing.T) {
 					}
 				}
 			}
-			audit, err := readValidationAudit(f.service.contentContext(t.Context()), f.service.database.db, scope, string(report.WorkItemID), "", "", "")
+			audit, err := f.service.readValidationAuditTenant(t.Context(), scope, string(report.WorkItemID), "", "", "")
 			if err != nil || len(audit.Occurrences) != 1 || audit.Occurrences[0].Comparisons[0].Outcome != test.want {
 				t.Fatalf("scheduled read=%+v %v", audit, err)
 			}
 		})
 	}
+	baseline := tracker.NativeLandingReceipt{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: strings.Repeat("9", 40), BaseRef: "develop", Landed: true, ObservedAt: at, Gate: &gate.CommandResult{Command: "make check-land", HeadSHA: checked.HeadSHA, TreeSHA: checked.TreeSHA, Evidence: &gate.CommandEvidence{Environment: environment, Checks: []gate.CheckObservation{checked}}}}
+	operatorChangeLandingAttempt(t, f, version, baseline, at, false)
 	t.Run("validation audit bounded observations", func(t *testing.T) {
 		large := scheduled
 		large.OccurrenceKey = strings.Repeat("1", 64)
@@ -583,7 +578,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		var comment tracker.NativeComment
 		decodeHubResponse(t, response, &comment)
-		audit, err := readValidationAudit(f.service.contentContext(t.Context()), f.service.database.db, scope, string(report.WorkItemID), "", "", "")
+		audit, err := f.service.readValidationAuditTenant(t.Context(), scope, string(report.WorkItemID), "", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -593,7 +588,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		}
 	})
 	foreignScope := nativeScope{organization: scope.organization, project: "prj_foreign"}
-	foreignAudit, err := readValidationAudit(f.service.contentContext(t.Context()), f.service.database.db, foreignScope, "", "", "", "")
+	foreignAudit, err := f.service.readValidationAuditTenant(t.Context(), foreignScope, "", "", "", "")
 	if err != nil || len(foreignAudit.Occurrences) != 0 {
 		t.Fatalf("foreign evidence=%+v %v", foreignAudit, err)
 	}
@@ -693,28 +688,43 @@ func TestOperatorChangeCommands(t *testing.T) {
 		t.Fatal("cross-project Change linkage succeeded")
 	}
 	t.Run("hosted get_change failure logs once", func(t *testing.T) {
-		var snapshot, payloadKey, trigger string
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT record_json,payload_object_key FROM change_versions WHERE id=?", version.ID).Scan(&snapshot, &payloadKey); err != nil {
+		f := newChangeFixture(t, nil)
+		version := f.publish(t, "malformed-version-source", "")
+		ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+		base := operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), ChangeID: f.change.ID}
+		content := eventstore.NewContent(f.service.runDetailStore())
+		ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, []byte(`["tenant content sentinel"]`))
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='change_versions_immutable'").Scan(&trigger); err != nil {
+		var row eventstore.Version
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			row, err = r.Version(t.Context(), f.change.ID, version.ID)
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_immutable"); err != nil {
+		row.ID, row.Number = newNativeID("version"), 2
+		row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
+		change, err := f.service.readChangeRecord(t.Context(), analyticsTestScope(t, f.nativeFixture), string(f.issue.WorkItemID), f.change.ID)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET record_json=?,payload_object_key='' WHERE id=?", `["tenant content sentinel"]`, version.ID); err != nil {
+		change.CurrentVersion = row.ID
+		changed, err := content.PrepareChange(t.Context(), f.project.OrganizationID, historyTestJSON(t, change))
+		if err != nil {
 			t.Fatal(err)
 		}
-		cleanupCtx := context.WithoutCancel(t.Context())
-		t.Cleanup(func() {
-			if _, err := f.service.database.db.ExecContext(cleanupCtx, "UPDATE change_versions SET record_json=?,payload_object_key=? WHERE id=?", snapshot, payloadKey, version.ID); err != nil {
-				t.Error(err)
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateVersion(t.Context(), row); err != nil {
+				return err
 			}
-			if _, err := f.service.database.db.ExecContext(cleanupCtx, trigger); err != nil {
-				t.Error(err)
-			}
-		})
+			_, err := w.UpdateChange(t.Context(), changed)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
 		var logs hostedLogBuffer
 		f.service.config.Logger = slog.New(hostedLogHandler{output: logging.NewHandler(&logs, slog.LevelInfo, false, logging.SourceSetting{})})
 		for _, transport := range []string{"stdio", "http"} {
@@ -730,11 +740,11 @@ func TestOperatorChangeCommands(t *testing.T) {
 				if err := json.Unmarshal([]byte(logged), &record); err != nil {
 					t.Fatal(err)
 				}
-				if record["msg"] != "operator tool failed" || record["tool"] != operatortool.GetChange || record["error_class"] != "*json.UnmarshalTypeError" || record["organization_id"] != string(f.project.OrganizationID) {
+				if record["msg"] != "operator tool failed" || record["tool"] != operatortool.GetChange || record["error_class"] != "*errors.errorString" || record["organization_id"] != string(f.project.OrganizationID) {
 					t.Fatal(logged)
 				}
 				trail, _ := record["error"].(string)
-				if !strings.Contains(trail, "get change:") || !strings.Contains(trail, "load detail: decode change version [redacted]: json: cannot unmarshal array") {
+				if !strings.Contains(trail, "get change:") || !strings.Contains(trail, "decode history payload:") || !strings.Contains(trail, artifact.ErrIntegrity.Error()) {
 					t.Fatal(logged)
 				}
 				source, ok := record["source"].(map[string]any)
@@ -797,9 +807,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 			record.RunID = strconv.Itoa(200 + i)
 			record.RunURL = "https://github.com/example-org/example-project/actions/runs/" + record.RunID
 			body := issueorigin.Stamp("Scheduled job failed"+record.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: record.RunURL, Fingerprint: record.OccurrenceKey})
-			if _, err := f.service.database.db.ExecContext(ctx, "UPDATE issues SET body=? WHERE native_id=?", body, unrelated.WorkItemID); err != nil {
-				t.Fatal(err)
-			}
+			operatorChangeSetBody(t, f.nativeFixture, unrelated, body)
 		}
 		for _, item := range []tracker.NativeIssue{f.issue, report} {
 			raw, err := json.Marshal(map[string]string{"project_id": string(f.project.ID), "reference": string(item.WorkItemID)})
@@ -823,11 +831,11 @@ func TestOperatorChangeCommands(t *testing.T) {
 		}
 		insert := func(ctx context.Context, kind, versionID string, record any) {
 			t.Helper()
-			raw, err := json.Marshal(record)
+			row, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: f.project.OrganizationID, ChangeID: f.change.ID, Kind: kind, VersionID: new(versionID)}, historyTestJSON(t, record))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(ctx, "INSERT INTO change_evidence (change_id,version_id,kind,record_json) VALUES (?,?,?,?)", f.change.ID, versionID, kind, raw); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(ctx, row); return err }); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1203,9 +1211,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusConflict)
 	})
 
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", operatortool.ConnectionIdentity(ctx).CredentialID); err != nil {
-		t.Fatal(err)
-	}
+	operatorChangeRevokeGrant(t, f.nativeFixture)
 	if _, err := executor.Execute(ctx, call); !errors.Is(err, operatortool.ErrAccessDenied) {
 		t.Fatalf("lost grant replay: %v", err)
 	}
@@ -1216,12 +1222,21 @@ func TestOperatorChangeCommands(t *testing.T) {
 func TestOperatorArtifactResults(t *testing.T) {
 	for _, scenario := range []string{"valid replay", "historical revision", "viewer", "forged hash", "foreign item", "missing service", "expired", "lost grant", "revoked session"} {
 		t.Run(scenario, func(t *testing.T) {
-			f := newHostedSecurityFixture(t)
+			f := newPostgresArtifactFixture(t)
 			deadline := time.Now().Add(time.Hour)
 			if scenario == "expired" {
 				deadline = time.Now().Add(-time.Minute)
 			}
-			ref, _, _ := seedHostedArtifact(t, f, deadline)
+			ref, _, _ := seedPostgresHostedArtifact(t, f)
+			org := tracker.OrganizationID(ref.OrganizationID)
+			if scenario == "expired" {
+				ref.Revision++
+				ref.ManifestID = artifact.NewID("manifest")
+				ref.ObservedAt, ref.ExpiresAt = deadline.Add(-time.Hour), deadline
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendArtifactReference(t.Context(), ref); return err }); err != nil {
+					t.Fatal(err)
+				}
+			}
 			role, grant := "member", "write"
 			if scenario == "viewer" {
 				role, grant = "viewer", "read"
@@ -1240,8 +1255,7 @@ func TestOperatorArtifactResults(t *testing.T) {
 				next := ref
 				next.Revision++
 				next.ManifestID = artifact.NewID("manifest")
-				raw, _ := json.Marshal(next)
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO artifact_references(organization_id,project_id,work_item_id,service_id,artifact_id,revision,manifest_id,reference_json) VALUES(?,?,?,?,?,?,?,?)`, next.OrganizationID, next.ProjectID, next.WorkItemID, next.ServiceID, next.ArtifactID, next.Revision, next.ManifestID, raw); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendArtifactReference(t.Context(), next); return err }); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1253,7 +1267,7 @@ func TestOperatorArtifactResults(t *testing.T) {
 			case "foreign item":
 				args.ItemID = "wi_foreign"
 			case "missing service":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE artifact_services SET binding_json='{}'"); err != nil {
+				if _, err := f.admin.ExecContext(t.Context(), "UPDATE artifact_services SET origin='' WHERE organization_id=$1 AND project_id=$2 AND id=$3", org, f.project, ref.ServiceID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1264,7 +1278,7 @@ func TestOperatorArtifactResults(t *testing.T) {
 					t.Fatal("invalid download succeeded")
 				}
 				var count int
-				if e := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM artifact_grants").Scan(&count); e != nil || count != 0 {
+				if e := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM artifact_grants WHERE organization_id=$1 AND project_id=$2", org, f.project).Scan(&count); e != nil || count != 0 {
 					t.Fatalf("denied grant effect=%d: %v", count, e)
 				}
 				return
@@ -1283,10 +1297,16 @@ func TestOperatorArtifactResults(t *testing.T) {
 			if strings.Contains(logs.String(), token) || strings.Contains(string(value.Receipt), token) {
 				t.Fatal("secret in audit/receipt")
 			}
-			var receipt string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT response_json FROM native_commands WHERE command_key='download'").Scan(&receipt); err != nil {
+			var receiptRow eventstore.Receipt
+			if err := f.admin.QueryRowContext(t.Context(), "SELECT payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM native_commands WHERE organization_id=$1 AND command_key='download'", org).Scan(&receiptRow.PayloadObjectKey, &receiptRow.PayloadSHA256, &receiptRow.PayloadBytes, &receiptRow.PayloadContentBytes); err != nil {
 				t.Fatal(err)
 			}
+			receiptRow.OrganizationID = org
+			receiptBytes, err := eventstore.NewContent(f.service.runDetailStore()).Receipt(t.Context(), receiptRow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt := string(receiptBytes)
 			if strings.Contains(receipt, token) {
 				t.Fatal("persisted token")
 			}
@@ -1294,10 +1314,18 @@ func TestOperatorArtifactResults(t *testing.T) {
 				t.Fatal("grant exceeded existing TTL")
 			}
 			if scenario == "lost grant" {
-				operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=?", u.identity.Subject)
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.DeleteAccessProjectGrant(t.Context(), u.identity.Subject, f.project)
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if scenario == "revoked session" {
-				operatorSQL(t, f, "UPDATE hosted_sessions SET revoked_at=?", formatHubTime(time.Now()))
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.RevokeAccessSession(t.Context(), apikey.HashToken(u.token), f.service.config.now())
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			replay, err := ex.Execute(ctx, call)
 			if scenario == "lost grant" || scenario == "revoked session" {
@@ -1318,7 +1346,24 @@ func TestOperatorArtifactResults(t *testing.T) {
 }
 
 func TestOperatorArchivedChangeReads(t *testing.T) {
-	f := newChangeFixture(t, nil)
+	details := &memoryRunDetails{keyReads: map[string]int{}}
+	f := newChangeFixture(t, newPostgresNativeService(t, Config{RunDetails: details}))
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	if f.service.outbox != nil {
+		f.service.outbox.stop()
+	}
+	active := details
+	reads := func() map[string]int {
+		active.mu.Lock()
+		defer active.mu.Unlock()
+		result := make(map[string]int, len(active.keyReads))
+		for key, count := range active.keyReads {
+			result[key] = count
+		}
+		return result
+	}
 	first := f.publish(t, "first", "")
 	second := f.publish(t, "second", first.ID)
 	versionPath := f.path + "/versions/" + second.ID
@@ -1333,6 +1378,9 @@ func TestOperatorArchivedChangeReads(t *testing.T) {
 	call := hostedContextProtocol(t, f.service, ctx, "stdio")
 	read := func(t *testing.T, name, section, version, cursor string) []byte {
 		t.Helper()
+		active.mu.Lock()
+		active.keyReads = map[string]int{}
+		active.mu.Unlock()
 		args := map[string]any{"project_id": string(f.project.ID), "work_item_id": string(f.issue.WorkItemID), "change_id": f.change.ID}
 		if name == operatortool.GetChange {
 			args["limit"] = 1
@@ -1364,17 +1412,19 @@ func TestOperatorArchivedChangeReads(t *testing.T) {
 	cases := []struct {
 		name, section, version, cursor string
 		hot                            []byte
+		objects                        map[string]int
 	}{
-		{operatortool.GetChange, "current", "", "", nil},
-		{operatortool.GetChange, "versions", "", "", nil},
-		{operatortool.GetChange, "reviews", "", "", nil},
-		{operatortool.GetChange, "checks", "", "", nil},
-		{operatortool.GetChange, "discussion", "", "", nil},
-		{operatortool.GetChangeVersion, "", first.ID, "", nil},
-		{operatortool.WorkItem, "", "", "", nil},
+		{operatortool.GetChange, "current", "", "", nil, nil},
+		{operatortool.GetChange, "versions", "", "", nil, nil},
+		{operatortool.GetChange, "reviews", "", "", nil, nil},
+		{operatortool.GetChange, "checks", "", "", nil, nil},
+		{operatortool.GetChange, "discussion", "", "", nil, nil},
+		{operatortool.GetChangeVersion, "", first.ID, "", nil, nil},
+		{operatortool.WorkItem, "", "", "", nil, nil},
 	}
 	for i := range cases {
 		cases[i].hot = read(t, cases[i].name, cases[i].section, cases[i].version, "")
+		cases[i].objects = reads()
 	}
 	var page operatortool.ChangeResult
 	if err := json.Unmarshal(cases[4].hot, &page); err != nil {
@@ -1387,33 +1437,93 @@ func TestOperatorArchivedChangeReads(t *testing.T) {
 	cases = append(cases, struct {
 		name, section, version, cursor string
 		hot                            []byte
-	}{operatortool.GetChange, "discussion", "", cursor, read(t, operatortool.GetChange, "discussion", "", cursor)})
-	ref, data := publishTestSection(t, f.nativeFixture, string(f.issue.WorkItemID), "change", f.change.ID, 0, 0,
-		archiveTestTable(t, f.service, "change_versions", "change_id=?", f.change.ID),
-		archiveTestTable(t, f.service, "change_evidence", "change_id=?", f.change.ID))
-	for _, table := range []string{"change_versions", "change_evidence"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER "+table+"_immutable"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE "+table+" SET record_json='{}' WHERE change_id=?", f.change.ID); err != nil {
-			t.Fatal(err)
-		}
+		objects                        map[string]int
+	}{operatortool.GetChange, "discussion", "", cursor, read(t, operatortool.GetChange, "discussion", "", cursor), reads()})
+	retained := &memoryRunDetails{data: map[string][]byte{}, keyReads: map[string]int{}}
+	details.mu.Lock()
+	for key, data := range details.data {
+		retained.data[key] = bytes.Clone(data)
 	}
-	fetches := 0
-	f.service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
-		fetches++
-		if got != ref {
-			t.Fatal("wrong archive")
-		}
-		return entryauthority.ArchiveResponse{Data: data}, nil
-	}
+	details.mu.Unlock()
+	f.service.config.RunDetails = retained
+	active = retained
+	details.mu.Lock()
+	clear(details.data)
+	details.mu.Unlock()
 	for i, test := range cases {
 		t.Run(fmt.Sprint(i, "/", test.name, "/", test.section), func(t *testing.T) {
-			fetches = 0
 			assertArchiveGolden(t, test.hot, read(t, test.name, test.section, test.version, test.cursor))
-			if fetches != 1 {
-				t.Fatalf("fetches=%d", fetches)
+			got := reads()
+			if len(got) == 0 || !reflect.DeepEqual(got, test.objects) {
+				t.Fatalf("retained object reads=%v want selected references=%v", got, test.objects)
+			}
+			details.mu.Lock()
+			liveReads := len(details.data)
+			details.mu.Unlock()
+			if liveReads != 0 {
+				t.Fatal("read repopulated mutable live payload storage")
 			}
 		})
 	}
+}
+
+func operatorChangeRevokeGrant(t *testing.T, f nativeFixture) {
+	t.Helper()
+	scope := analyticsTestScope(t, f)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteAccessTokenGrant(t.Context(), scope.credential.ID, scope.project)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func operatorChangeSetBody(t *testing.T, f nativeFixture, item tracker.NativeIssue, body string) tracker.NativeIssue {
+	t.Helper()
+	response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/work-items/"+string(item.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("body")}, ExpectedRevision: item.Revision, Body: &body})
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &item)
+	return item
+}
+
+func operatorChangeLandingAttempt(t *testing.T, f changeFixture, version tracker.ChangeVersion, receipt tracker.NativeLandingReceipt, at time.Time, validation bool) (leasestore.Attempt, string) {
+	t.Helper()
+	leaseID := newNativeID("lease")
+	lease := coordinatorActionLease(t, f.service, f.project.OrganizationID, f.issue.WorkItemID, leaseID)
+	data := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Phase: "completed", HeartbeatAt: at, Landing: &receipt}}
+	if validation {
+		data.Runtime.Validation = receipt.Gate
+	}
+	content := eventstore.NewContent(f.service.runDetailStore())
+	ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, historyTestJSON(t, data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: at, Data: tracker.CollaborationData{Revision: f.issue.Revision, Run: &data}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	landing, err := content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: f.project.OrganizationID, AttemptID: data.AttemptID, VersionID: version.ID, Repository: version.Repository, BaseRef: receipt.BaseRef}, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var attempt leasestore.Attempt
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		var err error
+		attempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", LocalAttemptID: 168, StartedAt: at, PayloadObjectKey: ref.Key, PayloadReference: ref})
+		if err != nil {
+			return err
+		}
+		if _, err := w.AppendEvent(t.Context(), event); err != nil {
+			return err
+		}
+		if _, err := w.CreateLandingReceipt(t.Context(), landing); err != nil {
+			return err
+		}
+		_, err = w.Release(t.Context(), leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, "released")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return attempt, data.RunID
 }

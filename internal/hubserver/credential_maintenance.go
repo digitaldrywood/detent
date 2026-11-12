@@ -81,9 +81,15 @@ func (s *Service) requireCredentialMaintenance(next echo.HandlerFunc) echo.Handl
 
 type credentialMaintenanceAuthorityKey struct{}
 
-func (s *Service) accessMaintenanceBinding(tenant accessstore.Tenant) error {
+func (s *Service) accessHostedBinding(tenant accessstore.Tenant) error {
 	cfg := s.config.Hosted
-	if cfg == nil || tenant.OrganizationID != s.accessOrganization() || tenant.ProviderID != cfg.WorkOSOrganizationID || tenant.BootstrapSubject != cfg.BootstrapSubject {
+	if cfg == nil || tenant.OrganizationID != s.accessOrganization() || tenant.BootstrapSubject != cfg.BootstrapSubject {
+		return ErrHostedDatabaseBinding
+	}
+	if s.config.CredentialMaintenance && cfg.WorkOSOrganizationID == "" {
+		return ErrHostedDatabaseBinding
+	}
+	if tenant.ProviderID != cfg.WorkOSOrganizationID && (s.config.CredentialMaintenance || cfg.WorkOSOrganizationID != "" || cfg.BootstrapSubject == "") {
 		return ErrHostedDatabaseBinding
 	}
 	deployment, generation := cfg.deployment()
@@ -96,7 +102,7 @@ func (s *Service) accessMaintenanceBinding(tenant accessstore.Tenant) error {
 	return nil
 }
 
-func (s *Service) validateAccessMaintenanceBinding(ctx context.Context) error {
+func (s *Service) validateAccessHostedBinding(ctx context.Context) error {
 	return s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		tenant, err := r.AccessTenant(ctx)
 		if errors.Is(err, tenantauth.ErrUnavailable) {
@@ -108,7 +114,7 @@ func (s *Service) validateAccessMaintenanceBinding(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		return s.accessMaintenanceBinding(tenant)
+		return s.accessHostedBinding(tenant)
 	})
 }
 
@@ -127,7 +133,7 @@ func (s *Service) authorizeCredentialMaintenanceWrite(ctx context.Context, w ten
 	if err != nil {
 		return err
 	}
-	if err := s.accessMaintenanceBinding(tenant); err != nil {
+	if err := s.accessHostedBinding(tenant); err != nil {
 		return err
 	}
 	if _, err := w.AuthorizeAccess(ctx, authority, s.config.now()); err != nil {

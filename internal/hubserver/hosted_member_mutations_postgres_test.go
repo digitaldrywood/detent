@@ -179,8 +179,8 @@ func TestPostgresMemberMutationRoutesPreserveCurrentAuthority(t *testing.T) {
 		}
 		return member
 	}
-	if service.database.db != nil || service.database.reader != nil || service.database.authReader != nil || service.database.claimReader != nil {
-		t.Fatal("member fixture retained a legacy database handle")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 	base := "/api/v2/organizations/org_security/members"
 	for _, user := range users {

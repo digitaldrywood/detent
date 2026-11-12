@@ -21,34 +21,49 @@ func (s *session) RunnerClaimState(ctx context.Context, runner string, project t
 	if err != nil {
 		return page, err
 	}
-	machine, err := s.Machine(ctx, string(identity.MachineID))
-	if err != nil {
-		return page, err
+	machineID := ""
+	if snapshot, ok := ctx.Value(runnerHeartbeatSnapshotKey{}).(*runnerHeartbeatSnapshot); ok && snapshot.session == s && snapshot.identity.RunnerID == runner && snapshot.project == project && snapshot.now.Equal(now) {
+		machineID = snapshot.machine.ID
+		page.State.HostCapacity = int(snapshot.machine.Capacity)
+		page.State.RunnerCapacity = int(min(identity.CapacityLimit, identity.ReportedCapacity))
+		page.State.Slots = append([]runnerauth.ClaimSlot(nil), snapshot.slots...)
+		page.State.PolicyIDs = map[tracker.ProjectID]string{project: snapshot.policyID}
+	} else {
+		machine, err := s.Machine(ctx, string(identity.MachineID))
+		if err != nil {
+			return page, err
+		}
+		page.State.HostCapacity = int(machine.Capacity)
+		page.State.RunnerCapacity = int(min(identity.CapacityLimit, identity.ReportedCapacity))
+		slots, err := s.queries.RunnerClaimSlots(ctx, pgquery.RunnerClaimSlotsParams{OrganizationID: s.organization, MachineID: machine.ID, Now: now})
+		if err != nil {
+			return page, mapError(ctx, err)
+		}
+		if len(slots) > 10000 {
+			return page, corestore.ErrInvalidPage
+		}
+		for _, slot := range slots {
+			page.State.Slots = append(page.State.Slots, runnerauth.ClaimSlot{ID: tracker.LeaseID(slot.LeaseID), RunnerID: slot.RunnerID})
+		}
+		policy, err := s.ProjectPolicy(ctx, project)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return page, err
+		}
+		page.State.PolicyIDs = map[tracker.ProjectID]string{project: policy.PolicyID}
+		machineID = machine.ID
 	}
-	page.State.HostCapacity = int(machine.Capacity)
-	page.State.RunnerCapacity = int(min(identity.CapacityLimit, identity.ReportedCapacity))
-	slots, err := s.queries.RunnerClaimSlots(ctx, pgquery.RunnerClaimSlotsParams{OrganizationID: s.organization, MachineID: machine.ID, Now: now})
-	if err != nil {
-		return page, mapError(ctx, err)
-	}
-	if len(slots) > 10000 {
-		return page, corestore.ErrInvalidPage
-	}
-	for _, slot := range slots {
-		page.State.Slots = append(page.State.Slots, runnerauth.ClaimSlot{ID: tracker.LeaseID(slot.LeaseID), RunnerID: slot.RunnerID})
-	}
-	policy, err := s.ProjectPolicy(ctx, project)
-	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-		return page, err
-	}
-	page.State.PolicyIDs = map[tracker.ProjectID]string{project: policy.PolicyID}
-	rows, err := s.queries.RunnerReleasedAttemptCandidates(ctx, pgquery.RunnerReleasedAttemptCandidatesParams{OrganizationID: s.organization, ProjectID: project, RunnerID: runner, MachineID: machine.ID, AfterID: after, PageSize: int32(limit)})
+	rows, err := s.queries.RunnerReleasedAttemptCandidates(ctx, pgquery.RunnerReleasedAttemptCandidatesParams{OrganizationID: s.organization, ProjectID: project, RunnerID: runner, MachineID: machineID, AfterID: after, PageSize: int32(limit)})
 	if err != nil {
 		return page, mapError(ctx, err)
 	}
 	for _, row := range rows {
 		if row.WorkItemID != "" {
-			page.Candidates = append(page.Candidates, runnerauth.ReleasedExecution{ProjectID: project, WorkItemID: tracker.NativeWorkItemID(row.WorkItemID), AttemptID: row.ScannedID})
+			candidate := runnerauth.ReleasedExecution{ProjectID: project, WorkItemID: tracker.NativeWorkItemID(row.WorkItemID), AttemptID: row.ScannedID}
+			if row.CleanupKnown {
+				page.Candidates = append(page.Candidates, candidate)
+			} else {
+				page.Unclassified = append(page.Unclassified, candidate)
+			}
 		}
 	}
 	if len(rows) == limit {

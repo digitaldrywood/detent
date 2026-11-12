@@ -122,23 +122,31 @@ func TestControllerRetirementWaitsForOldMachineReport(t *testing.T) {
 	var workers sync.WaitGroup
 	defer func() { releaseOnce.Do(func() { close(release) }); workers.Wait() }()
 	var reports atomic.Int64
-	client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture-token" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-		if reports.Add(1) == 1 {
+	h := newNativeChangeHub(t, true)
+	source := h.scheduler
+	nativeSource := source.nativeProject("local")
+	if err := source.ensureNativeMachine(t.Context(), nativeSource); err != nil {
+		t.Fatal(err)
+	}
+	source.mu.Lock()
+	source.nativeHeartbeats[h.project] = time.Time{}
+	source.mu.Unlock()
+	transport := fixtureClient(h.native.Transport()).requests.Load()
+	fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost && strings.Contains(request.URL.Path, "/machines/") && strings.HasSuffix(request.URL.Path, "/heartbeat") && reports.Add(1) == 1 {
 			close(entered)
 			<-release
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"fixture-machine","hostname":"fixture-host","capacity":1,"version":"1.0.0"}`)), Request: request}, nil
-	})}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := newTestScheduler(client, SchedulerConfig{Machine: Machine{ID: "fixture-machine", Hostname: "fixture-host", Capacity: 1, Version: "1.0.0"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
+		return transport.RoundTrip(request)
+	}))
+	t.Cleanup(func() { fixtureClient(h.native.Transport()).requests.Store(transport) })
 	reported := make(chan error, 1)
-	workers.Go(func() { reported <- source.ensureMachine(t.Context()) })
-	<-entered
+	workers.Go(func() { reported <- source.ensureNativeMachine(t.Context(), nativeSource) })
+	select {
+	case <-entered:
+	case err := <-reported:
+		t.Fatalf("machine report ended before reaching the Hub heartbeat: %v", err)
+	}
 	paused := make(chan func(), 1)
 	workers.Go(func() { paused <- source.PauseController() })
 	testenv.WaitUntil(t, t.Context(), func() error {
@@ -158,12 +166,14 @@ func TestControllerRetirementWaitsForOldMachineReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	resume := <-paused
-	source.lastHeartbeat = time.Time{}
-	if err := source.ensureMachine(t.Context()); err != nil || reports.Load() != 1 {
+	source.mu.Lock()
+	source.nativeHeartbeats[h.project] = time.Time{}
+	source.mu.Unlock()
+	if err := source.ensureNativeMachine(t.Context(), nativeSource); err != nil || reports.Load() != 1 {
 		t.Fatalf("retired controller published an old build: reports=%d err=%v", reports.Load(), err)
 	}
 	resume()
-	if err := source.ensureMachine(t.Context()); err != nil || reports.Load() != 2 {
+	if err := source.ensureNativeMachine(t.Context(), nativeSource); err != nil || reports.Load() != 2 {
 		t.Fatalf("failed adoption did not restore machine reporting: reports=%d err=%v", reports.Load(), err)
 	}
 }
@@ -269,8 +279,11 @@ func TestNativeMissingClaimNeverRunsUnguarded(t *testing.T) {
 	if err := scheduler.ReleaseClaim(t.Context(), "wi_"+strings.Repeat("a", 32), "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		t.Fatalf("missing native completion owner reported settlement: %v", err)
 	}
-	if err := scheduler.ReleaseClaim(t.Context(), "github-node", "completed"); err != nil {
-		t.Fatalf("legacy idempotent release = %v", err)
+	if err := scheduler.ReleaseClaim(t.Context(), "github-node", "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("unowned foreign completion reported settlement: %v", err)
+	}
+	if len(scheduler.nativeClaims) != 0 || len(scheduler.claims) != 0 || len(scheduler.claimPolicies) != 0 {
+		t.Fatal("missing execution authority created claim ownership")
 	}
 	if scheduler.RunExecution("github-node") != nil {
 		t.Fatal("legacy execution acquired a native guard")

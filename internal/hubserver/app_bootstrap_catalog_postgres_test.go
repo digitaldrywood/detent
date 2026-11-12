@@ -29,6 +29,7 @@ func TestPostgresEntryKeyBootstrapRead(t *testing.T) {
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	key := hostedSharedKey(38)
 	cfg := startupConfig(connection)
+	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	plans := pilotHostedPlans()
 	cfg.Hosted.Plans = &plans
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
@@ -55,7 +56,9 @@ func TestPostgresEntryKeyBootstrapRead(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	for _, org := range []tracker.OrganizationID{"org_startup", "org_other"} {
-		seedStartupOrganization(t, store.postgres, org)
+		binding := *cfg.Hosted
+		binding.OrganizationID, binding.WorkOSOrganizationID = string(org), "provider_"+string(org)
+		seedStartupOrganization(t, store.postgres, org, &binding)
 		if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			envelope, err := cfg.SecretKeys.Seal(bytes.Repeat([]byte{0x35}, 32), accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
 			if err != nil {

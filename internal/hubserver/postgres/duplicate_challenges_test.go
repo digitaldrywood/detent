@@ -21,7 +21,7 @@ func TestDuplicateChallengesAreScopedAndConsumedAtomically(t *testing.T) {
 	now := time.Date(2026, 11, 3, 18, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", Slug: string(org), Local: true, CreatedAt: now})
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", Slug: string(org), CreatedAt: now})
 		}); err != nil {
 			t.Fatal(err)
 		}

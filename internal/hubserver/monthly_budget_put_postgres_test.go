@@ -44,7 +44,7 @@ func TestPostgresMonthlyBudgetPut(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			seedStartupOrganization(t, store.postgres, organization)
+			seedStartupOrganization(t, store.postgres, organization, cfg.Hosted)
 			err = store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				for _, role := range []string{"owner", "admin", "member"} {
 					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "principal_" + role, Name: role, Hash: apikey.HashToken(string(organization) + role), Scope: "operator", UserID: "user_" + role, MembershipID: "membership_" + role, Kind: "personal", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -83,8 +83,8 @@ func TestPostgresMonthlyBudgetPut(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			if service.database.reader != nil || service.database.db != nil {
-				t.Fatal("legacy database handles exist")
+			if service.database.postgres == nil || service.config.TenantRepository == nil {
+				t.Fatal("fixture requires the PostgreSQL repository")
 			}
 			service.config.Hosted.SharedEntry.verifier.Now = cfg.now
 			sessionTime := now
@@ -113,6 +113,31 @@ func TestPostgresMonthlyBudgetPut(t *testing.T) {
 				response := httptest.NewRecorder()
 				service.Handler().ServeHTTP(response, request)
 				return response
+			}
+			for _, invalid := range []struct {
+				name, policy, reason string
+			}{
+				{"mode", `"mode":"private-token"`, "monthly budget mode must be drain_issue or hard_stop"},
+				{"luna", `"luna_api_micros":-1`, "monthly luna_api budget must be nonnegative"},
+				{"runner", `"runner_api_micros":-1`, "monthly runner_api budget must be nonnegative"},
+				{"sprite", `"sprite_infrastructure_micros":-1`, "monthly sprite_infrastructure budget must be nonnegative"},
+				{"total", `"total_micros":-1`, "monthly total budget must be nonnegative"},
+			} {
+				t.Run("invalid_"+invalid.name, func(t *testing.T) {
+					body := `{"idempotency_key":"invalid_` + invalid.name + `","expected_revision":"0","policy":{` + invalid.policy + `}}`
+					response := call(http.MethodPut, "/monthly-budget", "owner", "", body)
+					failure := requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
+					if failure.Message != invalid.reason || strings.Contains(response.Body.String(), "private-token") {
+						t.Fatalf("budget refusal = %#v", failure)
+					}
+					current := call(http.MethodGet, "/monthly-budget", "owner", "", "")
+					requireNativeStatus(t, current, http.StatusOK)
+					var settings monthlyBudgetSettings
+					decodeHubResponse(t, current, &settings)
+					if settings.Revision != 0 || settings.Policy.Enabled {
+						t.Fatalf("invalid policy changed settings: %#v", settings)
+					}
+				})
 			}
 			body := `{"idempotency_key":"budget_example","expected_revision":"0","policy":{"enabled":true,"mode":"hard_stop","luna_api_micros":11,"runner_api_micros":22,"sprite_infrastructure_micros":33,"total_micros":1234}}`
 			first := call(http.MethodPut, "/monthly-budget", "owner", "", body)

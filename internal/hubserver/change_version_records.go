@@ -53,6 +53,12 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 		return replay, nil
 	}
 	if err := validateChangeVersion(request.ChangeVersionInput); err != nil {
+		if visualErr := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := validateChangeRecordContent(ctx, r, scope, nil, request.Artifacts, "artifacts", false)
+			return err
+		}); visualErr != nil {
+			return nil, projectRecordError(visualErr)
+		}
 		return nil, err
 	}
 	if err := validateChangeVersionEvidence(scope, item, request); err != nil {
@@ -86,7 +92,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 		return nil, err
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		_, err := validateChangeRecordContent(ctx, r, scope, nil, request.Artifacts, false)
+		_, err := validateChangeRecordContent(ctx, r, scope, nil, request.Artifacts, "artifacts", false)
 		return err
 	}); err != nil {
 		return nil, projectRecordError(err)
@@ -182,7 +188,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 			if _, err := s.lockChangeRecordOperation(ctx, w, scope, item, changeID, ""); err != nil {
 				return err
 			}
-			if err := bindChangeRecordContent(ctx, w, scope, item, nil, request.Artifacts); err != nil {
+			if err := bindChangeRecordContent(ctx, w, scope, item, nil, request.Artifacts, "artifacts"); err != nil {
 				return err
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {

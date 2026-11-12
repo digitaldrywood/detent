@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +11,9 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -123,7 +127,23 @@ func (s *Service) localAppBootstrap(c echo.Context) error {
 		CSRFToken: "local", SignInPath: "/login", Version: s.config.Version,
 		Feature: s.appBootstrapFeature(), SelfHosted: true,
 	}
-	err = s.database.reader.QueryRowContext(ctx, "SELECT id,name,slug FROM organizations WHERE local=1").Scan(&payload.Organization.ID, &payload.Organization.Name, &payload.Organization.Slug)
+	scope := nativeScope{organization: tracker.OrganizationID(s.localOrganization), credential: credential, requireHostedAdmin: true}
+	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		organization, err := r.AccessOrganization(ctx)
+		if err != nil {
+			return err
+		}
+		if !organization.Local {
+			return nativeNotFound()
+		}
+		payload.Organization.ID = string(organization.OrganizationID)
+		payload.Organization.Name = organization.Name
+		payload.Organization.Slug = organization.Slug
+		return nil
+	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -181,8 +201,21 @@ func (s *Service) localAppOnly(next echo.HandlerFunc) echo.HandlerFunc {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		if !hostedReadRequest(c) {
-			now := formatHubTime(s.config.now())
-			_, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_members (user_id,email,membership_id,role,active,principal_id,created_at,updated_at) VALUES (?,?,?,'admin',1,?,?,?) ON CONFLICT(user_id) DO NOTHING`, appSubject(credential), credential.Name, "local_"+credential.ID, credential.ID, now, now)
+			ctx := c.Request().Context()
+			scope := nativeScope{organization: tracker.OrganizationID(s.localOrganization), credential: credential, requireHostedAdmin: true}
+			err := s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
+				if err := w.LockAccessOrganization(ctx); err != nil {
+					return err
+				}
+				if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+					return err
+				}
+				if _, err := w.AccessMember(ctx, appSubject(credential)); !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				now := s.config.now()
+				return w.CreateAccessMember(ctx, accessstore.Member{OrganizationID: scope.organization, UserID: appSubject(credential), Email: credential.Name, MembershipID: "local_" + credential.ID, Role: "admin", Active: true, PrincipalID: credential.ID, NotifyIssues: true, CreatedAt: now, UpdatedAt: now})
+			})
 			if err != nil {
 				return s.nativeAPIError(c, err)
 			}
@@ -213,7 +246,7 @@ func (s *Service) localAppCreateProject(c echo.Context) error {
 	scope := nativeScope{organization: tracker.OrganizationID(s.localOrganization), credential: credential}
 	c.Set("native_scope", scope)
 	request := createNativeProjectRequest{Mutation: input.Mutation, Name: input.Name, States: HostedProjectStates()}
-	return s.nativeMutation(c, request.Mutation, request, s.createNativeProjectOperation(request))
+	return s.nativeMutation(c, request.Mutation, request, nil)
 }
 
 func (s *Service) localAppMembers(c echo.Context) error {

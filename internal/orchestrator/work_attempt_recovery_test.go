@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,10 +17,6 @@ import (
 )
 
 func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()
@@ -81,10 +76,6 @@ func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
 }
 
 func TestHandleWorkAttemptRecoveryRejectsUnsupportedStateAndAudits(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()
@@ -114,10 +105,6 @@ func TestHandleWorkAttemptRecoveryRejectsUnsupportedStateAndAudits(t *testing.T)
 }
 
 func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()
@@ -127,29 +114,11 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 	issue.Title = "Resume recorded work"
 	issue.AssignedToWorker = true
 	attemptID := startRecoveryWorkAttempt(t, ctx, runtimeStore, issue, store.WorkAttemptStatusTerminal, store.WorkAttemptTerminalFailure, now.Add(-10*time.Minute))
-	sessionID, err := runtimeStore.StartSession(ctx, store.SessionStart{
-		ProjectID:        "detent",
-		IssueID:          issue.ID,
-		Identifier:       issue.Identifier,
-		IssueURL:         issue.URL,
-		StartedAt:        now.Add(-8 * time.Minute),
-		Model:            "gpt-5-codex",
-		RequestedModel:   "gpt-5-codex",
-		AgentBackendID:   "codex",
-		AgentBackendKind: "codex",
-		AgentRole:        "code",
-	})
-	if err != nil {
-		t.Fatalf("StartSession() error = %v", err)
-	}
-	if err := runtimeStore.FinishSession(ctx, sessionID, store.SessionFinish{
-		CompletedAt:       now.Add(-7 * time.Minute),
-		FinalState:        "completed",
-		Model:             "gpt-5-codex",
-		ProviderThreadID:  "thread-979",
-		ProviderSessionID: "session-979",
-	}); err != nil {
-		t.Fatalf("FinishSession() error = %v", err)
+	const sessionID int64 = 1
+	runtimeStore.resume = store.AgentResumeState{
+		DetentSessionID: sessionID, ProviderThreadID: "thread-979", ProviderSessionID: "session-979",
+		RequestedModel: "gpt-5-codex", Model: "gpt-5-codex", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code",
+		CompletedAt: now.Add(-7 * time.Minute),
 	}
 	orch := newWorkAttemptRecoveryOrchestrator(t, runtimeStore, nil)
 	state := newState(orch.cfg)
@@ -240,14 +209,7 @@ func TestAttemptRecoveryAfterPolicyChange(t *testing.T) {
 				Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, WorkerMetadataJSON: test.metadata}); err != nil {
 				t.Fatal(err)
 			}
-			sessionID, err := db.StartSession(ctx, store.SessionStart{WorkAttemptID: id, ProjectID: "detent", IssueID: issue.ID,
-				Identifier: issue.Identifier, IssueURL: issue.URL, StartedAt: now.Add(-time.Minute), AgentBackendKind: "codex"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := db.FinishSession(ctx, sessionID, store.SessionFinish{CompletedAt: now, FinalState: "completed", ProviderThreadID: "thread-979"}); err != nil {
-				t.Fatal(err)
-			}
+			db.resume = store.AgentResumeState{DetentSessionID: 1, ProviderThreadID: "thread-979", AgentBackendKind: "codex", CompletedAt: now}
 			runner := newWorkerHostRunner()
 			o, err := New(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"},
 				WorkerHosts: []string{"local"}, Policy: current}, Dependencies{
@@ -304,25 +266,14 @@ func TestAttemptRecoveryAfterPolicyChange(t *testing.T) {
 	}
 }
 
-func openWorkAttemptRecoveryStore(t *testing.T, ctx context.Context) store.Store {
+func openWorkAttemptRecoveryStore(t *testing.T, ctx context.Context) *runtimeFixture {
 	t.Helper()
 
-	runtimeStore, err := store.Open(ctx, store.Config{
-		Backend: store.BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "detent.db"),
-	})
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := runtimeStore.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-	})
+	runtimeStore := newRuntimeFixture()
 	return runtimeStore
 }
 
-func newWorkAttemptRecoveryOrchestrator(t *testing.T, runtimeStore store.Store, reaper WorkspaceReaper) *Orchestrator {
+func newWorkAttemptRecoveryOrchestrator(t *testing.T, runtimeStore *runtimeFixture, reaper WorkspaceReaper) *Orchestrator {
 	t.Helper()
 
 	return newWorkAttemptRecoveryOrchestratorWithConnector(t, runtimeStore, reaper, &recoveryTestConnector{})
@@ -330,7 +281,7 @@ func newWorkAttemptRecoveryOrchestrator(t *testing.T, runtimeStore store.Store, 
 
 func newWorkAttemptRecoveryOrchestratorWithConnector(
 	t *testing.T,
-	runtimeStore store.Store,
+	runtimeStore *runtimeFixture,
 	reaper WorkspaceReaper,
 	tracker connector.Connector,
 ) *Orchestrator {
@@ -399,7 +350,7 @@ func newWorkAttemptRecoveryLogicOrchestrator(t *testing.T, issue connector.Issue
 func startRecoveryWorkAttempt(
 	t *testing.T,
 	ctx context.Context,
-	runtimeStore store.Store,
+	runtimeStore *runtimeFixture,
 	issue connector.Issue,
 	status store.WorkAttemptStatus,
 	terminalState store.WorkAttemptTerminalState,
@@ -446,7 +397,7 @@ func startRecoveryWorkAttempt(
 func recoveryTimelineEvent(
 	t *testing.T,
 	ctx context.Context,
-	runtimeStore store.Store,
+	runtimeStore *runtimeFixture,
 	issueID string,
 	action WorkAttemptRecoveryAction,
 ) store.WorkflowPhaseEvent {

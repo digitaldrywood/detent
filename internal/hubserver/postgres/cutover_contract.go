@@ -3,22 +3,29 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+var ErrCutoverQueuePosition = errors.New("cutover requires one queue position per work item")
 
 type CutoverReceipt = pgquery.GithubCutover
 type LocalImportMapping = pgquery.LocalBoardImport
 type NeutralImportSource = pgquery.NeutralImportSource
 type NeutralImportRecord = pgquery.NeutralImportRecord
 type CutoverReceiptInput = pgquery.CutoverReceiptParams
+type LatestProjectCutoverReceiptInput = pgquery.LatestProjectCutoverReceiptParams
 type LocalImportMappingInput = pgquery.LocalImportMappingParams
 type NeutralImportSourceInput = pgquery.NeutralImportSourceParams
 type NeutralImportRecordInput = pgquery.NeutralImportRecordParams
@@ -28,6 +35,7 @@ type PutNeutralImportRecordInput = pgquery.PutNeutralImportRecordParams
 type CutoverReader interface {
 	projectstore.Reader
 	CutoverReceipt(context.Context, CutoverReceiptInput) (CutoverReceipt, error)
+	LatestProjectCutoverReceipt(context.Context, LatestProjectCutoverReceiptInput) (CutoverReceipt, error)
 	LocalImportMapping(context.Context, LocalImportMappingInput) (LocalImportMapping, error)
 	NeutralImportSource(context.Context, NeutralImportSourceInput) (NeutralImportSource, error)
 	NeutralImportRecord(context.Context, NeutralImportRecordInput) (NeutralImportRecord, error)
@@ -54,6 +62,13 @@ func (s *session) CutoverReceipt(ctx context.Context, arg CutoverReceiptInput) (
 
 	row, err := s.queries.CutoverReceipt(ctx, arg)
 
+	return row, mapError(ctx, err)
+}
+func (s *session) LatestProjectCutoverReceipt(ctx context.Context, arg LatestProjectCutoverReceiptInput) (CutoverReceipt, error) {
+	if err := s.checkOrganization(arg.OrganizationID); err != nil {
+		return CutoverReceipt{}, err
+	}
+	row, err := s.queries.LatestProjectCutoverReceipt(ctx, arg)
 	return row, mapError(ctx, err)
 }
 func (s *session) LocalImportMapping(ctx context.Context, arg LocalImportMappingInput) (LocalImportMapping, error) {
@@ -132,13 +147,26 @@ func (s *session) PutNeutralImportRecord(ctx context.Context, arg PutNeutralImpo
 	return row, mapError(ctx, err)
 }
 
+type CutoverQueueItem struct {
+	WorkItemID       tracker.NativeWorkItemID
+	ExpectedRevision int64
+	State            string
+}
+
 type CutoverCommit struct {
+	States                  []tracker.NativeState
+	Queues                  []CutoverQueueItem
 	Receipt                 pgquery.StoreCutoverReceiptParams
 	ExpectedContentRevision int64
 }
 
 func (s *session) CommitProjectCutover(ctx context.Context, arg CutoverCommit) (CutoverReceipt, error) {
 	receipt := arg.Receipt
+	if arg.States != nil {
+		if err := policy.ValidateStates(arg.States); err != nil {
+			return CutoverReceipt{}, err
+		}
+	}
 	if err := s.checkOrganization(receipt.OrganizationID); err != nil {
 		return CutoverReceipt{}, err
 	}
@@ -175,6 +203,59 @@ func (s *session) CommitProjectCutover(ctx context.Context, arg CutoverCommit) (
 	if count != 1 {
 		return CutoverReceipt{}, corestore.ErrRevisionConflict
 	}
+	if arg.States != nil {
+		if err := s.replaceProjectStates(ctx, receipt.ProjectID, arg.States); err != nil {
+			return CutoverReceipt{}, err
+		}
+		if err := s.recordBoardDelta(receipt.ProjectID, viewstore.BoardDelta{Topic: "lane", EntityID: string(receipt.ProjectID), EntityRevision: new(arg.ExpectedContentRevision + 1), Kind: "invalidate"}); err != nil {
+			return CutoverReceipt{}, err
+		}
+	}
+	for _, queue := range arg.Queues {
+		if err := s.cutoverQueue(ctx, receipt.ProjectID, queue, receipt.CreatedAt); err != nil {
+			return CutoverReceipt{}, err
+		}
+	}
 	row, err := s.queries.StoreCutoverReceipt(ctx, receipt)
 	return row, mapError(ctx, err)
+}
+
+func (s *session) cutoverQueue(ctx context.Context, project tracker.ProjectID, input CutoverQueueItem, at time.Time) error {
+	item, err := s.WorkItem(ctx, project, input.WorkItemID)
+	if err != nil {
+		return err
+	}
+	if item.Revision != input.ExpectedRevision {
+		return corestore.ErrRevisionConflict
+	}
+	rows, err := s.db.Query(ctx, `SELECT scope,state,rank,priority_override,created_at,updated_at FROM queue_entries WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 ORDER BY scope LIMIT 2 FOR UPDATE`, s.organization, project, input.WorkItemID)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	entries := []claimstore.QueueEntry{}
+	for rows.Next() {
+		entry := claimstore.QueueEntry{OrganizationID: s.organization, ProjectID: project, WorkItemID: input.WorkItemID}
+		if err := rows.Scan(&entry.Scope, &entry.State, &entry.Rank, &entry.Priority, &entry.CreatedAt, &entry.UpdatedAt); err != nil {
+			rows.Close()
+			return mapError(ctx, err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return mapError(ctx, err)
+	}
+	rows.Close()
+	if len(entries) > 1 {
+		return ErrCutoverQueuePosition
+	}
+	entry := claimstore.QueueEntry{OrganizationID: s.organization, ProjectID: project, WorkItemID: input.WorkItemID, Rank: string(input.WorkItemID), CreatedAt: at}
+	if len(entries) == 1 {
+		entry = entries[0]
+		if err := s.DeleteQueueEntry(ctx, project, input.WorkItemID, entry.Scope); err != nil {
+			return err
+		}
+	}
+	entry.Scope, entry.State, entry.UpdatedAt = string(project), input.State, at
+	return s.PutQueueEntry(ctx, entry)
 }

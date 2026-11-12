@@ -3,21 +3,26 @@ package postgres_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestRelationshipsAndLabelsAreTenantScopedAndAtomic(t *testing.T) {
 	repository, _ := repositoryFor(t, template.Database(t), smallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), Local: true, CreatedAt: historyAt()})
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), CreatedAt: historyAt()})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -90,7 +95,35 @@ func TestRelationshipsAndLabelsAreTenantScopedAndAtomic(t *testing.T) {
 	if successes != 1 || cycleErrors != 1 {
 		t.Fatalf("concurrent disjoint dependency successes=%d cycle errors=%d", successes, cycleErrors)
 	}
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			edge := corestore.Relationship{OrganizationID: organization, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: "wi_second_1", Type: "dependency"}
+			if err := w.CheckDependency(t.Context(), edge); err != nil {
+				return err
+			}
+			page, err := w.Relationships(t.Context(), edge.ProjectID, edge.WorkItemID, corestore.RelationshipCursor{}, 10)
+			if err == nil && len(page.Items) != 0 {
+				t.Fatalf("dependency preflight wrote edges: %+v", page.Items)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := writeRelationship("org_first", "prj_first", "wi_first_1", "prj_second", "wi_second_1", "dependency"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+		edge := corestore.Relationship{OrganizationID: "org_first", ProjectID: "prj_second", WorkItemID: "wi_second_1", RelatedProjectID: "prj_first", RelatedWorkItemID: "wi_first_1", Type: "dependency"}
+		if err := w.CheckDependency(t.Context(), edge); !errors.Is(err, corestore.ErrDependencyCycle) {
+			t.Fatalf("dependency preflight cycle error=%v", err)
+		}
+		page, err := w.Relationships(t.Context(), edge.ProjectID, edge.WorkItemID, corestore.RelationshipCursor{}, 10)
+		if err == nil && (len(page.Items) != 1 || page.Items[0].Direction != "blocks") {
+			t.Fatalf("refused dependency preflight changed edges: %+v", page.Items)
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeRelationship("org_first", "prj_second", "wi_second_1", "prj_first", "wi_first_1", "dependency"); !errors.Is(err, corestore.ErrDependencyCycle) {
@@ -313,10 +346,10 @@ func TestHistoricalIssueVersionLabelsRoundTripIntoTypedMemberships(t *testing.T)
 }
 
 func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, runtimePool := repositoryFor(t, template.Database(t), smallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), Local: true, CreatedAt: historyAt()})
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), CreatedAt: historyAt()})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -331,7 +364,11 @@ func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 				return err
 			}
 			for _, pair := range [][2]tracker.NativeWorkItemID{{"wi_first_1", "wi_second_1"}, {"wi_first_1", "wi_second_2"}, {"wi_first_2", "wi_second_1"}} {
-				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: organization, ProjectID: "prj_first", WorkItemID: pair[0], RelatedProjectID: "prj_second", RelatedWorkItemID: pair[1], Type: "dependency"}, "add", historyAt()); err != nil {
+				provenance := "native"
+				if pair[0] == "wi_first_1" && pair[1] == "wi_second_1" {
+					provenance = "progress_check"
+				}
+				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: organization, ProjectID: "prj_first", WorkItemID: pair[0], RelatedProjectID: "prj_second", RelatedWorkItemID: pair[1], Type: "dependency", Provenance: provenance}, "add", historyAt()); err != nil {
 					return err
 				}
 			}
@@ -399,4 +436,250 @@ func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	t.Run("current provenance invalidates multiple edges and preserves manual links", func(t *testing.T) {
+		content := eventstore.NewContent(newHistoryObjects())
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			var otherID int64
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: "wi_second_1", Type: "dependency"}, "add", historyAt()); err != nil {
+					return err
+				}
+				for index := range 201 {
+					id := tracker.NativeWorkItemID(fmt.Sprintf("wi_progress_%d", index))
+					if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "prj_second", NativeID: id, Number: int64(10 + index), Title: "Example progress dependency", NativeSourceKey: new("progress-check:" + string(id))}); err != nil {
+						return err
+					}
+					if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: id, Type: "dependency", Provenance: "progress_check"}, "add", historyAt()); err != nil {
+						return err
+					}
+				}
+				other, err := w.WorkItem(t.Context(), "prj_first", "wi_first_2")
+				if err != nil {
+					return err
+				}
+				otherID = other.ID
+				return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_2", RelatedProjectID: "prj_second", RelatedWorkItemID: "wi_progress_0", Type: "dependency", Provenance: "progress_check"}, "add", historyAt())
+			}); err != nil {
+				t.Fatal(err)
+			}
+			prepare := func(id, kind, actorKind, agent string, sequence int64) eventstore.Event {
+				t.Helper()
+				raw, err := json.Marshal(tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateID: "wi_first_1", AggregateSequence: sequence, Type: kind, SchemaVersion: 1, RecordedAt: historyAt(), Actor: tracker.Actor{Kind: actorKind, PrincipalID: "example-owner", Agent: agent}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				event, err := content.PrepareEvent(t.Context(), org, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return event
+			}
+			ownComment := prepare("event_progress_own", "comment.created", "machine", "progress-check", 0)
+			terminal := prepare("event_progress_terminal", "run.finished", "runner", "", otherID)
+			for _, event := range []eventstore.Event{ownComment, terminal} {
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				edited, err := r.WorkItem(t.Context(), "prj_first", "wi_first_1")
+				if err == nil && (edited.ID == otherID || edited.EventSequence != otherID) {
+					t.Fatalf("fixture did not separate item ID from event sequence: id=%d event=%d other=%d", edited.ID, edited.EventSequence, otherID)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			assertCount := func(want int) {
+				t.Helper()
+				count := 0
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					cursor := corestore.RelationshipCursor{}
+					for range 2 {
+						page, err := r.Relationships(t.Context(), "prj_first", "wi_first_1", cursor, corestore.MaxPageSize)
+						if err != nil {
+							return err
+						}
+						count += len(page.Items)
+						if page.Next == (corestore.RelationshipCursor{}) {
+							return nil
+						}
+						cursor = page.Next
+					}
+					return corestore.ErrInvalidPage
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if count != want {
+					t.Fatalf("tenant %s dependencies=%d want=%d", org, count, want)
+				}
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					page, err := r.Relationships(t.Context(), "prj_first", "wi_first_2", corestore.RelationshipCursor{}, 10)
+					if err != nil {
+						return err
+					}
+					owned, err := r.ProgressDependencies(t.Context(), "prj_first", "wi_first_2", corestore.WorkItemBlockerCursor{}, 10)
+					if err == nil && (len(page.Items) != 2 || len(owned) != 1 || owned[0].WorkItemID != "wi_progress_0") {
+						t.Fatalf("edited item invalidated another same-project item's owned edge: item=%+v owned=%+v", page, owned)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertCount(203)
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				page, err := r.ProgressDependencies(t.Context(), "prj_first", "wi_first_1", corestore.WorkItemBlockerCursor{}, corestore.MaxPageSize)
+				if err != nil {
+					return err
+				}
+				if len(page) != 201 || page[0].CreatedAt.IsZero() {
+					t.Fatalf("owned page mixed ordinary edges or lost timestamps: %+v", page)
+				}
+				last := page[corestore.MaxPageSize-1]
+				tail, err := r.ProgressDependencies(t.Context(), "prj_first", "wi_first_1", corestore.WorkItemBlockerCursor{ProjectID: last.ProjectID, IssueID: last.IssueID}, corestore.MaxPageSize)
+				if err == nil && (len(tail) != 1 || tail[0].IssueID != page[corestore.MaxPageSize].IssueID) {
+					t.Fatalf("owned continuation lost final edge: %+v", tail)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			event := prepare("event_progress_input", "issue.edited", "human", "", 0)
+			var selector string
+			var issueID int64
+			ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, statement string) {
+				if strings.HasPrefix(statement, "SELECT ctid FROM issue_dependencies") {
+					selector = statement
+				}
+			})
+			if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+				source, err := w.WorkItem(ctx, "prj_first", "wi_first_1")
+				if err != nil {
+					return err
+				}
+				issueID = source.ID
+				if _, err := w.AppendEvent(ctx, event); err != nil {
+					return err
+				}
+				return rollback
+			}); !errors.Is(err, rollback) {
+				t.Fatalf("input rollback=%v", err)
+			}
+			assertCount(203)
+			if selector == "" {
+				t.Fatal("owned invalidation selector was not observed")
+			}
+			for _, mode := range []string{"force_generic_plan", "force_custom_plan"} {
+				func() {
+					tx, err := runtimePool.Begin(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback(t.Context())
+					if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
+						t.Fatal(err)
+					}
+					var scoped bool
+					if err := tx.QueryRow(t.Context(), `SELECT pg_has_role(current_user,'detent_runtime_v2','USAGE') AND NOT pg_has_role(current_user,'detent_platform_v2','USAGE') AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) AND current_setting('detent.organization_id')=$1`, string(org)).Scan(&scoped); err != nil || !scoped {
+						t.Fatalf("progress plan lacks runtime tenant scope: %v", err)
+					}
+					if _, err := tx.Exec(t.Context(), "SET LOCAL plan_cache_mode="+mode); err != nil {
+						t.Fatal(err)
+					}
+					statement := pgx.Identifier{"progress_expiry_" + mode}.Sanitize()
+					if _, err := tx.Exec(t.Context(), "PREPARE "+statement+" AS "+selector); err != nil {
+						t.Fatal(err)
+					}
+					var raw []byte
+					if err := tx.QueryRow(t.Context(), "EXPLAIN(ANALYZE,BUFFERS,FORMAT JSON) EXECUTE "+statement+"($1,$2,$3,$4)", pgx.QueryExecModeSimpleProtocol, string(org), "prj_first", issueID, corestore.MaxRelationshipPreparationPages*corestore.MaxPageSize+1).Scan(&raw); err != nil {
+						t.Fatal(err)
+					}
+					type node struct {
+						Type      string  `json:"Node Type"`
+						Relation  string  `json:"Relation Name"`
+						Index     string  `json:"Index Name"`
+						Condition string  `json:"Index Cond"`
+						Rows      float64 `json:"Actual Rows"`
+						Removed   float64 `json:"Rows Removed by Filter"`
+						Loops     float64 `json:"Actual Loops"`
+						Plans     []node
+					}
+					var plans []struct{ Plan node }
+					if err := json.Unmarshal(raw, &plans); err != nil {
+						t.Fatal(err)
+					}
+					found := false
+					var inspect func(node)
+					inspect = func(plan node) {
+						if plan.Relation == "issue_dependencies" {
+							if (plan.Rows+plan.Removed)*plan.Loops > 201 {
+								t.Errorf("progress selector examined ordinary edges: %+v", plan)
+							}
+							if plan.Index == "issue_dependencies_progress_owner_lookup" && strings.Contains(plan.Condition, "organization_id") && strings.Contains(plan.Condition, "dependent_project_id") && strings.Contains(plan.Condition, "dependent_issue_id") {
+								found = true
+							}
+						}
+						for _, child := range plan.Plans {
+							inspect(child)
+						}
+					}
+					if len(plans) != 1 {
+						t.Fatalf("progress selector plans=%s", raw)
+					}
+					inspect(plans[0].Plan)
+					if !found {
+						t.Errorf("%s progress selector lacks provenance index: %s", mode, raw)
+					}
+					if _, err := tx.Exec(t.Context(), "DEALLOCATE "+statement); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Rollback(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}()
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
+				t.Fatal(err)
+			}
+			assertCount(2)
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				page, err := r.ProgressDependencies(t.Context(), "prj_first", "wi_first_1", corestore.WorkItemBlockerCursor{}, corestore.MaxPageSize)
+				if err == nil && len(page) != 0 {
+					t.Fatalf("ordinary same-prefix edge was presented as progress owned: %+v", page)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				page, err := r.Relationships(t.Context(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, 10)
+				if err != nil {
+					return err
+				}
+				if len(page.Items) != 2 || page.Items[0].RelatedWorkItemID != "wi_second_1" || page.Items[1].RelatedWorkItemID != "wi_second_2" {
+					t.Fatalf("source invalidation removed ordinary same-prefix dependency: %+v", page)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: "wi_progress_0", Type: "dependency", Provenance: "progress_check"}, "add", historyAt()); err != nil {
+					return err
+				}
+				_, err := w.AppendEvent(t.Context(), event)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			assertCount(3)
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.RemoveOwnedDependencies(t.Context(), "prj_first", "wi_first_1", "progress-check:", []corestore.WorkItemReference{{ProjectID: "prj_second", WorkItemID: "wi_second_1"}})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			assertCount(3)
+		}
+	})
 }

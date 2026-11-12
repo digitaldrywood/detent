@@ -77,8 +77,8 @@ func TestNativeResourceAuthorizationSharesSnapshot(t *testing.T) {
 				t.Fatalf("status = %d: %s", response.Code, response.Body)
 			}
 			t.Logf("authentication and resource authorization: %d transactions, %d observed statements", begins, statements)
-			if begins != 2 {
-				t.Errorf("transactions = %d; want authentication plus one authorization snapshot", begins)
+			if begins != 1 {
+				t.Errorf("transactions = %d; want one authorization snapshot after the batched authentication read", begins)
 			}
 			if statements > 17 {
 				t.Errorf("statements = %d; want at most 17", statements)

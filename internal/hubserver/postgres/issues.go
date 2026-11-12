@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"reflect"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -40,14 +42,20 @@ func (s *session) CreateWorkItem(ctx context.Context, record corestore.WorkItem)
 	if _, err := s.queries.ShareActiveProject(ctx, pgquery.ShareActiveProjectParams{OrganizationID: s.organization, ID: record.ProjectID}); err != nil {
 		return corestore.WorkItem{}, mapError(ctx, err)
 	}
-	return s.createWorkItem(ctx, record)
+	return s.createWorkItem(ctx, record, true)
 }
 
-func (s *session) createWorkItem(ctx context.Context, record corestore.WorkItem) (corestore.WorkItem, error) {
+func (s *session) createWorkItem(ctx context.Context, record corestore.WorkItem, currentWrite bool) (corestore.WorkItem, error) {
 	if err := s.advanceDuplicateSource(ctx, record.ProjectID); err != nil {
 		return corestore.WorkItem{}, err
 	}
 	row, err := s.queries.CreateWorkItem(ctx, pgquery.CreateWorkItemParams{
+		SourceRevision: record.SourceRevision, SourceScheduled: record.SourceScheduled, SourceObservedAt: record.SourceObservedAt,
+		CurrentWrite:           currentWrite,
+		TerminalClock:          s.workItemTerminalClock(),
+		TerminalEnteredAt:      record.TerminalEnteredAt,
+		ArchiveRestoredAt:      record.ArchiveRestoredAt,
+		ArchiveRestoreKnown:    record.ArchiveRestoreKnown,
 		LastActivityAt:         optionalTime(record.LastActivityAt),
 		ImportedID:             record.ID,
 		CreatedAt:              optionalTime(record.CreatedAt),
@@ -74,17 +82,49 @@ func (s *session) createWorkItem(ctx context.Context, record corestore.WorkItem)
 		Archived:               record.Archived,
 		WorkflowStateName:      record.WorkflowStateName,
 	})
-	return corestore.WorkItem(row), mapError(ctx, err)
+	if err != nil {
+		return corestore.WorkItem{}, mapError(ctx, err)
+	}
+	created := corestore.WorkItem(row)
+	if err := s.recordBoardDelta(created.ProjectID, viewstore.BoardDelta{WorkItemID: created.NativeID, Topic: "work_item", EntityID: string(created.NativeID), EntityRevision: new(created.Revision), Kind: "upsert", RelatedID: string(created.NativeID)}); err != nil {
+		return corestore.WorkItem{}, err
+	}
+	if err := s.recordBoardDelta(created.ProjectID, viewstore.BoardDelta{Topic: "human_action", EntityID: string(created.NativeID), EntityRevision: new(created.Revision), Kind: "upsert", RelatedID: string(created.NativeID)}); err != nil {
+		return corestore.WorkItem{}, err
+	}
+	return created, nil
+}
+
+type SourceWorkItemWriter interface {
+	UpdateWorkItemFromSource(context.Context, corestore.WorkItem, time.Time) (corestore.WorkItem, error)
 }
 
 func (s *session) UpdateWorkItem(ctx context.Context, record corestore.WorkItem) (corestore.WorkItem, error) {
+	return s.updateWorkItem(ctx, record, nil)
+}
+
+func (s *session) UpdateWorkItemFromSource(ctx context.Context, record corestore.WorkItem, activity time.Time) (corestore.WorkItem, error) {
+	if activity.IsZero() || !activity.Equal(record.LastActivityAt) {
+		return corestore.WorkItem{}, corestore.ErrRevisionConflict
+	}
+	return s.updateWorkItem(ctx, record, &activity)
+}
+
+func (s *session) updateWorkItem(ctx context.Context, record corestore.WorkItem, activity *time.Time) (corestore.WorkItem, error) {
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return corestore.WorkItem{}, err
 	}
 	if err := s.lockDuplicateSourceProject(ctx, record.ProjectID, "issue"); err != nil {
 		return corestore.WorkItem{}, err
 	}
+	previous, err := s.WorkItem(ctx, record.ProjectID, record.NativeID)
+	if err != nil {
+		return corestore.WorkItem{}, err
+	}
 	row, err := s.queries.UpdateWorkItem(ctx, pgquery.UpdateWorkItemParams{
+		ActivityClock:  activity,
+		SourceRevision: record.SourceRevision, SourceScheduled: record.SourceScheduled, SourceObservedAt: record.SourceObservedAt,
+		TerminalClock:          s.workItemTerminalClock(),
 		LastActivityAt:         optionalTime(record.LastActivityAt),
 		Number:                 record.Number,
 		EventSequence:          record.EventSequence,
@@ -106,10 +146,28 @@ func (s *session) UpdateWorkItem(ctx context.Context, record corestore.WorkItem)
 		NativeID:               record.NativeID,
 		ExpectedRevision:       record.Revision,
 	})
-	return corestore.WorkItem(row), updated(ctx, err)
+	if err := updated(ctx, err); err != nil {
+		return corestore.WorkItem{}, err
+	}
+	current := corestore.WorkItem(row)
+	if !reflect.DeepEqual(workItemDeliveryValues(previous), workItemDeliveryValues(current)) {
+		if err := s.recordBoardDelta(current.ProjectID, viewstore.BoardDelta{WorkItemID: current.NativeID, Topic: "work_item", EntityID: string(current.NativeID), EntityRevision: new(current.Revision), Kind: "upsert", RelatedID: string(current.NativeID)}); err != nil {
+			return corestore.WorkItem{}, err
+		}
+	}
+	if !reflect.DeepEqual(previous.IssueContractObjectKey, current.IssueContractObjectKey) {
+		if err := s.recordBoardDelta(current.ProjectID, viewstore.BoardDelta{Topic: "human_action", EntityID: string(current.NativeID), EntityRevision: new(current.Revision), Kind: "upsert", RelatedID: string(current.NativeID)}); err != nil {
+			return corestore.WorkItem{}, err
+		}
+	}
+	return current, nil
 }
 
 func (s *session) DeleteWorkItem(ctx context.Context, project tracker.ProjectID, id tracker.NativeWorkItemID) error {
+	previous, err := s.WorkItem(ctx, project, id)
+	if err != nil {
+		return err
+	}
 	if err := s.advanceDuplicateSource(ctx, project); err != nil {
 		return err
 	}
@@ -118,7 +176,17 @@ func (s *session) DeleteWorkItem(ctx context.Context, project tracker.ProjectID,
 		ProjectID:      project,
 		NativeID:       id,
 	})
-	return affected(ctx, rows, err)
+	if err := affected(ctx, rows, err); err != nil {
+		return err
+	}
+	if err := s.recordBoardDelta(project, viewstore.BoardDelta{WorkItemID: previous.NativeID, Topic: "work_item", EntityID: string(previous.NativeID), Kind: "delete", RelatedID: string(previous.NativeID)}); err != nil {
+		return err
+	}
+	return s.recordBoardDelta(project, viewstore.BoardDelta{Topic: "human_action", EntityID: string(previous.NativeID), Kind: "delete", RelatedID: string(previous.NativeID)})
+}
+
+func workItemDeliveryValues(row corestore.WorkItem) []any {
+	return []any{row.LastActivityAt, row.Number, row.NativeSourceKey, row.Title, row.IssueType, row.Priority, row.BodyObjectKey, row.IssueContractObjectKey, row.ReportContextObjectKey, row.ActorKind, row.ActorPrincipalID, row.ProvenanceProvider, row.ProvenanceExternalID, row.Archived, row.WorkflowStateName}
 }
 
 func (s *session) WorkItems(ctx context.Context, project tracker.ProjectID, after int64, limit int) ([]corestore.WorkItem, error) {
@@ -179,4 +247,12 @@ func (s *session) CompareAndSwapSourceRecovery(ctx context.Context, item coresto
 		return corestore.ErrRevisionConflict
 	}
 	return nil
+}
+
+func (s *session) workItemTerminalClock() *time.Time {
+	if s.leaseClock == nil {
+		return nil
+	}
+	now := s.leaseClock().UTC()
+	return &now
 }

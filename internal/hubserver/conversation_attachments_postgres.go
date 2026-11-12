@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -83,6 +84,7 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 	}
 	ref := conversationAttachmentRef(id, scope.credential.ID, upload.key)
 	var existing conversationstore.Attachment
+	var revision int64
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(conversationstore.AttachmentReader)
 		if !ok {
@@ -95,6 +97,7 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 		if err := s.authorizeConversationAttachmentPG(ctx, r, scope, current, true); err != nil {
 			return err
 		}
+		revision = current.Revision
 		existing, err = owner.ConversationAttachmentByRef(ctx, scope.project, id, ref)
 		if err == nil {
 			return nil
@@ -102,20 +105,7 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		limit, err := s.attachmentQuotaLimit(ctx, r)
-		if err != nil {
-			return err
-		}
-		used, err := r.CollaborationBytes(ctx)
-		if errors.Is(err, corestore.ErrNotFound) {
-			return attachmentAccountingUnavailable()
-		}
-		if err != nil {
-			return err
-		}
-		if int64(len(upload.content)) > limit-used {
-			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
-		}
+
 		return nil
 	})
 	if err != nil {
@@ -127,11 +117,71 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 	if s.conversations.store.contents == nil {
 		return nil, conversationContentUnavailable()
 	}
-	archive, err := s.conversations.store.publishPayload(ctx, string(scope.organization), upload.content)
+	archive, _, err := attachment.PrepareArchive(string(scope.organization), 1, bytes.NewReader(upload.content))
 	if err != nil {
 		return nil, err
 	}
 	now := s.config.now().UTC().Truncate(time.Microsecond)
+	stage := artifactstore.ArchiveOwner{OrganizationID: scope.organization, Kind: "conversation-upload", ID: string(scope.project) + "/" + ref, CreatedAt: now}
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		owner, ok := w.(conversationstore.AttachmentWriter)
+		if !ok {
+			return conversationContentUnavailable()
+		}
+		current, err := owner.LockAttachmentConversation(ctx, scope.project, id)
+		if err != nil {
+			return err
+		}
+		if err := s.authorizeConversationAttachmentPG(ctx, w, scope, current, true); err != nil {
+			return err
+		}
+		existing, err = owner.ConversationAttachmentByRef(ctx, scope.project, id, ref)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if current.Revision != revision {
+			return &errConversationRevision{ConversationID: id, Current: current.Revision}
+		}
+		limit, err := s.attachmentQuotaLimit(ctx, w)
+		if err != nil {
+			return err
+		}
+		if err := w.LockArchiveAccounting(ctx); err != nil {
+			return err
+		}
+		object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: contentArchiveID(string(scope.organization), archive), Reference: archive, CreatedAt: now})
+		if err != nil {
+			return err
+		}
+		stage.ArchiveID = object.ID
+		usage, err := w.ChargeArchiveObject(ctx, object.ID, limit)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return attachmentAccountingUnavailable()
+		}
+		if err != nil {
+			return err
+		}
+		if !usage.Allowed {
+			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+		}
+		return w.AddArchiveOwner(ctx, stage)
+	})
+	if err != nil {
+		return nil, translateConversationError(err)
+	}
+	if existing.ID != "" {
+		return s.conversationAttachmentReplayPG(ctx, scope, existing, name, media, upload.content)
+	}
+	published, err := s.conversations.store.publishPayload(ctx, string(scope.organization), upload.content)
+	if err != nil {
+		return nil, err
+	}
+	if published != archive {
+		return nil, conversationContentUnavailable()
+	}
 	expires := now.Add(conversation.AttachmentTTL)
 	a := conversationstore.Attachment{OrganizationID: scope.organization, ProjectID: scope.project, ConversationID: id, ID: conversation.NewAttachmentID(), PrincipalID: scope.credential.ID, Name: name, MIME: media, Size: int64(len(upload.content)), ArtifactRef: ref, ContentID: contentArchiveID(string(scope.organization), archive), CreatedAt: now, ExpiresAt: &expires}
 	replay := false
@@ -150,26 +200,21 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 		existing, err = owner.ConversationAttachmentByRef(ctx, scope.project, id, ref)
 		if err == nil {
 			replay = true
-			return nil
+			return w.RemoveArchiveOwner(ctx, stage)
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		limit, err := s.attachmentQuotaLimit(ctx, w)
-		if err != nil {
+		if current.Revision != revision {
+			return &errConversationRevision{ConversationID: id, Current: current.Revision}
+		}
+		if err := w.LockArchiveAccounting(ctx); err != nil {
 			return err
 		}
-		usage, err := w.AdjustCollaborationBytes(ctx, a.Size, limit)
-		if errors.Is(err, corestore.ErrNotFound) {
-			return attachmentAccountingUnavailable()
-		}
-		if err != nil {
+		if err := owner.CreateConversationAttachment(ctx, a, conversationstore.ContentObject{OrganizationID: scope.organization, ID: a.ContentID, Reference: archive, CreatedAt: now}); err != nil {
 			return err
 		}
-		if !usage.Allowed {
-			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
-		}
-		return owner.CreateConversationAttachment(ctx, a, conversationstore.ContentObject{OrganizationID: scope.organization, ID: a.ContentID, Reference: archive, CreatedAt: now})
+		return w.RemoveArchiveOwner(ctx, stage)
 	})
 	if err != nil {
 		return nil, translateConversationError(err)

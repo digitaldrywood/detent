@@ -50,58 +50,7 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 		s.registerCredentialMaintenanceRoutes(e)
 		return
 	}
-	if s.database.postgres != nil {
-		s.registerPostgresRoutes(e)
-		return
-	}
-	if s.config.Hosted != nil {
-		if s.hostedShared() {
-			e.Pre(s.hostedSharedEntry)
-			s.registerHostedSharedRoutes(e)
-		}
-		e.Use(s.hostedBoundary)
-		s.registerHostedRoutes(e)
-	} else {
-		s.registerLocalAppRoutes(e)
-	}
-	s.registerOperatorTools(e)
-	s.registerTeamThreadRoutes(e)
-	s.registerNativeRoutes(e)
-	s.registerProjectSecretRoutes(e)
-	s.registerSpritePoolRoutes(e)
-	s.registerCostUsageRoutes(e)
-	s.registerRunnerRoutes(e)
-	s.registerConversationRoutes(e)
-	read := s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin)
-	worker := s.requireAPIScope(apiScopeWorker)
-	operator := s.requireAPIScope(apiScopeOperator)
-	admin := s.requireAPIScope(apiScopeAdmin)
-	if s.config.Hosted == nil {
-		e.POST("/api/v2/admin/backup", s.backupDatabase, s.requireInstanceAdmin())
-	}
-	e.GET("/api/v1/repositories/:owner/:repo/policy", s.getProjectPolicy, read)
-	e.PUT("/api/v1/repositories/:owner/:repo/policy", s.approveProjectPolicy, s.requireInstanceAdmin())
-	e.DELETE("/api/v1/repositories/:owner/:repo/policy", s.revokeProjectPolicy, s.requireInstanceAdmin())
-
-	e.GET("/health", s.health, read)
-	e.GET("/api/v1/work-items", s.listWorkItems, read)
-	e.GET("/api/v1/work-items/:id", s.getWorkItem, read)
-	e.POST("/api/v1/claims", s.claimWorkItem, worker)
-	e.POST("/api/v1/leases/:id/renew", s.renewLease, worker)
-	e.POST("/api/v1/leases/:id/release", s.releaseLease, worker)
-	e.POST("/api/v1/work-items/:id/events", s.appendWorkItemEvent, worker)
-	e.POST("/api/v1/work-items/:id/workflow", s.changeWorkItemWorkflow, operator)
-	e.POST("/api/v1/work-items/:id/dependencies", s.changeWorkItemDependency, operator)
-	e.POST("/api/v1/work-items/:id/priority", s.changeWorkItemPriority, operator)
-	e.POST("/api/v1/work-items/:id/order", s.changeWorkItemOrder, operator)
-	e.POST("/api/v1/machines/register", s.registerMachine, worker)
-	e.POST("/api/v1/machines/:id/heartbeat", s.heartbeatMachine, worker)
-	e.GET("/api/v1/repositories/freshness", s.repositoryFreshness, read)
-	e.GET("/api/v1/outbox/health", s.outboxHealth, read)
-	e.POST("/api/v1/tokens", s.createAPIToken, admin)
-	e.POST("/api/v1/tokens/:id/rotate", s.rotateAPIToken, admin)
-	e.DELETE("/api/v1/tokens/:id", s.revokeAPIToken, admin)
-	e.POST("/api/v1/webhooks/github", s.githubWebhook)
+	s.registerPostgresRoutes(e)
 }
 
 func (s *Service) registerPostgresRoutes(e *echo.Echo) {
@@ -122,6 +71,8 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 			e.Pre(s.hostedSharedEntry)
 		}
 		e.Use(s.hostedBoundary)
+		e.GET("/api/cloud/metadata", s.hostedMetadata)
+		e.GET("/api/cloud/billing", s.hostedBilling)
 		e.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime, s.refreshHostedRuntime)
 		e.POST("/api/v2/organizations/:organization/entitlements/runtime", s.reloadHostedRuntime, s.refreshHostedRuntime)
 		e.GET("/api/v2/organizations/:organization/entitlements", s.hostedPlanReport, s.refreshHostedRuntime)
@@ -157,6 +108,8 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 		e.POST("/internal/v1/health", s.hostedSharedHealth)
 		e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
 		e.POST("/internal/v1/github/repositories", s.hostedGitHubRepositories)
+		e.POST("/internal/v1/github/receipt", s.hostedGitHubReceipt)
+		e.POST("/internal/v1/github/webhook", s.hostedGitHubWebhook)
 	}
 	s.registerTeamThreadRoutes(e)
 	s.registerOperatorTools(e)

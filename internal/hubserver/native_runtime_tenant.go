@@ -55,6 +55,11 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		if err := s.readRuntimeAdmissionTenant(ctx, scope, issue, &evidence, admission); err != nil {
 			return tracker.NativeRuntimeEvidence{}, err
 		}
+		if explanationRead(ctx) && evidence.Attempt == nil {
+			if err := s.readRuntimeSourceRecoveryTenant(ctx, scope, item, &evidence); err != nil {
+				return evidence, err
+			}
+		}
 		return evidence, nil
 	}
 	var localAttemptID int64
@@ -290,15 +295,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		if err != nil {
 			return tracker.NativeRuntimeEvidence{}, err
 		}
-		if len(detail.Versions) != 0 {
-			version := detail.Versions[0]
-			result.CurrentVersion = &tracker.NativeChangeVersionEvidence{NativeChangeReference: tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}, PublishedAt: version.CreatedAt, Validation: boundedChangeCommand(version.Validation), Landing: boundedChangeLanding(version.Landing)}
-		}
-		detail.Change.Body = ""
-		detail.Change.LinkedIssues = nil
-		detail.Versions, detail.Reviews, detail.Checks, detail.Discussion = nil, nil, nil, nil
-		detail.Summary.Messages = nil
-		result.Change = &detail
+		attachRuntimeChangeDetail(&result, detail)
 	}
 	if !snapshot.policyFound {
 		result.Unavailable = append(result.Unavailable, "approved_dispatch_policy")
@@ -346,6 +343,11 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 	}
 	if attempt.TerminalFailure == nil {
 		result.Unavailable = append(result.Unavailable, "terminal_failure")
+	}
+	if explanationRead(ctx) {
+		if err := s.readRuntimeSourceRecoveryTenant(ctx, scope, item, &result); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }

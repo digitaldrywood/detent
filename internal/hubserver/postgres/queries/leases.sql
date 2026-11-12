@@ -4,7 +4,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,clock_timestamp(),clock_timestamp(),clock_timestamp
 ON CONFLICT (organization_id,id) DO UPDATE SET hostname=EXCLUDED.hostname,display_name=EXCLUDED.display_name,capacity=EXCLUDED.capacity,version=EXCLUDED.version,sprite_name=EXCLUDED.sprite_name,updated_at=clock_timestamp();
 
 -- name: LockClaimIssue :one
-SELECT i.revision,i.archived FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE i.organization_id=$1 AND i.id=$2 AND p.deleted_at IS NULL FOR SHARE OF p FOR NO KEY UPDATE OF i;
+SELECT i.revision,i.archived,i.project_id FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE i.organization_id=$1 AND i.id=$2 AND p.deleted_at IS NULL FOR SHARE OF p FOR NO KEY UPDATE OF i;
 
 -- name: LockActiveLease :one
 SELECT * FROM leases WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL FOR UPDATE;
@@ -22,8 +22,14 @@ SELECT * FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE;
 SELECT clock_timestamp()::timestamptz AS now;
 
 -- name: InsertLease :one
-INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at)
-VALUES ($1,$2,$3,$4,$5,$6,sqlc.arg(landing_capacity),sqlc.arg(now),sqlc.arg(now),sqlc.arg(expires_at)) RETURNING *;
+WITH lease_created AS (
+ INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,project_id,runner_id)
+ VALUES ($1,$2,$3,$4,$5,$6,sqlc.arg(landing_capacity),sqlc.arg(now),sqlc.arg(now),sqlc.arg(expires_at),sqlc.arg(project_id),NULLIF(sqlc.arg(runner_id)::text,'')) RETURNING *
+), assigned AS (
+ INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at)
+ SELECT organization_id,lease_id,runner_id,acquired_at FROM lease_created WHERE runner_id IS NOT NULL
+)
+SELECT lease_created.organization_id, lease_created.lease_id, lease_created.fencing_token, lease_created.issue_id, lease_created.machine_id, lease_created.session_id, lease_created.work_item_revision, lease_created.landing_capacity, lease_created.acquired_at, lease_created.renewed_at, lease_created.expires_at, lease_created.released_at, lease_created.release_reason, lease_created.project_id AS lease_project_id, lease_created.runner_id FROM lease_created;
 
 -- name: UpdateLeaseLandingCapacity :one
 UPDATE leases SET landing_capacity=GREATEST(landing_capacity,sqlc.arg(landing_capacity)::bigint)
@@ -31,15 +37,29 @@ WHERE organization_id=sqlc.arg(organization_id) AND lease_id=sqlc.arg(lease_id)
 AND fencing_token=sqlc.arg(fencing_token)::bigint AND released_at IS NULL
 RETURNING *;
 
--- name: ExpireLease :one
-UPDATE leases SET released_at=sqlc.arg(now)::timestamptz,release_reason='expired'
-WHERE organization_id=sqlc.arg(organization_id) AND lease_id=sqlc.arg(lease_id)
-AND fencing_token=sqlc.arg(fencing_token)::bigint AND released_at IS NULL AND expires_at<=sqlc.arg(now)
-RETURNING *;
+-- name: LockLeaseExpiryScope :one
+WITH locked_project AS MATERIALIZED (
+ SELECT p.organization_id,p.id FROM leases l
+ JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+ JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
+ WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id) AND l.fencing_token=sqlc.arg(fencing_token)
+ FOR SHARE OF p
+)
+SELECT l.* FROM leases l
+JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+JOIN locked_project p ON p.organization_id=i.organization_id AND p.id=i.project_id
+WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id) AND l.fencing_token=sqlc.arg(fencing_token)
+FOR UPDATE OF i;
 
--- name: CancelLeaseAttempt :exec
-UPDATE native_attempts SET status='cancelled',updated_at=$4
-WHERE organization_id=$1 AND lease_id=$2 AND fencing_token=$3 AND status='running';
+-- name: ExpireLease :one
+UPDATE leases AS l SET released_at=sqlc.arg(now)::timestamptz,release_reason='expired'
+WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id)
+AND l.fencing_token=sqlc.arg(fencing_token)::bigint AND l.released_at IS NULL AND l.expires_at<=sqlc.arg(now)
+AND NOT EXISTS (
+ SELECT 1 FROM native_attempts a WHERE a.organization_id=l.organization_id AND a.lease_id=l.lease_id
+ AND a.fencing_token=l.fencing_token AND a.status='running'
+)
+RETURNING l.*;
 
 -- name: HeartbeatLeaseMachine :exec
 UPDATE machines SET last_heartbeat_at=greatest(last_heartbeat_at,$3),updated_at=greatest(updated_at,$3) WHERE organization_id=$1 AND id=$2;
@@ -49,7 +69,7 @@ SELECT * FROM leases WHERE organization_id=$1 AND lease_id=$2;
 
 -- name: GetActiveIssueLease :one
 SELECT * FROM leases
-WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL AND expires_at>clock_timestamp();
+WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id) AND released_at IS NULL AND expires_at>COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp());
 
 -- name: LeaseUsage :one
 SELECT count(*) FROM leases WHERE organization_id=$1 AND machine_id=$2 AND released_at IS NULL AND expires_at>sqlc.arg(now)::timestamptz;
@@ -59,6 +79,24 @@ SELECT * FROM native_attempts WHERE organization_id=$1 AND id=$2;
 
 -- name: GetLatestIssueAttempt :one
 SELECT * FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1;
+
+-- name: GetLeaseLossCandidate :one
+WITH unreleased AS MATERIALIZED (
+ SELECT fencing_token FROM leases
+ WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id) AND released_at IS NULL
+)
+SELECT a.* FROM native_attempts a
+JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id AND l.fencing_token=a.fencing_token
+WHERE a.organization_id=sqlc.arg(organization_id) AND a.issue_id=sqlc.arg(issue_id)
+AND a.fencing_token=COALESCE(
+ (SELECT fencing_token FROM unreleased),
+ CASE WHEN sqlc.arg(include_released)::boolean THEN (
+  SELECT latest.fencing_token FROM native_attempts latest
+  WHERE latest.organization_id=sqlc.arg(organization_id) AND latest.issue_id=sqlc.arg(issue_id)
+  ORDER BY latest.fencing_token DESC LIMIT 1
+ ) END
+)
+AND a.status='running' AND (l.released_at IS NOT NULL OR l.expires_at<=COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp()));
 
 -- name: GetLatestIssueAttemptsByIssues :many
 SELECT latest.*
@@ -87,23 +125,25 @@ ORDER BY fencing_token DESC LIMIT sqlc.arg(page_limit);
 SELECT * FROM native_attempts
 WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id)
 AND (sqlc.arg(after_fence)::bigint=0 OR fencing_token>sqlc.arg(after_fence)::bigint)
+AND (sqlc.arg(through_fence)::bigint=0 OR fencing_token<=sqlc.arg(through_fence)::bigint)
 ORDER BY fencing_token LIMIT sqlc.arg(page_limit);
 
 -- name: GetAttemptReceipt :one
 SELECT request_hash FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2 AND sequence=$3;
 
 -- name: InsertLeaseAttempt :one
-INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,runtime_heartbeat_at,runtime_summary_sequence,local_attempt_id,local_attempt_id_recorded)
-VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,sqlc.arg(started_at),sqlc.arg(started_at_submicro_ns),sqlc.arg(now),sqlc.narg(runtime_heartbeat_at),1,NULLIF(sqlc.arg(local_attempt_id)::bigint,0),true) RETURNING *;
+INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,runtime_heartbeat_at,runtime_summary_sequence,worker_cleanup_required,local_attempt_id,local_attempt_id_recorded,checkpoint_preserves_source,project_id)
+VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,sqlc.arg(started_at),sqlc.arg(started_at_submicro_ns),sqlc.arg(now),sqlc.narg(runtime_heartbeat_at),1,sqlc.narg(worker_cleanup_required)::boolean,NULLIF(sqlc.arg(local_attempt_id)::bigint,0),true,sqlc.narg(checkpoint_preserves_source)::boolean,(SELECT i.project_id FROM work_item_identities i WHERE i.organization_id=$1 AND i.id=$3)) RETURNING *;
 
 -- name: AdvanceLeaseAttempt :one
 UPDATE native_attempts SET sequence=sqlc.arg(next_sequence),
 local_attempt_id=CASE WHEN local_attempt_id_recorded THEN COALESCE(local_attempt_id,NULLIF(sqlc.arg(local_attempt_id)::bigint,0)) ELSE local_attempt_id END,
-runtime_heartbeat_at=sqlc.narg(runtime_heartbeat_at),runtime_summary_sequence=sqlc.arg(next_sequence),
+runtime_heartbeat_at=sqlc.narg(runtime_heartbeat_at),runtime_summary_sequence=sqlc.arg(next_sequence),worker_cleanup_required=sqlc.narg(worker_cleanup_required)::boolean,
 cleanup_acknowledged_at=CASE WHEN sqlc.arg(termination)::boolean THEN sqlc.arg(now) ELSE cleanup_acknowledged_at END,
 status=CASE WHEN sqlc.arg(usage_correction)::boolean THEN status ELSE sqlc.arg(status) END,
 payload_object_key=sqlc.arg(payload_object_key),
 checkpoint_object_key=COALESCE(sqlc.narg(checkpoint_object_key),checkpoint_object_key),
+checkpoint_preserves_source=CASE WHEN sqlc.narg(checkpoint_object_key)::text IS NOT NULL THEN sqlc.narg(checkpoint_preserves_source)::boolean ELSE checkpoint_preserves_source END,
 artifacts_object_key=COALESCE(sqlc.narg(artifacts_object_key),artifacts_object_key),
 updated_at=CASE WHEN sqlc.arg(usage_correction)::boolean THEN updated_at ELSE sqlc.arg(now) END
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND lease_id=sqlc.arg(lease_id)
@@ -135,44 +175,48 @@ WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND routing_
 RETURNING routing_revision;
 
 -- name: MutateLeaseCommand :one
-WITH locked AS MATERIALIZED (
+WITH lease_locked AS MATERIALIZED (
  SELECT l.* FROM leases l
  WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id)
  FOR UPDATE OF l
 ), at AS MATERIALIZED (
- SELECT COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp()) AS now FROM locked
-), changed AS (
+ SELECT COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp()) AS now FROM lease_locked
+), lease_changed AS (
  UPDATE leases l SET
  renewed_at=CASE WHEN sqlc.arg(operation)::text='renew' THEN at.now ELSE l.renewed_at END,
  expires_at=CASE WHEN sqlc.arg(operation)::text='renew' THEN at.now+sqlc.arg(ttl_us)::bigint*interval '1 microsecond' ELSE l.expires_at END,
  landing_capacity=CASE WHEN sqlc.arg(operation)::text='renew' AND sqlc.arg(landing_capacity)::bigint>0 THEN sqlc.arg(landing_capacity)::bigint ELSE l.landing_capacity END,
  released_at=CASE WHEN sqlc.arg(operation)::text='renew' THEN l.released_at ELSE at.now END,
  release_reason=CASE WHEN sqlc.arg(operation)::text='renew' THEN l.release_reason WHEN sqlc.arg(operation)::text='expire' THEN 'expired' ELSE sqlc.arg(reason)::text END
- FROM locked,at
- WHERE l.organization_id=locked.organization_id AND l.lease_id=locked.lease_id
- AND locked.fencing_token=sqlc.arg(fencing_token)::bigint AND locked.released_at IS NULL
- AND CASE WHEN sqlc.arg(operation)::text='expire' THEN locked.expires_at<=at.now ELSE locked.expires_at>at.now END
+ FROM lease_locked,at
+ WHERE l.organization_id=lease_locked.organization_id AND l.lease_id=lease_locked.lease_id
+ AND lease_locked.fencing_token=sqlc.arg(fencing_token)::bigint AND lease_locked.released_at IS NULL
+ AND CASE WHEN sqlc.arg(operation)::text='expire' THEN lease_locked.expires_at<=at.now ELSE lease_locked.expires_at>at.now END
+ AND (sqlc.arg(operation)::text<>'expire' OR NOT EXISTS (
+  SELECT 1 FROM native_attempts a WHERE a.organization_id=lease_locked.organization_id AND a.lease_id=lease_locked.lease_id
+  AND a.fencing_token=lease_locked.fencing_token AND a.status='running'
+ ))
  AND (sqlc.arg(operation)::text<>'renew' OR NOT EXISTS (
   SELECT 1 FROM issues i
   JOIN project_workflow_states s ON s.organization_id=i.organization_id AND s.project_id=i.project_id AND s.name=i.workflow_state_name
-  WHERE i.organization_id=locked.organization_id AND i.id=locked.issue_id AND s.terminal
+  WHERE i.organization_id=lease_locked.organization_id AND i.id=lease_locked.issue_id AND s.terminal
  ) OR EXISTS (
   SELECT 1 FROM native_attempts a
   JOIN change_landing_receipts r ON r.organization_id=a.organization_id AND r.attempt_id=a.id
-  WHERE a.organization_id=locked.organization_id AND a.issue_id=locked.issue_id
-  AND a.lease_id=locked.lease_id AND a.fencing_token=locked.fencing_token AND a.status='running'
+  WHERE a.organization_id=lease_locked.organization_id AND a.issue_id=lease_locked.issue_id
+  AND a.lease_id=lease_locked.lease_id AND a.fencing_token=lease_locked.fencing_token AND a.status='running'
  ))
  RETURNING l.*
 ), cancelled AS (
  UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,updated_at=c.released_at
- FROM changed c WHERE a.organization_id=c.organization_id AND a.lease_id=c.lease_id AND a.fencing_token=c.fencing_token
- AND a.status='running' AND sqlc.arg(operation)::text<>'renew'
+ FROM lease_changed c WHERE a.organization_id=c.organization_id AND a.lease_id=c.lease_id AND a.fencing_token=c.fencing_token
+ AND a.status='running' AND sqlc.arg(operation)::text='release'
 ), heartbeat AS (
  UPDATE machines m SET last_heartbeat_at=greatest(m.last_heartbeat_at,at.now),updated_at=greatest(m.updated_at,at.now)
- FROM changed c,at WHERE m.organization_id=c.organization_id AND m.id=c.machine_id AND sqlc.arg(operation)::text<>'expire'
+ FROM lease_changed c,at WHERE m.organization_id=c.organization_id AND m.id=c.machine_id AND sqlc.arg(operation)::text<>'expire'
 )
-SELECT changed.*,true AS applied FROM changed
-UNION ALL SELECT locked.*,false AS applied FROM locked WHERE NOT EXISTS (SELECT 1 FROM changed);
+SELECT lease_changed.organization_id,lease_changed.lease_id,lease_changed.fencing_token,lease_changed.issue_id,lease_changed.machine_id,lease_changed.session_id,lease_changed.work_item_revision,lease_changed.landing_capacity,lease_changed.acquired_at,lease_changed.renewed_at,lease_changed.expires_at,lease_changed.released_at,lease_changed.release_reason,lease_changed.project_id AS lease_project_id,lease_changed.runner_id,true AS applied FROM lease_changed
+UNION ALL SELECT lease_locked.organization_id,lease_locked.lease_id,lease_locked.fencing_token,lease_locked.issue_id,lease_locked.machine_id,lease_locked.session_id,lease_locked.work_item_revision,lease_locked.landing_capacity,lease_locked.acquired_at,lease_locked.renewed_at,lease_locked.expires_at,lease_locked.released_at,lease_locked.release_reason,lease_locked.project_id AS lease_project_id,lease_locked.runner_id,false AS applied FROM lease_locked WHERE NOT EXISTS (SELECT 1 FROM lease_changed);
 
 -- name: LeaseMutationFacts :one
 SELECT sqlc.embed(l),sqlc.embed(i)
@@ -212,9 +256,10 @@ WHERE r.organization_id=$1 AND r.lease_id=$2
 ORDER BY c.kind,CASE WHEN c.kind=2 THEN c.model_id ELSE '' END,c.position;
 
 -- name: SetAttemptRuntimeHeartbeat :exec
-UPDATE native_attempts SET runtime_heartbeat_at=sqlc.narg(runtime_heartbeat_at),runtime_summary_sequence=sqlc.arg(sequence)
+UPDATE native_attempts SET runtime_heartbeat_at=sqlc.narg(runtime_heartbeat_at),runtime_summary_sequence=sqlc.arg(sequence),
+worker_cleanup_required=CASE WHEN sqlc.narg(worker_cleanup_required)::boolean IS NOT NULL THEN sqlc.narg(worker_cleanup_required)::boolean WHEN runtime_summary_sequence=sequence THEN worker_cleanup_required ELSE NULL END
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND sequence=sqlc.arg(sequence)
-AND runtime_summary_sequence IS DISTINCT FROM sequence;
+AND (runtime_summary_sequence IS DISTINCT FROM sequence OR sqlc.narg(worker_cleanup_required)::boolean IS NOT NULL AND worker_cleanup_required IS DISTINCT FROM sqlc.narg(worker_cleanup_required)::boolean);
 
 -- name: LocalAttemptMatches :many
 WITH owned_item AS MATERIALIZED (

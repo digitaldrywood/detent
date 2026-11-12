@@ -5,32 +5,78 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestReportsLongRangeReadBudget(t *testing.T) {
-	f := newUsageHostedFixture(t)
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
-	f.service.config.now = func() time.Time { return now }
+	f := newUsageHostedFixture(t, func(cfg *Config) { cfg.now = func() time.Time { return now } })
+	installReportsBudgetTrace(t, f.service)
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 	seedProductionProject(t, f.service, scope, productionProjectShape{issues: 990, attempts: 990, usage: 660, leases: 1682, comments: 7000, days: 180})
-	if _, err := f.service.database.db.ExecContext(t.Context(), `WITH n(k) AS (VALUES(1),(2),(3),(4),(5),(6))
-INSERT INTO change_evidence(change_id,sequence,kind,version_id,record_json)
-SELECT c.id,(SELECT coalesce(max(sequence),0) FROM change_evidence)+row_number() OVER (ORDER BY c.id,k),CASE WHEN k%2=1 THEN 'review' ELSE 'discussion' END,v.id,
-CASE WHEN k%2=1 THEN json_object('review_id',c.id||k,'version_id',v.id,'decision','changes_requested','created_at',json_extract(c.record_json,'$.landed.landed_at'),'body',hex(zeroblob(2048)))
-ELSE json_object('discussion_id',c.id||k,'version_id',v.id,'created_at',json_extract(c.record_json,'$.landed.landed_at'),'body',hex(zeroblob(2048)),
-'escape',json_object('occurrence_id',c.id||k,'kind','reopened','cause','missing_criterion','observed_at',json_extract(c.record_json,'$.landed.landed_at'))) END
-FROM change_requests c JOIN change_versions v ON v.change_id=c.id CROSS JOIN n WHERE c.organization_id=? AND c.project_id=? AND c.id LIKE 'change_wi_shaped_%'`, scope.organization, scope.project); err != nil {
+	content := eventstore.NewContent(f.service.runDetailStore())
+	admin := hostedPostgresAdmin(t, f.service)
+	rows, err := admin.QueryContext(t.Context(), `SELECT id FROM change_requests WHERE organization_id=$1 AND project_id=$2 AND id LIKE 'change_wi_shaped_%' ORDER BY id`, scope.organization, scope.project)
+	if err != nil {
 		t.Fatal(err)
 	}
-	projectTestChangeColumns(t, f.service)
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	for _, id := range ids {
+		var change eventstore.Change
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error { var err error; change, err = r.Change(t.Context(), id); return err }); err != nil {
+			t.Fatal(err)
+		}
+		for number := 1; number <= 6; number++ {
+			kind := "review"
+			var value any = tracker.ChangeReview{ID: fmt.Sprintf("%s_%d", id, number), VersionID: *change.LandedVersionID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, Decision: "changes_requested", CreatedAt: *change.LandedAt, Body: strings.Repeat("x", 4096)}
+			if number%2 == 0 {
+				kind = "discussion"
+				value = tracker.ChangeDiscussion{ID: fmt.Sprintf("%s_%d", id, number), VersionID: *change.LandedVersionID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: *change.LandedAt, Body: strings.Repeat("x", 4096), Escape: &tracker.QualityEscape{OccurrenceID: fmt.Sprintf("%s_%d", id, number), Kind: "reopened", Cause: "missing_criterion", ObservedAt: *change.LandedAt, EvidenceReference: "record", EvidenceQuote: "Recorded failure", BasisQuote: "Frozen contract"}}
+			}
+			evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.organization, ChangeID: id, Kind: kind}, historyTestJSON(t, value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), evidence); return err }); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	if _, err := admin.ExecContext(t.Context(), "ANALYZE issues,collaboration_events,native_attempts,change_requests,change_evidence,attempt_usage,report_usage_current,report_escape_facts"); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name      string
 		rangeName string
@@ -47,6 +93,9 @@ FROM change_requests c JOIN change_versions v ON v.change_id=c.id CROSS JOIN n W
 			var mu sync.Mutex
 			var statements []tracedStatement
 			timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+				if args == nil {
+					return
+				}
 				values := make([]any, 0, len(args))
 				for _, arg := range args {
 					if arg.Name != "" {
@@ -83,39 +132,227 @@ FROM change_requests c JOIN change_versions v ON v.change_id=c.id CROSS JOIN n W
 			mu.Lock()
 			captured := append([]tracedStatement(nil), statements...)
 			mu.Unlock()
-			for _, target := range []struct {
-				name, fragment, index string
-			}{
-				{"quality reopened items", "WITH reopened_items", "analytics_event_order"},
-				{"quality events", "coalesce((SELECT terminal FROM workflow_states", "analytics_event_order"},
-				{"quality evidence", "SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key", "change_evidence_analytics_"},
-				{"prior attempts", "SELECT count(*) FROM analytics_native_attempts a", "analytics_attempt_"},
-			} {
-				found := false
-				for _, statement := range captured {
-					if !strings.Contains(statement.query, target.fragment) {
-						continue
-					}
-					found = true
-					plan := explainQueryPlan(t, f.service.database.reader, statement.query, statement.args)
-					ranges := 0
-					for _, detail := range plan {
-						if strings.HasPrefix(detail, "SEARCH ") && strings.Contains(detail, target.index) && strings.Contains(detail, ">?") && strings.Contains(detail, "<?") {
-							ranges++
-						}
-					}
-					want := 1
-					if target.name == "quality evidence" {
-						want = 2
-					}
-					if ranges < want {
-						t.Errorf("%s needs %d index range scans: %v", target.name, want, plan)
-					}
-				}
-				if !found {
-					t.Errorf("%s query was not exercised", target.name)
-				}
-			}
+			reportsAssertPostgresPlans(t, admin, scope.organization, captured, "issues", "collaboration_events", "native_attempts", "change_requests", "report_escape_facts")
+
 		})
 	}
+}
+
+type reportsBudgetTrace struct{}
+
+func (reportsBudgetTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if timing := requestTimingFrom(ctx); timing != nil && timing.trace != nil {
+		args := make([]driver.NamedValue, len(data.Args))
+		for i, value := range data.Args {
+			args[i] = driver.NamedValue{Ordinal: i + 1, Value: value}
+		}
+		timing.trace(data.SQL, args)
+	}
+	return ctx
+}
+func (reportsBudgetTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (reportsBudgetTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+func (trace reportsBudgetTrace) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
+	trace.TraceQueryStart(ctx, conn, pgx.TraceQueryStartData{SQL: data.SQL, Args: data.Args})
+}
+func (reportsBudgetTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+func installReportsBudgetTrace(t *testing.T, s *Service) {
+	t.Helper()
+	admin := hostedPostgresAdmin(t, s)
+	if err := s.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	if s.outbox != nil {
+		s.outbox.stop()
+	}
+	s.workerCancel()
+	<-s.workerDone
+	<-s.secretRewrapDone
+
+	config, err := s.config.Postgres.Connection.PoolConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = int32(s.config.Postgres.Pool.MaxConnections)
+	config.ConnConfig.Tracer = reportsBudgetTrace{}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := postgres.NewRepository(t.Context(), pool, s.config.Postgres.Pool)
+	if err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	projectRecordDatabases.Store(repository, admin)
+	oldTenant, oldAccess, oldBilling := s.config.TenantRepository, s.config.AccessRepository, s.config.BillingRepository
+	oldDatabase, oldMetrics, oldDatabaseBilling := s.database.postgres, s.requestMetrics.repository, s.database.billingRepository
+	s.config.TenantRepository, s.config.AccessRepository, s.config.BillingRepository = repository, repository, repository
+	s.database.postgres, s.requestMetrics.repository, s.database.billingRepository = repository, repository, repository
+	t.Cleanup(func() {
+		s.config.TenantRepository, s.config.AccessRepository, s.config.BillingRepository = oldTenant, oldAccess, oldBilling
+		s.database.postgres, s.requestMetrics.repository, s.database.billingRepository = oldDatabase, oldMetrics, oldDatabaseBilling
+		projectRecordDatabases.Delete(repository)
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+}
+func reportsAssertPostgresPlans(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statements []tracedStatement, required ...string) {
+	t.Helper()
+	families := map[string]bool{}
+	for execution, statement := range statements {
+		if !reportsBudgetReadStatement(statement.query) {
+			continue
+		}
+		relevant := false
+		for _, relation := range reportsBudgetHotRelations {
+			if strings.Contains(statement.query, relation) {
+				relevant = true
+				families[relation] = true
+			}
+		}
+		if !relevant {
+			continue
+		}
+		plan, raw := reportsExplainPostgresPlan(t, admin, organization, statement, "enable_seqscan=off")
+		if violations := reportsBudgetPlanViolations(statement, plan); len(violations) > 0 {
+			t.Errorf("actual report execution %d violates keyed source bounds: %v\nstatement: %s\nplan: %s", execution, violations, statement.query, raw)
+		}
+	}
+	for _, relation := range required {
+		if !families[relation] {
+			t.Errorf("actual report did not exercise %s facts", relation)
+		}
+	}
+}
+
+func reportsExplainPostgresPlan(t *testing.T, admin *sql.DB, organization tracker.OrganizationID, statement tracedStatement, planner ...string) (reportsBudgetPlan, []byte) {
+	t.Helper()
+	tx, err := admin.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), "SET LOCAL ROLE detent_runtime_v2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(organization)); err != nil {
+		t.Fatal(err)
+	}
+	for _, setting := range planner {
+		if _, err := tx.ExecContext(t.Context(), "SET LOCAL "+setting); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var raw []byte
+	if err := tx.QueryRowContext(t.Context(), "EXPLAIN(ANALYZE,BUFFERS,FORMAT JSON) "+statement.query, statement.args...).Scan(&raw); err != nil {
+		t.Fatalf("explain actual report: %v\nstatement: %s", err, statement.query)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	var plans []struct{ Plan reportsBudgetPlan }
+	if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+		t.Fatalf("report plan=%s error=%v", raw, err)
+	}
+	return plans[0].Plan, raw
+}
+
+var reportsBudgetHotRelations = []string{"issues", "collaboration_events", "native_attempts", "change_requests", "change_evidence", "attempt_usage", "report_usage_current", "report_escape_facts"}
+var reportsBudgetPointKey = regexp.MustCompile(`\b(?:id|native_id|work_item_id|issue_id|attempt_id|change_id|source_key|sequence)\b\s*(?:=|<|>)`)
+var reportsBudgetLimit = regexp.MustCompile(`(?i)\bLIMIT\s+(?:\$([0-9]+)|([0-9]+))`)
+
+type reportsBudgetPlan struct {
+	Node         string              `json:"Node Type"`
+	Index        string              `json:"Index Name"`
+	Relation     string              `json:"Relation Name"`
+	Condition    string              `json:"Index Cond"`
+	Rows         float64             `json:"Actual Rows"`
+	Loops        float64             `json:"Actual Loops"`
+	Removed      float64             `json:"Rows Removed by Filter"`
+	IndexRemoved float64             `json:"Rows Removed by Index Recheck"`
+	SortSpace    string              `json:"Sort Space Type"`
+	Plans        []reportsBudgetPlan `json:"Plans"`
+}
+
+func reportsBudgetPlanViolations(statement tracedStatement, plan reportsBudgetPlan) []string {
+	budget := 0
+	for _, match := range reportsBudgetLimit.FindAllStringSubmatch(statement.query, -1) {
+		value := match[2]
+		if match[1] != "" {
+			position, err := strconv.Atoi(match[1])
+			if err != nil || position < 1 || position > len(statement.args) {
+				continue
+			}
+			value = fmt.Sprint(statement.args[position-1])
+		}
+		limit, err := strconv.Atoi(value)
+		if err == nil && limit > budget {
+			budget = limit
+		}
+	}
+	if budget == 0 {
+		budget = 1001
+	}
+	if budget > 100001 {
+		return []string{fmt.Sprintf("source request exceeds existing 100001-row owner budget: %d", budget)}
+	}
+	violations := []string{}
+	var inspect func(reportsBudgetPlan)
+	inspect = func(node reportsBudgetPlan) {
+		if slices.Contains(reportsBudgetHotRelations, node.Relation) && node.Loops > 0 {
+			conditions, indexed := reportsBudgetConditions(node, node.Relation)
+			tenantKey := strings.Contains(conditions, "organization_id =")
+			pointKey := reportsBudgetPointKey.MatchString(conditions)
+			windowKey := false
+			for _, column := range []string{"recorded_at", "landed_at", "period", "started_at", "created_at", "native_updated_at", "updated_at", "observed_at"} {
+				windowKey = windowKey || (strings.Contains(conditions, column+" >=") && strings.Contains(conditions, column+" <"))
+			}
+			if strings.Contains(node.Node, "Seq Scan") || !indexed || !tenantKey || (!pointKey && !windowKey) {
+				violations = append(violations, fmt.Sprintf("%s uses %s without an indexed tenant and item/cursor or paired window key: %s", node.Relation, node.Node, conditions))
+			}
+			visits := (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+			if visits > float64(budget) {
+				violations = append(violations, fmt.Sprintf("%s visits %.0f rows above the request source budget %d", node.Relation, visits, budget))
+			}
+		}
+		if node.SortSpace == "Disk" {
+			violations = append(violations, "report source ordering spilled to disk")
+		}
+		for _, child := range node.Plans {
+			inspect(child)
+		}
+	}
+	inspect(plan)
+	return violations
+}
+
+func reportsBudgetConditions(node reportsBudgetPlan, relation string) (string, bool) {
+	if node.Relation != "" && node.Relation != relation {
+		return "", false
+	}
+	conditions, indexed := node.Condition, node.Index != ""
+	for _, child := range node.Plans {
+		value, childIndexed := reportsBudgetConditions(child, relation)
+		conditions += " " + value
+		indexed = indexed || childIndexed
+	}
+	return conditions, indexed
+}
+
+func reportsBudgetReadStatement(query string) bool {
+	query = strings.TrimSpace(query)
+	for strings.HasPrefix(query, "--") {
+		_, rest, found := strings.Cut(query, "\n")
+		if !found {
+			return false
+		}
+		query = strings.TrimSpace(rest)
+	}
+	query = strings.ToUpper(query)
+	return strings.HasPrefix(query, "SELECT") || strings.HasPrefix(query, "WITH")
 }

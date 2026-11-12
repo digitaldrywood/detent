@@ -41,3 +41,32 @@ func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstor
 	}
 	return nil
 }
+
+func (s *Service) checkRunnerAdmission(ctx context.Context, writer billingstore.Writer, now time.Time, counted int64, metrics ...string) error {
+	plans := s.database.plans()
+	if plans == nil {
+		return nil
+	}
+	populations, ok := writer.(billingstore.PopulationReader)
+	if !ok {
+		return nil
+	}
+	entitlement, err := s.database.hostedEntitlementRecord(ctx, writer, now)
+	if err != nil {
+		return err
+	}
+	for _, metric := range metrics {
+		limit, limited := entitlement.Allowances[metric]
+		if !limited {
+			continue
+		}
+		used, known, err := populations.BillingPopulation(ctx, metric, now, time.Duration(plans.ConnectedSeconds)*time.Second)
+		if err != nil {
+			return err
+		}
+		if before := used - counted; known && before >= limit {
+			return &hostedLimitError{Resource: metric, Allowance: limit, Consumption: before}
+		}
+	}
+	return nil
+}

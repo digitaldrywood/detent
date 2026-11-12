@@ -2,13 +2,9 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -200,37 +196,4 @@ func (s *Service) readWorkItemDiff(ctx context.Context, scope nativeScope, item,
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	return s.readWorkItemDiffTenant(ctx, scope, item, source)
-}
-
-// hubTransact runs fn in one transaction on the hub pool and commits when it
-// returns nil. Only one transaction may be open at a time on that pool, so fn
-// must never start another.
-func (s *Service) hubTransact(ctx context.Context, fn func(tx *sql.Tx, now time.Time) error) (resultErr error) {
-	contentMutation(ctx, true)
-	defer contentMutation(ctx, false)
-	_, err := prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) { return struct{}{}, s.commitHubTransaction(ctx, fn) })
-	return err
-}
-
-func (s *Service) commitHubTransaction(ctx context.Context, fn func(tx *sql.Tx, now time.Time) error) (resultErr error) {
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin hub transaction: %w", err)
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	now, err := s.database.currentTime()
-	if err != nil {
-		return err
-	}
-	if err := fn(tx, now); err != nil {
-		return err
-	}
-	if err := s.database.commit(ctx, tx); err != nil {
-		return fmt.Errorf("commit hub transaction: %w", err)
-	}
-	return nil
 }

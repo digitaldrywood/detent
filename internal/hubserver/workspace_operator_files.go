@@ -19,7 +19,7 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 	if err != nil {
 		return nil, err
 	}
-	record, err := w.readWorkspaceForActor(ctx, s.database.reader, scope, request.WorkspaceID)
+	record, err := w.readOperatorWorkspaceForActor(ctx, scope, request.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -57,14 +57,14 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 		principal.subject = connection.subject
 		principal.supportReason = scope.credential.Hosted.SupportReason
 	}
-	connection.actor = s.relayActor(ctx, connection, principal)
+	connection.actor = s.relayActor(ctx, scope.organization, connection, principal)
 	if err := w.openRelayAudit(ctx, record, connection, principal); err != nil {
 		return nil, err
 	}
 	defer func() {
 		auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
 		defer cancel()
-		w.closeRelayAudit(auditCtx, connection, "person_closed")
+		w.closeRelayAudit(auditCtx, record, connection, "person_closed")
 	}()
 	if err := w.relay.attachPerson(connection); err != nil {
 		return nil, errWorkspaceOperationUnavailable
@@ -106,7 +106,7 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 		if err := w.revalidatePersonLocally(ctx, record, connection); err != nil {
 			return result("unavailable", workspacesession.CodeStaleExecution, nil)
 		}
-		live, err := readWorkspaceByID(ctx, s.database.reader, record.ID)
+		live, err := w.readOperatorWorkspaceForActor(ctx, scope, record.ID)
 		if err != nil || live.LeaseID != record.LeaseID || live.FencingToken != record.FencingToken || live.RunnerID != record.RunnerID || live.AttemptID != record.AttemptID || live.SubjectWorkItemID != record.SubjectWorkItemID || !w.channelPermitted(live, workspacesession.ChannelFiles) {
 			return result("unavailable", workspacesession.CodeStaleExecution, nil)
 		}

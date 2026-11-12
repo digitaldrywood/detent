@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -121,6 +122,169 @@ func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+
+	type boardScope struct {
+		organization tracker.OrganizationID
+		project      tracker.ProjectID
+	}
+	readHeads := func(t *testing.T) map[boardScope]viewstore.BoardSequence {
+		t.Helper()
+		heads := make(map[boardScope]viewstore.BoardSequence)
+		for _, organization := range organizations {
+			if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
+					head, err := r.BoardSequence(t.Context(), project)
+					if err != nil {
+						return err
+					}
+					heads[boardScope{organization, project}] = head
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return heads
+	}
+	abort := errors.New("abort policy reset")
+	for _, organization := range organizations {
+		for _, test := range []struct {
+			name                 string
+			project, review      bool
+			source, otherProject bool
+			want                 error
+		}{
+			{name: "project reset", project: true},
+			{name: "review reset", review: true},
+			{name: "combined reset then source", project: true, review: true, source: true},
+			{name: "two project resets", project: true, otherProject: true},
+			{name: "same policy replay"},
+			{name: "stale policy CAS", project: true, want: corestore.ErrRevisionConflict},
+			{name: "rolled back combined reset", project: true, review: true, want: abort},
+		} {
+			t.Run(string(organization)+"/"+test.name, func(t *testing.T) {
+				before := readHeads(t)
+				key := boardScope{organization, "prj_first"}
+				var currentPolicy policystore.Revision
+				var currentReview eventstore.ReviewPolicy
+				err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					var err error
+					currentPolicy, err = w.ProjectPolicy(t.Context(), key.project)
+					if err != nil {
+						return err
+					}
+					currentReview, err = w.ReviewPolicy(t.Context(), key.project)
+					if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+						return err
+					}
+					selected := currentPolicy
+					if test.project {
+						selected = policyTestRevision(organization, key.project, "reset_"+strings.ReplaceAll(test.name, " ", "_"), now)
+						expected := currentPolicy.PolicyID
+						if errors.Is(test.want, corestore.ErrRevisionConflict) {
+							expected = "stale"
+						}
+						if err := w.ApproveProjectPolicy(t.Context(), selected, expected); err != nil {
+							return err
+						}
+					}
+					if test.review {
+						next := eventstore.ReviewPolicy{
+							OrganizationID: organization, ProjectID: key.project, PolicyRevisionID: selected.PolicyID,
+							ReviewPolicyID: "review_"+strings.ReplaceAll(test.name, " ", "_"), Revision: currentReview.Revision+1,
+							UpdatedBy: "admin", UpdatedAt: now, PayloadObjectKey: selected.PayloadObjectKey,
+							PayloadSHA256: selected.PayloadSHA256, PayloadBytes: selected.PayloadBytes, PayloadContentBytes: selected.PayloadContentBytes,
+						}
+						if err := w.SetReviewPolicy(t.Context(), next, currentReview.ReviewPolicyID); err != nil {
+							return err
+						}
+					}
+					if !test.project && !test.review {
+						if err := w.ApproveProjectPolicy(t.Context(), currentPolicy, currentPolicy.PolicyID); err != nil {
+							return err
+						}
+						if err := w.SetReviewPolicy(t.Context(), currentReview, currentReview.ReviewPolicyID); err != nil {
+							return err
+						}
+					}
+					if test.otherProject {
+						next := policyTestRevision(organization, "prj_second", "second_project_policy", now)
+						if err := w.ApproveProjectPolicy(t.Context(), next, ""); err != nil {
+							return err
+						}
+					}
+					if test.source {
+						item, err := w.WorkItem(t.Context(), key.project, "wi_first_1")
+						if err != nil {
+							return err
+						}
+						item.Title = "Current policy source"
+						if _, err := w.UpdateWorkItem(t.Context(), item); err != nil {
+							return err
+						}
+					}
+					head, err := w.BoardSequence(t.Context(), key.project)
+					if err != nil {
+						return err
+					}
+					if head != before[key] {
+						t.Fatalf("policy notice allocated before callback completed: head=%+v before=%+v", head, before[key])
+					}
+					return test.want
+				})
+				if !errors.Is(err, test.want) {
+					t.Fatalf("policy reset error=%v want=%v", err, test.want)
+				}
+				after := readHeads(t)
+				for scope, head := range before {
+					changed := test.want == nil && (test.project || test.review) && scope.organization == organization && (scope.project == key.project || test.otherProject)
+					if !changed {
+						if after[scope] != head {
+							t.Errorf("unrelated/no-op/failed policy reset changed %s/%s head: before=%+v after=%+v", scope.organization, scope.project, head, after[scope])
+						}
+						continue
+					}
+					advance := int64(1)
+					if test.source && scope == key {
+						advance++
+					}
+					if after[scope].Sequence != head.Sequence+advance || after[scope].ReplayFloor != head.Sequence+1 {
+						t.Fatalf("policy reset did not retain exact committed reset sequence for %s/%s: before=%+v after=%+v", scope.organization, scope.project, head, after[scope])
+					}
+					if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+						deltas, err := r.BoardDeltas(t.Context(), scope.project, head.Sequence, 3)
+						if err != nil {
+							return err
+						}
+						if len(deltas) != int(advance) || deltas[0].Sequence != head.Sequence+1 || deltas[0].Topic != "board" || deltas[0].Kind != "invalidate" || deltas[0].EntityID != string(scope.project) || deltas[0].Previous != nil || deltas[0].Current != nil {
+							t.Fatalf("policy reset markers=%+v", deltas)
+						}
+						if advance == 2 && (deltas[1].Topic != "work_item" || deltas[1].EntityID != "wi_first_1" || deltas[1].Sequence != after[scope].Sequence) {
+							t.Fatalf("policy reset reordered the later source event: %+v", deltas)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.want != nil {
+					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+						stored, err := r.ProjectPolicy(t.Context(), key.project)
+						if err != nil {
+							return err
+						}
+						storedReview, err := r.ReviewPolicy(t.Context(), key.project)
+						if err == nil && (!policyRevisionEqual(stored, currentPolicy) || !reviewPolicyEqual(storedReview, currentReview)) {
+							t.Error("failed policy reset committed policy state")
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+		}
 	}
 
 }

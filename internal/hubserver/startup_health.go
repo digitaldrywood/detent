@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -38,7 +37,7 @@ type startupHealth struct {
 	config   Config
 	service  atomic.Pointer[Service]
 	auth     atomic.Pointer[Service]
-	database atomic.Pointer[sql.DB]
+	schema   atomic.Pointer[MigrationHealth]
 	running  atomic.Bool
 }
 
@@ -65,24 +64,7 @@ func (s *startupHealth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	response := startupHealthResponse{MigrationHealth: MigrationHealth{MigrationsRunning: s.running.Load()}, HubSchemaApplicable: true, Status: "unavailable", Version: s.config.Version, Commit: s.config.Commit}
-	if db := s.database.Load(); db != nil {
-		var exists bool
-		err = db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='hub_schema_version')").Scan(&exists)
-		if err == nil && exists {
-			response.SchemaVersion, err = currentSchemaVersion(r.Context(), db)
-			if err == nil {
-				response.SchemaFingerprint, err = currentSchemaFingerprint(r.Context(), db)
-			}
-		}
-		if err != nil {
-			http.Error(w, "Hub schema unavailable", http.StatusServiceUnavailable)
-			return
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_ = json.NewEncoder(w).Encode(response)
+	s.writeUnavailable(w)
 }
 
 func (s *startupHealth) serveStandaloneHealth(w http.ResponseWriter, r *http.Request) {
@@ -102,27 +84,15 @@ func (s *startupHealth) serveStandaloneHealth(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-	response := startupHealthResponse{MigrationHealth: MigrationHealth{MigrationsRunning: s.running.Load()}, HubSchemaApplicable: true, Status: "unavailable", Version: s.config.Version, Commit: s.config.Commit}
-	if db := s.database.Load(); db != nil {
-		var exists bool
-		if err := db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='hub_schema_version')").Scan(&exists); err != nil {
-			http.Error(w, "Hub schema unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if exists {
-			version, err := currentSchemaVersion(r.Context(), db)
-			if err != nil {
-				http.Error(w, "Hub schema unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			response.SchemaVersion = version
-			response.SchemaFingerprint, err = currentSchemaFingerprint(r.Context(), db)
-			if err != nil {
-				http.Error(w, "Hub schema unavailable", http.StatusServiceUnavailable)
-				return
-			}
-		}
+	s.writeUnavailable(w)
+}
+
+func (s *startupHealth) writeUnavailable(w http.ResponseWriter) {
+	schema := MigrationHealth{MigrationsRunning: s.running.Load()}
+	if verified := s.schema.Load(); verified != nil {
+		schema = *verified
 	}
+	response := startupHealthResponse{MigrationHealth: schema, HubSchemaApplicable: true, Status: "unavailable", Version: s.config.Version, Commit: s.config.Commit}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)
 	_ = json.NewEncoder(w).Encode(response)

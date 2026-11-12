@@ -118,6 +118,45 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 			}
 		})
 	}
+	for _, test := range []struct {
+		name, field, value string
+		want               int
+		rejected           bool
+	}{
+		{name: "numeric urgent", field: "priority", value: "0", want: tracker.QueuePriorityUrgent},
+		{name: "numeric high", field: "priority", value: "1", want: tracker.QueuePriorityHigh},
+		{name: "numeric normal", field: "priority", value: "2", want: tracker.QueuePriorityNormal},
+		{name: "numeric low", field: "priority", value: "3", want: tracker.QueuePriorityLow},
+		{name: "operator urgent", field: "Priority", value: "Urgent", want: tracker.QueuePriorityUrgent},
+		{name: "operator high", field: "Priority", value: "High", want: tracker.QueuePriorityHigh},
+		{name: "operator normal", field: "Priority", value: "Normal", want: tracker.QueuePriorityNormal},
+		{name: "operator low", field: "Priority", value: "Low", want: tracker.QueuePriorityLow},
+		{name: "normalized high", field: "priority", value: " HIGH ", want: tracker.QueuePriorityHigh},
+		{name: "unknown name", field: "Priority", value: "highest", rejected: true},
+		{name: "negative level", field: "priority", value: "-1", rejected: true},
+		{name: "outside levels", field: "priority", value: "4", rejected: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before, err := adminNative.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			updateErr := ownerConnector.SetField(t.Context(), issue.ID, test.field, test.value)
+			if (updateErr != nil) != test.rejected {
+				t.Fatalf("priority rejection=%t: %v", test.rejected, updateErr)
+			}
+			after, err := adminNative.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if test.rejected {
+				if err != nil || after.Revision != before.Revision || after.Priority == nil || before.Priority == nil || *after.Priority != *before.Priority {
+					t.Fatalf("rejected priority changed the item: before=%+v after=%+v error=%v", before, after, err)
+				}
+				return
+			}
+			if err != nil || after.Priority == nil || *after.Priority != test.want || after.Revision != before.Revision+1 {
+				t.Fatalf("priority update = %+v, %v; want priority %d at revision %d", after, err, test.want, before.Revision+1)
+			}
+		})
+	}
 	blocker, err := ownerConnector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Blocker", Body: "blocking" + issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)

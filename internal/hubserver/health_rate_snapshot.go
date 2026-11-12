@@ -11,68 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readHealthRates(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time, runners []healthRunnerState, snapshot *healthSnapshot) error {
-	for _, project := range snapshot.Projects {
-		p := healthRateProject{ID: project.ID, Candidates: project.Candidates}
-		scope := nativeScope{organization: organization, project: tracker.ProjectID(p.ID)}
-		window := operatortool.AnalyticsWindow{From: now.Add(-healthBaselineWindow - healthLongWindow), To: now}
-		states, issues, partial, err := readAnalyticsResidenceHistory(withAnalyticsLiveIssues(ctx), q, scope, window)
-		if err != nil {
-			return err
-		}
-		p.ResidencePartial = partial
-		for _, issue := range issues {
-			p.Timelines = append(p.Timelines, buildAnalyticsResidenceTimeline(issue, states, now))
-		}
-		p.Attempts, err = readHealthRateAttempts(ctx, q, scope, window)
-		if err != nil {
-			return err
-		}
-		if err := readHealthProductivityAttempts(ctx, q, scope, p.Attempts); err != nil {
-			return err
-		}
-		landings, err := readHealthLandings(ctx, q, scope, window)
-		if err != nil {
-			return err
-		}
-		if len(landings) > maxAnalyticsPopulation {
-			return errHealthReadLimit
-		}
-		canonical := map[string]bool{}
-		for _, l := range landings {
-			key := l.ChangeID + "\x00" + l.Landing.VersionID + "\x00" + l.Landing.MergeSHA
-			canonical[key] = true
-			p.Attempts = append(p.Attempts, healthRateAttempt{ID: l.ChangeID, Item: string(l.WorkItemID), Landing: true, Landed: true, LandingAt: l.Landing.LandedAt})
-		}
-		for i := range p.Attempts {
-			if canonical[p.Attempts[i].LandingKey] {
-				p.Attempts[i].Landing, p.Attempts[i].Landed = false, false
-			}
-		}
-		p.Costs, err = readHealthItemCosts(ctx, q, scope, now)
-		if err != nil {
-			return err
-		}
-		p.BaselineCosts, err = readHealthItemCosts(ctx, q, scope, now.Add(-healthLongWindow))
-		if err != nil {
-			return err
-		}
-		for _, r := range runners {
-			if r.Routing.State == "active" {
-				for _, id := range r.Projects {
-					if id == p.ID {
-						p.Runners = append(p.Runners, r.healthRunner)
-						break
-					}
-				}
-			}
-		}
-		snapshot.BaselineUnavailable = append(snapshot.BaselineUnavailable, healthBaselineGaps(p, buildHealthRateBaseline(now, p))...)
-		snapshot.Rates = append(snapshot.Rates, p)
-	}
-	return nil
-}
-
 func readHealthLandings(ctx context.Context, q nativeQueryer, scope nativeScope, window operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
 	rows, err := q.QueryContext(ctx, `SELECT id,work_item_id,record_json,legacy FROM (
 	 SELECT id,work_item_id,record_json,0 AS legacy FROM (SELECT id,work_item_id,record_json FROM change_requests INDEXED BY change_requests_analytics_landed WHERE organization_id=? AND project_id=? AND landed_at>=? AND landed_at<? ORDER BY landed_at,id LIMIT ?)

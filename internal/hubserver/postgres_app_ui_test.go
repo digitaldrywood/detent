@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,9 +20,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -33,15 +37,17 @@ func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
+	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Workspace = &WorkspaceConfig{Enabled: true}
+	cfg.Conversation = &ConversationConfig{Enabled: true, Model: "configured-model", ReasoningEffort: "medium"}
 	key := hostedSharedKey(31)
 	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	store, err := openDatabase(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedStartupOrganization(t, store.postgres, "org_startup")
+	seedStartupOrganization(t, store.postgres, "org_startup", cfg.Hosted)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	if err := store.postgres.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: "credential_viewer", Name: "Example viewer", Hash: apikey.HashToken("example_viewer_token"), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: "user_viewer", MembershipID: "membership_viewer", ProjectAccess: "selected", Kind: "personal"}); err != nil {
@@ -65,6 +71,50 @@ func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	cfg.Clock = func() time.Time { return now }
+	seedStartupOrganization(t, store.postgres, "org_catalog_other")
+	if err := store.postgres.WriteTenant(t.Context(), "org_catalog_other", corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_catalog_other", ID: "project_granted", Name: "Other tenant", Slug: "other-tenant", Profile: "native"}, States: nativeFixtureStates()})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedRunner := func(organization tracker.OrganizationID, project tracker.ProjectID, id string, report providercapacity.Report) {
+		t.Helper()
+		if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: id, Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: id, Hash: apikey.HashToken(string(organization) + "/" + id), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: new(now.Add(time.Hour)), ProjectAccess: "selected", Kind: "service"}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: id, ProjectID: project}); err != nil {
+				return err
+			}
+			enrollment := runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_" + id, RunnerID: id, MachineID: tracker.MachineID(id), TokenHash: apikey.HashToken("enrollment/" + string(organization) + "/" + id), Scope: "projects", Operations: []string{"read"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "test_hub_admin"}
+			if err := w.CreateRunnerEnrollment(t.Context(), enrollment); err != nil {
+				return err
+			}
+			if err := w.RedeemRunnerEnrollment(t.Context(), enrollment.ID, id, tracker.MachineID(id), now); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: id, MachineID: tracker.MachineID(id), TokenID: id, EnrollmentID: enrollment.ID, Scope: "projects", Operations: enrollment.Operations, CapacityLimit: 1, ReportedCapacity: 1, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
+				return err
+			}
+			return w.ReplaceRunnerProviderReports(t.Context(), id, []providercapacity.Report{report})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report := providercapacity.Report{Provider: "example", Backend: "example", AccountAlias: "example", Billing: "subscription", MaxConcurrent: 1, Availability: "exhausted", ObservedAt: now, Models: []string{"z-model", "a-model"}, ModelDetails: []providercapacity.ModelDetail{{ID: "z-model", Label: "First model", Provider: "model-provider", ReasoningEfforts: []string{"medium", "max"}, DefaultReasoningEffort: "max", Default: true, Legacy: true}}}
+	seedRunner("org_startup", "project_granted", "runner_a", report)
+	report.Models = []string{"z-model", "b-model"}
+	report.ModelDetails = []providercapacity.ModelDetail{{ID: "z-model", Label: "Later duplicate", ReasoningEfforts: []string{"low"}}}
+	seedRunner("org_startup", "project_granted", "runner_b", report)
+	report.Models, report.ModelDetails = []string{"hidden-model"}, nil
+	seedRunner("org_startup", "project_hidden", "runner_hidden", report)
+	report.Models = []string{"other-tenant-model"}
+	seedRunner("org_catalog_other", "project_granted", "runner_a", report)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +127,8 @@ func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if service.database.db != nil {
-		t.Fatal("PostgreSQL browser bootstrap retained the SQLite database")
+	if service.database.postgres == nil {
+		t.Fatal("browser bootstrap requires PostgreSQL")
 	}
 
 	target := "/organizations/org_startup/app/bootstrap"
@@ -123,11 +173,29 @@ func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
 	if payload.Organization.ID != "org_startup" || payload.Organization.Name != "Example" || payload.Organization.Slug != "example-startup" || payload.Actor.Role != "viewer" {
 		t.Fatalf("PostgreSQL app bootstrap identity = %+v", payload)
 	}
-	if payload.Feature.Workspaces {
-		t.Fatal("PostgreSQL app bootstrap advertised unavailable workspace storage")
+	if !payload.Feature.Workspaces {
+		t.Fatal("PostgreSQL app bootstrap hid configured workspace storage")
 	}
 	if len(payload.Projects) != 1 || payload.Projects[0].ID != "project_granted" || payload.Projects[0].CanWrite || payload.Projects[0].CanManageRunners {
 		t.Fatalf("PostgreSQL app bootstrap project access = %+v", payload.Projects)
+	}
+	modelIDs := make([]string, 0, len(payload.Preferences.Models))
+	for _, choice := range payload.Preferences.Models {
+		modelIDs = append(modelIDs, choice.ID)
+	}
+	if !slices.Equal(modelIDs, []string{"auto", "z-model", "a-model", "b-model", "configured-model"}) {
+		t.Fatalf("authorized bootstrap model order = %v", modelIDs)
+	}
+	choice := payload.Preferences.Models[1]
+	if choice.Label != "First model" || choice.Provider != "model-provider" || !choice.BackendDefault || !choice.Legacy || choice.DefaultEffort != "max" || !slices.Equal(choice.Efforts, []string{"medium", "max"}) || choice.Default || !payload.Preferences.Models[4].Default {
+		t.Fatalf("bootstrap model details/defaults = %+v", payload.Preferences.Models)
+	}
+	other, err := service.appBootstrapPreferences(t.Context(), "org_catalog_other", []appBootstrapProject{{ID: "project_granted"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(other.Models) != 3 || other.Models[1].ID != "other-tenant-model" || other.Models[2].ID != "configured-model" {
+		t.Fatalf("second tenant catalog = %+v", other.Models)
 	}
 	session, err := service.accessWebSession(t.Context(), claims.Binding, time.Now())
 	if err != nil {
@@ -156,6 +224,23 @@ func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
 	if apiResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("unsigned PostgreSQL API path status = %d, want %d", apiResponse.Code, http.StatusUnauthorized)
 	}
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.DeleteAccessProjectGrant(t.Context(), "user_viewer", "project_granted"); err != nil {
+			return err
+		}
+		return w.DeleteAccessTokenGrant(t.Context(), "credential_viewer", "project_granted")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = serveSigned(target, "")
+	requireNativeStatus(t, response, http.StatusOK)
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Projects) != 0 || len(payload.Preferences.Models) != 2 || payload.Preferences.Models[0].ID != "auto" || payload.Preferences.Models[1].ID != "configured-model" {
+		t.Fatalf("bootstrap after grant revocation = projects:%+v models:%+v", payload.Projects, payload.Preferences.Models)
+	}
+
 }
 
 type healthAdmissionRepository struct {

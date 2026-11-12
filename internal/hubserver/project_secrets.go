@@ -56,21 +56,6 @@ func readSecretRows(ctx context.Context, db nativeQueryer) ([]projectSecretRow, 
 	return result, rows.Err()
 }
 
-func (d *database) checkProjectSecretKeys(ctx context.Context, keys *hubsecrets.Keyring) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	rows, err := readSecretRows(ctx, d.reader)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
-		if err := keys.Check(row.envelope, secretAAD(row.organization, row.project, row.kind)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *Service) registerProjectSecretRoutes(e *echo.Echo) {
 	read := s.requireNativeScope(apiScopeOperator, apiScopeAdmin)
 	manage := func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -100,23 +85,10 @@ func canManageProjectSecrets(credential apiCredential) bool {
 }
 
 func (s *Service) projectSecretMetadata(c echo.Context) error {
-	if s.config.AccessRepository != nil {
-		if c.Param("kind") != flySpritesToken {
-			return s.nativeAPIError(c, nativeNotFound())
-		}
-		status, err := s.readAccessSecretStatus(c.Request().Context(), nativeRequestScope(c))
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, status)
-	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
 	if c.Param("kind") != flySpritesToken {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	scope := nativeRequestScope(c)
-	status, err := readSecretStatus(ctx, s.database.reader, scope)
+	status, err := s.readAccessSecretStatus(c.Request().Context(), nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -161,12 +133,9 @@ func secretAudit(ctx context.Context, exec hostedExecer, organization, project, 
 }
 
 func (s *Service) auditSecretUse(ctx context.Context, scope nativeScope, version int) error {
-	if s.config.AccessRepository != nil {
-		return s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
-			return w.RecordAccessSecretAudit(ctx, s.accessSecretAudit(scope, "use", version))
-		})
-	}
-	return secretAudit(ctx, s.database.db, string(scope.organization), string(scope.project), secretActor(scope), flySpritesToken, "use", version, formatHubTime(s.config.now()))
+	return s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
+		return w.RecordAccessSecretAudit(ctx, s.accessSecretAudit(scope, "use", version))
+	})
 }
 
 func (s *Service) setProjectSecret(c echo.Context) error {
@@ -191,94 +160,17 @@ func (s *Service) setProjectSecret(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The Hub operator must configure a secret master key")
 	}
 	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	if s.config.AccessRepository != nil {
-		return s.setAccessProjectSecret(c, scope, token)
-	}
-	// Recheck current membership before making any provider call; the same
-	// authority is rechecked again in the write transaction after validation.
-	if err := s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
-		return secretAudit(ctx, tx, string(scope.organization), string(scope.project), secretActor(scope), flySpritesToken, "use", s.config.SecretKeys.Version(), formatHubTime(s.config.now()))
-	}); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	slug, err := validateSpritesToken(ctx, s.config.SpritesHTTPClient, token)
-	if err != nil {
-		return s.hostedJSONError(c, http.StatusUnprocessableEntity, err.Error())
-	}
-	envelope, err := s.config.SecretKeys.Seal(token, secretAAD(string(scope.organization), string(scope.project), flySpritesToken))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	clear(token)
-	var result projectSecretStatus
-	err = s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
-		old, err := readSecretStatus(ctx, tx, scope)
-		if err != nil {
-			return err
-		}
-		event := "set"
-		if old.Present {
-			event = "replace"
-		}
-		now := formatHubTime(s.config.now())
-		if scope.project == "" {
-			_, err = tx.ExecContext(ctx, `INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,kind) DO UPDATE SET organization_slug=excluded.organization_slug,ciphertext=excluded.ciphertext,nonce=excluded.nonce,wrapped_data_key=excluded.wrapped_data_key,master_key_version=excluded.master_key_version,updated_at=excluded.updated_at`, scope.organization, flySpritesToken, slug, envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, now)
-		} else {
-			_, err = tx.ExecContext(ctx, `INSERT INTO project_secrets(organization_id, project_id, kind, organization_slug, ciphertext, nonce, wrapped_data_key, master_key_version, updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id, project_id, kind) DO UPDATE SET organization_slug=excluded.organization_slug, ciphertext=excluded.ciphertext, nonce=excluded.nonce, wrapped_data_key=excluded.wrapped_data_key, master_key_version=excluded.master_key_version, updated_at=excluded.updated_at`, scope.organization, scope.project, flySpritesToken, slug, envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, now)
-		}
-		if err != nil {
-			return err
-		}
-		if err := secretAudit(ctx, tx, string(scope.organization), string(scope.project), secretActor(scope), flySpritesToken, event, envelope.Version, now); err != nil {
-			return err
-		}
-		result, err = readSecretStatus(ctx, tx, scope)
-		return err
-	})
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, result)
+	return s.setAccessProjectSecret(c, scope, token)
 }
 
 func (s *Service) removeProjectSecret(c echo.Context) error {
 	if c.Param("kind") != flySpritesToken {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	scope, ctx := nativeRequestScope(c), c.Request().Context()
-	if s.config.AccessRepository != nil {
-		if err := s.removeAccessProjectSecret(ctx, scope); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.NoContent(http.StatusNoContent)
-	}
-	err := s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
-		return removeProjectSecretInTx(ctx, tx, scope, s.config.now())
-	})
-	if err != nil {
+	if err := s.removeAccessProjectSecret(c.Request().Context(), nativeRequestScope(c)); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, projectSecretStatus{Kind: flySpritesToken})
-}
-
-func (s *Service) secretMutation(ctx context.Context, scope nativeScope, operation func(*sql.Tx) error) (err error) {
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if rollback := tx.Rollback(); rollback != nil && !errors.Is(rollback, sql.ErrTxDone) {
-			err = errors.Join(err, rollback)
-		}
-	}()
-	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-		return err
-	}
-	if err := operation(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return c.NoContent(http.StatusNoContent)
 }
 
 func removeProjectSecretInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {

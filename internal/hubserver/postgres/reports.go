@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -91,12 +93,16 @@ func (s *session) ReadOverviewFacts(ctx context.Context, query reportstore.Overv
 		}
 		projects[i] = string(project)
 	}
+	activityIDs := make([]string, len(query.ActivityWorkItems))
+	for i, id := range query.ActivityWorkItems {
+		activityIDs[i] = string(id)
+	}
 	statement := `WITH candidates AS (
-	 SELECT i.organization_id,i.id,i.project_id,i.native_id,i.title,i.created_at,i.workflow_state_name,i.actor_kind,i.actor_principal_id,i.issue_type,i.priority
+	 SELECT i.organization_id,i.id,i.project_id,i.native_id,i.title,i.created_at,i.workflow_state_name,i.actor_kind,i.actor_principal_id,i.issue_type,i.priority,i.revision,i.doctor_identity_revision
  FROM issues i
  WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[])
    AND ($3='' OR i.actor_principal_id=$3)
-   AND (i.created_at >= $4 AND i.created_at < $5 OR EXISTS (
+   AND (i.created_at >= $4 AND i.created_at < $5 OR i.native_id=ANY($15::text[]) OR EXISTS (
      SELECT 1 FROM collaboration_events e
      JOIN project_workflow_states ws ON ws.organization_id=e.organization_id AND ws.project_id=e.project_id AND ws.name=e.to_state AND ws.terminal
      WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id
@@ -125,9 +131,20 @@ func (s *session) ReadOverviewFacts(ctx context.Context, query reportstore.Overv
  AND (coalesce(cardinality($14::text[]),0)=0 OR EXISTS (SELECT 1 FROM collaboration_events e JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id WHERE e.organization_id=i.organization_id AND e.work_item_id=i.native_id AND e.recorded_at >= $4 AND e.recorded_at < $5 AND f.role=ANY($14::text[])))
  ORDER BY i.created_at,i.project_id,i.native_id LIMIT $12
 )
-SELECT i.project_id,i.native_id,i.title,i.created_at,coalesce(i.workflow_state_name,''),coalesce(i.actor_kind,''),coalesce(i.actor_principal_id,''),
- completion.recorded_at,coalesce(completion.to_state,''),coalesce(completion.actor_kind,''),coalesce(completion.actor_principal_id,''),
- previous_completion.recorded_at,coalesce(previous_completion.to_state,''),coalesce(previous_completion.actor_kind,''),coalesce(previous_completion.actor_principal_id,''),
+SELECT i.project_id,i.native_id,i.title,i.created_at,coalesce(i.workflow_state_name,''),
+ coalesce(i.actor_kind IN ('machine','automation','system','integration'),false) OR coalesce(i.doctor_identity_revision=i.revision,false) AND (coalesce(filing.actor_envelope_known,false) OR coalesce(filer_page.revision=i.revision,false) OR EXISTS(SELECT 1 FROM doctor_proposal_identities origin WHERE origin.organization_id=i.organization_id AND origin.project_id=i.project_id AND origin.work_item_id=i.native_id AND origin.kind='fingerprint' AND origin.source_revision=i.revision)),
+ coalesce(i.actor_kind IN ('machine','automation','system','integration'),false) OR coalesce(i.doctor_identity_revision=i.revision,false),coalesce(filing.id,''),
+ CASE WHEN i.actor_kind IN ('machine','automation','system','integration') OR EXISTS(SELECT 1 FROM doctor_proposal_identities origin WHERE origin.organization_id=i.organization_id AND origin.project_id=i.project_id AND origin.work_item_id=i.native_id AND origin.kind='fingerprint' AND origin.source_revision=i.revision AND i.doctor_identity_revision=i.revision) THEN 'automation'
+ WHEN i.actor_kind IN ('agent','runner') OR coalesce(CASE WHEN filing.actor_envelope_known THEN filing.actor_agent ELSE filer_page.actor_agent END,'')<>'' THEN 'agents'
+ WHEN i.actor_kind='human' THEN 'people' ELSE 'unknown' END,coalesce(i.actor_principal_id,''),
+ completion.recorded_at,coalesce(completion.to_state,''),coalesce(completion.actor_envelope_known,false),coalesce(completion.id,''),
+ CASE WHEN completion.actor_envelope_known AND completion.actor_kind='human' AND completion.actor_agent='' THEN 'people' WHEN final_runner.runner_id IS NOT NULL THEN 'runner' ELSE 'unknown' END,
+ CASE WHEN completion.actor_envelope_known AND completion.actor_kind='human' AND completion.actor_agent='' THEN completion.actor_principal_id ELSE coalesce(final_runner.runner_id,'') END,
+ CASE WHEN completion.actor_envelope_known AND completion.actor_kind='human' AND completion.actor_agent='' THEN completion.actor_display_name ELSE coalesce(final_runner.display_name,'') END,
+ previous_completion.recorded_at,coalesce(previous_completion.to_state,''),coalesce(previous_completion.actor_envelope_known,false),coalesce(previous_completion.id,''),
+ CASE WHEN previous_completion.actor_envelope_known AND previous_completion.actor_kind='human' AND previous_completion.actor_agent='' THEN 'people' WHEN previous_final_runner.runner_id IS NOT NULL THEN 'runner' ELSE 'unknown' END,
+ CASE WHEN previous_completion.actor_envelope_known AND previous_completion.actor_kind='human' AND previous_completion.actor_agent='' THEN previous_completion.actor_principal_id ELSE coalesce(previous_final_runner.runner_id,'') END,
+ CASE WHEN previous_completion.actor_envelope_known AND previous_completion.actor_kind='human' AND previous_completion.actor_agent='' THEN previous_completion.actor_display_name ELSE coalesce(previous_final_runner.display_name,'') END,
  EXISTS(SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=(SELECT id FROM issues WHERE organization_id=i.organization_id AND project_id=i.project_id AND native_id=i.native_id) AND a.started_at >= $6 AND a.started_at < $5),
  EXISTS(SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=(SELECT id FROM issues WHERE organization_id=i.organization_id AND project_id=i.project_id AND native_id=i.native_id) AND a.started_at >= $4 AND a.started_at < $6),
  EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.to_state='Rework' AND e.recorded_at >= $6 AND e.recorded_at < $5),
@@ -137,7 +154,13 @@ SELECT i.project_id,i.native_id,i.title,i.created_at,coalesce(i.workflow_state_n
  ,EXISTS(SELECT 1 FROM change_requests c JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.work_item_id=i.native_id AND c.landed_at >= $4 AND c.landed_at < $6 AND c.landed_head_sha=v.head_sha AND c.landed_merge_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$')
 FROM candidates i
 LEFT JOIN LATERAL (
- SELECT e.recorded_at,e.to_state,e.actor_kind,e.actor_principal_id,ws.terminal
+ SELECT e.id,e.actor_agent,e.actor_envelope_known FROM collaboration_events e
+ WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created'
+ ORDER BY e.sequence LIMIT 1
+) filing ON true
+LEFT JOIN native_work_item_pages filer_page ON filer_page.organization_id=i.organization_id AND filer_page.project_id=i.project_id AND filer_page.work_item_id=i.native_id AND filer_page.revision=i.revision
+LEFT JOIN LATERAL (
+ SELECT e.id,e.recorded_at,e.to_state,e.actor_kind,e.actor_principal_id,e.actor_agent,e.actor_display_name,e.actor_envelope_known,ws.terminal
  FROM collaboration_events e LEFT JOIN project_workflow_states ws
    ON ws.organization_id=e.organization_id AND ws.project_id=e.project_id AND ws.name=e.to_state
  WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id
@@ -145,15 +168,33 @@ LEFT JOIN LATERAL (
  ORDER BY e.recorded_at DESC,e.sequence DESC LIMIT 1
 ) completion ON completion.terminal
 LEFT JOIN LATERAL (
- SELECT e.recorded_at,e.to_state,e.actor_kind,e.actor_principal_id,ws.terminal
+ SELECT r.runner_id,r.display_name
+ FROM native_attempts a
+ LEFT JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
+ LEFT JOIN runner_lease_assignments assignment ON assignment.organization_id=l.organization_id AND assignment.lease_id=l.lease_id
+ LEFT JOIN runner_identities r ON r.organization_id=assignment.organization_id AND r.runner_id=assignment.runner_id AND r.machine_id=l.machine_id
+ WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at<=completion.recorded_at
+ ORDER BY a.started_at DESC,a.started_at_submicro_ns DESC,a.id DESC LIMIT 1
+) final_runner ON completion.to_state='Done' 
+LEFT JOIN LATERAL (
+ SELECT e.id,e.recorded_at,e.to_state,e.actor_kind,e.actor_principal_id,e.actor_agent,e.actor_display_name,e.actor_envelope_known,ws.terminal
  FROM collaboration_events e LEFT JOIN project_workflow_states ws
    ON ws.organization_id=e.organization_id AND ws.project_id=e.project_id AND ws.name=e.to_state
  WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id
    AND e.type='workflow.transitioned' AND e.recorded_at < $6
  ORDER BY e.recorded_at DESC,e.sequence DESC LIMIT 1
 ) previous_completion ON previous_completion.terminal
+LEFT JOIN LATERAL (
+ SELECT r.runner_id,r.display_name
+ FROM native_attempts a
+ LEFT JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
+ LEFT JOIN runner_lease_assignments assignment ON assignment.organization_id=l.organization_id AND assignment.lease_id=l.lease_id
+ LEFT JOIN runner_identities r ON r.organization_id=assignment.organization_id AND r.runner_id=assignment.runner_id AND r.machine_id=l.machine_id
+ WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at<=previous_completion.recorded_at
+ ORDER BY a.started_at DESC,a.started_at_submicro_ns DESC,a.id DESC LIMIT 1
+) previous_final_runner ON previous_completion.to_state='Done' 
 ORDER BY i.created_at,i.project_id,i.native_id`
-	rows, err := s.db.Query(ctx, statement, s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Split.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, query.Filter.Models, query.Filter.Stages)
+	rows, err := s.db.Query(ctx, statement, s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Split.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, query.Filter.Models, query.Filter.Stages, activityIDs)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -163,7 +204,7 @@ ORDER BY i.created_at,i.project_id,i.native_id`
 		var fact reportstore.OverviewFact
 		var closedAt, previousClosedAt pgtype.Timestamptz
 		var project, workItem string
-		if err := rows.Scan(&project, &workItem, &fact.Title, &fact.CreatedAt, &fact.State, &fact.FilerKind, &fact.FilerID, &closedAt, &fact.CompletedState, &fact.CompletedKind, &fact.CompletedID, &previousClosedAt, &fact.PreviousCompletedState, &fact.PreviousCompletedKind, &fact.PreviousCompletedID, &fact.Worked, &fact.PreviousWorked, &fact.Reworked, &fact.PreviousReworked, &fact.ActivityObserved, &fact.ChangesLanded, &fact.PreviousChangesLanded); err != nil {
+		if err := rows.Scan(&project, &workItem, &fact.Title, &fact.CreatedAt, &fact.State, &fact.FilerKnown, &fact.FilerOriginKnown, &fact.FilerEventID, &fact.FilerKind, &fact.FilerID, &closedAt, &fact.CompletedState, &fact.CompletedActorKnown, &fact.CompletedEventID, &fact.CompletedKind, &fact.CompletedID, &fact.CompletedName, &previousClosedAt, &fact.PreviousCompletedState, &fact.PreviousCompletedActorKnown, &fact.PreviousCompletedEventID, &fact.PreviousCompletedKind, &fact.PreviousCompletedID, &fact.PreviousCompletedName, &fact.Worked, &fact.PreviousWorked, &fact.Reworked, &fact.PreviousReworked, &fact.ActivityObserved, &fact.ChangesLanded, &fact.PreviousChangesLanded); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		fact.ProjectID, fact.WorkItemID = tracker.ProjectID(project), tracker.NativeWorkItemID(workItem)
@@ -302,7 +343,7 @@ func (s *session) ReadAttemptFacts(ctx context.Context, query reportstore.Attemp
 		}
 		projects[i] = string(project)
 	}
-	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,a.id,coalesce(r.runner_id,''),coalesce(r.display_name,''),coalesce(nullif(f.run_status,''),'running'),a.started_at,coalesce(f.recorded_at,a.started_at),coalesce(f.role,''),coalesce(f.model,''),coalesce(f.effort,''),f.event_id IS NOT NULL,coalesce(f.failed,false),coalesce(f.failure_class,''),coalesce(f.failure_kind,''),coalesce(f.landing_receipt,false),coalesce(f.landed,false),coalesce(f.landing_change_id,''),coalesce(f.duration_seconds,0)
+	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,a.id,coalesce(r.runner_id,''),coalesce(r.display_name,''),coalesce(nullif(f.run_status,''),'running'),a.started_at,coalesce(f.recorded_at,a.started_at),coalesce(f.role,''),coalesce(f.model,''),coalesce(f.effort,''),f.event_id IS NOT NULL,coalesce(f.failed,false),coalesce(f.failure_class,''),coalesce(f.failure_kind,''),coalesce(f.landing_receipt,false),coalesce(f.landed,false),coalesce(f.landing_change_id,''),coalesce(f.duration_seconds,0),coalesce(f.event_id,'')
 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
 LEFT JOIN report_attempt_facts af ON af.organization_id=a.organization_id AND af.attempt_id=a.id
 LEFT JOIN collaboration_events outcome ON outcome.organization_id=af.organization_id AND outcome.id=af.outcome_event_id
@@ -330,7 +371,7 @@ ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, projects, query.Principal
 	for rows.Next() {
 		var fact reportstore.AttemptFact
 		var project, workItem string
-		if err := rows.Scan(&project, &workItem, &fact.AttemptID, &fact.RunnerID, &fact.RunnerName, &fact.Status, &fact.StartedAt, &fact.OutcomeAt, &fact.Role, &fact.Model, &fact.Effort, &fact.ProjectionKnown, &fact.Failed, &fact.FailureClass, &fact.FailureKind, &fact.LandingReceipt, &fact.Landed, &fact.LandingChangeID, &fact.DurationSeconds); err != nil {
+		if err := rows.Scan(&project, &workItem, &fact.AttemptID, &fact.RunnerID, &fact.RunnerName, &fact.Status, &fact.StartedAt, &fact.OutcomeAt, &fact.Role, &fact.Model, &fact.Effort, &fact.ProjectionKnown, &fact.Failed, &fact.FailureClass, &fact.FailureKind, &fact.LandingReceipt, &fact.Landed, &fact.LandingChangeID, &fact.DurationSeconds, &fact.EventID); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		fact.UpdatedAt = fact.OutcomeAt
@@ -355,6 +396,112 @@ func (s *session) HasPriorData(ctx context.Context, projects []tracker.ProjectID
 		projectIDs[i] = string(project)
 	}
 	var recorded bool
-	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issues WHERE organization_id=$1 AND project_id=ANY($2::text[]) AND ($3='' OR actor_principal_id=$3) AND created_at<$4)`, s.organization, projectIDs, principal, before.UTC()).Scan(&recorded)
+	if principal != "" {
+		err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issues WHERE organization_id=$1 AND project_id=ANY($2::text[]) AND actor_principal_id=$3 AND created_at<$4)`, s.organization, projectIDs, principal, before.UTC()).Scan(&recorded)
+		return recorded, mapError(ctx, err)
+	}
+	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=$1 AND id=ANY($2::text[]) AND deleted_at IS NULL AND created_at<$3)`, s.organization, projectIDs, before.UTC()).Scan(&recorded)
 	return recorded, mapError(ctx, err)
+}
+
+func (s *session) ReadAnalyticsAttemptPage(ctx context.Context, query reportstore.AnalyticsAttemptQuery) (reportstore.AnalyticsAttemptPage, error) {
+	out := reportstore.AnalyticsAttemptPage{Items: []reportstore.AnalyticsAttemptRow{}, Partial: query.After.ID != ""}
+	if query.ProjectID == "" || len(query.RunnerIDs) > 32 || !query.From.Before(query.To) || query.Limit < 1 || query.Limit > reportstore.AnalyticsAttemptLimit || query.After.Submicro < 0 || query.After.Submicro > 999 || (query.After.ID == "") != query.After.StartedAt.IsZero() || query.After.StartedAt.Nanosecond()%1000 != 0 || query.After.ID == "" && query.After.Submicro != 0 {
+		return out, corestore.ErrInvalidPage
+	}
+	args := []any{s.organization, query.ProjectID, query.To.UTC(), query.Limit + 1, query.From.UTC(), query.Principal, query.RunnerID}
+	seek := ""
+	direction, comparison := " DESC", "<"
+	if query.OldestFirst {
+		direction, comparison = "", ">"
+	}
+	if query.StartedInWindow {
+		seek = " AND a.started_at>=$5"
+	}
+	if query.After.ID != "" {
+		seek += " AND (a.started_at,a.started_at_submicro_ns,a.id)" + comparison + "($8,$9,$10)"
+		args = append(args, query.After.StartedAt.UTC(), query.After.Submicro, query.After.ID)
+	}
+	runnerArg := len(args) + 1
+	args = append(args, query.RunnerIDs)
+	roleSelect, roleJoin := "", ""
+	if query.StartedInWindow {
+		roleSelect = ",latest_fact.role"
+		roleJoin = `LEFT JOIN LATERAL(SELECT f.latest_event_id FROM report_attempt_facts f WHERE f.organization_id=$1 AND f.attempt_id=a.id LIMIT 1)latest_attempt ON true
+ LEFT JOIN LATERAL(SELECT f.role FROM report_event_facts f WHERE f.organization_id=$1 AND f.event_id=latest_attempt.latest_event_id LIMIT 1)latest_fact ON true`
+	}
+	rows, err := s.db.Query(ctx, `WITH examined AS MATERIALIZED (
+ SELECT a.id,a.project_id,a.issue_id,a.lease_id,a.status,a.started_at,a.started_at_submicro_ns,a.updated_at
+ FROM native_attempts a WHERE a.organization_id=$1 AND a.project_id=$2 AND a.started_at<$3`+seek+`
+ ORDER BY a.started_at`+direction+`,a.started_at_submicro_ns`+direction+`,a.id`+direction+` LIMIT $4
+) SELECT a.id,a.project_id,coalesce(i.native_id,''),a.status,a.started_at,a.started_at_submicro_ns,a.updated_at,
+ i.id IS NOT NULL AND a.updated_at>=$5 AND ($6='' OR coalesce(i.actor_principal_id,'')=$6) AND ($7='' OR coalesce(la.runner_id,'')=$7) AND (coalesce(cardinality($`+strconv.Itoa(runnerArg)+`::text[]),0)=0 OR coalesce(la.runner_id,'')=ANY($`+strconv.Itoa(runnerArg)+`::text[])) AS eligible`+roleSelect+`
+FROM examined a LEFT JOIN issues i ON i.organization_id=$1 AND i.project_id=a.project_id AND i.id=a.issue_id
+LEFT JOIN runner_lease_assignments la ON la.organization_id=$1 AND la.lease_id=a.lease_id
+`+roleJoin+`
+ORDER BY a.started_at`+direction+`,a.started_at_submicro_ns`+direction+`,a.id`+direction, args...)
+	if err != nil {
+		return out, mapError(ctx, err)
+	}
+	defer rows.Close()
+	var last reportstore.AnalyticsAttemptCursor
+	for rows.Next() {
+		var row reportstore.AnalyticsAttemptRow
+		var key reportstore.AnalyticsAttemptCursor
+		var eligible bool
+		values := []any{&row.AttemptID, &row.ProjectID, &row.WorkItemID, &row.Status, &key.StartedAt, &key.Submicro, &row.UpdatedAt, &eligible}
+		if query.StartedInWindow {
+			values = append(values, &row.Role)
+		}
+		if err := rows.Scan(values...); err != nil {
+			return out, mapError(ctx, err)
+		}
+		out.Examined++
+		if out.Examined > query.Limit {
+			out.Next = last
+			out.Partial = true
+			break
+		}
+		key.ID = row.AttemptID
+		last = key
+		row.StartedAt = key.StartedAt.Add(time.Duration(key.Submicro))
+		if eligible {
+			out.Items = append(out.Items, row)
+		}
+	}
+	return out, mapError(ctx, rows.Err())
+}
+
+func (s *session) ReadCohortWorkItems(ctx context.Context, q reportstore.OverviewQuery) ([]tracker.NativeWorkItemID, error) {
+	if len(q.Projects) != 1 || q.Limit > 5000 {
+		return nil, corestore.ErrInvalidPage
+	}
+	args, err := s.reportQueryArgs(q)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, `WITH candidates AS MATERIALIZED(
+ SELECT i.* FROM issues i WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) ORDER BY i.project_id,i.native_id LIMIT $11
+ ) SELECT i.native_id,(`+reportIssueFilter+` AND i.created_at<$5) AS eligible FROM candidates i ORDER BY i.native_id`, args...)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	out := []tracker.NativeWorkItemID{}
+	examined := 0
+	for rows.Next() {
+		var id tracker.NativeWorkItemID
+		var eligible bool
+		if err := rows.Scan(&id, &eligible); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		examined++
+		if examined > q.Limit {
+			return nil, reportstore.ErrPopulationExceeded
+		}
+		if eligible {
+			out = append(out, id)
+		}
+	}
+	return out, mapError(ctx, rows.Err())
 }

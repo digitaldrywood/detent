@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -62,16 +67,21 @@ func linkedWebhookPayload(t *testing.T, action string, snapshot tracker.GitHubIs
 func applyLinkedWebhook(t *testing.T, f nativeFixture, action, event string, snapshot tracker.GitHubIssueSnapshot, comment *githubWebhookComment) {
 	t.Helper()
 	raw := linkedWebhookPayload(t, action, snapshot, comment)
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	var payload githubWebhookPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := f.service.gitHubIntegrationScope(t.Context(), f.project.OrganizationID, f.project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
 	ctx := context.WithValue(t.Context(), linkedSourceURLKey{}, "https://cloud.example")
-	if _, err := applyWebhook(ctx, tx, storedWebhook{EventType: event, Action: action, DeliveryID: action, Payload: raw}, time.Now()); err != nil {
+	identity, err := nativeCommandHash(raw)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.database.commit(t.Context(), tx); err != nil {
+	row := projectstore.GitHubWebhook{DeliveryID: identity, EventType: event, Action: action, Repository: scope.integrationRepository, ReceivedAt: f.service.config.now()}
+	if err := f.service.applyGitHubWebhookRecord(ctx, scope, row, payload); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -89,7 +99,6 @@ func TestNativeGitHubWebhookIntake(t *testing.T) {
 			snapshot := linkedSnapshot()
 			snapshot.Body, snapshot.Provenance.AuthorID = test.body, test.author
 			f.service.config.GitHubWebhookSecret = []byte(testWebhookSecret)
-			f.service.database.linkedSourceBase = "https://cloud.example"
 			if test.action == "closed" {
 				pendingLinkedIssue(t, f)
 			}
@@ -98,15 +107,16 @@ func TestNativeGitHubWebhookIntake(t *testing.T) {
 				requireNativeStatus(t, sendSignedWebhookRequest(t, f.service, "intake-delivery", "issues", payload), http.StatusAccepted)
 			}
 			applyLinkedWebhook(t, f, test.action, "issues", snapshot, nil)
-			var id string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE project_id = ?", f.project.ID).Scan(&id); err != nil {
+			var source eventstore.LinkedSource
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				source, err = r.LinkedSourceByURL(t.Context(), f.project.ID, snapshot.URL)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, id)
-			if err != nil {
-				t.Fatal(err)
-			}
+			id := source.WorkItemID
+			issue := readWorkItem(t, f, id, "")
 			if issue.State != test.wantState || issue.LinkedSource.Status != "complete" || issue.Body != test.body || issue.Terminal || len(issue.Assignees) != 0 {
 				t.Fatalf("intake = %+v", issue)
 			}
@@ -121,7 +131,7 @@ func TestNativeGitHubWebhookIntake(t *testing.T) {
 				t.Fatal("manual intake created a duplicate")
 			}
 			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&count); err != nil || count != 0 {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbound WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("intake outbox rows = %d, %v", count, err)
 			}
 		})
@@ -135,28 +145,39 @@ func TestNativeGitHubSourceUpdates(t *testing.T) {
 			f := linkedFixture(t)
 			snapshot := linkedSnapshot()
 			applyLinkedWebhook(t, f, "opened", "issues", snapshot, nil)
-			var id string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE project_id = ?", f.project.ID).Scan(&id); err != nil {
+			var source eventstore.LinkedSource
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				source, err = r.LinkedSourceByURL(t.Context(), f.project.ID, snapshot.URL)
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
+			id := source.WorkItemID
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				organization, err := w.AccessOrganization(t.Context())
+				if err != nil {
+					return err
+				}
+				return w.SetAccessOrganizationSlug(t.Context(), &organization.Slug, "local-organization")
+			}); err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback()
-			issue, _, err := readNativeIssue(t.Context(), tx, scope, id)
-			if err != nil {
-				t.Fatal(err)
+			issue := readWorkItem(t, f, id, "")
+			destinations := []string{state}
+			if state == "Done" {
+				destinations = []string{"Todo", "Done"}
 			}
-			from := issue.State
-			issue.State = state
-			ctx := context.WithValue(t.Context(), linkedSourceURLKey{}, "https://cloud.example")
-			if _, err := persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: state}, time.Now()); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
+			for index, destination := range destinations {
+				if issue.State == destination {
+					continue
+				}
+				request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "source-update-state-" + strconv.Itoa(index)}, ExpectedRevision: issue.Revision, State: destination, Reason: "user_requested"}
+				ctx := context.WithValue(t.Context(), linkedSourceURLKey{}, "https://cloud.example")
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, f.base+"/work-items/"+string(id)+"/workflow", f.token, request).WithContext(ctx))
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &issue)
 			}
 			for _, action := range []string{"closed", "reopened"} {
 				snapshot.Provenance.UpdatedAt = snapshot.Provenance.UpdatedAt.Add(time.Second)
@@ -167,15 +188,19 @@ func TestNativeGitHubSourceUpdates(t *testing.T) {
 			comment := &githubWebhookComment{NodeID: "C_webhook", Body: "External discussion", User: &githubWebhookActor{Login: &author}, CreatedAt: snapshot.Provenance.UpdatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}
 			applyLinkedWebhook(t, f, "created", "issue_comment", snapshot, comment)
 			applyLinkedWebhook(t, f, "created", "issue_comment", snapshot, comment)
-			issue, _, err = readNativeIssue(t.Context(), f.service.database.db, scope, id)
-			if err != nil || issue.State != state {
-				t.Fatalf("state changed = %s, %v", issue.State, err)
+			issue = readWorkItem(t, f, id, "")
+			if issue.State != state {
+				t.Fatalf("state changed = %s", issue.State)
 			}
-			var comments, closes int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", id).Scan(&comments); err != nil || comments != 3 {
-				t.Fatalf("comments = %d, %v", comments, err)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id)+"/comments", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var comments tracker.Page[tracker.NativeComment]
+			decodeHubResponse(t, response, &comments)
+			if len(comments.Items) != 3 || comments.NextCursor != "" {
+				t.Fatalf("comments = %+v", comments)
 			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox WHERE json_extract(desired_json, '$.close_source') = 1 AND json_extract(desired_json, '$.state_reason') = 'not_planned'").Scan(&closes); err != nil {
+			var closes int
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbound WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&closes); err != nil {
 				t.Fatal(err)
 			}
 			want := 0
@@ -186,26 +211,47 @@ func TestNativeGitHubSourceUpdates(t *testing.T) {
 				t.Fatalf("closes = %d, want %d", closes, want)
 			}
 			if state == "Cancelled" {
-				var raw string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT desired_json FROM github_outbox").Scan(&raw); err != nil {
+				var key string
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT command_key FROM github_outbound WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", f.project.OrganizationID, f.project.ID, id).Scan(&key); err != nil {
+					t.Fatal(err)
+				}
+				var outbound projectstore.GitHubOutbound
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					outbound, err = r.(projectstore.GitHubOutboxWriter).GitHubOutbound(t.Context(), key)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				raw, err := eventstore.NewContent(f.service.runDetailStore()).Receipt(t.Context(), outbound.Payload)
+				if err != nil {
 					t.Fatal(err)
 				}
 				var desired WorkpadDesired
-				if err := json.Unmarshal([]byte(raw), &desired); err != nil {
+				if err := json.Unmarshal(raw, &desired); err != nil {
 					t.Fatal(err)
 				}
 				if desired.Body != "Cancelled in Detent: https://cloud.example/local-organization/linked/issues/1" || !desired.CloseSource || desired.StateReason != "not_planned" {
 					t.Fatalf("cancellation summary = %+v", desired)
 				}
-				item, found, err := f.service.claimOutbox(t.Context())
-				if err != nil || !found || item.IssueNumber != 12 || item.Profile != "native" || item.RepositoryOwner != "acme" {
-					t.Fatalf("outbox source routing = %+v, %t, %v", item, found, err)
+				calls := make(chan OutboxItem, 1)
+				f.service.config.OutboxBackend = githubOutboundSignal{calls: calls}
+				if worked, err := f.service.ProcessOutbox(t.Context()); err != nil || !worked {
+					t.Fatalf("outbox processing = %t, %v", worked, err)
+				}
+				select {
+				case item := <-calls:
+					if item.IssueNumber != 12 || item.Profile != "native" || item.RepositoryOwner != "acme" {
+						t.Fatalf("outbox source routing = %+v", item)
+					}
+				default:
+					t.Fatal("outbox processing did not deliver the source mutation")
 				}
 			}
-			r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+id+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "private"}, Body: "Private Cloud discussion"})
+			r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(id)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "private"}, Body: "Private Cloud discussion"})
 			requireNativeStatus(t, r, http.StatusOK)
 			var total int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&total); err != nil || total != want {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbound WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&total); err != nil || total != want {
 				t.Fatalf("Cloud discussion mirrored: %d, %v", total, err)
 			}
 		})
@@ -218,17 +264,20 @@ func TestNativeTriageWorkflowProjection(t *testing.T) {
 		for _, bound := range []bool{false, true} {
 			t.Run(strconv.FormatBool(custom)+"/"+strconv.FormatBool(bound), func(t *testing.T) {
 				f := newNativeFixture(t, nil, "", "triage")
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 				if bound {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'acme/orders' WHERE id = ?", f.project.ID); err != nil {
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+						project, err := w.ProjectRecord(t.Context(), scope.project)
+						if err != nil {
+							return err
+						}
+						project.Settings.CheckoutRepository = "acme/orders"
+						_, err = w.UpdateProjectRecord(t.Context(), project)
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback()
-				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 				states := nativeFixtureStates()
 				states = append(states, tracker.NativeState{Name: "Triage", Dispatchable: true, Transitions: []string{"Todo"}})
 				if custom {
@@ -238,10 +287,13 @@ func TestNativeTriageWorkflowProjection(t *testing.T) {
 						{Name: "Triage", Dispatchable: true, Transitions: []string{"Working"}},
 					}
 				}
-				if err := applyNativeProjectStates(t.Context(), tx, scope, states, time.Now()); err != nil {
+				current, err := f.service.readProjectRecord(t.Context(), scope)
+				if err != nil {
 					t.Fatal(err)
 				}
-				project, err := readNativeProject(t.Context(), tx, scope)
+				response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, updateProjectIntegrationRequest{Mutation: tracker.Mutation{IdempotencyKey: "triage-workflow"}, ExpectedRevision: tracker.Revision(current.Settings.Revision), Intake: "disabled", Projection: "disabled", States: &states})
+				requireNativeStatus(t, response, http.StatusOK)
+				project, err := f.service.readProjectRecord(t.Context(), scope)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -262,23 +314,69 @@ func TestNativeTriageWorkflowProjection(t *testing.T) {
 
 func pendingLinkedIssue(t *testing.T, f nativeFixture) tracker.NativeIssue {
 	t.Helper()
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
+	source := coreWorkItemNeutralFixtureBody(t, f.project.OrganizationID, f.project.ID, false, "")
+	linked := newCoreNeutralFixture(t, f.project.OrganizationID, "linked_issue_sources")
+	source.tables["linked_issue_sources"] = linked.tables["linked_issue_sources"]
+	source.add("linked_issue_sources", map[string]any{"work_item_id": "wi_core_import", "source_url": linkedSnapshot().URL, "title_supplied": false, "body_supplied": false, "snapshot_json": nil})
+	source.set("issues", map[string]string{"native_id": "wi_core_import"}, map[string]any{"assignees_json": "[]"})
+	var originalPrevious, canonicalPrevious []byte
+	versions := 0
+	for _, row := range source.records["collaboration_versions"] {
+		if string(row.Values["record_id"].Data) != "wi_core_import" {
+			continue
+		}
+		raw := row.Values["record_json"].Data
+		if string(row.Values["encoding"].Data) == "patch" {
+			var err error
+			raw, err = applyNativeVersionPatch(originalPrevious, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		originalPrevious = raw
+		var historical tracker.NativeIssue
+		if err := json.Unmarshal(raw, &historical); err != nil {
+			t.Fatal(err)
+		}
+		historical.Assignees = nil
+		historical.LinkedSource = &tracker.LinkedIssueSource{URL: linkedSnapshot().URL, Status: "pending"}
+		raw, err := json.Marshal(historical)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys, fields, err := nativeVersionObject(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err = nativeVersionObjectBytes(keys, fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, encoding, err := encodeNativeVersion(canonicalPrevious, "snapshot", raw, int64(historical.Revision))
+		if err != nil || historical.Revision == 2 && encoding != "patch" {
+			t.Fatalf("historical linked version encoding=%s error=%v", encoding, err)
+		}
+		source.set("collaboration_versions", map[string]string{"record_id": "wi_core_import", "revision": strconv.FormatInt(int64(historical.Revision), 10)}, map[string]any{"encoding": encoding, "record_json": string(encoded)})
+		canonicalPrevious = raw
+		versions++
 	}
-	defer tx.Rollback()
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	issue, err := createLinkedIssueTx(t.Context(), tx, scope, tracker.CreateIssue{GitHubIssueURL: linkedSnapshot().URL}, time.Now())
-	if err != nil {
-		t.Fatal(err)
+	if versions != 2 {
+		t.Fatalf("historical linked versions = %d, want 2", versions)
 	}
-	issue.State = "Todo"
-	issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Triage", ToState: "Todo"}, time.Now())
-	if err != nil {
-		t.Fatal(err)
+	input := CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
+		t.Fatalf("historical pending source import = %d, %v", count, err)
 	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
+	other := readWorkItem(t, f, "wi_core_import_second", "")
+	if other.State != "Todo" || other.Revision != 2 || other.Title != "Updated title" || other.Body != "" {
+		t.Fatalf("historical companion issue = %+v", other)
+	}
+	issue := readWorkItem(t, f, "wi_core_import", "")
+	if issue.State != "Todo" {
+		t.Fatalf("historical pending source lane = %s, want Todo", issue.State)
+	}
+	if issue.LinkedSource == nil || issue.LinkedSource.Status != "pending" {
+		t.Fatal("linked source must await intake")
 	}
 	return issue
 }
@@ -288,48 +386,39 @@ func TestNativeGitHubTriageMigration(t *testing.T) {
 	for _, binding := range []string{"", "checkout", "repository"} {
 		t.Run(binding, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "triage-migration")
+			historicalStates := nativeFixtureStates()
+			if binding != "" {
+				historicalStates = append([]tracker.NativeState{{Name: "Triage", Transitions: []string{"Todo"}}}, historicalStates...)
+			}
+			states, err := json.Marshal(historicalStates)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := newCoreNeutralFixture(t, f.project.OrganizationID, "projects", "repositories")
+			projectID := tracker.ProjectID("prj_historical_triage")
+			values := map[string]any{"id": projectID, "name": "Historical project", "slug": "historical-project", "profile": "native", "states_json": string(states), "created_at": testTimestamp, "content_settings_revision": 1, "integration_revision": 1, "model_selection_revision": 1}
 			if binding == "checkout" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'acme/orders' WHERE id = ?", f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				values["checkout_repository"] = "acme/orders"
 			}
 			if binding == "repository" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO repositories (github_node_id, github_owner, github_name, created_at, updated_at) VALUES ('R_migration', 'acme', 'orders', ?, ?)", testTimestamp, testTimestamp); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM projects WHERE repository_id IS NOT NULL"); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id = (SELECT id FROM repositories WHERE github_node_id = 'R_migration') WHERE id = ?", f.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				source.add("repositories", map[string]any{"id": 1, "github_node_id": "R_migration", "github_owner": "acme", "github_name": "orders", "created_at": testTimestamp, "updated_at": testTimestamp})
+				values["repository_id"] = 1
 			}
-			migration, err := migrationFiles.ReadFile("migrations/20261006024500_native_github_triage.sql")
+			source.add("projects", values)
+			input := postgres.CoreProjectImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, Objects: f.service.runDetailStore()}
+			if count, err := f.service.database.postgres.ImportCoreProjects(t.Context(), input); err != nil || count != 1 {
+				t.Fatalf("historical project import = %d, %v", count, err)
+			}
+			project, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: projectID})
 			if err != nil {
 				t.Fatal(err)
 			}
-			up, _, _ := strings.Cut(string(migration), "-- +goose Down")
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
+			if !reflect.DeepEqual(project.States, historicalStates) {
+				t.Fatalf("historical workflow changed = %+v, want %+v", project.States, historicalStates)
 			}
-			defer tx.Rollback()
-			states, err := json.Marshal(nativeFixtureStates())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", string(states), f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id=? AND detent_state='Triage'", f.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.ExecContext(t.Context(), up); err != nil {
-				t.Fatal(err)
-			}
-			project, err := readNativeProject(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
-			if err != nil {
-				t.Fatal(err)
+			current, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			if err != nil || !reflect.DeepEqual(current.States, nativeFixtureStates()) {
+				t.Fatalf("current project affected = %+v, %v", current.States, err)
 			}
 			if binding == "" {
 				if project.States[0].Name == "Triage" {
@@ -340,7 +429,7 @@ func TestNativeGitHubTriageMigration(t *testing.T) {
 					t.Fatalf("migrated workflow = %+v", project.States)
 				}
 				var dispatchable, terminal bool
-				if err := tx.QueryRowContext(t.Context(), "SELECT dispatchable, terminal FROM workflow_states WHERE project_id = ? AND detent_state = 'Triage'", f.project.ID).Scan(&dispatchable, &terminal); err != nil || dispatchable || terminal {
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT dispatchable, terminal FROM project_workflow_states WHERE organization_id=$1 AND project_id=$2 AND name='Triage'", f.project.OrganizationID, projectID).Scan(&dispatchable, &terminal); err != nil || dispatchable || terminal {
 					t.Fatalf("migration flags = %t, %t, %v", dispatchable, terminal, err)
 				}
 			}
@@ -350,7 +439,15 @@ func TestNativeGitHubTriageMigration(t *testing.T) {
 
 func (f *browserHostedFixture) seedGitHubTriage(t *testing.T) {
 	t.Helper()
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'acme/orders' WHERE id = ?", f.project); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), tracker.ProjectID(f.project))
+		if err != nil {
+			return err
+		}
+		project.Settings.CheckoutRepository = "acme/orders"
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := linkedSnapshot()

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -120,7 +122,7 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 			if !canManageProjectSecrets(credential) {
 				err = operatortool.ErrAccessDenied
 			} else {
-				value, err = readSlackIntegration(ctx, s.database.reader, record.OrganizationID)
+				value, err = s.coordinatorSlackIntegration(ctx, record.OrganizationID)
 			}
 		}
 	case "get_project_budget":
@@ -200,13 +202,58 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 	return value, nil
 }
 
+func (s *Service) coordinatorSlackIntegration(ctx context.Context, organization tracker.OrganizationID) (slackIntegrationStatus, error) {
+	reader, ok := s.config.TenantRepository.(interface {
+		ReadSlack(context.Context, tracker.OrganizationID, corestore.Workload, func(postgres.SlackReader) error) error
+	})
+	if !ok {
+		return slackIntegrationStatus{}, operatortool.ErrServiceUnavailable
+	}
+	var result slackIntegrationStatus
+	err := reader.ReadSlack(ctx, organization, corestore.Serving, func(r postgres.SlackReader) error {
+		row, err := r.SlackIntegration(ctx)
+		if err == nil {
+			if row.OrganizationID != organization {
+				return corestore.ErrTenantMismatch
+			}
+			result.ChannelName = row.ChannelName
+			result.LastDeliveryFailed, result.LastStatusCode = row.LastDeliveryFailed, int(row.LastStatusCode)
+			if row.LastSuccessAt != nil {
+				stamp := formatHubTime(*row.LastSuccessAt)
+				result.LastSuccessAt = &stamp
+			}
+			if row.LastFailureAt != nil {
+				stamp := formatHubTime(*row.LastFailureAt)
+				result.LastFailureAt = &stamp
+			}
+		} else if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		secret, err := r.AccessSecret(ctx, "", slackWebhookSecret)
+		if err == nil {
+			if secret.OrganizationID != organization || secret.ProjectID != "" || secret.Kind != slackWebhookSecret {
+				return corestore.ErrTenantMismatch
+			}
+			result.Webhook = maskedSlackWebhook
+		} else if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		return nil
+	})
+	return result, err
+}
+
 func coordinatorProjectReadScoped(name string) bool {
 	name = coordinatorScreenTarget(name)
 	return name != operatortool.GetOrganizationModelSelection && name != operatortool.MembershipList && name != operatortool.HostedPlan && name != operatortool.BillingStatus && name != operatortool.BillingUsage
 }
 
 func (s *Service) coordinatorRunnerAttached(ctx context.Context, record conversationRecord, id string) (bool, error) {
-	r, err := readRunnerWithClock(ctx, s.database.reader, record.OrganizationID, id, s.config.now)
+	credential, err := currentHubOperator(ctx)
+	if err != nil {
+		return false, err
+	}
+	r, err := s.coordinatorRunner(ctx, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, id)
 	if err != nil {
 		return false, err
 	}
@@ -217,24 +264,20 @@ func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversa
 	if s.config.Hosted == nil || string(record.OrganizationID) != s.config.Hosted.OrganizationID {
 		return nil, operatortool.ErrAccessDenied
 	}
-	visible := map[tracker.ProjectID]bool{record.ProjectID: true}
-	fleet, err := s.hostedFleetRunners(ctx, credential, visible)
+	projects, err := s.hostedReadableProjects(ctx, credential)
 	if err != nil {
 		return nil, err
 	}
-	attached := make([]hostedFleetRunner, 0, len(fleet))
+	fleet, reservations, err := s.readHostedFleetSnapshotTenant(ctx, credential, projects, record.ProjectID, s.config.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	attached := make([]hostedFleetRunner, 0, len(fleet.Runners))
 	connected := map[string]bool{}
 	connectionHealth := map[string]string{}
-	for _, r := range fleet {
-		source, err := readRunnerWithClock(ctx, s.database.reader, record.OrganizationID, r.ID, s.config.now)
-		if err != nil {
-			return nil, err
-		}
-		if !source.AllowsProject(record.ProjectID) {
-			continue
-		}
-		connected[r.ID] = source.State == "active" && source.ConnectionHealth == "online"
-		connectionHealth[r.ID] = source.ConnectionHealth
+	for _, r := range fleet.Runners {
+		connected[r.ID] = r.State == "active" && r.ConnectionHealth == "online"
+		connectionHealth[r.ID] = r.ConnectionHealth
 		if r.Routing != nil {
 			routing := *r.Routing
 			routing.ProjectIDs = slices.DeleteFunc(slices.Clone(routing.ProjectIDs), func(project tracker.ProjectID) bool { return project != record.ProjectID })
@@ -255,10 +298,6 @@ func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversa
 		attached = append(attached, r)
 	}
 	scopeHostUsage(attached)
-	reservations, err := s.hostedVisibleReservations(ctx, visible)
-	if err != nil {
-		return nil, err
-	}
 	scopeProviderUsage(attached, reservations)
 	type projectRunner struct {
 		hostedFleetRunner
@@ -314,14 +353,7 @@ func (s *Service) coordinatorScreenReport(ctx context.Context, record conversati
 		}
 		return report, nil
 	}
-	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: string(record.ProjectID), Limit: maxAnalyticsPopulation}, w)
-	if err != nil {
-		return nil, err
-	}
-	if len(analytics.Projects) != 1 {
-		return nil, operatortool.ErrAccessDenied
-	}
-	return s.readHostedDiagnostics(ctx, analytics)
+	return s.readDiagnosticsTenant(ctx, credential, w, record.ProjectID)
 }
 
 func coordinatorScreenTarget(name string) string {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -119,6 +120,9 @@ func gitHubServiceConfig(t *testing.T, cfg hubserver.Config) (hubserver.Config, 
 		t.Fatal(err)
 	}
 	connection := githubTemplate.Connection(t, db, role, "")
+	if _, err := db.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
+		t.Fatal(err)
+	}
 	cfg.DatabaseBackend, cfg.DatabasePath = hubserver.DatabasePostgres, ""
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
 	cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "http://127.0.0.1:7777", Provider: &githubHostedProvider{}}
@@ -144,6 +148,10 @@ func gitHubServiceConfig(t *testing.T, cfg hubserver.Config) (hubserver.Config, 
 	if err != nil {
 		return hubserver.Config{}, err
 	}
+	deployment, generation := "origin", int64(0)
+	if cfg.Hosted.SharedEntry != nil {
+		deployment, generation = "shared", cfg.Hosted.SharedEntry.Generation
+	}
 	now := time.Now().UTC()
 	err = repository.WriteTenant(t.Context(), "org_example", corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_example", Name: "Example", Slug: "example", CreatedAt: now}); err != nil {
@@ -152,7 +160,7 @@ func gitHubServiceConfig(t *testing.T, cfg hubserver.Config) (hubserver.Config, 
 		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: "org_example", ID: "hub_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_example", ProviderID: "provider_example", AllocationGeneration: 1}); err != nil {
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_example", ProviderID: cfg.Hosted.WorkOSOrganizationID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 			return err
 		}
 		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_example", Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: "org_example", Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now}); err != nil {

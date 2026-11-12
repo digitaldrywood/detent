@@ -51,6 +51,7 @@ type AccessImporter struct {
 	digest       string
 	organization tracker.OrganizationID
 	tables       []accessImportTable
+	hostedSource bool
 }
 
 type accessImportTable struct {
@@ -86,30 +87,31 @@ var accessImportTableNames = [...]string{
 	"organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_release_preferences", "daily_summary_preferences", "daily_summary_receipts", "hosted_project_grants", "token_grants",
 	"hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations",
 	"hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets",
-	"project_secret_audit", "hosted_audit", "hosted_audit_times",
+	"project_secret_audit", "hosted_audit", "hosted_audit_times", "hosted_work_view_preferences",
 }
 
 var accessImportTargets = map[string]map[string]string{
-	"organizations":              {"id": "organization_id", "name": "name", "slug": "slug", "local": "local", "created_at": "created_at"},
-	"hosted_tenant":              {"provider_id": "provider_id", "bootstrap_subject": "bootstrap_subject", "deployment": "deployment", "public_url": "public_url", "allocation_generation": "allocation_generation"},
-	"api_tokens":                 {"id": "id", "name": "name", "token_hash": "token_hash", "token_fingerprint": "token_fingerprint", "scope": "scope", "native_only": "native_only", "created_at": "created_at", "updated_at": "updated_at", "rotated_at": "rotated_at", "revoked_at": "revoked_at", "expires_at": "expires_at", "last_used_at": "last_used_at", "hosted_user_id": "hosted_user_id", "hosted_membership_id": "hosted_membership_id", "operator_key_scope": "operator_key_scope", "operator_project_access": "operator_project_access", "key_kind": "key_kind"},
-	"hosted_members":             {"user_id": "user_id", "email": "email", "membership_id": "membership_id", "role": "role", "active": "active", "principal_id": "principal_id", "notify_issues": "notify_issues", "created_at": "created_at", "updated_at": "updated_at"},
-	"hosted_release_preferences": {"user_id": "user_id", "version": "version", "build_time": "build_time"},
-	"daily_summary_preferences":  {"user_id": "user_id", "enabled": "enabled", "send_minute": "send_minute", "time_zone": "time_zone", "weekdays": "weekdays", "token": "token", "window_end": "window_end", "due_at": "due_at"},
-	"daily_summary_receipts":     {"user_id": "user_id", "window_end": "window_end", "status": "status", "attempts": "attempts", "recorded_at": "recorded_at"},
-	"hosted_project_grants":      {"user_id": "user_id", "project_id": "project_id", "can_write": "can_write", "manage_runner": "manage_runner"},
-	"token_grants":               {"token_id": "token_id", "project_id": "project_id"},
-	"hosted_sessions":            {"token_hash": "token_hash", "email": "email", "identity_subject": "identity_subject", "created_at": "created_at", "expires_at": "expires_at", "revoked_at": "revoked_at"},
-	"hosted_transactions":        {"token_hash": "token_hash", "state": "state", "verifier": "verifier", "organization_id": "provider_organization_id", "support_actor": "support_actor", "support_session": "support_session", "invitation_token": "invitation_token", "expires_at": "expires_at", "consumed_at": "consumed_at"},
-	"hosted_invitations":         {"id": "id", "email": "email", "role": "role", "accepted_user_id": "accepted_user_id", "created_at": "created_at", "expires_at": "expires_at"},
-	"hosted_member_reservations": {"email": "email", "expires_at": "expires_at"},
-	"hosted_binding_migrations":  {"id": "id", "from_public_url": "from_public_url", "to_public_url": "to_public_url", "from_deployment": "from_deployment", "from_generation": "from_generation", "to_generation": "to_generation", "migrated_at": "migrated_at", "applied": "applied"},
-	"organization_secrets":       {"kind": "kind", "organization_slug": "organization_slug", "ciphertext": "ciphertext", "nonce": "nonce", "wrapped_data_key": "wrapped_data_key", "master_key_version": "master_key_version", "updated_at": "updated_at"},
-	"organization_secret_audit":  {"id": "id", "actor": "actor", "kind": "kind", "key_version": "key_version", "event": "event", "recorded_at": "recorded_at"},
-	"project_secrets":            {"project_id": "project_id", "kind": "kind", "organization_slug": "organization_slug", "ciphertext": "ciphertext", "nonce": "nonce", "wrapped_data_key": "wrapped_data_key", "master_key_version": "master_key_version", "updated_at": "updated_at"},
-	"project_secret_audit":       {"id": "id", "project_id": "project_id", "actor": "actor", "kind": "kind", "key_version": "key_version", "event": "event", "recorded_at": "recorded_at"},
-	"hosted_audit":               {"id": "id", "session_id": "session_id", "actual_actor": "actual_actor", "effective_user": "effective_user", "reason": "reason", "event": "event", "route": "route", "project_id": "project_id", "status": "status", "started_at": "started_at", "expires_at": "expires_at", "recorded_at": "recorded_at", "recorded_at_ns": "recorded_at_ns", "account_kind": "account_kind", "account_retry": "account_retry"},
-	"hosted_audit_times":         {"audit_id": "audit_id", "recorded_at_ns": "recorded_at_ns"},
+	"hosted_work_view_preferences": {"organization_id": "organization_id", "user_id": "user_id", "view_query": "view_query"},
+	"organizations":                {"id": "organization_id", "name": "name", "slug": "slug", "local": "local", "created_at": "created_at"},
+	"hosted_tenant":                {"provider_id": "provider_id", "bootstrap_subject": "bootstrap_subject", "deployment": "deployment", "public_url": "public_url", "allocation_generation": "allocation_generation"},
+	"api_tokens":                   {"id": "id", "name": "name", "token_hash": "token_hash", "token_fingerprint": "token_fingerprint", "scope": "scope", "native_only": "native_only", "created_at": "created_at", "updated_at": "updated_at", "rotated_at": "rotated_at", "revoked_at": "revoked_at", "expires_at": "expires_at", "last_used_at": "last_used_at", "hosted_user_id": "hosted_user_id", "hosted_membership_id": "hosted_membership_id", "operator_key_scope": "operator_key_scope", "operator_project_access": "operator_project_access", "key_kind": "key_kind"},
+	"hosted_members":               {"user_id": "user_id", "email": "email", "membership_id": "membership_id", "role": "role", "active": "active", "principal_id": "principal_id", "notify_issues": "notify_issues", "created_at": "created_at", "updated_at": "updated_at"},
+	"hosted_release_preferences":   {"user_id": "user_id", "version": "version", "build_time": "build_time"},
+	"daily_summary_preferences":    {"user_id": "user_id", "enabled": "enabled", "send_minute": "send_minute", "time_zone": "time_zone", "weekdays": "weekdays", "token": "token", "window_end": "window_end", "due_at": "due_at"},
+	"daily_summary_receipts":       {"user_id": "user_id", "window_end": "window_end", "status": "status", "attempts": "attempts", "recorded_at": "recorded_at"},
+	"hosted_project_grants":        {"user_id": "user_id", "project_id": "project_id", "can_write": "can_write", "manage_runner": "manage_runner"},
+	"token_grants":                 {"token_id": "token_id", "project_id": "project_id"},
+	"hosted_sessions":              {"token_hash": "token_hash", "email": "email", "identity_subject": "identity_subject", "created_at": "created_at", "expires_at": "expires_at", "revoked_at": "revoked_at"},
+	"hosted_transactions":          {"token_hash": "token_hash", "state": "state", "verifier": "verifier", "organization_id": "provider_organization_id", "support_actor": "support_actor", "support_session": "support_session", "invitation_token": "invitation_token", "expires_at": "expires_at", "consumed_at": "consumed_at"},
+	"hosted_invitations":           {"id": "id", "email": "email", "role": "role", "accepted_user_id": "accepted_user_id", "created_at": "created_at", "expires_at": "expires_at"},
+	"hosted_member_reservations":   {"email": "email", "expires_at": "expires_at"},
+	"hosted_binding_migrations":    {"id": "id", "from_public_url": "from_public_url", "to_public_url": "to_public_url", "from_deployment": "from_deployment", "from_generation": "from_generation", "to_generation": "to_generation", "migrated_at": "migrated_at", "applied": "applied"},
+	"organization_secrets":         {"kind": "kind", "organization_slug": "organization_slug", "ciphertext": "ciphertext", "nonce": "nonce", "wrapped_data_key": "wrapped_data_key", "master_key_version": "master_key_version", "updated_at": "updated_at"},
+	"organization_secret_audit":    {"id": "id", "actor": "actor", "kind": "kind", "key_version": "key_version", "event": "event", "recorded_at": "recorded_at"},
+	"project_secrets":              {"project_id": "project_id", "kind": "kind", "organization_slug": "organization_slug", "ciphertext": "ciphertext", "nonce": "nonce", "wrapped_data_key": "wrapped_data_key", "master_key_version": "master_key_version", "updated_at": "updated_at"},
+	"project_secret_audit":         {"id": "id", "project_id": "project_id", "actor": "actor", "kind": "kind", "key_version": "key_version", "event": "event", "recorded_at": "recorded_at"},
+	"hosted_audit":                 {"id": "id", "session_id": "session_id", "actual_actor": "actual_actor", "effective_user": "effective_user", "reason": "reason", "event": "event", "route": "route", "project_id": "project_id", "status": "status", "started_at": "started_at", "expires_at": "expires_at", "recorded_at": "recorded_at", "recorded_at_ns": "recorded_at_ns", "account_kind": "account_kind", "account_retry": "account_retry"},
+	"hosted_audit_times":           {"audit_id": "audit_id", "recorded_at_ns": "recorded_at_ns"},
 }
 
 type accessImportTransform struct {
@@ -118,11 +120,12 @@ type accessImportTransform struct {
 }
 
 var accessImportTransforms = map[string]map[string]accessImportTransform{
-	"api_tokens":         {"hosted_organization_id": {name: "provider-binding", targets: []storagecatalog.Target{{Table: "public.hosted_tenant", Column: "provider_id", Type: "text"}}}},
-	"hosted_tenant":      {"singleton": {name: "tenant-singleton"}},
-	"hosted_sessions":    {"identity_json": {name: "hosted-identity", targets: []storagecatalog.Target{{Table: "public.hosted_sessions", Column: "identity_subject", Type: "text"}, {Table: "public.hosted_sessions", Column: "provider_organization_id", Type: "text"}, {Table: "public.hosted_sessions", Column: "session_id", Type: "text"}, {Table: "public.hosted_sessions", Column: "identity_created_at", Type: "timestamp with time zone"}, {Table: "public.hosted_sessions", Column: "identity_expires_at", Type: "timestamp with time zone"}, {Table: "public.hosted_sessions", Column: "support_actor", Type: "text"}, {Table: "public.hosted_sessions", Column: "support_reason", Type: "text"}}}},
-	"hosted_invitations": {"grants_json": {name: "invitation-grants", targets: []storagecatalog.Target{{Table: "public.hosted_invitation_grants", Column: "project_id", Type: "text"}, {Table: "public.hosted_invitation_grants", Column: "can_write", Type: "boolean"}, {Table: "public.hosted_invitation_grants", Column: "manage_runner", Type: "boolean"}}}},
-	"hosted_audit":       {"mutation_json": {name: "archive-json", targets: []storagecatalog.Target{{Table: "public.hosted_audit", Column: "mutation_object_key", Type: "text"}, {Table: "public.hosted_audit", Column: "mutation_sha256", Type: "text"}, {Table: "public.hosted_audit", Column: "mutation_bytes", Type: "bigint"}, {Table: "public.hosted_audit", Column: "mutation_content_bytes", Type: "bigint"}, {Table: "public.hosted_audit", Column: "mutation_format_version", Type: "integer"}}}},
+	"hosted_work_view_preferences": {"scope": {name: "work-view-scope", targets: []storagecatalog.Target{{Table: "public.hosted_work_view_preferences", Column: "scope", Type: "text"}}}},
+	"api_tokens":                   {"hosted_organization_id": {name: "provider-binding", targets: []storagecatalog.Target{{Table: "public.hosted_tenant", Column: "provider_id", Type: "text"}}}},
+	"hosted_tenant":                {"singleton": {name: "tenant-singleton"}},
+	"hosted_sessions":              {"identity_json": {name: "hosted-identity", targets: []storagecatalog.Target{{Table: "public.hosted_sessions", Column: "identity_subject", Type: "text"}, {Table: "public.hosted_sessions", Column: "provider_organization_id", Type: "text"}, {Table: "public.hosted_sessions", Column: "session_id", Type: "text"}, {Table: "public.hosted_sessions", Column: "identity_created_at", Type: "timestamp with time zone"}, {Table: "public.hosted_sessions", Column: "identity_expires_at", Type: "timestamp with time zone"}, {Table: "public.hosted_sessions", Column: "support_actor", Type: "text"}, {Table: "public.hosted_sessions", Column: "support_reason", Type: "text"}}}},
+	"hosted_invitations":           {"grants_json": {name: "invitation-grants", targets: []storagecatalog.Target{{Table: "public.hosted_invitation_grants", Column: "project_id", Type: "text"}, {Table: "public.hosted_invitation_grants", Column: "can_write", Type: "boolean"}, {Table: "public.hosted_invitation_grants", Column: "manage_runner", Type: "boolean"}}}},
+	"hosted_audit":                 {"mutation_json": {name: "archive-json", targets: []storagecatalog.Target{{Table: "public.hosted_audit", Column: "mutation_object_key", Type: "text"}, {Table: "public.hosted_audit", Column: "mutation_sha256", Type: "text"}, {Table: "public.hosted_audit", Column: "mutation_bytes", Type: "bigint"}, {Table: "public.hosted_audit", Column: "mutation_content_bytes", Type: "bigint"}, {Table: "public.hosted_audit", Column: "mutation_format_version", Type: "integer"}}}},
 }
 
 func (r *Repository) NewAccessImporter(ctx context.Context, source AccessImportSource) (*AccessImporter, error) {
@@ -162,6 +165,10 @@ func (r *Repository) NewAccessImporter(ctx context.Context, source AccessImportS
 	if err := i.validateSource(ctx); err != nil {
 		return nil, mapError(ctx, err)
 	}
+	i.hostedSource, err = i.sourceHostedTenant(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read access source hosted tenant: %w", mapError(ctx, err))
+	}
 	return i, nil
 }
 
@@ -171,7 +178,7 @@ func validateAccessImportCatalog(catalog storagecatalog.Catalog) error {
 	}
 	for tableName, expected := range accessImportTargets {
 		table, ok := catalog.Tables["hub/"+tableName]
-		familyOK := table.Family == "access" || table.Family == "delivery" && (tableName == "hosted_release_preferences" || tableName == "daily_summary_preferences" || tableName == "daily_summary_receipts")
+		familyOK := table.Family == "access" || table.Family == "board" && tableName == "hosted_work_view_preferences" || table.Family == "delivery" && (tableName == "hosted_release_preferences" || tableName == "daily_summary_preferences" || tableName == "daily_summary_receipts")
 		if !ok || !familyOK || table.Disposition != "target" {
 			return ErrAccessImport
 		}
@@ -324,6 +331,11 @@ type pgqueryDBTX interface {
 
 func (i *AccessImporter) validateSource(ctx context.Context) error {
 	for _, name := range accessImportTableNames {
+		if name == "hosted_work_view_preferences" && i.source.neutral != nil {
+			if _, err := i.source.neutral.table(name); err != nil {
+				continue
+			}
+		}
 		if _, ok := i.source.Schema[name]; !ok {
 			return fmt.Errorf("validate access source %s schema: %w", name, storagecatalog.ErrUnmapped)
 		}
@@ -574,22 +586,34 @@ func (i *AccessImporter) prepareAuditObject(ctx context.Context, row *accessImpo
 	return nil
 }
 
+func (i *AccessImporter) sourceHostedTenant(ctx context.Context) (bool, error) {
+	for _, table := range i.tables {
+		if table.name != "hosted_tenant" {
+			continue
+		}
+		rows, err := i.readPage(ctx, table, accessImportCheckpoint{}, 1)
+		return len(rows) > 0, err
+	}
+	return false, ErrAccessImport
+}
+
 func (i *AccessImporter) validateOrganization(ctx context.Context, s *session, row accessImportRow) error {
 	if len(row.raw) == 0 || row.raw["id"].Null || string(row.raw["id"].Data) != string(i.organization) {
 		return storagecatalog.ErrOrganization
 	}
 	values := row.values
+	sourceLocal := values["local"].Boolean && !i.hostedSource
 	var name, slug string
 	var local bool
 	var created time.Time
 	err := s.db.QueryRow(ctx, `SELECT name,slug,local,created_at FROM organizations WHERE organization_id=$1`, i.organization).Scan(&name, &slug, &local, &created)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return s.createAccessOrganization(ctx, accessstore.Organization{OrganizationID: i.organization, Name: values["name"].Text, Slug: values["slug"].Text, Local: values["local"].Boolean, CreatedAt: recordTime(values["created_at"].Time)}, false)
+		return s.createAccessOrganization(ctx, accessstore.Organization{OrganizationID: i.organization, Name: values["name"].Text, Slug: values["slug"].Text, Local: sourceLocal, CreatedAt: recordTime(values["created_at"].Time)}, false)
 	}
 	if err != nil {
 		return errors.Join(storagecatalog.ErrOrganization, err)
 	}
-	if values["name"].Text != name || values["slug"].Text != slug || values["local"].Boolean != local || !recordTime(values["created_at"].Time).Equal(created) {
+	if values["name"].Text != name || values["slug"].Text != slug || sourceLocal != local || !recordTime(values["created_at"].Time).Equal(created) {
 		return storagecatalog.ErrOrganization
 	}
 	return nil
@@ -625,6 +649,30 @@ func (i *AccessImporter) importRow(ctx context.Context, s *session, table string
 	}
 	var extra []map[string]any
 	switch table {
+	case "hosted_work_view_preferences":
+		user, ok := columns["user_id"].(string)
+		if !ok || user == "" {
+			return ErrAccessImport
+		}
+		if _, err := s.AccessMember(ctx, user); err != nil {
+			return errors.Join(ErrAccessImport, err)
+		}
+		scope := string(row.raw["scope"].Data)
+		if scope == "organization" || scope == "" {
+			columns["scope"] = ""
+		} else {
+			project, legacy := strings.CutPrefix(scope, "project:")
+			if !legacy {
+				project = scope
+			}
+			if project == "" || strings.Contains(project, "/") || strings.Contains(project, ":") {
+				return ErrAccessImport
+			}
+			if _, err := s.Project(ctx, tracker.ProjectID(project)); err != nil {
+				return errors.Join(ErrAccessImport, err)
+			}
+			columns["scope"] = project
+		}
 	case "hosted_tenant":
 		if row.raw["singleton"].Null || string(row.raw["singleton"].Data) != "1" {
 			return ErrAccessImport
@@ -642,6 +690,10 @@ func (i *AccessImporter) importRow(ctx context.Context, s *session, table string
 		hostedOrganization := row.raw["hosted_organization_id"]
 		if !hostedOrganization.Null && string(hostedOrganization.Data) != string(i.organization) {
 			return ErrAccessImport
+		}
+	case "hosted_members":
+		if active, ok := columns["active"].(bool); ok && !active {
+			columns["sessions_revoked_before"] = values["updated_at"].Time
 		}
 	case "hosted_sessions":
 		identity, err := decodeHostedImportIdentity(row.raw["identity_json"].Data)
@@ -693,6 +745,23 @@ func (i *AccessImporter) importRow(ctx context.Context, s *session, table string
 	case "hosted_member_reservations":
 		columns["expires_at"] = values["expires_at"].Time
 	case "hosted_audit":
+		if columns["account_kind"] == nil || columns["account_retry"] == nil {
+			var receipt struct {
+				Kind  string `json:"kind"`
+				Retry string `json:"retry"`
+			}
+			if event, ok := columns["event"].(string); ok && strings.HasPrefix(strings.TrimSpace(event), "{") {
+				if err := json.Unmarshal([]byte(event), &receipt); err != nil {
+					receipt.Kind, receipt.Retry = "", ""
+				}
+			}
+			if columns["account_kind"] == nil {
+				columns["account_kind"] = receipt.Kind
+			}
+			if columns["account_retry"] == nil {
+				columns["account_retry"] = receipt.Retry
+			}
+		}
 		if len(row.objects) != 1 {
 			return ErrAccessImport
 		}

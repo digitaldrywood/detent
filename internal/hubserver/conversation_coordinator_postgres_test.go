@@ -171,7 +171,7 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 						if _, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: organization, ProjectID: project, ID: id, OwnerPrincipalID: key, Origin: conversationOriginUser, Title: "Cross-project answer", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, Preferences: conversation.DefaultPreferences(), ReadAudience: audience, CreatedAt: now, UpdatedAt: now}); err != nil {
 							return err
 						}
-						_, err = w.CreateMessage(t.Context(), conversationstore.Message{OrganizationID: organization, ConversationID: id, ID: conversation.NewMessageID(), Role: conversation.RoleAssistant, Actor: conversation.Actor{Kind: conversation.ActorRunner}, Kind: conversation.MessageText, ContentReference: contentID, Delivery: conversation.DeliveryDelivered, CreatedAt: now, UpdatedAt: now})
+						_, err = w.CreateMessage(t.Context(), conversationstore.Message{OrganizationID: organization, ConversationID: id, ID: conversation.NewMessageID(), Role: conversation.RoleAssistant, Actor: conversation.Actor{Kind: conversation.ActorRunner}, Kind: conversation.MessageText, ContentReference: contentID, TextBytes: int64(len(text)), StoredTextBytes: int64(len(text)), Delivery: conversation.DeliveryDelivered, CreatedAt: now, UpdatedAt: now})
 						return err
 					}); err != nil {
 						t.Fatal(err)

@@ -22,9 +22,6 @@ func storedPayloadKey(ctx context.Context, organization string, raw []byte) (str
 }
 
 func storedMeteredPayloadKey(ctx context.Context, organization string, raw []byte, billable bool) (string, error) {
-	if pending, ok := ctx.Value(pendingContentKey{}).(*pendingContentMutation); ok && pending.tx != nil {
-		return pending.stage(ctx, organization, raw, billable)
-	}
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok {
 		return "", errContentStorageUnconfigured
@@ -44,36 +41,39 @@ func storedMeteredPayloadKey(ctx context.Context, organization string, raw []byt
 
 func readStoredPayload(ctx context.Context, key string) ([]byte, error) {
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
-	if !ok {
+	if !ok || content.readOrganization == "" {
 		return nil, errContentStorageUnconfigured
+	}
+	organization := content.readOrganization
+	parts := strings.Split(key, "/")
+	if len(parts) != 6 || parts[0] != "orgs" || parts[1] != organization {
+		return nil, artifact.ErrIntegrity
+	}
+	expected, err := attachment.ArchiveKey(organization, parts[5])
+	if err != nil || expected != key {
+		return nil, artifact.ErrIntegrity
 	}
 	content.mu.Lock()
 	raw, found := content.payloads[key]
+	ref, known := content.references[key]
 	writing := content.writing
 	content.mu.Unlock()
 	if found {
+		if !known || ref.Validate(organization) != nil || ref.Key != key || ref.CustomerOwned || ref.BindingID != "" || ref.SchemaVersion != 1 {
+			return nil, artifact.ErrIntegrity
+		}
 		return bytes.Clone(raw), nil
 	}
-	if claimWriting(ctx) {
-		return nil, errClaimHintStale
-	}
-	prepared := claimPrepared(ctx)
-	if writing || prepared != nil && !prepared.hydrating {
+	if writing {
 		return nil, &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
 			_, err := readStoredPayload(ctx, key)
 			return err
 		}}
 	}
-	parts := strings.Split(key, "/")
-	if len(parts) != 6 || parts[0] != "orgs" {
-		return nil, artifact.ErrIntegrity
+	if content.readReference == nil {
+		return nil, errContentStorageUnconfigured
 	}
-	organization := parts[1]
-	query := content.query
-	if scoped, ok := ctx.Value(payloadQueryKey{}).(nativeQueryer); ok {
-		query = scoped
-	}
-	ref, err := readPayloadReference(ctx, query, organization, key)
+	ref, err = content.readReference(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("read payload reference: %w", errors.Join(artifact.ErrIntegrity, err))
 	}
@@ -238,7 +238,7 @@ func prepareContentMutation[T any](ctx context.Context, q nativeQueryer, operati
 func isolateContentContext(ctx context.Context) context.Context {
 	if current, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 		current.mu.Lock()
-		isolated := &changeContent{encoder: current.encoder, call: current.call, store: current.store, register: current.register, query: current.query, prepared: maps.Clone(current.prepared), payloads: maps.Clone(current.payloads), references: maps.Clone(current.references), payloadBytes: current.payloadBytes, organization: current.organization, stableHistory: current.stableHistory}
+		isolated := &changeContent{encoder: current.encoder, call: current.call, store: current.store, register: current.register, readOrganization: current.readOrganization, readReference: current.readReference, query: current.query, prepared: maps.Clone(current.prepared), payloads: maps.Clone(current.payloads), references: maps.Clone(current.references), payloadBytes: current.payloadBytes, organization: current.organization, stableHistory: current.stableHistory}
 		current.mu.Unlock()
 		ctx = context.WithValue(ctx, changeContentKey{}, isolated)
 	}

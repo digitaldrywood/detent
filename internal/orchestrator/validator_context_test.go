@@ -30,10 +30,6 @@ func TestValidatorAcceptanceContextIdentity(t *testing.T) {
 }
 
 func TestValidatorContextMemoReuse(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	for _, verdict := range []string{gate.ValidatorVerdictRework, gate.ValidatorVerdictPass, gate.ValidatorVerdictWait} {
 		t.Run(verdict, func(t *testing.T) {
 			issue := connector.Issue{ID: "mobile200", Identifier: "digitaldrywood/pyroapex-mobile#200", Description: "Require reproduction", PullRequest: &connector.PullRequest{Number: 207, BaseSHA: "base", HeadSHA: "same-head"}}

@@ -4,8 +4,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestHostedBillingOverLimitRemedy(t *testing.T) {
@@ -79,21 +77,10 @@ func TestHostedPagesExcludeInstanceSurfaces(t *testing.T) {
 	}
 }
 
-func TestHostedAppShellIgnoresInstanceData(t *testing.T) {
+func TestHostedAppShellRendersHostedProjectNavigation(t *testing.T) {
 	t.Parallel()
 
-	hosted := hostedTestData("organization")
-	html := renderSSEFingerprintComponent(t, AppShell(DashboardShellData{
-		Hosted: &hosted,
-		Title:  "private instance title",
-		Projects: []ProjectSmallMultiple{
-			{ID: "private-instance-project", Name: "private instance project"},
-		},
-		Snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{{Title: "private instance issue"}}},
-	}, nil))
-	if strings.Contains(html, "private instance") || strings.Contains(html, "private-instance") {
-		t.Error("hosted shell exposed instance data")
-	}
+	html := renderSSEFingerprintComponent(t, hostedAppShell(hostedTestData("organization")))
 	if !strings.Contains(html, "Private project") {
 		t.Error("hosted shell lost explicitly supplied hosted project navigation")
 	}

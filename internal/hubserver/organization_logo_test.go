@@ -12,9 +12,11 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -26,6 +28,7 @@ func TestOrganizationLogoLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedPostgresHubAdmin(t, f.service.config.TenantRepository, f.service, other)
 	var content bytes.Buffer
 	if err := png.Encode(&content, image.NewNRGBA(image.Rect(0, 0, 64, 64))); err != nil {
 		t.Fatal(err)
@@ -49,7 +52,12 @@ func TestOrganizationLogoLifecycle(t *testing.T) {
 				}
 				if previous != "" {
 					var deleted bool
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT deleted_at IS NOT NULL FROM attachments WHERE id=?", previous).Scan(&deleted); err != nil || !deleted {
+					deleteErr := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+						row, err := r.Attachment(t.Context(), "", previous)
+						deleted = row.Metadata.DeletedAt != nil
+						return err
+					})
+					if err := deleteErr; err != nil || !deleted {
 						t.Fatalf("old logo was not deleted: %v", err)
 					}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/attachment-metadata/"+previous, testHubAdminToken, nil), http.StatusNotFound)
@@ -62,10 +70,28 @@ func TestOrganizationLogoLifecycle(t *testing.T) {
 					}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/attachment-metadata/"+logo.ImageKey, testHubAdminToken, nil), http.StatusOK)
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/logo-metadata", testHubAdminToken, nil), http.StatusOK)
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE attachments SET created_at=? WHERE id=?", formatHubTime(time.Now().Add(-2*attachment.OrphanTTL)), logo.ImageKey); err != nil {
-						t.Fatal(err)
-					}
-					if err := f.service.expireNativeRecords(t.Context(), time.Now()); err != nil {
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
+						row, err := r.Attachment(t.Context(), "", logo.ImageKey)
+						if err != nil {
+							return err
+						}
+						if row.Retention != "organization" || row.Metadata.DeletedAt != nil {
+							return fmt.Errorf("current logo lost organization retention")
+						}
+						candidates, err := r.(attachmentstore.ExpiryReader).AttachmentDeletionCandidates(t.Context(), row.Metadata.CreatedAt.Add(2*attachment.OrphanTTL), 100)
+						if err != nil {
+							return err
+						}
+						if len(candidates) == 100 {
+							return fmt.Errorf("logo expiry fixture exceeded bounded population")
+						}
+						for _, candidate := range candidates {
+							if candidate.Metadata.ID == logo.ImageKey {
+								return fmt.Errorf("current logo became an expired orphan")
+							}
+						}
+						return nil
+					}); err != nil {
 						t.Fatal(err)
 					}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/logo-metadata", testHubAdminToken, nil), http.StatusOK)
@@ -124,9 +150,14 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "revision":
-				store.afterPut = func(context.Context) error {
-					_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organizations SET logo_revision=logo_revision+1 WHERE id=?", f.project.OrganizationID)
-					return err
+				store.afterPut = func(ctx context.Context) error {
+					return f.service.config.TenantRepository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+						logo, err := w.OrganizationLogo(ctx)
+						if err != nil {
+							return err
+						}
+						return w.UpdateOrganizationLogo(ctx, logo, logo.Revision)
+					})
 				}
 			case "replay":
 				store.afterPut = func(context.Context) error {
@@ -153,10 +184,10 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 				t.Fatalf("stored objects=%d, want %d", len(store.objects), wantObjects)
 			}
 			var attachments int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE organization_id=?", f.project.OrganizationID).Scan(&attachments); err != nil || attachments != wantObjects {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE organization_id=$1", f.project.OrganizationID).Scan(&attachments); err != nil || attachments != wantObjects {
 				t.Fatalf("attachment rows=%d, want %d: %v", attachments, wantObjects, err)
 			}
-			logo, err := readOrganizationLogo(t.Context(), f.service.database.reader, f.project.OrganizationID)
+			logo, err := f.service.readOrganizationLogoRecord(t.Context(), f.project.OrganizationID)
 			if err != nil || (logo.ImageKey == "") != (wantObjects == 0) {
 				t.Fatalf("logo=%+v: %v", logo, err)
 			}
@@ -199,7 +230,7 @@ func TestOrganizationLogoMCP(t *testing.T) {
 		if response.Code != 200 || envelope.Result.IsError {
 			t.Fatal(response.Body.String())
 		}
-		logo, err := readOrganizationLogo(t.Context(), f.service.database.reader, f.project.OrganizationID)
+		logo, err := f.service.readOrganizationLogoRecord(t.Context(), f.project.OrganizationID)
 		if err != nil || logo.Revision != tracker.Revision(i+2) || (logo.ImageKey == "") != remove {
 			t.Fatalf("logo=%+v %v", logo, err)
 		}
@@ -217,7 +248,14 @@ func TestHostedOrganizationLogoPermissions(t *testing.T) {
 			if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_owner", test.role); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET role=? WHERE user_id='user_browser_owner'", test.role); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_browser_preview", corestore.Serving, func(w tenantstore.Writer) error {
+				member, err := w.AccessMember(t.Context(), "user_browser_owner")
+				if err != nil {
+					return err
+				}
+				member.Role = test.role
+				return w.UpdateAccessMember(t.Context(), member)
+			}); err != nil {
 				t.Fatal(err)
 			}
 			f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/logo", map[string]any{"remove": true, "expected_revision": "1", "idempotency_key": "logo"}, test.status)

@@ -19,11 +19,24 @@ type SpriteAllocation = pgquery.ProjectSpriteAllocation
 type SpriteMember = pgquery.RunnerSpriteMembership
 type SpriteOperation = pgquery.SpriteLifecycleOperation
 
+type SpritePoolMember struct {
+	SpriteMember
+	RunnerID string
+}
+
 type SpriteReader interface {
 	SpritePool(context.Context) (SpritePool, error)
+	SpritePoolMembers(context.Context) ([]SpritePoolMember, error)
+	SpritePoolAuthority(context.Context, time.Time) (string, error)
 	SpriteAllocation(context.Context, tracker.ProjectID) (SpriteAllocation, error)
+	SpriteAllocationSize(context.Context, tracker.ProjectID) (int, error)
+	SpriteAllocationAuthority(context.Context, tracker.ProjectID, time.Time) (bool, error)
 	SpriteAllocations(context.Context, tracker.ProjectID, int) ([]SpriteAllocation, error)
 	SpriteMembers(context.Context, string, int) ([]SpriteMember, error)
+	SpriteMember(context.Context, string) (SpriteMember, error)
+	SpriteMemberPlacementCounts(context.Context, string) (int, int, int, error)
+	SpriteLeaseUsage(context.Context, time.Time, string) (int, error)
+	SpriteMemberHoldsWork(context.Context, string) (bool, error)
 	SpriteOperation(context.Context, string) (SpriteOperation, error)
 	PendingSpriteOperations(context.Context, time.Time, int) ([]SpriteOperation, error)
 }
@@ -50,6 +63,46 @@ func (r *Repository) WriteSprite(ctx context.Context, organization tracker.Organ
 func (s *session) SpritePool(ctx context.Context) (SpritePool, error) {
 	row, err := s.queries.SpritePool(ctx, s.organization)
 	return row, mapError(ctx, err)
+}
+
+func (s *session) SpritePoolMembers(ctx context.Context) ([]SpritePoolMember, error) {
+	rows, err := s.db.Query(ctx, `WITH selected AS MATERIALIZED (
+ SELECT name FROM runner_sprite_memberships WHERE organization_id=$1 AND state IN ('bootstrapping','enrolled','deleting')
+ UNION ALL
+ (SELECT name FROM runner_sprite_memberships WHERE organization_id=$1 AND state='deleted' ORDER BY created_at DESC,name DESC LIMIT 20)
+)
+SELECT m.organization_id,m.name,m.provider_organization,m.token_project_id,m.enrollment_id,m.state,m.bootstrap_log,m.idle_since,m.created_at,m.allocation_project_id,m.allocation_revision,COALESCE(r.runner_id,'')
+FROM selected
+JOIN runner_sprite_memberships m ON m.organization_id=$1 AND m.name=selected.name
+LEFT JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
+ORDER BY m.created_at,m.name`, s.organization)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	result := []SpritePoolMember{}
+	for rows.Next() {
+		var row SpritePoolMember
+		if err := rows.Scan(&row.OrganizationID, &row.Name, &row.ProviderOrganization, &row.TokenProjectID, &row.EnrollmentID, &row.State, &row.BootstrapLog, &row.IdleSince, &row.CreatedAt, &row.AllocationProjectID, &row.AllocationRevision, &row.RunnerID); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		result = append(result, row)
+	}
+	return result, mapError(ctx, rows.Err())
+}
+
+func (s *session) SpritePoolAuthority(ctx context.Context, now time.Time) (string, error) {
+	if now.IsZero() {
+		return "", corestore.ErrInvalidPage
+	}
+	var actor string
+	err := s.db.QueryRow(ctx, `SELECT p.configured_by FROM organization_sprite_pools p
+JOIN api_tokens t ON t.organization_id=p.organization_id AND t.id=p.configured_by
+WHERE p.organization_id=$1 AND t.revoked_at IS NULL AND t.created_at<=$2 AND (t.expires_at IS NULL OR t.expires_at>$2)
+AND ((t.scope='admin' AND NOT t.native_only) OR EXISTS (
+ SELECT 1 FROM hosted_members m WHERE m.organization_id=t.organization_id AND m.principal_id=t.id AND m.active AND m.role IN ('owner','admin')
+))`, s.organization, now).Scan(&actor)
+	return actor, mapError(ctx, err)
 }
 
 func (s *session) PutSpritePool(ctx context.Context, row SpritePool, expected int64) (SpritePool, error) {
@@ -171,4 +224,52 @@ func (s *session) RecordSpriteProvisionFailure(ctx context.Context, project trac
 		return corestore.ErrRevisionConflict
 	}
 	return nil
+}
+
+func (s *session) SpriteMember(ctx context.Context, name string) (SpriteMember, error) {
+	if name == "" {
+		return SpriteMember{}, corestore.ErrInvalidPage
+	}
+	row, err := s.queries.SpriteMember(ctx, pgquery.SpriteMemberParams{OrganizationID: s.organization, Name: name})
+	return row, mapError(ctx, err)
+}
+
+func (s *session) SpriteLeaseUsage(ctx context.Context, now time.Time, joining string) (int, error) {
+	if now.IsZero() {
+		return 0, corestore.ErrInvalidPage
+	}
+	count, err := s.queries.SpriteLeaseUsage(ctx, pgquery.SpriteLeaseUsageParams{OrganizationID: s.organization, Now: now, Joining: joining})
+	return int(count), mapError(ctx, err)
+}
+
+func (s *session) SpriteAllocationSize(ctx context.Context, project tracker.ProjectID) (int, error) {
+	count, err := s.queries.SpriteAllocationSize(ctx, pgquery.SpriteAllocationSizeParams{OrganizationID: s.organization, AllocationProjectID: string(project)})
+	return int(count), mapError(ctx, err)
+}
+
+func (s *session) SpriteMemberHoldsWork(ctx context.Context, enrollment string) (bool, error) {
+	if enrollment == "" {
+		return false, corestore.ErrInvalidPage
+	}
+	held, err := s.queries.SpriteMemberHoldsWork(ctx, pgquery.SpriteMemberHoldsWorkParams{OrganizationID: s.organization, EnrollmentID: enrollment})
+	if err != nil {
+		return false, mapError(ctx, err)
+	}
+	if !held.Valid {
+		return false, corestore.ErrInvalidPage
+	}
+	return held.Bool, nil
+}
+
+func (s *session) SpriteAllocationAuthority(ctx context.Context, project tracker.ProjectID, now time.Time) (bool, error) {
+	if project == "" || now.IsZero() {
+		return false, corestore.ErrInvalidPage
+	}
+	allowed, err := s.queries.SpriteAllocationAuthority(ctx, pgquery.SpriteAllocationAuthorityParams{OrganizationID: s.organization, ProjectID: project, Now: now})
+	return allowed, mapError(ctx, err)
+}
+
+func (s *session) SpriteMemberPlacementCounts(ctx context.Context, name string) (int, int, int, error) {
+	row, err := s.queries.SpriteMemberPlacementCounts(ctx, pgquery.SpriteMemberPlacementCountsParams{OrganizationID: s.organization, Name: name})
+	return int(row.ActiveCount), int(row.OtherCount), int(row.AheadCount), mapError(ctx, err)
 }

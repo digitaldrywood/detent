@@ -87,7 +87,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		}
 	}()
 
-	o.recoverLocalAdmissions(ctx, state)
 	o.refreshBackendCapacity(ctx, state, now)
 	o.expireOrphanedWorkAttempts(ctx, state, now)
 	o.syncGitHubRESTCapacityOutage(state, now)
@@ -162,13 +161,86 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	}
 	fetched = filterReconciledTickIssues(state, fetched, earlyUnblocked)
 	timing.step("observe_lanes")
+	failedLaneObservations := make(map[string]struct{})
+	var unobservedIssues []connector.Issue
 	for _, issue := range mergeIssueSlices(fetched.candidates, fetched.status) {
 		if _, _, err := o.observeLane(ctx, state, issue, now); err != nil {
 			if o.logger != nil {
 				o.logger.Warn("classify tracker lane before reconciliation failed", "issue_id", issue.ID, "error", err)
 			}
-			return
+			failedLaneObservations[strings.TrimSpace(issue.ID)] = struct{}{}
+			unobservedIssues = append(unobservedIssues, cloneIssue(issue))
+			continue
 		}
+	}
+	if len(failedLaneObservations) > 0 {
+		retained := func(issues []connector.Issue) []connector.Issue {
+			var out []connector.Issue
+			for _, issue := range issues {
+				if _, failed := failedLaneObservations[strings.TrimSpace(issue.ID)]; failed {
+					out = append(out, cloneIssue(issue))
+				}
+			}
+			return out
+		}
+		retainedPipeline, retainedWatch := retained(previous.pipeline), retained(previous.epicTransitionWatch)
+		retainedSignals := retained(state.LaneSignalCandidates)
+		retainedParents := make(map[string]connector.Issue)
+		for key, issue := range previous.pendingEpicParentLookups {
+			if _, failed := failedLaneObservations[strings.TrimSpace(issue.ID)]; failed {
+				retainedParents[key] = cloneIssue(issue)
+			}
+		}
+		defer func() {
+			state.Pipeline = mergeIssueSlices(state.Pipeline, retainedPipeline)
+			state.epicTransitionWatch = mergeIssueSlices(state.epicTransitionWatch, retainedWatch)
+			state.LaneSignalCandidates = mergeIssueSlices(state.LaneSignalCandidates, retainedSignals)
+			if len(retainedParents) > 0 && state.pendingEpicParentLookups == nil {
+				state.pendingEpicParentLookups = make(map[string]connector.Issue)
+			}
+			for key, issue := range retainedParents {
+				if _, exists := state.pendingEpicParentLookups[key]; !exists {
+					state.pendingEpicParentLookups[key] = issue
+				}
+			}
+		}()
+		failedCandidateClaims := retained(fetched.candidates)
+		failedCandidateClaims = slices.DeleteFunc(failedCandidateClaims, func(issue connector.Issue) bool {
+			_, deferred := state.deferredCompletions[issue.ID]
+			retry, waiting := state.Retry[issue.ID]
+			return deferred || waiting && retry.CompletionDeferred
+		})
+		fetched = filterReconciledTickIssues(state, fetched, failedLaneObservations)
+		trackerRetryIssues = filterReconciledIssues(trackerRetryIssues, failedLaneObservations)
+		previous.pipeline = filterReconciledIssues(previous.pipeline, failedLaneObservations)
+		previous.epicTransitionWatch = filterReconciledIssues(previous.epicTransitionWatch, failedLaneObservations)
+		previous.blockedStatusIssues = filterReconciledIssues(previous.blockedStatusIssues, failedLaneObservations)
+		previous.pendingEpicParentLookups = cloneIssueMap(previous.pendingEpicParentLookups)
+		for key, issue := range previous.pendingEpicParentLookups {
+			if _, failed := failedLaneObservations[strings.TrimSpace(issue.ID)]; failed {
+				delete(previous.pendingEpicParentLookups, key)
+			}
+		}
+		state.LaneSignalCandidates = filterReconciledIssues(state.LaneSignalCandidates, failedLaneObservations)
+		unobservedRetries := make(map[string]Retry)
+		for id := range failedLaneObservations {
+			if retry, exists := state.Retry[id]; exists {
+				unobservedRetries[id] = retry
+				delete(state.Retry, id)
+			}
+		}
+		defer func() {
+			for id, retry := range unobservedRetries {
+				if _, exists := state.Retry[id]; !exists {
+					state.Retry[id] = retry
+				}
+			}
+		}()
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), heartbeatOperationTimeout)
+			defer cancel()
+			o.releaseDeferredSchedulingClaims(cleanupCtx, state, failedCandidateClaims)
+		}()
 	}
 	timing.next("reconciliation")
 	timing.step("retain_pull_request_snapshots")
@@ -355,7 +427,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	refreshOK := refreshSucceeded(state)
 	if refreshOK {
 		state.BoardIssues = overlayIssueStateSnapshots(
-			boardIssuesFromFetched(fetched),
+			mergeIssueSlices(boardIssuesFromFetched(fetched), unobservedIssues),
 			state.tickTransitions.boardIssues,
 		)
 		missing := candidatesMissingFromBoard(trackerCandidates, state.BoardIssues)

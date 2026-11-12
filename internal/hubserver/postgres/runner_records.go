@@ -94,9 +94,7 @@ func (s *session) RunnerProjects(ctx context.Context, runnerID string, limit int
 	return s.runnerRoutingProjects(ctx, &identity, limit)
 }
 
-func (s *session) runnerRoutingProjects(ctx context.Context, identity *runnerstore.Identity, limit int) ([]tracker.ProjectID, error) {
-	runnerID := identity.RunnerID
-	rows, err := s.db.Query(ctx, `SELECT kind,key,number,value FROM (
+const runnerRoutingProjectsSQL = `SELECT kind,key,number,value FROM (
 SELECT 0 AS kind,'' AS key,position AS number,window_spec AS value FROM runner_availability_windows WHERE organization_id=$1 AND runner_id=$2
 UNION ALL
 SELECT 1,slot_key,capacity,'' FROM runner_availability_window_slots WHERE organization_id=$1 AND runner_id=$2
@@ -106,7 +104,11 @@ UNION ALL
 (SELECT 3,project_id,rank,'' FROM runner_project_ranks WHERE organization_id=$1 AND runner_id=$2 ORDER BY project_id LIMIT $6)
 UNION ALL
 (SELECT 4,p.id,0,'' FROM projects p WHERE p.organization_id=$1 AND p.deleted_at IS NULL AND $5>1 AND ($4='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.organization_id=$1 AND g.token_id=$3 AND g.project_id=p.id)) ORDER BY p.id LIMIT $5)
-) routing_projects ORDER BY kind,key,number`, s.organization, runnerID, identity.TokenID, identity.Scope, limit+1, runnerstore.MaxRunnerProjectRanks+1)
+) routing_projects ORDER BY kind,key,number`
+
+func (s *session) runnerRoutingProjects(ctx context.Context, identity *runnerstore.Identity, limit int) ([]tracker.ProjectID, error) {
+	runnerID := identity.RunnerID
+	rows, err := s.db.Query(ctx, runnerRoutingProjectsSQL, s.organization, runnerID, identity.TokenID, identity.Scope, limit+1, runnerstore.MaxRunnerProjectRanks+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -150,16 +152,24 @@ UNION ALL
 	return projects, nil
 }
 
-func (s *session) RunnerProjectAuthorized(ctx context.Context, runnerID string, project tracker.ProjectID, now time.Time) (bool, error) {
-	var allowed bool
-	err := s.db.QueryRow(ctx, `SELECT EXISTS (
+const runnerProjectAuthoritySourceSQL = `
 SELECT 1 FROM runner_identities r
 JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
 JOIN projects p ON p.organization_id=r.organization_id AND p.id=$3 AND p.deleted_at IS NULL
-WHERE r.organization_id=$1 AND r.runner_id=$2 AND r.removed_at IS NULL
+WHERE r.organization_id=$1 AND `
+
+const runnerProjectAuthorityRuleSQL = ` AND r.removed_at IS NULL
 AND r.expires_at>$4 AND t.scope='worker' AND t.key_kind='service' AND t.revoked_at IS NULL
 AND t.created_at<=$4 AND (t.expires_at IS NULL OR t.expires_at>$4)
-AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=p.id)))`, s.organization, runnerID, project, now).Scan(&allowed)
+AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=p.id))`
+
+const runnerProjectAuthorizedSQL = runnerProjectAuthoritySourceSQL + `r.runner_id=$2` + runnerProjectAuthorityRuleSQL
+
+const runnerCredentialProjectAuthorizedSQL = runnerProjectAuthoritySourceSQL + `r.token_id=$2` + runnerProjectAuthorityRuleSQL
+
+func (s *session) RunnerProjectAuthorized(ctx context.Context, runnerID string, project tracker.ProjectID, now time.Time) (bool, error) {
+	var allowed bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (`+runnerProjectAuthorizedSQL+`)`, s.organization, runnerID, project, now).Scan(&allowed)
 	return allowed, mapError(ctx, err)
 }
 
@@ -257,6 +267,57 @@ func (s *session) RunnerActiveLeaseIDs(ctx context.Context, runnerID string, now
 		return nil, runnerstore.ErrLimitExceeded
 	}
 	return ids, nil
+}
+
+func (s *session) RunnerUnreleasedLeaseProjects(ctx context.Context, runnerID, afterLeaseID string, limit int) (runnerstore.LeaseProjectPage, error) {
+	if err := checkPage(limit); err != nil {
+		return runnerstore.LeaseProjectPage{}, err
+	}
+	if strings.TrimSpace(runnerID) == "" {
+		return runnerstore.LeaseProjectPage{}, runnerstore.ErrInvalidRecord
+	}
+	identity, err := s.runnerIdentityRow(ctx, `runner_id=$2`, runnerID)
+	if err != nil {
+		return runnerstore.LeaseProjectPage{}, err
+	}
+	rows, err := s.db.Query(ctx, `WITH examined AS MATERIALIZED (
+ SELECT lease_id,issue_id FROM leases
+ WHERE organization_id=$1 AND machine_id=$2 AND released_at IS NULL AND lease_id>$4
+ ORDER BY lease_id LIMIT $5
+)
+SELECT e.lease_id,a.runner_id,i.project_id FROM examined e
+LEFT JOIN runner_lease_assignments a ON a.organization_id=$1 AND a.lease_id=e.lease_id AND a.runner_id=$3
+LEFT JOIN issues i ON i.organization_id=$1 AND i.id=e.issue_id AND a.lease_id IS NOT NULL
+ORDER BY e.lease_id`, s.organization, identity.MachineID, runnerID, afterLeaseID, limit)
+	if err != nil {
+		return runnerstore.LeaseProjectPage{}, mapError(ctx, err)
+	}
+	defer rows.Close()
+	page := runnerstore.LeaseProjectPage{AfterLeaseID: afterLeaseID}
+	projects := map[tracker.ProjectID]bool{}
+	for rows.Next() {
+		var assigned, project *string
+		if err := rows.Scan(&page.AfterLeaseID, &assigned, &project); err != nil {
+			return runnerstore.LeaseProjectPage{}, mapError(ctx, err)
+		}
+		page.Examined++
+		if assigned == nil {
+			continue
+		}
+		if project == nil || *project == "" {
+			return runnerstore.LeaseProjectPage{}, corestore.ErrInvalidRelationship
+		}
+		id := tracker.ProjectID(*project)
+		if !projects[id] {
+			projects[id] = true
+			page.Projects = append(page.Projects, id)
+		}
+	}
+	if err := mapError(ctx, rows.Err()); err != nil {
+		return runnerstore.LeaseProjectPage{}, err
+	}
+	page.Exhausted = page.Examined < limit
+	return page, nil
 }
 
 func (s *session) RunnerHasActiveLease(ctx context.Context, runnerID string, now time.Time) (bool, error) {
@@ -861,6 +922,65 @@ func (s *session) writeRunnerProjectDiagnosticDetails(ctx context.Context, row r
 	return mapError(ctx, err)
 }
 
+func (s *session) RunnerProviderCatalog(ctx context.Context, projects []tracker.ProjectID, now time.Time) ([]runnerstore.ProviderCatalogModel, error) {
+	if now.IsZero() {
+		return nil, runnerstore.ErrInvalidRecord
+	}
+	models := []runnerstore.ProviderCatalogModel{}
+	if projects != nil && len(projects) == 0 {
+		return models, nil
+	}
+	ids := make([]string, len(projects))
+	for index, project := range projects {
+		if project == "" {
+			return nil, runnerstore.ErrInvalidRecord
+		}
+		ids[index] = string(project)
+	}
+	rows, err := s.db.Query(ctx, `WITH selected AS MATERIALIZED (
+SELECT DISTINCT ON (m.model_id) r.runner_id,p.backend,m.position,m.model_id
+FROM runner_identities r
+JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
+JOIN runner_provider_reports p ON p.organization_id=r.organization_id AND p.runner_id=r.runner_id
+JOIN runner_provider_report_models m ON m.organization_id=p.organization_id AND m.runner_id=p.runner_id AND m.backend=p.backend
+WHERE r.organization_id=$1 AND r.state='active' AND r.removed_at IS NULL AND r.expires_at>$2
+AND t.scope='worker' AND t.key_kind='service' AND t.revoked_at IS NULL
+AND t.created_at<=$2 AND (t.expires_at IS NULL OR t.expires_at>$2)
+AND p.observed_at<=$2 AND p.observed_at>$5
+AND EXISTS(SELECT 1 FROM projects project WHERE project.organization_id=r.organization_id AND project.deleted_at IS NULL
+AND ($3 OR project.id=ANY($4::text[]))
+AND (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g
+WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=project.id)))
+ORDER BY m.model_id,r.runner_id,p.backend,m.position
+)
+SELECT p.provider,m.model_id,m.has_detail,m.label,m.model_provider,m.is_default,m.default_reasoning_effort,m.legacy,
+ARRAY(SELECT e.effort FROM runner_provider_model_efforts e
+WHERE e.organization_id=m.organization_id AND e.runner_id=m.runner_id AND e.backend=m.backend AND e.model_id=m.model_id
+ORDER BY e.position)
+FROM selected
+JOIN runner_provider_reports p ON p.organization_id=$1 AND p.runner_id=selected.runner_id AND p.backend=selected.backend
+JOIN runner_provider_report_models m ON m.organization_id=p.organization_id AND m.runner_id=p.runner_id AND m.backend=p.backend AND m.position=selected.position AND m.model_id=selected.model_id
+ORDER BY selected.runner_id,selected.backend,selected.position`, s.organization, now, projects == nil, ids, now.Add(-providercapacity.MaxAge))
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var model runnerstore.ProviderCatalogModel
+		var detail providercapacity.ModelDetail
+		var hasDetail bool
+		if err := rows.Scan(&model.Provider, &model.ID, &hasDetail, &detail.Label, &detail.Provider, &detail.Default, &detail.DefaultReasoningEffort, &detail.Legacy, &detail.ReasoningEfforts); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		if hasDetail {
+			detail.ID = model.ID
+			model.Detail = &detail
+		}
+		models = append(models, model)
+	}
+	return models, mapError(ctx, rows.Err())
+}
+
 func (s *session) RunnerProviderReports(ctx context.Context, runnerID string) ([]providercapacity.Report, error) {
 	rows, err := s.db.Query(ctx, `SELECT backend,provider,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at FROM runner_provider_reports WHERE organization_id=$1 AND runner_id=$2 ORDER BY backend`, s.organization, runnerID)
 	if err != nil {
@@ -1098,7 +1218,8 @@ func (s *session) AssignRunnerLease(ctx context.Context, row runnerstore.LeaseAs
 		return err
 	}
 	var machineID string
-	err := s.db.QueryRow(ctx, `SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 AND l.lease_id=$2 AND l.released_at IS NULL FOR UPDATE`, row.OrganizationID, row.LeaseID).Scan(&machineID)
+	var boundRunner *string
+	err := s.db.QueryRow(ctx, `SELECT l.machine_id,l.runner_id FROM leases l WHERE l.organization_id=$1 AND l.lease_id=$2 AND l.released_at IS NULL FOR UPDATE`, row.OrganizationID, row.LeaseID).Scan(&machineID, &boundRunner)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -1110,8 +1231,29 @@ func (s *session) AssignRunnerLease(ctx context.Context, row runnerstore.LeaseAs
 	if !compatible {
 		return corestore.ErrNotFound
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO runner_lease_assignments (organization_id,lease_id,runner_id,assigned_at) VALUES ($1,$2,$3,$4)`, row.OrganizationID, row.LeaseID, row.RunnerID, row.AssignedAt)
-	return mapError(ctx, err)
+	var result pgconn.CommandTag
+	if boundRunner != nil {
+		if *boundRunner != row.RunnerID {
+			return corestore.ErrUniqueViolation
+		}
+		result, err = s.db.Exec(ctx, `INSERT INTO runner_lease_assignments (organization_id,lease_id,runner_id,assigned_at) VALUES ($1,$2,$3,$4)`, row.OrganizationID, row.LeaseID, row.RunnerID, row.AssignedAt)
+	} else {
+		result, err = s.db.Exec(ctx, `WITH bound AS (
+ UPDATE leases l SET runner_id=$3,project_id=i.project_id FROM issues i
+ WHERE l.organization_id=$1 AND l.lease_id=$2 AND l.runner_id IS NULL
+ AND i.organization_id=l.organization_id AND i.id=l.issue_id
+ RETURNING l.organization_id,l.lease_id
+)
+INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at)
+SELECT organization_id,lease_id,$3,$4 FROM bound`, row.OrganizationID, row.LeaseID, row.RunnerID, row.AssignedAt)
+	}
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if result.RowsAffected() != 1 {
+		return corestore.ErrNotFound
+	}
+	return nil
 }
 
 func (s *session) UpdateRunnerIdentity(ctx context.Context, row runnerstore.Identity) error {
@@ -1335,3 +1477,31 @@ func updateOwned(ctx context.Context, result pgconn.CommandTag, err error) error
 
 var _ runnerstore.Reader = (*session)(nil)
 var _ runnerstore.Writer = (*session)(nil)
+
+func (s *session) RunnerHasUnreleasedLease(ctx context.Context, runnerID string) (bool, error) {
+	return s.runnerUnreleasedMembership(ctx, runnerID, "")
+}
+
+func (s *session) RunnerHasUnreleasedProjectLease(ctx context.Context, runnerID string, project tracker.ProjectID) (bool, error) {
+	if project == "" {
+		return false, runnerstore.ErrInvalidRecord
+	}
+	return s.runnerUnreleasedMembership(ctx, runnerID, project)
+}
+
+func (s *session) runnerUnreleasedMembership(ctx context.Context, runnerID string, project tracker.ProjectID) (bool, error) {
+	if strings.TrimSpace(runnerID) == "" {
+		return false, runnerstore.ErrInvalidRecord
+	}
+	var machine string
+	if err := s.db.QueryRow(ctx, `SELECT machine_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2`, s.organization, runnerID).Scan(&machine); err != nil {
+		return false, mapError(ctx, err)
+	}
+	var present bool
+	if project == "" {
+		err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM leases WHERE organization_id=$1 AND runner_id=$2 AND machine_id=$3 AND released_at IS NULL AND runner_id IS NOT NULL)`, s.organization, runnerID, machine).Scan(&present)
+		return present, mapError(ctx, err)
+	}
+	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM leases WHERE organization_id=$1 AND runner_id=$2 AND machine_id=$3 AND project_id=$4 AND released_at IS NULL AND runner_id IS NOT NULL)`, s.organization, runnerID, machine, project).Scan(&present)
+	return present, mapError(ctx, err)
+}

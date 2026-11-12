@@ -55,6 +55,9 @@ func (s *Service) approveChangeReviewPolicyRecord(c echo.Context, request tracke
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	replay, found, err := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
 	if err != nil {
 		return s.nativeAPIError(c, err)

@@ -10,7 +10,6 @@ import (
 
 type APIError = api.APIError
 
-type ClaimRequest = api.ClaimRequest
 type Client = api.Client
 
 type Config = api.Config
@@ -30,7 +29,6 @@ var ErrUnavailable = api.ErrUnavailable
 type FleetClient = api.FleetClient
 
 type Machine = api.Machine
-type MachineHeartbeat = api.MachineHeartbeat
 
 type NativeClient = api.NativeClient
 type NativeConnector = api.NativeConnector
@@ -55,5 +53,3 @@ type SessionTimings = api.SessionTimings
 func WithMutationAuthority(ctx context.Context, scope string, lease tracker.NativeLease, cancellation func() error) context.Context {
 	return api.WithMutationAuthority(ctx, scope, lease, cancellation)
 }
-
-type WorkItem = api.WorkItem

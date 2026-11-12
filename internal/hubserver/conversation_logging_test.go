@@ -6,13 +6,16 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 // conversationLogSentinel is the message text every logging test sends. No
@@ -106,14 +109,10 @@ func requireConversationLogFields(t *testing.T, record map[string]any, want map[
 }
 
 // openConversationLogService opens a hub whose logger writes JSON into sink.
-// It mirrors openTestService, which pins a discarding logger.
 func openConversationLogService(t *testing.T, cfg Config, sink *conversationLogSink) *Service {
 	t.Helper()
 	if cfg.Content == nil {
 		cfg.Content = (&changeObjectFixture{}).call
-	}
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
 	}
 	if cfg.Conversation != nil && cfg.Conversation.ArchiveContents == nil {
 		conversationConfig := *cfg.Conversation
@@ -125,15 +124,10 @@ func openConversationLogService(t *testing.T, cfg Config, sink *conversationLogS
 	if len(cfg.InitialAdminToken) == 0 {
 		cfg.InitialAdminToken = []byte(testHubAdminToken)
 	}
-	service, err := Open(t.Context(), cfg)
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
+	service := openTestService(t, cfg)
+	if service.config.Postgres == nil {
+		t.Fatal("logging fixture requires PostgreSQL")
 	}
-	t.Cleanup(func() {
-		if err := service.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-	})
 	return service
 }
 
@@ -142,13 +136,13 @@ func openConversationLogService(t *testing.T, cfg Config, sink *conversationLogS
 func newConversationLogFixture(t *testing.T, cfg *ConversationConfig) (conversationAPIFixture, *conversationLogSink) {
 	t.Helper()
 	sink := &conversationLogSink{}
-	service := openConversationLogService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: cfg}, sink)
+	service := openConversationLogService(t, Config{Conversation: cfg}, sink)
 	f := newNativeFixture(t, service, "", "chat-logging")
-	var ownerID string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = ?", "operator-chat-logging").Scan(&ownerID); err != nil {
-		t.Fatal(err)
+	credential, status, err := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil || status != http.StatusOK || credential.ID == "" {
+		t.Fatalf("authenticate logging operator: status=%d error=%v", status, err)
 	}
-	return conversationAPIFixture{nativeFixture: f, ownerID: ownerID}, sink
+	return conversationAPIFixture{nativeFixture: f, ownerID: (nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}).actor().PrincipalID}, sink
 }
 
 // TestConversationLoggingCommandPath covers the diagnostics the operator API
@@ -258,66 +252,70 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 	// execution, one message and one receipt mid-delivery, one pending
 	// question, and one saved message on each wake path.
 	ctx := t.Context()
-	db := f.service.database.db
-	exec := func(query string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, query, args...); err != nil {
-			t.Fatalf("seed %q: %v", query, err)
-		}
-	}
-	executionRaw, err := json.Marshal(conversation.Execution{Status: conversation.ExecutionRunning})
-	if err != nil {
-		t.Fatal(err)
-	}
-	exec("UPDATE conversations SET execution_json=?,content_attachment_id='',execution_status=NULL,query_metadata_version=0 WHERE id = ?", string(executionRaw), unlinked.ID)
-	exec("UPDATE conversation_messages SET delivery = ? WHERE conversation_id = ? AND command_key = ?", conversation.DeliverySending, unlinked.ID, "u2")
-	receipt, found, err := f.service.conversations.readReceipt(ctx, f.service.database.reader, unlinked.ID, "u2")
-	if err != nil || !found {
-		t.Fatalf("read receipt: found=%v err=%v", found, err)
-	}
-	receipt.Status = conversation.DeliverySending
-	receiptRaw, err := json.Marshal(receipt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exec("UPDATE conversation_commands SET receipt_json=?,content_attachment_id='',receipt_status=NULL,query_metadata_version=0 WHERE conversation_id = ? AND key = ?", string(receiptRaw), unlinked.ID, "u2")
-	exec("UPDATE conversation_messages SET delivery = ? WHERE conversation_id = ? AND command_key = ?", conversation.DeliverySaved, unlinked.ID, "u1")
-	var messageID string
-	if err := db.QueryRowContext(ctx, "SELECT id FROM conversation_messages WHERE conversation_id = ? AND command_key = ?", unlinked.ID, "u2").Scan(&messageID); err != nil {
-		t.Fatalf("read seeded message: %v", err)
-	}
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	question := conversationQuestionRecord{Question: conversation.Question{
-		ID: conversation.NewQuestionID(), ConversationID: unlinked.ID, MessageID: messageID,
-		Status: conversation.QuestionPending, Prompts: []conversation.Prompt{{ID: "p", Question: "Continue?"}},
-		CreatedAt: now, UpdatedAt: now,
-	}}
-	questionRaw, err := questionPayload(question)
-	if err != nil {
-		t.Fatal(err)
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		stored, err := w.LockConversation(ctx, f.project.ID, unlinked.ID)
+		if err != nil {
+			return err
+		}
+		stored.Execution = conversation.Execution{Status: conversation.ExecutionRunning}
+		stored.ContentReference = ""
+		if _, err := w.UpdateConversation(ctx, stored, stored.Revision); err != nil {
+			return err
+		}
+		message, found, err := w.MessageByCommandKey(ctx, unlinked.ID, "u2")
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("normalization message was not stored")
+		}
+		message.Delivery = conversation.DeliverySending
+		if _, err := w.UpdateMessage(ctx, message, message.Revision); err != nil {
+			return err
+		}
+		command, found, err := w.Command(ctx, unlinked.ID, "u2")
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("normalization receipt was not stored")
+		}
+		command.Receipt.Status = conversation.DeliverySending
+		if err := w.UpdateCommand(ctx, command); err != nil {
+			return err
+		}
+		saved, found, err := w.MessageByCommandKey(ctx, unlinked.ID, "u1")
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("coordinator wake message was not stored")
+		}
+		saved.Delivery = conversation.DeliverySaved
+		if _, err := w.UpdateMessage(ctx, saved, saved.Revision); err != nil {
+			return err
+		}
+		return w.UpsertQuestion(ctx, conversationstore.Question{OrganizationID: f.project.OrganizationID, ConversationID: unlinked.ID, Question: conversation.Question{
+			ID: conversation.NewQuestionID(), ConversationID: unlinked.ID, MessageID: message.ID,
+			Status: conversation.QuestionPending, Prompts: []conversation.Prompt{{ID: "p", Question: "Continue?"}}, CreatedAt: now, UpdatedAt: now,
+		}})
+	}); err != nil {
+		t.Fatalf("seed restart state: %v", err)
 	}
-	ctx = prepareRecordTestPayload(t, conversationFixture{store: f.service.conversations.store}, conversationRecord{OrganizationID: f.project.OrganizationID}, questionRaw)
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("BeginTx() error = %v", err)
-	}
-	if err := f.service.conversations.store.upsertQuestion(ctx, tx, question); err != nil {
-		_ = tx.Rollback()
-		t.Fatalf("upsertQuestion() error = %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("Commit() error = %v", err)
-	}
-
-	// Restart on the same database and read what the new process reported.
-	databasePath := f.service.config.DatabasePath
+	config := f.service.config
+	databaseName := config.Postgres.Connection.Database
+	previousRepository := config.TenantRepository
+	config.Conversation = &ConversationConfig{Enabled: true, ControlQueueSize: 8, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir(), ArchiveContents: config.Conversation.ArchiveContents}
 	if err := f.service.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
+	config.TenantRepository, config.AccessRepository, config.BillingRepository = nil, nil, nil
 	sink := &conversationLogSink{}
-	// The restarted hub has a coordinator backend, so the saved message of
-	// the unlinked conversation is handed to the coordinator.
-	openConversationLogService(t, Config{DatabasePath: databasePath, Conversation: &ConversationConfig{Enabled: true, ControlQueueSize: 8, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir(), ArchiveContents: f.service.config.Conversation.ArchiveContents}}, sink)
+	restarted := openConversationLogService(t, config, sink)
+	if restarted.config.Postgres == nil || restarted.config.Postgres.Connection.Database != databaseName || restarted.config.TenantRepository == previousRepository {
+		t.Fatal("restart did not reopen the same PostgreSQL database with a new repository")
+	}
 
 	requireConversationLogFields(t, sink.only(t, "conversation.restart_normalized"), map[string]any{
 		"conversations": float64(1),

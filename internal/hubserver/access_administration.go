@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -164,7 +165,7 @@ func (s *Service) accessLocalMember(ctx context.Context, user string) (bool, str
 	var member accessstore.Member
 	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error { var err error; member, err = r.AccessMember(ctx, user); return err })
 	if errors.Is(err, corestore.ErrNotFound) && errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-		return false, "", nil
+		return false, "", sql.ErrNoRows
 	}
 	return member.Active, member.Role, err
 }

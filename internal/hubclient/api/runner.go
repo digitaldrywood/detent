@@ -31,6 +31,7 @@ import (
 type RunnerState struct {
 	problems             []runnerauth.Problem
 	settingsRejected     bool
+	configurations       map[tracker.ProjectID]runnerauth.ProjectConfiguration
 	routingMu            sync.Mutex
 	routing              *runnerauth.RoutingSnapshot
 	routingChanged       chan struct{}
@@ -643,6 +644,12 @@ func (r *RunnerState) ApplyRouting(snapshot runnerauth.RoutingSnapshot) {
 	if previous != nil && (previous.Routing.State != snapshot.Routing.State || !reflect.DeepEqual(previous.ClaimState, snapshot.ClaimState) || previous.Routing.Availability.Timezone != snapshot.Routing.Availability.Timezone || previous.Routing.Availability.HardDeadline != snapshot.Routing.Availability.HardDeadline || !slices.Equal(previous.Routing.Availability.Windows, snapshot.Routing.Availability.Windows) || !maps.Equal(previous.Routing.Availability.WindowSlots, snapshot.Routing.Availability.WindowSlots)) {
 		r.notifyClaimChange()
 	}
+	if snapshot.ProjectConfiguration != nil {
+		if r.configurations == nil {
+			r.configurations = make(map[tracker.ProjectID]runnerauth.ProjectConfiguration)
+		}
+		r.configurations[tracker.ProjectID(snapshot.ProjectConfiguration.ProjectID)] = *snapshot.ProjectConfiguration
+	}
 	r.routing = &snapshot
 }
 
@@ -792,4 +799,22 @@ func (c *NativeClient) hostMetricsSupported() bool {
 	c.client.capabilitiesMu.Lock()
 	defer c.client.capabilitiesMu.Unlock()
 	return slices.Contains(c.client.capabilities.Features, tracker.NativeHostMetricsCapability)
+}
+
+func (c *Client) CurrentProjectConfiguration(project tracker.ProjectID) *runnerauth.ProjectConfiguration {
+	c.runner.routingMu.Lock()
+	defer c.runner.routingMu.Unlock()
+	view, ok := c.runner.configurations[project]
+	if !ok {
+		return nil
+	}
+	raw, err := json.Marshal(view)
+	if err != nil {
+		return nil
+	}
+	var result runnerauth.ProjectConfiguration
+	if json.Unmarshal(raw, &result) != nil {
+		return nil
+	}
+	return &result
 }

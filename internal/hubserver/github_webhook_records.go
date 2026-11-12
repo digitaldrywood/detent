@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,6 +87,9 @@ func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verifiedByEntry boo
 		}
 		if prior.Digest != row.Digest || prior.EventType != event || prior.Repository != row.Repository {
 			return ErrWebhookDeliveryConflict
+		}
+		if err := owner.ObserveGitHubWebhookReceipt(ctx, row); err != nil {
+			return err
 		}
 		row = prior
 		return nil
@@ -190,6 +194,9 @@ func (s *Service) processGitHubWebhookRecord(ctx context.Context, row projectsto
 }
 
 func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScope, row projectstore.GitHubWebhook, payload githubWebhookPayload) error {
+	if row.EventType == "pull_request" {
+		return s.applyGitHubPullRequestWebhookRecord(ctx, scope, row, payload)
+	}
 	if row.EventType != "issues" && row.EventType != "issue_comment" {
 		return nil
 	}
@@ -245,7 +252,51 @@ func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScop
 		_, err = s.importGitHubSnapshotRecord(ctx, scope, key, tracker.GitHubIssuePreview{Number: number, ID: source.NodeID, URL: canonical}, snapshot, "Triage", nil)
 		return err
 	}
+	if row.EventType == "issues" && (row.Action == "closed" || row.Action == "reopened") {
+		provenance := snapshot.Provenance
+		provenance.ExternalID = "state:" + source.NodeID + ":" + row.Action + ":" + source.UpdatedAt.Format(time.RFC3339Nano)
+		if payload.Sender != nil && payload.Sender.Login != nil {
+			provenance.AuthorID = *payload.Sender.Login
+		}
+		snapshot.Comments = append(snapshot.Comments, tracker.GitHubIssueComment{Body: "GitHub issue " + row.Action + ": " + canonical, Provenance: provenance})
+	}
 	scope.scheduledRepair = s.observeImportedScheduledRepair(ctx, scope, snapshot)
 	_, err = s.applyLinkedIssueRecord(ctx, scope, linked.WorkItemID, "github.webhook", tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: key}, Snapshot: snapshot})
 	return err
+}
+
+func (s *Service) applyGitHubPullRequestWebhookRecord(ctx context.Context, scope nativeScope, row projectstore.GitHubWebhook, payload githubWebhookPayload) error {
+	source, _, complete := normalizeWebhookPullRequest(payload.PullRequest)
+	if !complete {
+		return errors.New("GitHub pull request webhook is incomplete")
+	}
+	canonical := "https://github.com/" + strings.ToLower(row.Repository) + "/pull/" + strconv.Itoa(source.Number)
+	if payload.Repository == nil || payload.Repository.FullName == nil || !strings.EqualFold(*payload.Repository.FullName, row.Repository) || !strings.EqualFold(source.URL, canonical) || !validCommitID(source.HeadSHA) || source.MergedAt.IsZero() && source.State != "open" && source.State != "closed" || !source.MergedAt.IsZero() && (source.State != "closed" || !validCommitID(source.MergeSHA)) {
+		return errors.New("GitHub pull request webhook identity is invalid")
+	}
+	observation := projectstore.GitHubPullRequestObservation{Repository: strings.ToLower(row.Repository), Number: source.Number, HeadSHA: source.HeadSHA, SourceUpdatedAt: source.UpdatedAt, ObservedAt: row.ReceivedAt, State: source.State, Draft: source.Draft, MergeSHA: &source.MergeSHA, BaseRef: &source.BaseRef, MergedBy: &source.MergedBy}
+	if payload.Repository.DefaultBranch != nil && strings.TrimSpace(*payload.Repository.DefaultBranch) != "" {
+		observation.RepositoryDefaultBranch = new(strings.TrimSpace(*payload.Repository.DefaultBranch))
+	}
+	if !source.MergedAt.IsZero() {
+		observation.State = "merged"
+		observation.MergedAt = new(source.MergedAt)
+	}
+	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Background, func(w tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		project, err := w.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(project.Settings.Repository, row.Repository) {
+			return nil
+		}
+		writer, ok := w.(projectstore.GitHubIntakeWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		return writer.RecordGitHubPullRequestSource(ctx, scope.project, row, observation)
+	})
 }

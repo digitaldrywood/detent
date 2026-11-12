@@ -2,6 +2,11 @@ package postgres
 
 func neutralChangeSourceSchemasV1() map[string]neutralCoreSourceSchema {
 	return map[string]neutralCoreSourceSchema{
+		"quality_landings": {seekKeys: []string{"version_id"}, columns: map[string]string{
+			"version_id":  "[0,\"version_id\",\"TEXT\",0,null,1,0]",
+			"record_json": "[1,\"record_json\",\"TEXT\",1,null,0,0]",
+			"landed_at":   "[2,\"landed_at\",\"TEXT\",0,null,0,0]",
+		}},
 		"change_requests": {seekKeys: []string{"id"}, columns: map[string]string{
 			"activity_created_at":         "[8,\"activity_created_at\",\"REAL\",0,null,0,0]",
 			"activity_current_version_id": "[9,\"activity_current_version_id\",\"TEXT\",0,null,0,0]",

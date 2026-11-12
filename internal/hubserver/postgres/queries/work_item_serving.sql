@@ -10,6 +10,10 @@ SELECT * FROM issues WHERE organization_id=sqlc.arg(organization_id) AND project
 -- name: WorkItemBySource :one
 SELECT * FROM issues WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND native_source_key=sqlc.arg(source_key);
 
+-- name: WorkItemByProvenance :one
+SELECT * FROM issues WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND provenance_provider=sqlc.arg(provenance_provider) AND provenance_external_id=sqlc.arg(provenance_external_id)
+ORDER BY number,id LIMIT 1;
+
 -- name: CommentBySource :one
 SELECT * FROM native_comments WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND source_key=sqlc.arg(source_key);
 

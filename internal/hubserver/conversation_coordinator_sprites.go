@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,7 +149,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 		return nil, nativePublicInvalid("Configure and enable the Sprite pool with set_sprite_pool before scaling up")
 	}
 	if call.Name == "scale_up_sprite_pool" {
-		if _, err := s.spritePoolAuthority(ctx, s.database.reader, scope); err != nil {
+		if _, err := s.spritePoolRecordAuthority(ctx, scope, nil); err != nil {
 			return nil, operatortool.ErrAccessDenied
 		}
 	}
@@ -187,7 +186,7 @@ func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope nat
 		if s.config.SecretKeys == nil || s.config.Hosted == nil {
 			return nativePublicInvalid("Sprite pools require hosted configuration and the organization secret store")
 		}
-		status, err := s.readSecretStatus(ctx, s.database.reader, scope)
+		status, err := s.readAccessSecretStatus(ctx, scope)
 		if err != nil {
 			return err
 		}
@@ -211,11 +210,7 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 		return chat.ActionExecution{}, coordinatorActionError(err)
 	}
 	if string(action.Kind) == "set_sprite_pool" {
-		err = s.executeSpritePoolSettingsCommand(ctx, scope, tracker.MutationForContext(ctx, action.RequestID), change, func(ctx context.Context, tx *sql.Tx, scope nativeScope) (spritePoolSettings, *string, error) {
-			settings, err := readSpritePoolSettings(ctx, tx, scope)
-			if err != nil {
-				return settings, nil, err
-			}
+		err = s.executeSpritePoolSettingsCommand(ctx, scope, tracker.MutationForContext(ctx, action.RequestID), change, func(settings spritePoolSettings) (spritePoolSettings, *string, error) {
 			change.Input.apply(&settings)
 			settings.Revision = change.Revision
 			if err := s.validateCoordinatorSpriteChange(ctx, scope, settings); err != nil {
@@ -240,22 +235,9 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 		if err := s.validateCoordinatorSpriteChange(ctx, scope, settings); err != nil {
 			return chat.ActionExecution{}, coordinatorActionError(err)
 		}
-		err = s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
-			if err := requireCredentialAuthority(ctx, tx, scope.credential, s.config.now()); err != nil {
-				return err
-			}
-			if _, err := s.spritePoolAuthority(ctx, tx, scope); err != nil {
-				return operatortool.ErrAccessDenied
-			}
-			var revision int64
-			if err := tx.QueryRowContext(ctx, `SELECT revision FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&revision); err != nil {
-				return err
-			}
-			if revision != settings.Revision {
-				return nativeConflict(tracker.Revision(revision))
-			}
-			return nil
-		})
+		if err = s.recheckProjectRecordMutation(ctx, scope); err == nil {
+			_, err = s.spritePoolRecordAuthority(ctx, scope, &settings.Revision)
+		}
 	}
 	if err != nil {
 		return chat.ActionExecution{}, coordinatorActionError(err)
@@ -265,7 +247,7 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 }
 
 func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeScope, view spritePoolView, connector string, project tracker.ProjectID) (any, error) {
-	secret, err := s.readSecretStatus(ctx, s.database.reader, scope)
+	secret, err := s.readAccessSecretStatus(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +275,7 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 			item["waiting_for"] = member.WaitingFor
 		}
 		if member.RunnerID != "" && member.State == "enrolled" {
-			r, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, member.RunnerID, s.config.now)
+			r, err := s.spritePoolRunner(ctx, scope, member.RunnerID)
 			if err != nil {
 				return nil, err
 			}

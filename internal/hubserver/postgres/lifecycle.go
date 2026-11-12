@@ -21,9 +21,10 @@ import (
 )
 
 type Config struct {
-	Connection pgtransport.Connection
-	Pool       PoolConfig
-	LeaseClock func() time.Time
+	Connection              pgtransport.Connection
+	Pool                    PoolConfig
+	LeaseClock              func() time.Time
+	ObserveSchemaValidation func(bool)
 }
 
 var ErrConnectionConfig = errors.New("PostgreSQL requires an explicit host, port, database, user and TLS mode without session overrides or credential discovery")
@@ -43,10 +44,15 @@ func Open(ctx context.Context, cfg Config, migrations fs.FS) (*Repository, error
 	if err != nil {
 		return nil, err
 	}
-	repository, err := NewRepository(ctx, pool, cfg.Pool)
+	repository, err := NewRepository(ctx, pool, cfg.Pool, cfg.LeaseClock)
 	if err == nil {
-		repository.leaseClock = cfg.LeaseClock
-		err = validateNativeSchema(ctx, pool, migrations)
+		err = func() error {
+			if observe := cfg.ObserveSchemaValidation; observe != nil {
+				observe(true)
+				defer observe(false)
+			}
+			return validateNativeSchema(ctx, pool, migrations)
+		}()
 	}
 	if err == nil {
 		err = ctx.Err()

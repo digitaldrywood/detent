@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,7 +116,7 @@ func newPostgresNativeService(t *testing.T, cfg Config) *Service {
 	} else {
 		primary = tracker.OrganizationID(cfg.Hosted.OrganizationID)
 		if err := repository.WriteTenant(t.Context(), primary, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: primary, Name: string(primary), Slug: strings.ReplaceAll(string(primary), "_", "-"), Local: true, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)})
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: primary, Name: string(primary), Slug: strings.ReplaceAll(string(primary), "_", "-"), CreatedAt: time.Now().UTC().Truncate(time.Microsecond)})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -551,7 +552,15 @@ func TestNativeWorkflowRefusalCode(t *testing.T) {
 			}
 			recorded = httptest.NewRecorder()
 			context = echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), recorded)
-			if err := service.nativeAPIError(context, validateNativeIssueIntake(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, tracker.CreateIssue{State: "Triage"})); err != nil {
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("fixture authentication=%d %v", status, err)
+			}
+			_, intakeErr := f.service.createNativeIssueCommand(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "unlinked-triage"}, Title: "Unlinked draft", Body: nativeContractTestBody, State: "Triage"})
+			if intakeErr == nil {
+				t.Fatal("unlinked Triage creation accepted")
+			}
+			if err := service.nativeAPIError(context, intakeErr); err != nil {
 				t.Fatal(err)
 			}
 			public := requireNativeCode(t, recorded, http.StatusUnprocessableEntity, "invalid_request")
@@ -622,7 +631,23 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 		}
 	}
 	t.Run("activity", func(t *testing.T) {
-		f := newPullRequestFixture(t, true)
+		clock := &leaseTestClock{value: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)}
+		f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}))
+		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(t.Context(), f.project.ID)
+			if err != nil {
+				return err
+			}
+			project.Settings.RepositoryEnabled = true
+			project.Settings.Repository, project.Settings.CheckoutRepository = "example/repo", "example/repo"
+			_, err = w.UpdateProjectRecord(t.Context(), project)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
 		path := f.base + "/work-items/" + string(f.issue.WorkItemID)
 		linked := f.create(t, "activity-linked")
 		unrelated := f.create(t, "activity-unrelated")
@@ -631,9 +656,9 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 		start := nativeStartedEvent(lease)
 		var comment, workpad tracker.NativeComment
 		var version tracker.ChangeVersion
-		changePath := f.changeFixture.path
-		if !f.issue.LastActivityAt.Equal(f.now) {
-			t.Fatalf("creation activity = %s, want %s", f.issue.LastActivityAt, f.now)
+		changePath := f.path
+		if !f.issue.LastActivityAt.Equal(clock.Now()) {
+			t.Fatalf("creation activity = %s, want %s", f.issue.LastActivityAt, clock.Now())
 		}
 		for index, test := range []struct {
 			name        string
@@ -696,8 +721,23 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions/"+version.ID+"/checks", f.token, changeTestResult(version)), http.StatusOK)
 			}},
 			{"PR event", false, true, func(t *testing.T, _ tracker.NativeIssue) {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE pull_requests SET issue_id = NULL, updated_at = ?, synchronized_at = ? WHERE repository_id = ?", formatHubTime(f.now), formatHubTime(f.now), f.repositoryID); err != nil {
+				key := projectstore.GitHubPullRequestRefreshKey{ProjectID: f.project.ID, ChangeID: version.ChangeID, Repository: "example/repo", Number: 1}
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.(projectstore.GitHubPullRequestRefreshWriter).RequestGitHubPullRequests(t.Context(), []projectstore.GitHubPullRequestRefresh{{GitHubPullRequestRefreshKey: key, WorkItemID: f.issue.WorkItemID, RequestedVersion: version.ID, RequestedHeadSHA: version.HeadSHA, RequestedAt: clock.Now()}})
+				}); err != nil {
 					t.Fatal(err)
+				}
+				for range 2 {
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+						owner := w.(projectstore.GitHubPullRequestRefreshWriter)
+						current, err := owner.GitHubPullRequestRefresh(t.Context(), key)
+						if err != nil {
+							return err
+						}
+						return owner.CompleteGitHubPullRequestRefresh(t.Context(), current, projectstore.GitHubPullRequestObservation{Repository: key.Repository, Number: key.Number, HeadSHA: version.HeadSHA, SourceUpdatedAt: clock.Now(), ObservedAt: clock.Now(), State: "open", Mergeable: new(true), Checks: tracker.CheckSummary{Status: "completed", Conclusion: "success", Total: 1, Passed: 1}, Reviews: tracker.ReviewSummary{State: "known", Decision: "approved", Approvals: 1}})
+					}); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}},
 			{"change landing", true, true, func(t *testing.T, _ tracker.NativeIssue) {
@@ -706,18 +746,18 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				before := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
-				f.now = f.now.Add(time.Duration(index+1) * 10 * time.Millisecond)
+				clock.Advance(time.Duration(index+1) * 10 * time.Millisecond)
 				test.apply(t, before)
 				after := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
 				wantUpdated := before.UpdatedAt
 				if test.editsIssue {
-					wantUpdated = f.now
+					wantUpdated = clock.Now()
 				}
-				if !after.LastActivityAt.Equal(f.now) || !after.UpdatedAt.Equal(wantUpdated) {
-					t.Fatalf("activity = %s, updated = %s; want %s, %s", after.LastActivityAt, after.UpdatedAt, f.now, wantUpdated)
+				if !after.LastActivityAt.Equal(clock.Now()) || !after.UpdatedAt.Equal(wantUpdated) {
+					t.Fatalf("activity = %s, updated = %s; want %s, %s", after.LastActivityAt, after.UpdatedAt, clock.Now(), wantUpdated)
 				}
 				linkedAfter := readWorkItem(t, f.nativeFixture, linked.WorkItemID, "")
-				if test.linkedEvent && (!linkedAfter.LastActivityAt.Equal(f.now) || !linkedAfter.UpdatedAt.Equal(linked.UpdatedAt)) {
+				if test.linkedEvent && (!linkedAfter.LastActivityAt.Equal(clock.Now()) || !linkedAfter.UpdatedAt.Equal(linked.UpdatedAt)) {
 					t.Fatalf("linked issue activity = %s, updated = %s", linkedAfter.LastActivityAt, linkedAfter.UpdatedAt)
 				}
 				if got := readWorkItem(t, f.nativeFixture, unrelated.WorkItemID, ""); !got.LastActivityAt.Equal(unrelated.LastActivityAt) {
@@ -748,7 +788,7 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 						t.Fatal(err)
 					}
 					var fields map[string]json.RawMessage
-					if err := json.Unmarshal(raw, &fields); err != nil || string(fields["last_activity_at"]) != strconv.Quote(formatHubTime(f.now)) {
+					if err := json.Unmarshal(raw, &fields); err != nil || string(fields["last_activity_at"]) != strconv.Quote(formatHubTime(clock.Now())) {
 						t.Fatalf("operator activity = %s, error = %v", fields["last_activity_at"], err)
 					}
 				}
@@ -757,7 +797,7 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 		latest := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "").LastActivityAt
 		for _, stamp := range []time.Time{latest.Add(-time.Nanosecond), latest.Truncate(time.Second), latest.Add(-time.Hour), latest} {
 			before := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
-			f.now = stamp
+			clock.Advance(stamp.Sub(clock.Now()))
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "older-" + formatHubTime(stamp)}, Body: "Older activity"}), http.StatusOK)
 			after := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
 			if !after.LastActivityAt.Equal(before.LastActivityAt) || !after.UpdatedAt.Equal(before.UpdatedAt) {
@@ -766,7 +806,7 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 			title := "Older edit " + formatHubTime(stamp)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "older-edit-" + formatHubTime(stamp)}, ExpectedRevision: after.Revision, Title: &title}), http.StatusOK)
 			edited := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
-			if !edited.LastActivityAt.Equal(latest) || !edited.UpdatedAt.Equal(stamp) {
+			if !edited.LastActivityAt.Equal(latest) || !edited.UpdatedAt.Equal(stamp.Truncate(time.Microsecond)) {
 				t.Fatalf("older edit activity = %s, updated = %s; want %s, %s", edited.LastActivityAt, edited.UpdatedAt, latest, stamp)
 			}
 		}
@@ -875,16 +915,36 @@ func TestNativeDependenciesDoNotLeakThroughCompatibility(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	native := f.create(t, "private-native-title")
-	_, legacyID := seedProjection(t, f.service.database.db)
-	var nativeID int64
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", native.WorkItemID).Scan(&nativeID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at) VALUES (?, ?, 'native', ?, ?)", legacyID, nativeID, testTimestamp, testTimestamp); err != nil {
-		t.Fatal(err)
-	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, fmt.Sprintf("/api/v1/work-items/%d", legacyID), testHubAdminToken, nil)
+	other := f.create(t, "current dependency owner")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(native.WorkItemID)+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "private-graph"}, ExpectedRevision: native.Revision, RelatedWorkItemID: other.WorkItemID, Operation: "add"})
 	requireNativeStatus(t, response, http.StatusOK)
+	current := readWorkItem(t, f, native.WorkItemID, "")
+	if current.WorkItemID != native.WorkItemID || current.Title != native.Title {
+		t.Fatalf("current v2 work item = %#v", current)
+	}
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err = f.service.resolveOperatorRecordReadItem(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, string(native.WorkItemID))
+	if err != nil || len(current.Dependencies) != 1 || current.Dependencies[0] != other.WorkItemID {
+		t.Fatalf("current dependency graph = %#v error=%v", current.Dependencies, err)
+	}
+	var nativeID, legacyID int64
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		item, err := r.WorkItem(t.Context(), f.project.ID, native.WorkItemID)
+		if err != nil {
+			return err
+		}
+		nativeID = item.ID
+		item, err = r.WorkItem(t.Context(), f.project.ID, other.WorkItemID)
+		legacyID = item.ID
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, fmt.Sprintf("/api/v1/work-items/%d", legacyID), testHubAdminToken, nil)
+	requireNativeStatus(t, response, http.StatusNotFound)
 	if strings.Contains(response.Body.String(), "private-native-title") {
 		t.Fatal("v1 exposed native graph content")
 	}
@@ -963,7 +1023,11 @@ func TestNativeTenantIsolationAndCursorBinding(t *testing.T) {
 		})
 	}
 	var legacyID int64
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", one.WorkItemID).Scan(&legacyID); err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		item, err := r.WorkItem(t.Context(), f.project.ID, one.WorkItemID)
+		legacyID = item.ID
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, fmt.Sprintf("/api/v1/work-items/%d", legacyID), testHubAdminToken, nil), http.StatusNotFound)
@@ -979,7 +1043,19 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 	request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "cross-project"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", f.token, request), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", testHubAdminToken, request), http.StatusOK)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET blocked_reason=?,blocked_reason_basis=? WHERE native_id=?", "Private dependency details.", dependencyBasis([]string{string(blocker.WorkItemID)}), issue.WorkItemID); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		owner := w.(corestore.DependencyReasonWriter)
+		return owner.CompareAndSwapDependencyReason(t.Context(), corestore.DependencyReason{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, Kind: "blocked", Reason: tracker.DependencyReason{Text: "Private dependency details.", Basis: dependencyBasis([]string{string(blocker.WorkItemID)}), Revision: 1}}, 0)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		reasons, err := r.(corestore.DependencyReasonReader).DependencyReasonRecords(t.Context(), f.project.ID, []tracker.NativeWorkItemID{issue.WorkItemID})
+		if err == nil && (len(reasons) != 1 || reasons[0].Reason.Text != "Private dependency details.") {
+			t.Fatalf("private dependency reason fixture = %#v", reasons)
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	drainTestNativeBoard(t, f.service)
@@ -997,6 +1073,17 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 				if test.suffix == "" {
 					var got tracker.NativeIssue
 					decodeHubResponse(t, response, &got)
+					if got.DependencyReady || !slices.Contains(got.OmittedFields, "dependency_ready") {
+						t.Fatalf("basic item read claimed scheduling readiness: %#v", got)
+					}
+					credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(token), "", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					got, err = f.service.resolveOperatorRecordReadItem(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, string(issue.WorkItemID))
+					if err != nil {
+						t.Fatal(err)
+					}
 					if got.DependencyReady != (token != testHubAdminToken) {
 						t.Fatalf("public readiness includes hidden blocker: ready=%v administrator=%v", got.DependencyReady, token == testHubAdminToken)
 					}
@@ -1017,24 +1104,26 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 			}
 		})
 	}
-	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := nativeScope{organization: f.project.OrganizationID, project: other.project.ID, credential: credential}
 	reference := fmt.Sprintf("%s#%d", other.project.ID, blocker.Number)
-	if _, err := resolveNativeBlockerReference(t.Context(), f.service.database.db, scope, reference); err == nil {
+	if _, err := f.service.resolveOperatorRecordReadItem(t.Context(), scope, reference); err == nil {
 		t.Fatal("recorded predicate resolved without its project grant")
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/tokens/"+credential.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": f.project.OrganizationID, "project_id": other.project.ID}), http.StatusNoContent)
-	resolved, err := resolveNativeBlockerReference(t.Context(), f.service.database.db, scope, reference)
+	resolved, err := f.service.resolveOperatorRecordReadItem(t.Context(), scope, reference)
 	if err != nil || resolved.WorkItemID != blocker.WorkItemID || resolved.Terminal {
 		t.Fatalf("granted native predicate resolution = %+v, %v", resolved, err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id = ? AND project_id = ?", credential.ID, other.project.ID); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteAccessTokenGrant(t.Context(), credential.ID, other.project.ID)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveNativeBlockerReference(t.Context(), f.service.database.db, scope, reference); err == nil {
+	if _, err := f.service.resolveOperatorRecordReadItem(t.Context(), scope, reference); err == nil {
 		t.Fatal("recorded predicate retained removed project authority")
 	}
 }
@@ -1078,7 +1167,7 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			current := readWorkItem(t, f, a.WorkItemID, "")
 			var beforeVersions, beforeEvents int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", a.WorkItemID, a.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
+			if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3)", f.project.OrganizationID, f.project.ID, a.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
 				t.Fatal(err)
 			}
 			request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedRevision: current.Revision, RelatedWorkItemID: test.target, Operation: test.operation, RelationshipType: test.relationship}
@@ -1091,7 +1180,7 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 				increment = 1
 			}
 			var versions, events int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", a.WorkItemID, a.WorkItemID).Scan(&versions, &events); err != nil {
+			if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3)", f.project.OrganizationID, f.project.ID, a.WorkItemID).Scan(&versions, &events); err != nil {
 				t.Fatal(err)
 			}
 			if after.Revision != current.Revision+tracker.Revision(increment) || versions != beforeVersions+increment || events != beforeEvents+increment {
@@ -1122,25 +1211,6 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 	if len(page.Items) != 1 || page.NextCursor == "" {
 		t.Fatalf("history page = %#v", page)
 	}
-}
-
-func createNativeFixtureIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
-	descriptor := hubTestPolicy()
-	raw, err := json.Marshal(descriptor)
-	if err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	policyScope := string(scope.organization) + "/" + string(scope.project)
-	if _, err := tx.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, 'fixture', ?) ON CONFLICT DO NOTHING", policyScope, descriptor.ID, string(raw), formatHubTime(now)); err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT DO NOTHING", policyScope, descriptor.ID); err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	if !strings.Contains(request.Body, "## Acceptance criteria") {
-		request.Body += issueContractTestSections
-	}
-	return createNativeIssueTx(ctx, tx, scope, request, now)
 }
 
 func TestNativeNewestIssuePages(t *testing.T) {
@@ -1220,8 +1290,8 @@ func TestNativeFixturePostgresCallers(t *testing.T) {
 				t.Fatal("fixture replaced caller service")
 			}
 			service = first.service
-			if service.database.postgres == nil || service.database.db != nil || service.database.reader != nil {
-				t.Fatal("fixture requires PostgreSQL without legacy handles")
+			if service.database.postgres == nil || service.config.TenantRepository == nil {
+				t.Fatal("required PostgreSQL fixture owners are not configured")
 			}
 			second := newNativeFixture(t, service, first.project.OrganizationID, "Second project")
 			for _, fixture := range []nativeFixture{first, second} {

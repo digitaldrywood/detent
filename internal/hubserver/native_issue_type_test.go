@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -11,16 +10,15 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -194,40 +192,70 @@ func TestNativeIssueTypes(t *testing.T) {
 
 func TestNativeIssueTypeMigration(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "issue-type-migration")
-	first, second := f.create(t, "Existing bug label"), f.create(t, "Existing enhancement label")
-	if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE issues DROP COLUMN issue_type"); err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
+	fixture := coreWorkItemNeutralFixture(t, f.project.OrganizationID, f.project.ID, false)
+	cases := []struct {
 		id    tracker.NativeWorkItemID
 		label string
-	}{{first.WorkItemID, "bug"}, {second.WorkItemID, "enhancement"}} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET labels_json=? WHERE native_id=?", "[\""+test.label+"\"]", test.id); err != nil {
+	}{{"wi_core_import", "bug"}, {"wi_core_import_second", "enhancement"}}
+	for _, test := range cases {
+		labels, err := json.Marshal([]string{test.label})
+		if err != nil {
 			t.Fatal(err)
 		}
-		syncNativeIssueFixtureFacts(t, f.service.database.db, test.id)
-	}
-	data, err := migrationFiles.ReadFile("migrations/20261013150500_issue_type.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, fstest.MapFS{"20261013150500_issue_type.sql": &fstest.MapFile{Data: data}}, goose.WithDisableGlobalRegistry(true), goose.WithTableName("issue_type_migration_test"), goose.WithSlog(discardLogger()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Up(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		id    tracker.NativeWorkItemID
-		label string
-	}{{first.WorkItemID, "bug"}, {second.WorkItemID, "enhancement"}} {
-		var stored sql.NullString
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT issue_type FROM issues WHERE native_id=?", test.id).Scan(&stored); err != nil {
+		fixture.set("issues", map[string]string{"native_id": string(test.id)}, map[string]any{"issue_type": nil, "labels_json": string(labels)})
+		var base, patch []byte
+		for _, row := range fixture.records["collaboration_versions"] {
+			var id, raw string
+			var revision int64
+			if err := row.Decode(map[string]any{"record_id": &id, "revision": &revision, "record_json": &raw}); err != nil {
+				t.Fatal(err)
+			}
+			if id != string(test.id) {
+				continue
+			}
+			if revision == 1 {
+				base = []byte(raw)
+			} else {
+				patch = []byte(raw)
+			}
+		}
+		current, err := applyNativeVersionPatch(base, patch)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if stored.Valid {
-			t.Fatalf("existing type=%v", stored)
+		for _, raw := range []*[]byte{&base, &current} {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(*raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			fields["labels"], fields["type"] = labels, json.RawMessage("null")
+			*raw, err = json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		fixture.set("collaboration_versions", map[string]string{"record_id": string(test.id), "revision": "1"}, map[string]any{"encoding": "snapshot", "record_json": string(base)})
+		patch, encoding, err := encodeNativeVersion(base, "snapshot", current, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.set("collaboration_versions", map[string]string{"record_id": string(test.id), "revision": "2"}, map[string]any{"encoding": encoding, "record_json": string(patch)})
+	}
+	source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	if count, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || count != 2 {
+		t.Fatalf("historical issue import count=%d error=%v", count, err)
+	}
+	for _, test := range cases {
+		var stored corestore.WorkItem
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			stored, err = r.WorkItem(t.Context(), f.project.ID, test.id)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if stored.IssueType != "" {
+			t.Fatalf("existing type=%v", stored.IssueType)
 		}
 		page, err := f.service.readIssues(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, url.Values{"label": {test.label}})
 		if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != test.id || page.Items[0].Type != "" {

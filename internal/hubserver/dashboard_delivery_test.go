@@ -3,15 +3,12 @@ package hubserver
 import (
 	"bufio"
 	"context"
-	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,8 +16,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -48,29 +50,11 @@ func controlledHostedDelivery(t *testing.T, cfg dashboardDeliveryConfig, configu
 
 func hostedDeliveryHead(t *testing.T, f hostedSecurityFixture) int64 {
 	t.Helper()
-	head, _, err := readDashboardWatermark(t.Context(), f.service.database.reader, nativeScope{organization: "org_security", project: f.project})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return head
-}
-
-func appendHostedDeliveryLane(t *testing.T, f hostedSecurityFixture, name string) int64 {
-	t.Helper()
-	var seq int64
-	if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
-		return tx.QueryRowContext(t.Context(), "INSERT INTO native_board_deltas(organization_id,project_id,topic,entity_id) VALUES('org_security',?,'lane',?) RETURNING sequence", f.project, name).Scan(&seq)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return seq
+	return dashboardPostgresHead(t, f)
 }
 
 func pumpHostedDelivery(t *testing.T, d *dashboardDelivery) {
 	t.Helper()
-	if err := d.recover(t.Context(), d.service.database.reader); err != nil {
-		t.Fatal(err)
-	}
 	d.changed()
 	for d.remaining > 0 {
 		d.deliver(t.Context())
@@ -86,15 +70,11 @@ func readHostedCursorFrame(t *testing.T, r *bufio.Reader, event string, sequence
 	return frame
 }
 
-func anotherHostedDeliveryProject(t *testing.T, f hostedSecurityFixture, user hostedSecurityUser) hostedSecurityFixture {
+func readHostedItemFrames(t *testing.T, r *bufio.Reader, sequence int64) sseFrame {
 	t.Helper()
-	other := f
-	other.project = "prj_stream_other"
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) SELECT ?,organization_id,'Other project',profile,states_json,created_at,0 FROM projects WHERE id=?", other.project, f.project); err != nil {
-		t.Fatal(err)
-	}
-	other.grant(t, user, false, false)
-	return other
+	frame := readHostedCursorFrame(t, r, "work_item", sequence-1)
+	readHostedCursorFrame(t, r, "human_action", sequence)
+	return frame
 }
 
 func TestHostedEventsReplay(t *testing.T) {
@@ -112,12 +92,12 @@ func TestHostedEventsReplay(t *testing.T) {
 			otherStream := openHostedTestStream(t, other, user, "?since=0")
 			pumpHostedDelivery(t, d)
 			for _, seq := range []int64{first, second, third} {
-				frame := readHostedCursorFrame(t, stream, "work_item", seq)
+				frame := readHostedItemFrames(t, stream, seq)
 				if strings.Contains(frame.Data, "other") {
 					t.Fatal("cross-project content")
 				}
 			}
-			readHostedCursorFrame(t, otherStream, "work_item", otherSeq)
+			readHostedItemFrames(t, otherStream, otherSeq)
 			query := "?since=" + strconv.FormatInt(first, 10)
 			last := ""
 			if header {
@@ -126,8 +106,8 @@ func TestHostedEventsReplay(t *testing.T) {
 			}
 			replay := openHostedTestCursorStream(t, f, user, query, last)
 			pumpHostedDelivery(t, d)
-			readHostedCursorFrame(t, replay, "work_item", second)
-			readHostedCursorFrame(t, replay, "work_item", third)
+			readHostedItemFrames(t, replay, second)
+			readHostedItemFrames(t, replay, third)
 			d.mu.Lock()
 			sub := d.subs.Back().Value.(*dashboardSubscription)
 			d.mu.Unlock()
@@ -160,7 +140,7 @@ func TestHostedEventsReset(t *testing.T) {
 			if test == "trim between pages" {
 				d.changed()
 				d.deliver(t.Context())
-				readHostedCursorFrame(t, stream, "work_item", first)
+				readHostedCursorFrame(t, stream, "work_item", first-1)
 				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM native_board_deltas WHERE organization_id='org_security' AND project_id=$1 AND sequence<=$2", f.project, head); err != nil {
 					t.Fatal(err)
 				}
@@ -181,17 +161,28 @@ func TestHostedEventsReset(t *testing.T) {
 
 func TestHostedEventsAuthorizationCheckpointAndIdleRevocation(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{pageSize: 1})
-	hidden := f.seedIssue(t, 1)
-	reporter := f.user(t, "stream-reporter", "reporter", "reporter@example.test", "write", "")
-	before := hostedDeliveryHead(t, f)
-	var filtered int64
-	if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
-		return tx.QueryRowContext(t.Context(), "INSERT INTO native_board_deltas(organization_id,project_id,topic,entity_id,entity_revision) VALUES('org_security',?,'work_item',?,99) RETURNING sequence", f.project, hidden).Scan(&filtered)
+	f, _, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{pageSize: 1})
+	hidden := dashboardPostgresIssue(t, f, 1)
+	reporter := f.user(t, "stream-reporter", "reporter", "reporter@example.test", "", "")
+	dashboardPostgresGrant(t, f, reporter)
+	before := dashboardPostgresHead(t, f)
+	repository := f.service.config.TenantRepository
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		item, err := w.WorkItem(t.Context(), f.project, hidden)
+		if err != nil {
+			return err
+		}
+		item.Title = "Hidden current source"
+		_, err = w.UpdateWorkItem(t.Context(), item)
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	visible := appendHostedDeliveryLane(t, f, "visible")
+	filtered := dashboardPostgresHead(t, f)
+	if filtered != before+1 {
+		t.Fatalf("hidden source notice=%d want %d", filtered, before+1)
+	}
+	visible := appendDashboardPostgresLane(t, f)
 	stream := openHostedTestStream(t, f, reporter, "?since="+strconv.FormatInt(before, 10))
 	pumpHostedDelivery(t, d)
 	frame := readHostedCursorFrame(t, stream, "checkpoint", filtered)
@@ -199,64 +190,43 @@ func TestHostedEventsAuthorizationCheckpointAndIdleRevocation(t *testing.T) {
 		t.Fatalf("filtered content=%q", frame.Data)
 	}
 	readHostedCursorFrame(t, stream, "lane", visible)
-	conn, err := f.service.database.reader.Conn(t.Context())
-	if err != nil {
+	pumpHostedDelivery(t, d)
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteAccessProjectGrant(t.Context(), reporter.identity.Subject, f.project)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	if err := d.recover(t.Context(), conn); err != nil {
-		t.Fatal(err)
+	if head := dashboardPostgresHead(t, f); head != visible {
+		t.Fatalf("grant revocation changed project head: %d want %d", head, visible)
 	}
-	for d.remaining > 0 {
-		d.deliver(t.Context())
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=?", reporter.identity.Subject); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.recover(t.Context(), conn); err != nil {
-		t.Fatal(err)
-	}
-	for d.remaining > 0 {
-		d.deliver(t.Context())
-	}
+	pumpHostedDelivery(t, d)
 	readHostedCursorFrame(t, stream, "reset", visible)
-	_, err = readSSEFrame(stream)
-	if !errors.Is(err, io.EOF) {
+	if _, err := readSSEFrame(stream); !errors.Is(err, io.EOF) {
 		t.Fatalf("revoked stream=%v", err)
 	}
-	_ = user
 }
 
 func TestHostedEventsRecoveryAndAdmissionBudget(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{budget: 1, tenantLimit: 2})
-	other := anotherHostedDeliveryProject(t, f, user)
-	before := hostedDeliveryHead(t, f)
+	f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{budget: 1, tenantLimit: 2})
+	other := dashboardPostgresProject(t, f, user)
+	before := dashboardPostgresHead(t, f)
 	stream := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
 	otherStream := openHostedTestStream(t, other, user, "?since=0")
 	requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/"+string(f.project)+"/events?since=0", nil), http.StatusTooManyRequests)
 	pumpHostedDelivery(t, d)
-	conn, err := f.service.database.reader.Conn(t.Context())
-	if err != nil {
-		t.Fatal(err)
+	select {
+	case <-f.service.database.dashboardCommitted:
+	default:
 	}
-	defer conn.Close()
-	if err := d.recover(t.Context(), conn); err != nil {
-		t.Fatal(err)
-	}
-	for d.remaining > 0 {
-		d.deliver(t.Context())
-	}
-	first := appendHostedDeliveryLane(t, f, "first")
-	second := appendHostedDeliveryLane(t, other, "second")
+	first := appendDashboardPostgresLane(t, f)
+	second := appendDashboardPostgresLane(t, other)
 	select {
 	case <-f.service.database.dashboardCommitted:
 	default:
 		t.Fatal("no commit notification")
 	}
-	if err := d.recover(t.Context(), conn); err != nil {
-		t.Fatal(err)
-	}
+	d.changed()
 	d.deliver(t.Context())
 	if d.remaining != 1 {
 		t.Fatalf("recovery did not preserve budget continuation: %d", d.remaining)
@@ -268,17 +238,18 @@ func TestHostedEventsRecoveryAndAdmissionBudget(t *testing.T) {
 
 func TestHostedEventsReplayLiveHandoff(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{pageSize: 1, budget: 1})
-	before := hostedDeliveryHead(t, f)
-	first := appendHostedDeliveryLane(t, f, "first")
+	f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{pageSize: 1, budget: 1})
+	before := dashboardPostgresHead(t, f)
+	first := appendDashboardPostgresLane(t, f)
 	stream := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
+	select {
+	case <-f.service.database.dashboardCommitted:
+	default:
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	barrier := make(chan struct{})
-	committed := make(chan struct {
-		sequence int64
-		err      error
-	}, 1)
+	committed := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -287,35 +258,33 @@ func TestHostedEventsReplayLiveHandoff(t *testing.T) {
 		case <-ctx.Done():
 			return
 		}
-		var seq int64
-		err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-			return tx.QueryRowContext(ctx, "INSERT INTO native_board_deltas(organization_id,project_id,topic,entity_id) VALUES('org_security',?,'lane','handoff') RETURNING sequence", f.project).Scan(&seq)
+		committed <- f.service.config.TenantRepository.WriteTenant(ctx, "org_security", corestore.Background, func(w tenantstore.Writer) error {
+			return dashboardPostgresLane(ctx, w, f.project)
 		})
-		committed <- struct {
-			sequence int64
-			err      error
-		}{seq, err}
 	}()
 	t.Cleanup(func() { cancel(); <-done })
-	var second int64
 	var once sync.Once
-	traced := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-		if strings.Contains(query, "SELECT sequence,topic,entity_id") {
+	traced := postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, query string) {
+		if strings.Contains(query, "FROM native_board_deltas WHERE") {
 			once.Do(func() {
 				close(barrier)
-				result := <-committed
-				if result.err != nil {
-					t.Fatal(result.err)
+				select {
+				case err := <-committed:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
 				}
-				second = result.sequence
 			})
 		}
-	}})
+	})
 	d.changed()
 	d.deliver(traced)
 	readHostedCursorFrame(t, stream, "lane", first)
-	if second <= first {
-		t.Fatal("handoff barrier did not commit after the replay snapshot")
+	second := dashboardPostgresHead(t, f)
+	if second != first+1 {
+		t.Fatal("handoff barrier did not commit one notice after the replay snapshot")
 	}
 	select {
 	case <-f.service.database.dashboardCommitted:
@@ -336,70 +305,59 @@ func TestHostedEventsReplayLiveHandoff(t *testing.T) {
 
 func TestHostedEventsIdleHeartbeatReads(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{})
-	other := anotherHostedDeliveryProject(t, f, user)
-	head := hostedDeliveryHead(t, f)
-	stream := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(head, 10))
+	trace := &dispatchWaitPostgresTrace{}
+	f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{}, func(c *pgxpool.Config) {
+		c.ConnConfig.Tracer = trace
+	})
+	other := dashboardPostgresProject(t, f, user)
+	head := dashboardPostgresHead(t, f)
+	query := "?since=" + strconv.FormatInt(head, 10)
+	openHostedTestStream(t, f, user, query)
+	openHostedTestStream(t, f, user, query)
 	pumpHostedDelivery(t, d)
-	conn, err := f.service.database.reader.Conn(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	if err := d.recover(t.Context(), conn); err != nil {
-		t.Fatal(err)
-	}
-	for d.remaining > 0 {
-		d.deliver(t.Context())
-	}
-	var queries atomic.Int64
-	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(string, []driver.NamedValue) { queries.Add(1) }})
-	for range 3 {
-		if err := d.recover(ctx, conn); err != nil {
-			t.Fatal(err)
+
+	var reads, otherStatements int
+	ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, statement string) {
+		switch {
+		case strings.HasPrefix(statement, "WITH project_state AS MATERIALIZED"):
+			reads++
+		case statement != "COMMIT":
+			otherStatements++
 		}
-		d.deliver(ctx)
+	})
+	recover := func(want int) {
+		t.Helper()
+		reads, otherStatements = 0, 0
+		for range want {
+			d.changed()
+			d.deliver(ctx)
+		}
+		if reads != want || otherStatements != 0 {
+			t.Fatalf("idle recovery: %d shared project reads and %d other statements, want %d shared reads for two subscribers", reads, otherStatements, want)
+		}
 	}
-	if queries.Load() != 6 {
-		t.Fatalf("idle subscription performed reads: %d, want only six shared recovery reads", queries.Load())
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET last_used_at=created_at"); err != nil {
+	recover(3)
+	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET last_used_at=created_at WHERE organization_id='org_security'"); err != nil {
 		t.Fatal(err)
 	}
-	queries.Store(0)
-	if err := d.recover(ctx, conn); err != nil {
-		t.Fatal(err)
-	}
-	d.deliver(ctx)
-	if queries.Load() != 2 {
-		t.Fatalf("unrelated bookkeeping woke an idle stream: %d queries", queries.Load())
-	}
-	appendHostedDeliveryLane(t, other, "other-project")
-	queries.Store(0)
-	if err := d.recover(ctx, conn); err != nil {
-		t.Fatal(err)
-	}
-	for d.remaining > 0 {
-		d.deliver(ctx)
-	}
-	if queries.Load() != 3 {
-		t.Fatalf("other project delivery performed subscriber reads: %d queries", queries.Load())
-	}
-	queries.Store(0)
+	recover(1)
+	appendDashboardPostgresLane(t, other)
+	recover(1)
+
 	heartbeat := make(chan time.Time, 1)
 	d.config.newTimer = func(time.Duration) dashboardTimer {
 		return dashboardTimer{channel: heartbeat, reset: func(time.Duration) {}, stop: func() {}}
 	}
-	second := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(head, 10))
+	heartbeatStream := openHostedTestStream(t, f, user, query)
+	before := trace.queries.Load()
 	heartbeat <- time.Now()
-	frame, err := readSSEFrame(second)
+	frame, err := readSSEFrame(heartbeatStream)
 	if err != nil || frame.ID != "" || frame.Event != "" || frame.Data != "" {
 		t.Fatalf("heartbeat carries a cursor or content: %+v %v", frame, err)
 	}
-	if queries.Load() != 0 {
+	if trace.queries.Load() != before {
 		t.Fatal("heartbeat read the database")
 	}
-	_ = stream
 }
 
 func TestHostedEventsSlowConsumerResumes(t *testing.T) {
@@ -427,7 +385,7 @@ func TestHostedEventsSlowConsumerResumes(t *testing.T) {
 	replay := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
 	pumpHostedDelivery(t, d)
 	for _, seq := range sequences {
-		readHostedCursorFrame(t, replay, "work_item", seq)
+		readHostedItemFrames(t, replay, seq)
 	}
 	_ = slow
 }
@@ -451,15 +409,13 @@ func TestHostedEventsTwoHubOwnersRecoverOtherWriter(t *testing.T) {
 	for i, source := range []hostedSecurityFixture{f, secondFixture} {
 		seq := dashboardPostgresAppend(t, source, fmt.Sprintf("writer-%d", i))
 		for _, owner := range []*dashboardDelivery{first, second} {
-			if err := owner.recover(t.Context(), nil); err != nil {
-				t.Fatal(err)
-			}
+			owner.changed()
 			for owner.remaining > 0 {
 				owner.deliver(t.Context())
 			}
 		}
-		readHostedCursorFrame(t, streamOne, "work_item", seq)
-		readHostedCursorFrame(t, streamTwo, "work_item", seq)
+		readHostedItemFrames(t, streamOne, seq)
+		readHostedItemFrames(t, streamTwo, seq)
 	}
 }
 
@@ -475,14 +431,44 @@ func TestHostedEventsActionRunDelivery(t *testing.T) {
 	stream := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
 	now := f.service.config.now()
 	var sequence int64
-	if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
-		if err := insertProjectAction(t.Context(), tx, actionRecord{ID: "action_events", OrganizationID: "org_security", ProjectID: f.project, Name: "Example action", Command: "true", Icon: "play", CreatedBy: user.identity.Subject, Revision: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
+	command, err := f.service.runDetailStore().StoreDetail(t.Context(), "org_security", []byte("true"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		workspaceOwner := w.(postgres.WorkspaceWriter)
+		current, err := workspaceOwner.WorkspaceSession(t.Context(), f.project, workspace.ID)
+		if err != nil {
 			return err
 		}
-		if err := insertProjectActionRun(t.Context(), tx, actionRunRecord{ID: "actionrun_events", ActionID: "action_events", OrganizationID: "org_security", ProjectID: f.project, WorkspaceID: workspace.ID, Command: "true", Status: "queued", CreatedBy: user.identity.Subject, Revision: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
+		if _, err := workspaceOwner.UpdateWorkspaceSession(t.Context(), postgres.WorkspaceUpdate{OrganizationID: current.OrganizationID, ProjectID: current.ProjectID, ID: current.ID, ExpectedRevision: current.Revision, ExpectedRunnerID: current.RunnerID, ExpectedLeaseID: current.LeaseID, ExpectedFencingToken: current.FencingToken, State: workspacesession.StateStarting, UpdatedAt: now}); err != nil {
 			return err
 		}
-		return tx.QueryRowContext(t.Context(), "SELECT sequence FROM native_board_deltas WHERE topic='action_run' AND entity_id='actionrun_events'").Scan(&sequence)
+		owner := w.(postgres.RelayActionWriter)
+		if err := owner.CreateProjectAction(t.Context(), actionstore.Record{Action: workspacesession.Action{ID: "action_events", OrganizationID: "org_security", ProjectID: string(f.project), Name: "Example action", Icon: "play", CreatedBy: user.identity.Subject, Revision: 1, CreatedAt: now, UpdatedAt: now}, Command: command}); err != nil {
+			return err
+		}
+		if _, err := owner.CreateActionRun(t.Context(), postgres.CreateActionRunInput{ID: "actionrun_events", ActionID: "action_events", OrganizationID: "org_security", ProjectID: f.project, WorkspaceID: workspace.ID, CreatedBy: user.identity.Subject, CreatedAt: now}); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+		rows, err := r.BoardDeltas(t.Context(), f.project, before, corestore.MaxPageSize)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.Topic == "action_run" && row.EntityID == "actionrun_events" {
+				sequence = row.Sequence
+			}
+		}
+		if sequence == 0 {
+			return errors.New("action run did not publish a dashboard delta")
+		}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -497,8 +483,6 @@ func TestHostedEventsActionRunDelivery(t *testing.T) {
 func TestHostedEventsCommitWakeAndRecoveryTimer(t *testing.T) {
 	t.Parallel()
 	recovery := make(chan time.Time, 1)
-	var clock atomic.Int64
-	clock.Store(time.Now().UnixNano())
 	cfg := dashboardDeliveryConfig{newTimer: func(d time.Duration) dashboardTimer {
 		var ch <-chan time.Time
 		if d > 100*time.Millisecond && d < 2*time.Second {
@@ -506,28 +490,20 @@ func TestHostedEventsCommitWakeAndRecoveryTimer(t *testing.T) {
 		}
 		return dashboardTimer{channel: ch, reset: func(time.Duration) {}, stop: func() {}}
 	}}
-	f := newHostedSecurityFixture(t, func(c *Config) {
-		c.dashboardDelivery = &cfg
-		c.now = func() time.Time { return time.Unix(0, clock.Load()) }
-	})
-	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-		t.Fatal(err)
-	}
-	user := f.user(t, "timer-viewer", "viewer", "timer@example.test", "read", "")
-	head := hostedDeliveryHead(t, f)
+	f, _, d := controlledPostgresDelivery(t, cfg)
+	user := f.user(t, "timer-viewer", "viewer", "timer@example.test", "", "")
+	dashboardPostgresGrant(t, f, user)
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	f.service.config.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	head := dashboardPostgresHead(t, f)
+	d.start()
 	stream := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(head, 10))
-	first := appendHostedDeliveryLane(t, f, "commit-notification")
+	first := appendDashboardPostgresLane(t, f)
 	readHostedCursorFrame(t, stream, "lane", first)
 	clock.Add(int64(15 * time.Second))
-	writer, err := sql.Open("sqlite", sqliteWriterDSN(f.service.database.path, f.service.config.BusyTimeout, true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer writer.Close()
-	var second int64
-	if err := writer.QueryRowContext(t.Context(), "INSERT INTO native_board_deltas(organization_id,project_id,topic,entity_id) VALUES('org_security',?,'lane','missed-notification') RETURNING sequence", f.project).Scan(&second); err != nil {
-		t.Fatal(err)
-	}
+	f.service.database.postgres.SetBoardCommitNotifier(nil)
+	second := appendDashboardPostgresLane(t, f)
 	recovery <- time.Now()
 	readHostedCursorFrame(t, stream, "lane", second)
 	if err := f.provider.RevokeSession(t.Context(), user.identity.Hosted.SessionID); err != nil {
@@ -536,7 +512,7 @@ func TestHostedEventsCommitWakeAndRecoveryTimer(t *testing.T) {
 	clock.Add(int64(6 * time.Second))
 	recovery <- time.Now()
 	readHostedCursorFrame(t, stream, "reset", second)
-	_, err = readSSEFrame(stream)
+	_, err := readSSEFrame(stream)
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("idle provider revocation did not close: %v", err)
 	}
@@ -566,14 +542,15 @@ func TestHostedEventsLegacyBoardFiltersAndGap(t *testing.T) {
 			if err := json.Unmarshal([]byte(frame.Data), &board); err != nil {
 				t.Fatal(err)
 			}
-			total := 0
-			if board.Work == nil {
-				t.Fatal("missing legacy summary")
+			if !board.CountsIndependent || board.Work != nil {
+				t.Fatalf("board frame replaces independently loaded counts: %+v", board)
 			}
-			for _, lane := range board.Work.Lanes {
-				total += lane.Total
-			}
-			if board.Gap != test.gap || len(board.Deltas) != 0 || total != test.total || board.GrantVersion == "" {
+			var page tracker.NativeIssuePage
+			response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board"+test.query, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &page)
+			total := len(page.Cards)
+			if board.Gap != test.gap || len(board.Deltas) != 0 || total != test.total || board.GrantVersion == "" || board.GrantVersion != page.GrantVersion {
 				t.Fatalf("legacy frame=%+v total=%d want gap=%t total=%d", board, total, test.gap, test.total)
 			}
 		})
@@ -582,45 +559,40 @@ func TestHostedEventsLegacyBoardFiltersAndGap(t *testing.T) {
 
 func TestHostedEventsNotifyOnlyAfterCommit(t *testing.T) {
 	t.Parallel()
-	committed := make(chan struct{}, 1)
-	writer, err := openTimedWriter(sqliteWriterDSN(filepath.Join(t.TempDir(), "notifications.db"), time.Second, false), nil, committed)
-	if err != nil {
+	f, _, _ := controlledPostgresDelivery(t, dashboardDeliveryConfig{})
+	committed := f.service.database.dashboardCommitted
+	repository := f.service.config.TenantRepository
+	before := dashboardPostgresHead(t, f)
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.UpdateAccessOrganizationName(t.Context(), "Renamed organization")
+	}); err != nil {
 		t.Fatal(err)
 	}
-	defer writer.Close()
-	if _, err := writer.ExecContext(t.Context(), "CREATE TABLE events(id INTEGER PRIMARY KEY)"); err != nil {
-		t.Fatal(err)
+	select {
+	case <-committed:
+		t.Fatal("commit without a delivery notice notified delivery")
+	default:
 	}
-
-	for {
-		select {
-		case <-committed:
-		default:
-			goto drained
-		}
+	if head := dashboardPostgresHead(t, f); head != before {
+		t.Fatalf("unrelated commit advanced delivery head: got %d, want %d", head, before)
 	}
-drained:
+	rollback := errors.New("abort delivery mutation")
 	for _, commit := range []bool{false, true} {
-		tx, err := writer.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.ExecContext(t.Context(), "INSERT INTO events DEFAULT VALUES"); err != nil {
-			tx.Rollback()
-			t.Fatal(err)
-		}
-		select {
-		case <-committed:
-			tx.Rollback()
-			t.Fatal("transaction notified before commit")
-		default:
-		}
-		if commit {
-			err = tx.Commit()
-		} else {
-			err = tx.Rollback()
-		}
-		if err != nil {
+		err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+			if err := dashboardPostgresLane(t.Context(), w, f.project); err != nil {
+				return err
+			}
+			select {
+			case <-committed:
+				t.Fatal("transaction notified before commit")
+			default:
+			}
+			if !commit {
+				return rollback
+			}
+			return nil
+		})
+		if commit && err != nil || !commit && !errors.Is(err, rollback) {
 			t.Fatal(err)
 		}
 		select {
@@ -633,17 +605,22 @@ drained:
 				t.Fatal("committed change did not notify")
 			}
 		}
+		want := before
+		if commit {
+			want++
+		}
+		if head := dashboardPostgresHead(t, f); head != want {
+			t.Fatalf("commit=%t head=%d want=%d", commit, head, want)
+		}
 	}
-	var id int64
-	if err := writer.QueryRowContext(t.Context(), "INSERT INTO events DEFAULT VALUES RETURNING id").Scan(&id); err != nil {
-		t.Fatal(err)
+	if head := dashboardPostgresAppend(t, f, "returning-write"); head != before+3 {
+		t.Fatalf("typed write returning a row advanced head to %d", head)
 	}
 	select {
 	case <-committed:
 	default:
-		t.Fatal("autocommit returning query did not notify")
+		t.Fatal("typed write returning a row did not notify")
 	}
-
 }
 
 func TestHostedEventsLegacyBoardPagesShareSummary(t *testing.T) {
@@ -656,12 +633,13 @@ func TestHostedEventsLegacyBoardPagesShareSummary(t *testing.T) {
 	head := hostedDeliveryHead(t, f)
 	first := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(before, 10))
 	second := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(before, 10))
-	var summaries int
-	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-		if strings.Contains(query, "SELECT state,total,running FROM native_board_counts") {
+	var summaries, statements int
+	ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
+		statements++
+		if strings.Contains(query, "FROM native_board_counts") || strings.Contains(query, "GROUP BY b.state") {
 			summaries++
 		}
-	}})
+	})
 	d.changed()
 	for d.remaining > 0 {
 		d.deliver(ctx)
@@ -678,7 +656,7 @@ func TestHostedEventsLegacyBoardPagesShareSummary(t *testing.T) {
 			if err := json.Unmarshal([]byte(frame.Data), &board); err != nil {
 				t.Fatal(err)
 			}
-			if board.Sequence <= previous || len(board.Deltas) > 1 || board.Gap || board.Work == nil {
+			if board.Sequence <= previous || len(board.Deltas) > 1 || board.Gap || !board.CountsIndependent || board.Work != nil {
 				t.Fatalf("unbounded or non-resumable board frame=%+v", board)
 			}
 			for _, delta := range board.Deltas {
@@ -692,6 +670,9 @@ func TestHostedEventsLegacyBoardPagesShareSummary(t *testing.T) {
 		if len(seen) != 2 {
 			t.Fatalf("board replay lost cards: %d", len(seen))
 		}
+	}
+	if statements == 0 {
+		t.Fatal("delivery did not execute an observed PostgreSQL statement")
 	}
 	if summaries != 0 {
 		t.Fatalf("delivery recomputed the background summary: %d", summaries)
@@ -712,7 +693,9 @@ func TestHostedEventsDeletedEntityVisibility(t *testing.T) {
 			stream := openHostedTestStream(t, f, user, query)
 			pumpHostedDelivery(t, d)
 			if entity == "item" {
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM issues WHERE organization_id='org_security' AND native_id=$1", item); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+					return w.DeleteWorkItem(t.Context(), f.project, item)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			} else {

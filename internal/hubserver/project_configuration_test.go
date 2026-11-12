@@ -2,21 +2,29 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -50,19 +58,24 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.now()}
+			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "hub_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.now()}
+			seedHubConfiguration(t, f, r.binding.RunnerID, view)
 			post := func() {
 				t.Helper()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
 			}
 			post()
-			scope := string(f.project.OrganizationID) + "/" + view.ProjectID
-			reports, err := readObservedPolicies(t.Context(), f.service.database.db, scope, current, f.service.config.now())
-			if err != nil || len(reports) != 1 || reports[0].Policy.ID != selected.ID {
+
+			reports, err := f.service.tenantProjectPolicyRead(t.Context(), f.project.OrganizationID, f.project.ID, policy.Approval{Policy: current}, 100, "")
+			if err != nil || len(reports.ObservedPolicies) != 1 || reports.ObservedPolicies[0].Policy.ID != selected.ID {
 				t.Fatalf("heartbeat selected policy reports=%+v %v", reports, err)
 			}
-			source := &policy.RepositorySource{Repository: "digitaldrywood/detent", Commit: strings.Repeat("b", 40)}
-			if err := storeObservedPolicy(t.Context(), f.service.database.db, scope, r.binding.RunnerID, policy.Observation{Descriptor: selected, Source: source}, f.service.config.now()); err != nil {
+			source := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("b", 40)}
+			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(r.redemption.Credential), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.recordConfigurationPolicyObservation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, policy.Observation{Descriptor: selected, Source: source}); err != nil {
 				t.Fatal(err)
 			}
 			post()
@@ -95,7 +108,11 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 			}
 			readHealth := func(want bool) {
 				t.Helper()
-				runner, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+				credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				runner, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, r.binding.RunnerID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -145,12 +162,40 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 			if approved.Status != chatpkg.ActionSucceeded {
 				t.Fatalf("selected policy approval=%+v", approved)
 			}
-			stored, _, err := readProjectPolicy(t.Context(), f.service.database.db, scope)
+			stored, err := f.service.readTenantProjectPolicy(t.Context(), f.project.OrganizationID, f.project.ID)
 			if err != nil || stored.Policy.ID != selected.ID {
 				t.Fatalf("approved policy=%+v %v", stored, err)
 			}
 			readReports(0)
 			readHealth(false)
+			readResult, err := executor.Execute(ctx, read)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var before runnerauth.ProjectConfiguration
+			if err := json.Unmarshal(readResult.Content, &before); err != nil {
+				t.Fatal(err)
+			}
+			applyArgs, err := json.Marshal(operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: before.RunnerID, ExpectedRunnerRevision: before.RunnerRevision, RequestID: "apply-selected", ExpectedConfigRevision: before.ConfigRevision, ExpectedPolicyID: current.ID, PolicyID: selected.ID, SourceRevision: selected.SourceRevision})
+			if err != nil {
+				t.Fatal(err)
+			}
+			applied, err := executor.Execute(ctx, operatortool.Call{Name: "apply_local_project_policy", Arguments: applyArgs})
+			if err != nil {
+				t.Fatalf("apply selected=%s %v", applied.Content, err)
+			}
+			delivery := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
+			requireNativeStatus(t, delivery, http.StatusOK)
+			var routing runnerauth.RoutingSnapshot
+			decodeHubResponse(t, delivery, &routing)
+			if routing.ProjectConfigurationRequest == nil || routing.ProjectConfigurationRequest.Desired == nil {
+				t.Fatal("selected policy command was not delivered")
+			}
+			view = *routing.ProjectConfigurationRequest.Desired
+			view.RuntimeRegistered = true
+			view.Applied = true
+			view.Saved = true
+			view.Pending = false
 			view.EffectivePolicy, view.PolicyMismatch = &selected, true
 			post()
 			readHealth(false)
@@ -164,9 +209,19 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 }
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "entry personal drain", "entry service drain", "entry revoked drain", "entry expired drain", "entry member removed drain", "entry grant removed drain", "entry scoped drain", "entry service scoped drain", "entry downgraded drain", "entry service downgraded drain", "entry foreign organization drain", "entry rotated drain", "entry missing origin drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale policy", "stale source", "stale runner", "foreign runner", "foreign project", "busy", "busy binding enable", "busy binding disable", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "entry personal drain", "entry service drain", "entry revoked drain", "entry expired drain", "entry member removed drain", "entry grant removed drain", "entry scoped drain", "entry service scoped drain", "entry downgraded drain", "entry service downgraded drain", "entry foreign organization drain", "entry rotated drain", "entry missing origin drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "payload outage", "settlement without diagnostics", "settlement older diagnostics", "restart pending", "restart completion", "stale configuration", "stale policy", "stale source", "stale runner", "foreign runner", "foreign project", "busy", "busy binding enable", "busy binding disable", "racing binding enable", "serialization conflict", "replace pending", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
+			details := &configurationDetailCounter{DetailStore: f.service.runDetailStore()}
+			f.service.config.RunDetails = details
+			f.service.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+				return func(c echo.Context) error {
+					if c.Request().Method == http.MethodPost && strings.HasSuffix(c.Request().URL.Path, "/heartbeat") {
+						c.SetRequest(c.Request().WithContext(context.WithValue(c.Request().Context(), configurationDetailRequestKey{}, true)))
+					}
+					return next(c)
+				}
+			})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			r.enroll(t)
 			current := hubTestPolicy()
@@ -174,7 +229,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			candidate.ConfigDigest = strings.Repeat("c", 64)
 			candidate = candidate.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", current)
-			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, Paused: true, Source: "configured_committed_workflow", EffectivePolicy: &current, SelectedPolicy: &current, LocalBindingPolicy: &candidate, ObservedAt: time.Now()}
+			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "hub_configuration", ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, Paused: true, Source: "configured_committed_workflow", EffectivePolicy: &current, SelectedPolicy: &current, LocalBindingPolicy: &candidate, ObservedAt: time.Now()}
 			if scenario == "cloud apply" {
 				view.Source = "cloud_workflow"
 			}
@@ -184,6 +239,11 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			if scenario == "drained apply" {
 				view.Paused, view.Draining = false, true
 			}
+			if strings.HasPrefix(scenario, "settlement ") {
+				view.Diagnostics = &runnerauth.ProjectDiagnostics{Source: "runner_runtime_and_durable_attempt_owners", ObservedAt: f.service.config.now().UTC(), RuntimeObservedAt: f.service.config.now().UTC(), Counts: map[string]int{}, Unavailable: map[string]string{}}
+			}
+			initialDiagnostics := view.Diagnostics
+			seedHubConfiguration(t, f, r.binding.RunnerID, view)
 			heartbeat := func() runnerauth.RoutingSnapshot {
 				t.Helper()
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
@@ -193,6 +253,12 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				return snapshot
 			}
 			heartbeat()
+			writes := details.stores.Load()
+			view.ObservedAt = view.ObservedAt.Add(time.Nanosecond)
+			heartbeat()
+			if got := details.stores.Load(); got != writes {
+				t.Fatalf("unchanged heartbeat wrote configuration objects: %d -> %d", writes, got)
+			}
 			contexts := make(chan context.Context, 1)
 			f.service.echo.GET("/api/v2/organizations/:organization/configuration-context-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/configuration-context-test", testHubAdminToken, nil), http.StatusOK)
@@ -210,12 +276,12 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				shared := hostedSharedFixture{hostedSecurityFixture: hostedSecurityFixture{service: f.service, provider: provider, project: f.project.ID, base: f.base}}
 				f.service.config.Hosted = hostedSharedTestConfig("", provider, hostedSharedKey(7), 1).Hosted
 				f.service.config.Hosted.OrganizationID = string(f.project.OrganizationID)
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_tenant(singleton,organization_id,provider_id,bootstrap_subject,public_url,deployment,allocation_generation) VALUES (1,?,'org_provider','user_owner','https://hub.example.test','shared',1)", f.project.OrganizationID); err != nil {
+				if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "INSERT INTO hosted_tenant(organization_id,provider_id,bootstrap_subject,public_url,deployment,allocation_generation) VALUES ($1,'org_provider','user_owner','https://hub.example.test','shared',1)", f.project.OrganizationID); err != nil {
 					t.Fatal(err)
 				}
 				owner := shared.member(t, "configuration-owner", "owner", "")
 				entrySubject = owner.identity.Subject
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,?,?,1,1)", entrySubject, f.project.OrganizationID, f.project.ID); err != nil {
+				if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES ($1,$2,$3,true,true)", entrySubject, f.project.OrganizationID, f.project.ID); err != nil {
 					t.Fatal(err)
 				}
 				entryClaims = cloudassert.Claims{Issuer: "entry", Audience: string(f.project.OrganizationID), ProviderOrganization: "org_provider", Subject: entrySubject, Role: "owner", Kind: cloudassert.KindKey, Generation: 1, IssuedAt: entryNow, ExpiresAt: entryNow.Add(20 * time.Second), Key: &apikey.KeyAuthority{ID: "key_configuration", CredentialBinding: strings.Repeat("b", 64), Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}}
@@ -319,11 +385,11 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 					case "entry expired drain":
 						entryExpires = entryNow
 					case "entry member removed drain":
-						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active=0 WHERE user_id=?", entrySubject); err != nil {
+						if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "UPDATE hosted_members SET active=false WHERE user_id=$1", entrySubject); err != nil {
 							t.Fatal(err)
 						}
 					case "entry grant removed drain":
-						if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", entrySubject, f.project.ID); err != nil {
+						if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=$1 AND project_id=$2", entrySubject, f.project.ID); err != nil {
 							t.Fatal(err)
 						}
 					case "entry scoped drain", "entry service scoped drain":
@@ -336,19 +402,10 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 						entryClaims.Key.CredentialBinding = strings.Repeat("c", 64)
 					}
 				}
-				var objectsBefore int
-				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_content_objects WHERE organization_id=?`, f.project.OrganizationID).Scan(&objectsBefore); err != nil {
-					t.Fatal(err)
-				}
+				objectsBefore := details.stores.Load()
 				request := heartbeat().ProjectConfigurationRequest
-				if request != nil {
-					var objectsAfter int
-					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_content_objects WHERE organization_id=?`, f.project.OrganizationID).Scan(&objectsAfter); err != nil {
-						t.Fatal(err)
-					}
-					if objectsAfter != objectsBefore {
-						t.Fatal("delivery heartbeat stored an unused completion payload")
-					}
+				if request != nil && details.stores.Load() != objectsBefore {
+					t.Fatal("delivery heartbeat wrote an unused payload object")
 				}
 				if strings.HasPrefix(scenario, "entry ") && entryResolutions == 0 {
 					t.Fatal("queued entry authority was not resolved from its current owner")
@@ -362,6 +419,8 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				if request == nil || request.Operation != "drain_local_project" || request.RequestID != args.RequestID {
 					t.Fatalf("drain delivery=%+v", request)
 				}
+				view = *request.Desired
+				view.RuntimeRegistered = true
 				view.RequestID, view.Saved, view.Applied, view.Draining = args.RequestID, true, true, true
 				if heartbeat().ProjectConfigurationRequest != nil {
 					t.Fatal("acknowledged drain repeated")
@@ -404,7 +463,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 					t.Fatalf("resume queued=%s %v", result.Content, err)
 				}
 				if scenario == "resume revoked" {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE token_hash = ?", formatHubTime(time.Now()), apikey.HashToken(testHubAdminToken)); err != nil {
+					if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = $1 WHERE token_hash = $2", time.Now().UTC(), apikey.HashToken(testHubAdminToken)); err != nil {
 						t.Fatal(err)
 					}
 					if heartbeat().ProjectConfigurationRequest != nil {
@@ -416,6 +475,8 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				if request == nil || request.Operation != "resume_local_project" || request.RequestID != args.RequestID {
 					t.Fatalf("resume delivery=%+v", request)
 				}
+				view = *request.Desired
+				view.RuntimeRegistered = true
 				view.RequestID, view.Saved, view.Applied, view.Paused, view.Draining = args.RequestID, true, true, false, false
 				if heartbeat().ProjectConfigurationRequest != nil {
 					t.Fatal("acknowledged resume repeated")
@@ -435,10 +496,13 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			var activeLease tracker.NativeLease
 			var activeEvent tracker.NativeRunEvent
 			var activeWorker, activePath string
-			if scenario == "busy" {
+			if scenario == "busy" || strings.HasPrefix(scenario, "busy binding ") {
 				item := f.create(t, "Running work")
-				activeWorker = f.worker(t, "active-worker")
-				activeLease = claimNativeAttempt(t, f, activeWorker, "active-machine", "active-session", item.WorkItemID)
+				activeWorker = r.redemption.Credential
+				r.reportCapacity(t)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", activeWorker, tracker.NativeClaim{PolicyID: current.ID, WorkItemID: item.WorkItemID, MachineID: r.binding.MachineID, SessionID: "active-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &activeLease)
 				activeEvent = nativeStartedEvent(activeLease)
 				activePath = f.base + "/work-items/" + string(item.WorkItemID)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, activePath+"/events", activeWorker, activeEvent), http.StatusOK)
@@ -474,12 +538,46 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 					enabled = false
 					view.AllowLocalBinding = true
 					view.RestrictedBindingPolicy = &candidate
+					seedHubConfiguration(t, f, r.binding.RunnerID, view)
 				}
 				view.UnsettledAttempts = 1
 				heartbeat()
 			}
+			if scenario == "racing binding enable" {
+				item := f.create(t, "Concurrent work")
+				r.reportCapacity(t)
+				ctx = context.WithValue(ctx, configurationDetailMutationKey{}, true)
+				details.interleave = func() {
+					details.interleave = nil
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, tracker.NativeClaim{PolicyID: candidate.ID, WorkItemID: item.WorkItemID, MachineID: r.binding.MachineID, SessionID: "racing-configuration", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+					requireNativeStatus(t, response, http.StatusOK)
+				}
+			}
+			var serialization *configurationSerializationRepository
+			if scenario == "serialization conflict" {
+				serialization = &configurationSerializationRepository{Repository: f.service.config.TenantRepository}
+				f.service.config.TenantRepository = serialization
+				ctx = context.WithValue(ctx, configurationSerializationKey{}, true)
+			}
 			preview, previewErr := executor.projectConfigurationCommand(ctx, "apply_local_project_policy", args, true)
 			result, err = call("apply_local_project_policy", args)
+			if scenario == "serialization conflict" {
+				var conflict *nativeError
+				if previewErr != nil || !errors.As(err, &conflict) || conflict.Code != "revision_conflict" || serialization.attempts.Load() != 1 {
+					t.Fatalf("serialization retry spun: preview=%v result=%s error=%v attempts=%d", previewErr, result.Content, err, serialization.attempts.Load())
+				}
+				return
+			}
+			if scenario == "racing binding enable" {
+				var conflict *nativeError
+				if previewErr != nil || !errors.As(err, &conflict) || conflict.Code != "policy_mismatch" {
+					t.Fatalf("claim between plan and write was not refused: preview=%s %v result=%s %v", preview.Content, previewErr, result.Content, err)
+				}
+				if heartbeat().ProjectConfigurationRequest != nil {
+					t.Fatal("settlement race delivered a binding change")
+				}
+				return
+			}
 			refused := scenario == "stale configuration" || scenario == "stale policy" || scenario == "stale source" || scenario == "stale runner" || scenario == "foreign runner" || scenario == "foreign project" || scenario == "wrong candidate" || strings.HasPrefix(scenario, "busy binding ")
 			if refused {
 				if scenario == "foreign runner" {
@@ -513,29 +611,109 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			switch scenario {
 			case "revoked issuer":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE token_hash = ?", formatHubTime(time.Now()), apikey.HashToken(testHubAdminToken)); err != nil {
+				if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = $1 WHERE token_hash = $2", time.Now().UTC(), apikey.HashToken(testHubAdminToken)); err != nil {
 					t.Fatal(err)
 				}
 			case "downgraded issuer":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET scope = ? WHERE token_hash = ?", "operator", apikey.HashToken(testHubAdminToken)); err != nil {
+				if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "UPDATE api_tokens SET scope = $1 WHERE token_hash = $2", "operator", apikey.HashToken(testHubAdminToken)); err != nil {
 					t.Fatal(err)
 				}
 			case "revoked policy":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope = ?", string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
+				if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "DELETE FROM project_policies WHERE organization_id = $1 AND project_id = $2", f.project.OrganizationID, f.project.ID); err != nil {
 					t.Fatal(err)
 				}
 			case "changed routing":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET revision = revision + 1 WHERE id = ?", r.binding.RunnerID); err != nil {
+				if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "UPDATE runner_identities SET revision = revision + 1 WHERE runner_id = $1", r.binding.RunnerID); err != nil {
 					t.Fatal(err)
 				}
 			}
+			if scenario == "replace pending" {
+				oldArgs := args
+				delivered := heartbeat().ProjectConfigurationRequest
+				if delivered == nil || delivered.Desired == nil || delivered.Desired.RunnerRevision <= observed.RunnerRevision {
+					t.Fatalf("pending delivery did not carry committed runner revision: %+v", delivered)
+				}
+				view = *delivered.Desired
+				view.RuntimeRegistered = true
+				view.Applied = false
+				view.Saved = false
+				view.AllowLocalBinding = false
+				view.Constraint = "Runtime policy changed before lifecycle settlement."
+				if next := heartbeat().ProjectConfigurationRequest; next == nil || next.RequestID != oldArgs.RequestID {
+					t.Fatal("partial effect was falsely settled")
+				}
+				currentResult, err := call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: r.binding.RunnerID})
+				var currentView runnerauth.ProjectConfiguration
+				if err != nil || json.Unmarshal(currentResult.Content, &currentView) != nil {
+					t.Fatalf("read pending=%s %v", currentResult.Content, err)
+				}
+				args.RequestID = "replace-partial-application"
+				args.AllowLocalBinding = nil
+				args.ExpectedRunnerRevision = currentView.RunnerRevision
+				args.ExpectedConfigRevision = currentView.ConfigRevision
+				args.ExpectedPolicyID = currentView.EffectivePolicy.ID
+				replacement, err := call("apply_local_project_policy", args)
+				if err != nil || !strings.Contains(string(replacement.Content), `"pending":true`) {
+					t.Fatalf("pending request prevented corrective intent: %s %v", replacement.Content, err)
+				}
+				superseded, err := call("apply_local_project_policy", oldArgs)
+				var oldOutcome runnerauth.ProjectConfiguration
+				if err != nil || json.Unmarshal(superseded.Content, &oldOutcome) != nil || oldOutcome.Pending || oldOutcome.Applied || !strings.Contains(oldOutcome.Constraint, "superseded") || !strings.Contains(oldOutcome.Constraint, "not confirmed") {
+					t.Fatalf("old request lost uncertain outcome: %s %v", superseded.Content, err)
+				}
+				oldReport := *delivered.Desired
+				oldReport.RuntimeRegistered = true
+				oldReport.Applied = true
+				oldReport.Saved = true
+				stale := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": oldReport})
+				requireNativeCode(t, stale, http.StatusUnprocessableEntity, "invalid_request")
+				view = currentView
+				view.RequestID = ""
+				view.RunnerRevision = 0
+				view.Constraint = ""
+			}
+			if scenario == "restart pending" {
+				f.service = reopenPostgresNativeService(t, f.service)
+				executor = hubProjectExecutor{f.service}
+			}
+			if scenario == "payload outage" {
+				details.fail.Store(true)
+				unavailable := heartbeat()
+				if unavailable.ProjectConfigurationRequest != nil || unavailable.ProjectConfiguration != nil {
+					t.Fatal("object outage delivered or acknowledged configuration")
+				}
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					command, err := reader.(postgres.ConfigurationReader).ConfigurationCommand(t.Context(), r.binding.RunnerID, f.project.ID)
+					if err != nil {
+						return err
+					}
+					if command.Status != "pending" {
+						t.Fatalf("object outage settled command: %+v", command)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				details.fail.Store(false)
+			}
 			snapshot := heartbeat()
-			if scenario != "apply" && scenario != "cloud apply" && scenario != "drained apply" && scenario != "running apply" && scenario != "busy" && scenario != "refused apply" && scenario != "storage exhausted" {
+			if scenario != "apply" && scenario != "cloud apply" && scenario != "drained apply" && scenario != "running apply" && scenario != "busy" && scenario != "refused apply" && scenario != "storage exhausted" && scenario != "payload outage" && !strings.HasPrefix(scenario, "settlement ") && scenario != "restart pending" && scenario != "restart completion" && scenario != "replace pending" {
 				if snapshot.ProjectConfigurationRequest != nil {
 					t.Fatal("revoked or stale request reached runner")
 				}
+				if scenario == "changed routing" || scenario == "revoked policy" {
+					replay, err := call("apply_local_project_policy", args)
+					var outcome runnerauth.ProjectConfiguration
+					want := "runner revision"
+					if scenario == "revoked policy" {
+						want = "approved policy"
+					}
+					if err != nil || json.Unmarshal(replay.Content, &outcome) != nil || !strings.Contains(outcome.Constraint, want) || strings.Contains(outcome.Constraint, "permission") {
+						t.Fatalf("wrong refusal cause: %s %v", replay.Content, err)
+					}
+				}
 				var pending int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_identities WHERE id = ? AND json_extract(routing_settings_json, '$.project_configuration_request') IS NOT NULL", r.binding.RunnerID).Scan(&pending); err != nil || pending != 0 {
+				if err := configurationTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM runner_project_configurations WHERE runner_id = $1 AND request_status='pending'", r.binding.RunnerID).Scan(&pending); err != nil || pending != 0 {
 					t.Fatalf("refused request retained application: %d %v", pending, err)
 				}
 				return
@@ -547,21 +725,31 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			if err != nil || !strings.Contains(string(queuedReplay.Content), `"pending":true`) {
 				t.Fatalf("queued replay=%s %v", queuedReplay.Content, err)
 			}
+			view = *snapshot.ProjectConfigurationRequest.Desired
+			if scenario == "settlement older diagnostics" {
+				view.Diagnostics = &runnerauth.ProjectDiagnostics{Source: "runner_runtime_and_durable_attempt_owners", ObservedAt: f.service.config.now().UTC().Add(-time.Hour), RuntimeObservedAt: f.service.config.now().UTC().Add(-time.Hour), Counts: map[string]int{}, Unavailable: map[string]string{}}
+			}
+			view.RuntimeRegistered = true
 			view.RequestID, view.Saved, view.Applied, view.AllowLocalBinding = args.RequestID, true, true, true
-			if scenario == "busy" {
+			if scenario == "busy" || scenario == "replace pending" {
 				view.AllowLocalBinding = false
 			}
-			view.EffectivePolicy, view.ConfigRevision = &candidate, strings.Repeat("d", 64)
+			view.EffectivePolicy = &candidate
 			if scenario == "refused apply" {
 				view.Applied, view.Saved, view.AllowLocalBinding = false, false, false
 				view.EffectivePolicy, view.ConfigRevision = &current, args.ExpectedConfigRevision
 				view.Constraint = "The configured definition cannot supply the approved policy revision."
 			}
 			if scenario == "storage exhausted" {
-				view.Constraint = strings.Repeat("x", 1120)
+				view.Constraint = ""
 				f.service.config.Hosted = &HostedConfig{}
-				f.service.database.hostedOrganization = f.project.OrganizationID
-				hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": 1})
+				f.service.config.Hosted.OrganizationID = string(f.project.OrganizationID)
+				configurationTestStorageLimit(t, f, 1)
+				_, storageErr := prepareChangeContent(f.service.contentContext(t.Context()), string(f.project.OrganizationID), []byte(strings.Repeat("ordinary billable storage probe", 80)))
+				var quota *hostedLimitError
+				if !errors.As(storageErr, &quota) || quota.Resource != "collaboration_bytes" || quota.Allowance != 1 {
+					t.Fatalf("one-byte storage allowance did not refuse an ordinary write: %v", storageErr)
+				}
 				f.service.config.Hosted = nil
 			}
 			if heartbeat().ProjectConfigurationRequest != nil {
@@ -611,6 +799,17 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 				return
 			}
+			if scenario == "restart completion" {
+				f.service = reopenPostgresNativeService(t, f.service)
+				executor = hubProjectExecutor{f.service}
+			}
+			if strings.HasPrefix(scenario, "settlement ") {
+				result, err := call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: r.binding.RunnerID})
+				var fresh runnerauth.ProjectConfiguration
+				if err != nil || json.Unmarshal(result.Content, &fresh) != nil || fresh.EffectivePolicy == nil || fresh.EffectivePolicy.ID != candidate.ID || fresh.SelectedPolicy == nil || fresh.SelectedPolicy.ID != candidate.ID || fresh.Diagnostics == nil || !fresh.Diagnostics.ObservedAt.Equal(initialDiagnostics.ObservedAt) || !fresh.Diagnostics.RuntimeObservedAt.Equal(initialDiagnostics.RuntimeObservedAt) {
+					t.Fatalf("settlement lost current policy or retained diagnostics: %s %v", result.Content, err)
+				}
+			}
 			completedReplay, err := call("apply_local_project_policy", args)
 			if err != nil || !strings.Contains(string(completedReplay.Content), `"applied":true`) || strings.Contains(string(completedReplay.Content), `"pending":true`) {
 				t.Fatalf("completed replay=%s %v", completedReplay.Content, err)
@@ -629,4 +828,123 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 		})
 	}
+}
+
+func configurationTestDatabase(t *testing.T, f nativeFixture) *sql.DB {
+	t.Helper()
+	value, ok := projectRecordDatabases.Load(f.service.config.TenantRepository)
+	if !ok {
+		t.Fatal("PostgreSQL fixture administrator is unavailable")
+	}
+	return value.(*sql.DB)
+}
+
+func seedHubConfiguration(t *testing.T, f nativeFixture, runner string, view runnerauth.ProjectConfiguration) {
+	t.Helper()
+	view.Authority = "hub_configuration"
+	if view.ConfigRevision == "" {
+		var err error
+		view.ConfigRevision, err = projectConfigurationDigest(view)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ref, err := f.service.prepareConfigurationPayload(t.Context(), f.project.OrganizationID, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		identity, err := w.RunnerIdentity(t.Context(), runner)
+		if err != nil {
+			return err
+		}
+		owner := w.(postgres.ConfigurationWriter)
+		now := f.service.config.now().UTC()
+		authority := postgres.ConfigurationAuthority{RunnerID: runner, EnrollmentID: identity.EnrollmentID, Revision: identity.Revision, At: now}
+		_, err = owner.InitializeConfiguration(t.Context(), postgres.ConfigurationHeader{OrganizationID: f.project.OrganizationID, RunnerID: runner, SourceRevision: view.ConfigRevision, CreatedAt: now}, authority)
+		if err != nil {
+			return err
+		}
+		header, err := owner.ConfigurationHeader(t.Context(), runner)
+		if err != nil {
+			return err
+		}
+		_, err = owner.ApplyConfiguration(t.Context(), postgres.ConfigurationChange{OrganizationID: f.project.OrganizationID, Authority: authority, ExpectedRevision: header.Revision, ExpectedSourceRevision: header.SourceRevision, SourceRevision: view.ConfigRevision, Projects: []postgres.ConfigurationProject{configurationProjectRow(f.project.OrganizationID, runner, view, ref, now)}})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func configurationTestStorageLimit(t *testing.T, f nativeFixture, limit int64) {
+	t.Helper()
+	plans := pilotHostedPlans()
+	selected := plans.Plans[0]
+	selected.PlanReference = PlanReference{ID: "configuration_storage", Version: 1}
+	selected.Allowances["collaboration_bytes"] = limit
+	plans.Plans = []HostedPlan{selected}
+	plans.Base = selected.PlanReference
+	cfg := *f.service.config.Hosted
+	cfg.Plans = &plans
+	f.service.database.billingAuditStore = f.service.runDetailStore()
+	f.service.database.hostedOrganization = f.project.OrganizationID
+	if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		assignment, err := w.BillingAssignment(t.Context())
+		if err != nil {
+			return err
+		}
+		assignment.Base = billingstore.PlanReference{ID: selected.ID, Version: selected.Version}
+		assignment.Subscription = nil
+		return w.SetBillingAssignment(t.Context(), assignment, assignment.Revision)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+type configurationDetailRequestKey struct{}
+type configurationDetailMutationKey struct{}
+type configurationDetailCounter struct {
+	attachment.DetailStore
+	stores     atomic.Int64
+	fail       atomic.Bool
+	interleave func()
+}
+
+func (d *configurationDetailCounter) StoreDetail(ctx context.Context, org string, raw []byte) (attachment.ArchiveReference, error) {
+	if ctx.Value(configurationDetailRequestKey{}) == true {
+		d.stores.Add(1)
+	}
+	if d.fail.Load() {
+		return attachment.ArchiveReference{}, artifact.ErrStorage
+	}
+	ref, err := d.DetailStore.StoreDetail(ctx, org, raw)
+	if err == nil && ctx.Value(configurationDetailMutationKey{}) == true && d.interleave != nil {
+		d.interleave()
+	}
+	return ref, err
+}
+func (d *configurationDetailCounter) ReadDetail(ctx context.Context, org string, ref attachment.ArchiveReference) ([]byte, error) {
+	if d.fail.Load() {
+		return nil, artifact.ErrStorage
+	}
+	return d.DetailStore.ReadDetail(ctx, org, ref)
+}
+
+type configurationSerializationKey struct{}
+type configurationSerializationRepository struct {
+	tenantstore.Repository
+	attempts atomic.Int64
+}
+
+func (r *configurationSerializationRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	if ctx.Value(configurationSerializationKey{}) == true {
+		r.attempts.Add(1)
+		return corestore.ErrSerializationFailure
+	}
+	return r.Repository.WriteTenant(ctx, org, workload, write)
 }

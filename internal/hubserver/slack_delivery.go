@@ -3,9 +3,9 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -13,7 +13,10 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -66,36 +69,42 @@ func renderSlackFinding(publicURL string, basePath string, finding healthFinding
 	return body.String(), err
 }
 
-func enqueueSlackOpened(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, finding string, at time.Time) error {
-	now := formatHubTime(at)
-	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO health_slack_deliveries(finding_id,event,queued_at,next_attempt_at) SELECT ?, 'opened', ?, ? WHERE EXISTS(SELECT 1 FROM organization_secrets WHERE organization_id=? AND kind=?)`, finding, now, now, organization, slackWebhookSecret)
-	return err
-}
-
-func enqueueSlackResolved(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, fingerprints sqlParameterRows, at time.Time) error {
-	now := formatHubTime(at)
-	_, err := execSQL(ctx, tx, `INSERT OR IGNORE INTO health_slack_deliveries(finding_id,event,queued_at,next_attempt_at)
- SELECT f.id,'resolved',?,? FROM health_findings f WHERE f.organization_id=? AND f.resolved_at IS NULL AND f.severity='attention' AND f.fingerprint NOT IN (SELECT value FROM sql_rows(?))
- AND EXISTS(SELECT 1 FROM organization_secrets WHERE organization_id=? AND kind=?) AND EXISTS(SELECT 1 FROM health_slack_deliveries d WHERE d.finding_id=f.id AND d.event='opened')`, now, now, organization, fingerprints, organization, slackWebhookSecret)
-	return err
-}
-
 func (s *Service) readSlackWebhook(ctx context.Context, organization tracker.OrganizationID, actor string) ([]byte, error) {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	var envelope hubsecrets.Envelope
-	err := s.database.reader.QueryRowContext(readCtx, `SELECT ciphertext,nonce,wrapped_data_key,master_key_version FROM organization_secrets WHERE organization_id=? AND kind=?`, organization, slackWebhookSecret).Scan(&envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
-	if errors.Is(err, sql.ErrNoRows) {
+	var secret accessstore.Secret
+	err := s.accessRead(readCtx, organization, func(r tenantstore.Reader) error {
+		owner, ok := r.(postgres.SlackReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		settings, err := owner.SlackIntegration(readCtx)
+		if err != nil {
+			return err
+		}
+		if !settings.Enabled {
+			return corestore.ErrNotFound
+		}
+		secret, err = r.AccessSecret(readCtx, "", slackWebhookSecret)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	value, err := s.config.SecretKeys.Open(envelope, secretAAD(string(organization), "", slackWebhookSecret))
+	if s.config.SecretKeys == nil {
+		return nil, errors.New("Slack secret storage is unavailable")
+	}
+	value, err := s.config.SecretKeys.Open(secret.Envelope, accessstore.SecretAAD(organization, "", slackWebhookSecret))
 	if err != nil {
 		return nil, err
 	}
-	if err := secretAudit(ctx, s.database.db, string(organization), "", actor, slackWebhookSecret, "use", envelope.Version, formatHubTime(s.config.now())); err != nil {
+	err = s.accessWrite(ctx, organization, func(w tenantstore.Writer) error {
+		return w.RecordAccessSecretAudit(ctx, accessstore.SecretAudit{OrganizationID: organization, Actor: actor, Kind: slackWebhookSecret, Event: "use", KeyVersion: secret.Envelope.Version, RecordedAt: s.config.now()})
+	})
+	if err != nil {
 		clear(value)
 		return nil, err
 	}
@@ -131,138 +140,7 @@ func (s *Service) postSlack(ctx context.Context, webhook []byte, text string) (i
 		return 0, false
 	}
 	defer response.Body.Close()
-	return response.StatusCode, response.StatusCode >= 200 && response.StatusCode < 300
-}
-
-func (s *Service) recordSlackResult(ctx context.Context, db hostedExecer, organization tracker.OrganizationID, finding string, status int, delivered bool, at time.Time) error {
-	now := formatHubTime(at)
-	if delivered {
-		if _, err := db.ExecContext(ctx, `UPDATE slack_integrations SET last_success_at=?,last_status_code=?,last_delivery_failed=0 WHERE organization_id=?`, now, status, organization); err != nil {
-			return err
-		}
-		if finding != "" {
-			_, err := db.ExecContext(ctx, `UPDATE health_findings SET slack_unavailable_at=NULL,slack_status_code=NULL WHERE organization_id=? AND id=?`, organization, finding)
-			return err
-		}
-		return nil
-	}
-	if _, err := db.ExecContext(ctx, `UPDATE slack_integrations SET last_failure_at=?,last_status_code=?,last_delivery_failed=1 WHERE organization_id=?`, now, status, organization); err != nil {
-		return err
-	}
-	if finding != "" {
-		_, err := db.ExecContext(ctx, `UPDATE health_findings SET slack_unavailable_at=?,slack_status_code=? WHERE organization_id=? AND id=?`, now, status, organization, finding)
-		return err
-	}
-	return nil
-}
-
-func (s *Service) processSlackDelivery(ctx context.Context) (bool, error) {
-	if s.config.SecretKeys == nil {
-		return false, nil
-	}
-	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	var pending int
-	if err := s.database.reader.QueryRowContext(readCtx, `SELECT count(*) FROM health_slack_deliveries WHERE completed_at IS NULL AND attempts<2`).Scan(&pending); err != nil {
-		return false, err
-	}
-	if pending == 0 {
-		return false, nil
-	}
-	now := s.config.now()
-	var organization tracker.OrganizationID
-	var finding healthFinding
-	var event, subject, opened, queued string
-	var attempts int
-	err := s.database.reader.QueryRowContext(readCtx, `SELECT f.organization_id,f.id,f.signal,f.subject_json,f.summary,f.next_action,f.opened_at,d.event,d.queued_at,d.attempts
- FROM health_slack_deliveries d JOIN health_findings f ON f.id=d.finding_id
- WHERE d.completed_at IS NULL AND d.attempts<2 AND julianday(d.next_attempt_at)<=julianday(?)
- AND (d.event='opened' OR NOT EXISTS(SELECT 1 FROM health_slack_deliveries o WHERE o.finding_id=d.finding_id AND o.event='opened' AND o.completed_at IS NULL AND o.attempts<2))
- ORDER BY d.queued_at,d.event LIMIT 1`, formatHubTime(now)).Scan(&organization, &finding.ID, &finding.Signal, &subject, &finding.Summary, &finding.NextAction, &opened, &event, &queued, &attempts)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := json.Unmarshal([]byte(subject), &finding.Subject); err != nil {
-		return false, err
-	}
-	finding.OpenedAt, err = parseTimeValue(opened)
-	if err != nil {
-		return false, err
-	}
-	at, err := parseTimeValue(queued)
-	if err != nil {
-		return false, err
-	}
-	webhook, err := s.readSlackWebhook(ctx, organization, "health-slack")
-	if err != nil {
-		return false, err
-	}
-	defer clear(webhook)
-	if len(webhook) == 0 {
-		_, err := s.database.db.ExecContext(ctx, `UPDATE health_slack_deliveries SET completed_at=? WHERE finding_id=? AND event=?`, formatHubTime(now), finding.ID, event)
-		return true, err
-	}
-	publicURL := ""
-	if s.config.Hosted != nil {
-		publicURL = s.config.Hosted.PublicURL
-	}
-	issuePath := ""
-	basePath := s.hostedBase()
-	if s.config.Hosted != nil {
-		slugCtx, cancelSlug := context.WithTimeout(ctx, hubReadTimeout)
-		var slug string
-		err := s.database.reader.QueryRowContext(slugCtx, "SELECT slug FROM organizations WHERE id=?", organization).Scan(&slug)
-		cancelSlug()
-		if err != nil {
-			return false, err
-		}
-		basePath = "/" + slug
-	}
-	if finding.Subject.Kind == "work_item" {
-		pathCtx, cancelPath := context.WithTimeout(ctx, hubReadTimeout)
-		path, pathErr := readIssueBrowserPath(pathCtx, s.database.reader, finding.Subject.ID)
-		cancelPath()
-		if pathErr == nil {
-			issuePath = path
-			basePath = ""
-		} else if !errors.Is(pathErr, sql.ErrNoRows) {
-			return false, pathErr
-		}
-	}
-	text, err := renderSlackFinding(publicURL, basePath, finding, event, at, issuePath)
-	if err != nil {
-		return false, err
-	}
-	result, err := s.database.db.ExecContext(ctx, `UPDATE health_slack_deliveries SET attempts=attempts+1,next_attempt_at=? WHERE finding_id=? AND event=? AND attempts=? AND completed_at IS NULL`, formatHubTime(now.Add(time.Minute)), finding.ID, event, attempts)
-	if err != nil {
-		return false, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil || changed != 1 {
-		return false, err
-	}
-	status, delivered := s.postSlack(ctx, webhook, text)
-	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.config.BusyTimeout)
-	defer cancel()
-	tx, err := s.database.db.BeginTx(finishCtx, nil)
-	if err != nil {
-		return true, err
-	}
-	defer tx.Rollback()
-	at = s.config.now()
-	if err := s.recordSlackResult(finishCtx, tx, organization, finding.ID, status, delivered, at); err != nil {
-		return true, err
-	}
-	var completed *string
-	if delivered || attempts == 1 {
-		value := formatHubTime(at)
-		completed = &value
-	}
-	if _, err := tx.ExecContext(finishCtx, `UPDATE health_slack_deliveries SET completed_at=?,next_attempt_at=? WHERE finding_id=? AND event=?`, completed, formatHubTime(at.Add(time.Minute)), finding.ID, event); err != nil {
-		return true, err
-	}
-	return true, tx.Commit()
+	acknowledgment, err := io.ReadAll(io.LimitReader(response.Body, 4097))
+	defer clear(acknowledgment)
+	return response.StatusCode, err == nil && len(acknowledgment) <= 4096 && response.StatusCode >= 200 && response.StatusCode < 300 && strings.TrimSpace(string(acknowledgment)) == "ok"
 }

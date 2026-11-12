@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,11 +13,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestBillingPlansKeepHistoricalTermsAndTenantScope(t *testing.T) {
@@ -119,6 +123,108 @@ func TestBillingPlansKeepHistoricalTermsAndTenantScope(t *testing.T) {
 			})
 		}
 	}
+	t.Run("historical storage floors preserve catalog and tenant terms", func(t *testing.T) {
+		admin, fixture := migrationDatabaseAtVersion(t, 20261112124957)
+		var database string
+		if err := admin.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&database); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+fmt.Sprintf(" CONNECTION LIMIT %d", smallPool().MaxConnections+2)); err != nil {
+			t.Fatal(err)
+		}
+		pool := rolePoolFromTemplate(t, fixture, admin, postgres.RuntimeRoleName, "")
+		repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := repository.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		organizations := []tracker.OrganizationID{"org_storage_first", "org_storage_second"}
+		const missingStorageMetric int64 = -1
+		const absentStoragePlan int64 = -2
+		tests := []struct {
+			ref     billingstore.PlanReference
+			storage [2]int64
+			want    [2]int64
+		}{
+			{billingstore.PlanReference{ID: "free", Version: 1}, [2]int64{1 << 30, 1 << 30}, [2]int64{1 << 30, 1 << 30}},
+			{billingstore.PlanReference{ID: "starter", Version: 1}, [2]int64{missingStorageMetric, 1 << 30}, [2]int64{25 << 30, 25 << 30}},
+			{billingstore.PlanReference{ID: "team", Version: 2}, [2]int64{1 << 30, 200 << 30}, [2]int64{100 << 30, 200 << 30}},
+			{billingstore.PlanReference{ID: "growth", Version: 2}, [2]int64{250 << 30, absentStoragePlan}, [2]int64{250 << 30, absentStoragePlan}},
+			{billingstore.PlanReference{ID: "scale", Version: 1}, [2]int64{500 << 30, 600 << 30}, [2]int64{500 << 30, 600 << 30}},
+			{billingstore.PlanReference{ID: "scale", Version: 2}, [2]int64{500 << 30, 600 << 30}, [2]int64{500 << 30, 600 << 30}},
+			{billingstore.PlanReference{ID: "growth", Version: 1}, [2]int64{1 << 30, 2 << 30}, [2]int64{1 << 30, 2 << 30}},
+			{billingstore.PlanReference{ID: "pilot_free", Version: 1}, [2]int64{1 << 30, 2 << 30}, [2]int64{1 << 30, 2 << 30}},
+			{billingstore.PlanReference{ID: "comp_team", Version: 1}, [2]int64{1 << 30, 2 << 30}, [2]int64{1 << 30, 2 << 30}},
+			{billingstore.PlanReference{ID: "starter", Version: 2}, [2]int64{17 << 30, 18 << 30}, [2]int64{17 << 30, 18 << 30}},
+			{billingstore.PlanReference{ID: "team", Version: 1}, [2]int64{19 << 30, 20 << 30}, [2]int64{19 << 30, 20 << 30}},
+		}
+		expected := make(map[tracker.OrganizationID]map[billingstore.PlanReference]billingstore.Plan)
+		for index, org := range organizations {
+			seedTenantAccess(t, repository, org)
+			expected[org] = make(map[billingstore.PlanReference]billingstore.Plan)
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				for _, test := range tests {
+					if test.storage[index] == absentStoragePlan {
+						continue
+					}
+					plan := billingstore.Plan{OrganizationID: org, PlanReference: test.ref, Name: "Historical plan", MonthlyUSDCents: new(int64(1234)), RuntimeID: "runtime_historical", Allowances: map[string]int64{"history_records": 2000000}, Features: []string{"collaboration"}}
+					if test.storage[index] >= 0 {
+						plan.Allowances["collaboration_bytes"] = test.storage[index]
+					}
+					if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
+						return err
+					}
+					plan.Allowances = map[string]int64{"history_records": 2000000, "collaboration_bytes": test.want[index]}
+					expected[org][test.ref] = plan
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		migrationPool := rolePoolFromTemplate(t, fixture, admin, postgres.MigrationRoleName, "")
+		login := migrationPool.Config().ConnConfig
+		connection := fixture.Connection(t, admin, login.User, login.Password)
+		for run := range 2 {
+			if err := postgres.Migrate(t.Context(), connection, os.DirFS("migrations")); err != nil {
+				t.Fatal(err)
+			}
+			for _, org := range organizations {
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					for _, test := range tests {
+						got, err := r.BillingPlan(t.Context(), test.ref)
+						want, found := expected[org][test.ref]
+						if !found {
+							if !errors.Is(err, corestore.ErrNotFound) {
+								return fmt.Errorf("storage upgrade created absent plan %v: %v", test.ref, err)
+							}
+							continue
+						}
+						if err != nil {
+							return err
+						}
+						if !reflect.DeepEqual(got, want) {
+							return fmt.Errorf("storage upgrade run %d plan=%+v want %+v", run, got, want)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var policies, forcedTables int
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM pg_policies WHERE policyname IN ('historical_storage_floor_plans','historical_storage_floor_allowances')").Scan(&policies); err != nil || policies != 0 {
+				t.Fatal("storage upgrade retained temporary migration authority", policies, err)
+			}
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM pg_class WHERE oid IN ('hosted_plans'::regclass,'hosted_plan_allowances'::regclass) AND relrowsecurity AND relforcerowsecurity").Scan(&forcedTables); err != nil || forcedTables != 2 {
+				t.Fatal("storage upgrade changed tenant row security", forcedTables, err)
+			}
+		}
+	})
 }
 
 func TestBillingEffectiveGrantsExcludeHistoryAndKeepAllActiveScopes(t *testing.T) {
@@ -568,82 +674,246 @@ func TestHostedBillingSourceParityRefusesChangedSeedPlan(t *testing.T) {
 func TestBillingMonthlyBudgetParticipantsAreTypedAndTenantScoped(t *testing.T) {
 	admin := template.Database(t)
 	repository, _ := repositoryFor(t, admin, smallPool())
-	org := tracker.OrganizationID("org_budget")
-	seedTenantAccess(t, repository, org)
-	project := tracker.ProjectID("prj_budget")
-	err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
-		if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: project, Name: "Budget example", Profile: "native"}); err != nil {
-			return err
-		}
-		for id := int64(1); id <= 2; id++ {
-			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: id, ProjectID: project, NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", id)), Number: id, Title: "Budget example"}); err != nil {
-				return err
+	for _, org := range []tracker.OrganizationID{"org_budget", "org_budget_second"} {
+		seedTenantAccess(t, repository, org)
+		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			for id := int64(1); id <= 2; id++ {
+				project := tracker.ProjectID(fmt.Sprintf("prj_budget_%d", id))
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: "Budget example " + string(project), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Blocked"}, {Name: "Waiting"}, {Name: "Done", Terminal: true}}}); err != nil {
+					return fmt.Errorf("create budget project %s: %w", project, err)
+				}
+				item := tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", id))
+				state, at := "Todo", historyAt()
+				if _, err := w.CreateWorkItemWithClaimFacts(t.Context(), corestore.WorkItem{OrganizationID: org, ID: id, ProjectID: project, NativeID: item, Number: id, Title: "Budget example", WorkflowStateName: &state}, nil, claimstore.WorkItemFacts{OrganizationID: org, ProjectID: project, WorkItemID: item}, claimstore.QueueEntry{OrganizationID: org, ProjectID: project, WorkItemID: item, Scope: string(project), State: state, Rank: string(item), CreatedAt: at, UpdatedAt: at}); err != nil {
+					return fmt.Errorf("create budget issue %s: %w", item, err)
+				}
 			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-		for id := int64(1); id <= 2; id++ {
-			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: fmt.Sprintf("machine_%d", id), Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	leases := []leasestore.Lease{}
-	for id := int64(1); id <= 2; id++ {
-		var lease leasestore.Lease
-		err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-			var err error
-			lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: id, ExpectedRevision: 1, MachineID: fmt.Sprintf("machine_%d", id), SessionID: fmt.Sprintf("session_%d", id), LeaseID: fmt.Sprintf("lease_%d", id), TTL: time.Hour})
-			return err
+			return nil
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		leases = append(leases, lease)
-	}
-	firstAt := historyAt()
-	for i, lease := range leases {
-		row := billingstore.MonthlyLease{OrganizationID: org, LeaseID: tracker.LeaseID(lease.LeaseID), LunaAPI: i == 0, RunnerAPI: i == 1, SpriteInfrastructure: i == 0}
-		admission := billingstore.MonthlyAdmission{OrganizationID: org, IssueID: tracker.WorkItemID(i + 1), AdmittedAt: firstAt.Add(time.Duration(i) * time.Minute)}
-		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.RecordBillingMonthlyAdmission(t.Context(), admission); err != nil {
-				return err
+		err = repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+			for id := int64(1); id <= 2; id++ {
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: fmt.Sprintf("machine_%d", id), Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+					return err
+				}
 			}
-			replay := admission
-			replay.AdmittedAt = replay.AdmittedAt.Add(time.Hour)
-			if err := w.RecordBillingMonthlyAdmission(t.Context(), replay); err != nil {
-				return err
-			}
-			return w.RecordBillingMonthlyLease(t.Context(), row)
-		}); err != nil {
+			return nil
+		})
+		if err != nil {
 			t.Fatal(err)
 		}
+		leases := []leasestore.Lease{}
+		for id := int64(1); id <= 2; id++ {
+			var lease leasestore.Lease
+			err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				var err error
+				lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: id, ExpectedRevision: 1, MachineID: fmt.Sprintf("machine_%d", id), SessionID: fmt.Sprintf("session_%d", id), LeaseID: fmt.Sprintf("lease_%d", id), TTL: time.Hour})
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			leases = append(leases, lease)
+		}
+		firstAt := historyAt()
+		for i, lease := range leases {
+			row := billingstore.MonthlyLease{OrganizationID: org, LeaseID: tracker.LeaseID(lease.LeaseID), LunaAPI: i == 0, RunnerAPI: i == 1, SpriteInfrastructure: i == 0}
+			admission := billingstore.MonthlyAdmission{OrganizationID: org, IssueID: tracker.WorkItemID(i + 1), AdmittedAt: firstAt.Add(time.Duration(i) * time.Minute)}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.RecordBillingMonthlyAdmission(t.Context(), admission); err != nil {
+					return err
+				}
+				replay := admission
+				replay.AdmittedAt = replay.AdmittedAt.Add(time.Hour)
+				if err := w.RecordBillingMonthlyAdmission(t.Context(), replay); err != nil {
+					return err
+				}
+				return w.RecordBillingMonthlyLease(t.Context(), row)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				gotAdmission, err := r.BillingMonthlyAdmission(t.Context(), admission.IssueID)
+				if err != nil {
+					return err
+				}
+				if !gotAdmission.AdmittedAt.Equal(admission.AdmittedAt) {
+					return fmt.Errorf("admission=%+v want %+v", gotAdmission, admission)
+				}
+				gotLease, err := r.BillingMonthlyLease(t.Context(), row.LeaseID)
+				if err != nil {
+					return err
+				}
+				if gotLease != row {
+					return fmt.Errorf("lease exposure=%+v want %+v", gotLease, row)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-			gotAdmission, err := r.BillingMonthlyAdmission(t.Context(), admission.IssueID)
+			allowed, err := r.BillingMonthlyAdmittedCandidate(t.Context(), "prj_budget_1", leases[0].AcquiredAt)
 			if err != nil {
 				return err
 			}
-			if !gotAdmission.AdmittedAt.Equal(admission.AdmittedAt) {
-				return fmt.Errorf("admission=%+v want %+v", gotAdmission, admission)
-			}
-			gotLease, err := r.BillingMonthlyLease(t.Context(), row.LeaseID)
-			if err != nil {
-				return err
-			}
-			if gotLease != row {
-				return fmt.Errorf("lease exposure=%+v want %+v", gotLease, row)
+			if allowed {
+				t.Fatal("active lease was a fresh admitted candidate")
 			}
 			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
+		for _, lease := range leases {
+			if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "completed")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			allowed, err := r.BillingMonthlyAdmittedCandidate(t.Context(), "", leases[0].AcquiredAt)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				t.Fatal("organization query lost released admitted cohort")
+			}
+			missing, err := r.BillingMonthlyAdmittedCandidate(t.Context(), "prj_missing", leases[0].AcquiredAt)
+			if err != nil {
+				return err
+			}
+			if missing {
+				t.Fatal("project query returned another project's cohort")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for id := int64(1); id <= 2; id++ {
+			project := tracker.ProjectID(fmt.Sprintf("prj_budget_%d", id))
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				allowed, err := r.BillingMonthlyAdmittedCandidate(t.Context(), project, leases[0].AcquiredAt)
+				if err != nil {
+					return err
+				}
+				if !allowed {
+					t.Fatalf("project %s lost admitted candidate", project)
+				}
+				retained, err := r.BillingMonthlyRetainsMachine(t.Context(), project, tracker.MachineID(fmt.Sprintf("machine_%d", id)))
+				if err != nil {
+					return err
+				}
+				if !retained {
+					t.Fatalf("project %s lost most recent machine", project)
+				}
+				foreign, err := r.BillingMonthlyRetainsMachine(t.Context(), project, "machine_foreign")
+				if err != nil {
+					return err
+				}
+				if foreign {
+					t.Fatal("foreign machine inherited monthly retention")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+			_, err := w.Claim(t.Context(), leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_2", SessionID: "replacement", LeaseID: "replacement_lease", TTL: time.Hour})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			previous, err := r.BillingMonthlyRetainsMachine(t.Context(), "prj_budget_1", "machine_1")
+			if err != nil {
+				return err
+			}
+			current, err := r.BillingMonthlyRetainsMachine(t.Context(), "prj_budget_1", "machine_2")
+			if err != nil {
+				return err
+			}
+			if previous || !current {
+				t.Fatalf("retention ignored successor fencing: previous=%t current=%t", previous, current)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for id, state := range []string{"Blocked", "Done"} {
+			project, item := tracker.ProjectID(fmt.Sprintf("prj_budget_%d", id+1)), tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", id+1))
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				row, err := w.WorkItem(t.Context(), project, item)
+				if err != nil {
+					return err
+				}
+				waiting := "Waiting"
+				row.WorkflowStateName = &waiting
+				_, err = w.UpdateWorkItem(t.Context(), row)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				if _, err := r.BillingMonthlyAdmission(t.Context(), tracker.WorkItemID(id+1)); err != nil {
+					return fmt.Errorf("waiting fixture lost admission: %w", err)
+				}
+				allowed, err := r.BillingMonthlyAdmittedCandidate(t.Context(), project, leases[0].AcquiredAt)
+				if err != nil {
+					return err
+				}
+				retained, err := r.BillingMonthlyRetainsMachine(t.Context(), project, "machine_2")
+				if err != nil {
+					return err
+				}
+				if allowed || retained {
+					t.Fatalf("non-dispatchable workflow flags ignored: candidate=%t retained=%t", allowed, retained)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				row, err := w.WorkItem(t.Context(), project, item)
+				if err != nil {
+					return err
+				}
+				row.WorkflowStateName = &state
+				_, err = w.UpdateWorkItem(t.Context(), row)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				allowed, err := r.BillingMonthlyAdmittedCandidate(t.Context(), project, leases[0].AcquiredAt)
+				if err != nil {
+					return err
+				}
+				retained, err := r.BillingMonthlyRetainsMachine(t.Context(), project, "machine_2")
+				if err != nil {
+					return err
+				}
+				if allowed || retained {
+					t.Fatalf("%s retained budget cohort: candidate=%t retained=%t", state, allowed, retained)
+				}
+				if id == 1 {
+					organizationAllowed, err := r.BillingMonthlyAdmittedCandidate(t.Context(), "", leases[0].AcquiredAt)
+					if err != nil {
+						return err
+					}
+					if organizationAllowed {
+						t.Fatal("organization query retained terminal cohorts")
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
+
 }

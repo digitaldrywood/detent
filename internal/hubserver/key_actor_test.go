@@ -3,13 +3,13 @@ package hubserver
 import (
 	"bytes"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,65 +18,73 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestHostedKeyActorMigration(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+func TestHostedKeyActorImport(t *testing.T) {
+	repository, _ := projectRecordPostgresWithAdmin(t, 3)
+	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	if _, err := db.ExecContext(t.Context(), `CREATE TABLE api_tokens(id TEXT PRIMARY KEY, hosted_user_id TEXT, hosted_membership_id TEXT, operator_key_scope TEXT, scope TEXT, native_only INTEGER);
-CREATE TABLE runner_identities(token_id TEXT);`); err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		id, scope     string
-		owned, runner bool
-	}{
-		{id: "account_a", scope: "operator", owned: true},
-		{id: "account_b", scope: "admin", owned: true},
-		{id: "service", scope: "operator"},
-		{id: "worker", scope: "worker", owned: true},
-		{id: "runner", scope: "operator", owned: true, runner: true},
-	} {
-		var owner, membership, permission any
-		if test.owned {
-			owner, membership, permission = "user_"+test.id, "member_"+test.id, "write"
-		}
-		if _, err := db.ExecContext(t.Context(), "INSERT INTO api_tokens VALUES(?,?,?,?,?,1)", test.id, owner, membership, permission, test.scope); err != nil {
-			t.Fatal(err)
-		}
-		if test.runner {
-			if _, err := db.ExecContext(t.Context(), "INSERT INTO runner_identities VALUES(?)", test.id); err != nil {
+	for _, organization := range []tracker.OrganizationID{"org_actor_first", "org_actor_second"} {
+		t.Run(string(organization), func(t *testing.T) {
+			fixture := newCoreNeutralFixture(t, organization, "organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_release_preferences", "daily_summary_preferences", "daily_summary_receipts", "hosted_project_grants", "token_grants", "hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations", "hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets", "project_secret_audit", "hosted_audit", "hosted_audit_times")
+			stamp := "2026-10-31T12:00:00Z"
+			fixture.add("organizations", map[string]any{"id": string(organization), "name": "Example organization", "slug": string(organization), "local": "0", "created_at": stamp})
+			fixture.add("hosted_tenant", map[string]any{"singleton": "1", "provider_id": "provider_" + string(organization), "bootstrap_subject": "example_owner", "deployment": "example", "public_url": "https://example.test", "allocation_generation": "1"})
+			cases := []struct{ id, scope, kind string }{{"account_a", "operator", "personal"}, {"account_b", "admin", "personal"}, {"service", "operator", "service"}, {"worker", "worker", "service"}, {"runner", "operator", "service"}}
+			for _, test := range cases {
+				row := map[string]any{"id": test.id, "name": test.id, "token_hash": string(organization) + "_" + test.id, "scope": test.scope, "native_only": "1", "created_at": stamp, "updated_at": stamp, "operator_project_access": "selected", "key_kind": test.kind}
+				if test.id != "service" {
+					row["hosted_user_id"], row["hosted_membership_id"], row["operator_key_scope"] = "user_"+test.id, "member_"+test.id, "write"
+				}
+				fixture.add("api_tokens", row)
+			}
+			source := postgres.AccessCopyImportSource{BundlePath: fixture.write(), OrganizationID: organization, Catalog: catalog, Objects: &memoryRunDetails{}}
+			if _, err := repository.ImportAccessCopy(t.Context(), source); err != nil {
 				t.Fatal(err)
 			}
-		}
-	}
-	raw, err := migrationFiles.ReadFile("migrations/20261013030500_api_key_actor_kind.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), strings.Split(string(raw), "-- +goose Down")[0]); err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct{ id, kind string }{
-		{"account_a", "personal"}, {"account_b", "personal"}, {"service", "service"}, {"worker", "service"}, {"runner", "service"},
-	} {
-		var got string
-		if err := db.QueryRowContext(t.Context(), "SELECT key_kind FROM api_tokens WHERE id=?", test.id).Scan(&got); err != nil || got != test.kind {
-			t.Fatalf("%s kind=%s want=%s error=%v", test.id, got, test.kind, err)
-		}
+			if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				for _, test := range cases {
+					got, err := r.AccessCredential(t.Context(), test.id)
+					if err != nil {
+						return err
+					}
+					if got.Kind != test.kind || got.Scope != test.scope {
+						t.Fatalf("%s kind=%s scope=%s want=%s/%s", test.id, got.Kind, got.Scope, test.kind, test.scope)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			missingKind := fixture.clone(t)
+			table := missingKind.tables["api_tokens"]
+			delete(table.Columns, "key_kind")
+			missingKind.tables["api_tokens"] = table
+			for index := range missingKind.records["api_tokens"] {
+				delete(missingKind.records["api_tokens"][index].Values, "key_kind")
+			}
+			source.BundlePath = missingKind.write()
+			if _, err := repository.ImportAccessCopy(t.Context(), source); !errors.Is(err, storagecatalog.ErrUnmapped) {
+				t.Fatalf("source without explicit key kind error=%v", err)
+			}
+		})
 	}
 }
 
@@ -102,6 +110,31 @@ func TestNativeKeyActor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func keyActorAuditForTest(t *testing.T, service *Service, route, session string) (accessstore.Audit, string) {
+	t.Helper()
+	organization := service.accessOrganization()
+	var id int64
+	if err := hostedPostgresAdmin(t, service).QueryRowContext(t.Context(), "SELECT id FROM hosted_audit WHERE organization_id=$1 AND route=$2 AND ($3='' OR session_id=$3) ORDER BY id DESC LIMIT 1", organization, route, session).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	var audit accessstore.Audit
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		audit, err = r.AccessAudit(t.Context(), id)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if audit.Mutation == nil {
+		return audit, ""
+	}
+	raw, err := service.runDetailStore().ReadDetail(t.Context(), string(organization), *audit.Mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return audit, string(raw)
 }
 
 func TestMCPKeyIssueContract(t *testing.T) {
@@ -145,11 +178,8 @@ func TestMCPKeyIssueContract(t *testing.T) {
 					}
 					checkClaimable := func(want bool) {
 						t.Helper()
-						_, id, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(issue.WorkItemID))
-						if err != nil {
-							t.Fatal(err)
-						}
-						got, reason, err := nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
+						evaluation, err := nativeIssueContractEvaluationForTest(t.Context(), f.service, scope, issue.WorkItemID)
+						got, reason := evaluation.Allowed, evaluation.Reason
 						if err != nil || got != want || (reason == "") != want {
 							t.Fatalf("claimable=%v reason=%q error=%v want=%v", got, reason, err, want)
 						}
@@ -203,7 +233,11 @@ func TestMCPKeyIssueContract(t *testing.T) {
 					if envelope.Result.IsError {
 						t.Fatalf("edit failed: %s", response.Body.String())
 					}
-					issue, _, err = readNativeIssue(t.Context(), f.service.database.db, scope, string(issue.WorkItemID))
+					row, currentVersion, err := f.service.readWorkItemRecord(t.Context(), scope, string(issue.WorkItemID))
+					if err != nil {
+						t.Fatal(err)
+					}
+					issue, err = f.service.hydrateWorkItemRecord(t.Context(), row, currentVersion)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -243,14 +277,29 @@ func TestMCPKeyIssueContract(t *testing.T) {
 					if err := json.Unmarshal(raw, &original); err != nil || original.Body != originalBody {
 						t.Fatalf("original large issue history changed: %v", err)
 					}
-					var actorJSON string
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actor_json FROM collaboration_events WHERE work_item_id=? AND type='issue.edited' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&actorJSON); err != nil {
+					var editedEvent eventstore.Event
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+						events, err := r.Events(t.Context(), scope.project, issue.WorkItemID, 0, 3)
+						if err != nil {
+							return err
+						}
+						for _, event := range events {
+							if event.Type == "issue.edited" {
+								editedEvent = event
+							}
+						}
+						if editedEvent.ID == "" {
+							return corestore.ErrNotFound
+						}
+						return nil
+					}); err != nil {
 						t.Fatal(err)
 					}
-					var actor tracker.Actor
-					if err := json.Unmarshal([]byte(actorJSON), &actor); err != nil {
+					persistedEvent, err := eventstore.NewContent(f.service.runDetailStore()).Event(t.Context(), editedEvent)
+					if err != nil {
 						t.Fatal(err)
 					}
+					actor := persistedEvent.Actor
 					wantActor := tracker.Actor{Kind: "human", PrincipalID: issuer.ID, ViaKey: key.ID}
 					if !want {
 						wantActor.Kind, wantActor.PrincipalID = "integration", key.ID
@@ -263,29 +312,19 @@ func TestMCPKeyIssueContract(t *testing.T) {
 					}
 					var auditJSON, human string
 					if deployment == "shared entry" {
-						var effective, project, route string
-						var status int
-						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,project_id,route,status,mutation_json FROM hosted_audit WHERE session_id=? AND event='key_call' ORDER BY id DESC LIMIT 1", key.ID).Scan(&human, &effective, &project, &route, &status, &auditJSON); err != nil {
-							t.Fatal(err)
-						}
-						var metadata struct {
-							KeyID     string `json:"key_id"`
-							Owner     string `json:"owner"`
-							Kind      string `json:"kind"`
-							Operation string `json:"operation"`
-							Resource  string `json:"resource"`
-						}
+						audit, _ := keyActorAuditForTest(t, f.service, operatortool.EditItem, key.ID)
+						human = audit.ActualActor
+						effective, project, route, status := audit.EffectiveUser, string(audit.ProjectID), audit.Route, audit.Status
 						wantHuman := user.identity.Subject
 						if !want {
 							wantHuman = "service:" + key.ID
 						}
-						if err := json.Unmarshal([]byte(auditJSON), &metadata); err != nil || metadata.KeyID != key.ID || metadata.Owner != wantHuman || metadata.Kind != kind || metadata.Operation != operatortool.EditItem || metadata.Resource != string(issue.WorkItemID) || human != wantHuman || effective != wantHuman || project != string(f.project) || route != operatortool.EditItem || status != http.StatusOK {
-							t.Fatalf("key audit=%s actor=%s effective=%s project=%s route=%s status=%d error=%v", auditJSON, human, effective, project, route, status, err)
+						if audit.KeyID != key.ID || audit.KeyOwner != wantHuman || audit.KeyKind != kind || audit.Route != operatortool.EditItem || audit.Resource != string(issue.WorkItemID) || human != wantHuman || effective != wantHuman || project != string(f.project) || route != operatortool.EditItem || status != http.StatusOK {
+							t.Fatalf("key audit=%+v actor=%s effective=%s project=%s route=%s status=%d", audit, human, effective, project, route, status)
 						}
 					} else {
-						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,mutation_json FROM hosted_audit WHERE route='mcp edit_item' ORDER BY id DESC LIMIT 1").Scan(&human, &auditJSON); err != nil {
-							t.Fatal(err)
-						}
+						audit, rawAudit := keyActorAuditForTest(t, f.service, "mcp edit_item", "")
+						human, auditJSON = audit.ActualActor, rawAudit
 						var metadata mutation.Metadata
 						if err := json.Unmarshal([]byte(auditJSON), &metadata); err != nil || metadata.ViaKey != key.ID || metadata.ActorKind != wantActor.Kind || want && human != user.identity.Subject || !want && human != wantActor.PrincipalID {
 							t.Fatalf("audit=%s actor=%s error=%v", auditJSON, human, err)
@@ -305,9 +344,7 @@ func TestMCPKeyIssueContract(t *testing.T) {
 						requireNativeStatus(t, response, http.StatusOK)
 						decodeHubResponse(t, response, &issue)
 						checkClaimable(want)
-						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT mutation_json FROM hosted_audit WHERE route=? ORDER BY id DESC LIMIT 1", "PATCH "+path).Scan(&auditJSON); err != nil {
-							t.Fatal(err)
-						}
+						_, auditJSON = keyActorAuditForTest(t, f.service, "PATCH "+path, "")
 						if err := json.Unmarshal([]byte(auditJSON), &metadata); err != nil || metadata.ViaKey != key.ID || metadata.ActorKind != wantActor.Kind || metadata.Source != "api" {
 							t.Fatalf("CLI audit=%s error=%v", auditJSON, err)
 						}
@@ -341,20 +378,12 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 	}
 	create := func(t *testing.T, name string) tracker.NativeIssue {
 		t.Helper()
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		raw, err := f.service.createNativeIssueCommand(t.Context(), scope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + name}, Title: name, Body: issueContractTestSections, State: "Todo"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-				t.Error(err)
-			}
-		})
-		item, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: name, Body: issueContractTestSections, State: "Todo"}, time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := f.service.database.commit(t.Context(), tx); err != nil {
+		var item tracker.NativeIssue
+		if err := json.Unmarshal(raw, &item); err != nil {
 			t.Fatal(err)
 		}
 		return item
@@ -423,43 +452,94 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 				case operatortool.MoveItem:
 					fields["target_state"] = "Done"
 				case operatortool.TransferItem:
-					now := f.service.config.now()
-					machine := tracker.MachineID(newNativeID("machine"))
-					operatorSQL(t, f, `INSERT INTO machines(id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id,token_id) VALUES(?,?,?,1,'test',?,?,?,?,?)`, machine, machine, machine, formatHubTime(now), formatHubTime(now), formatHubTime(now), scope.organization, issuer.ID)
+					if _, err := f.service.approveTestTenantPolicy(t.Context(), string(scope.organization)+"/"+string(scope.project), issuer.ID, policy.Change{Policy: hubTestPolicy()}); err != nil {
+						t.Fatal(err)
+					}
 					input := changeTestInput()
 					input.Repository = "https://github.com/example-org/example-project"
 					bundle := changeTestSource(t, &input)
+					now := f.service.config.now()
+					service := f.service
+					service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
+					repository := service.config.TenantRepository
+					orgID, projectID := scope.organization, scope.project
+					binding := runnerauth.NewBinding()
+					workerID, runnerID := newNativeID("credential"), binding.RunnerID
+					workerToken, err := apikey.GenerateToken()
+					if err != nil {
+						t.Fatal(err)
+					}
+					workerHash := apikey.HashToken(workerToken)
+					leaseID := newNativeID("lease")
+					var lease leasestore.Lease
+					expires := now.Add(time.Hour)
+					if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
+						workItem, err := w.WorkItem(t.Context(), projectID, item.WorkItemID)
+						if err != nil {
+							return err
+						}
+						if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: orgID, ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+							return err
+						}
+						if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: orgID, ID: workerID, Name: "Source runner", Hash: workerHash, Fingerprint: tokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+							return err
+						}
+						if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: orgID, TokenID: workerID, ProjectID: projectID}); err != nil {
+							return err
+						}
+						enrollmentID := newNativeID("enrollment")
+						operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}
+						if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: orgID, ID: enrollmentID, RunnerID: runnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("example-source-enrollment"), Scope: "projects", ProjectIDs: []tracker.ProjectID{projectID}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-owner"}); err != nil {
+							return err
+						}
+						if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, runnerID, binding.MachineID, now); err != nil {
+							return err
+						}
+						if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: orgID, RunnerID: runnerID, MachineID: binding.MachineID, TokenID: workerID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{projectID}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+							return err
+						}
+						lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "source-session", LeaseID: leaseID, TTL: time.Hour})
+						if err != nil {
+							return err
+						}
+						if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: orgID, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
+							return err
+						}
+						return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: orgID, ProjectID: projectID, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: input.PolicyID, BoundAt: now})
+					}); err != nil {
+						t.Fatal(err)
+					}
+					input.AttemptID, input.RunID = newNativeID("attempt"), newNativeID("run")
+					for index, kind := range []string{"run.started", "run.finished"} {
+						run := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: kind}, Type: kind, SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: input.AttemptID, RunID: input.RunID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: input.PolicyID, Sequence: int64(index + 1), Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "example"}}}
+						if kind == "run.finished" {
+							run.Data.Outcome = "succeeded"
+						}
+						encoded, err := json.Marshal(run)
+						if err != nil {
+							t.Fatal(err)
+						}
+						response := shared.serve(t, hostedSharedRequest{kind: cloudassert.KindMachine, bearer: workerToken, method: http.MethodPost, target: "/organizations/" + string(scope.organization) + f.base + "/work-items/" + string(item.WorkItemID) + "/events", body: string(encoded)})
+						requireNativeStatus(t, response, http.StatusOK)
+					}
 					ctx := f.service.contentContext(t.Context())
-					if _, err := prepareChangeContent(ctx, string(scope.organization), bundle); err != nil {
+					raw, err := f.service.createChangeRecordCommand(ctx, scope, string(item.WorkItemID), "key-transfer-create", tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "transfer-change"}, Title: "Transfer source"})
+					if err != nil {
 						t.Fatal(err)
 					}
-					if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-						input.AttemptID = seedHealthRateAttempt(t, tx, scope, item, string(machine), "succeeded", tracker.NativeRunData{PolicyID: input.PolicyID}, now, -1)
-						input.RunID = newNativeID("run")
-						_, err := tx.ExecContext(ctx, "UPDATE native_attempts SET run_id=?,policy_id=? WHERE id=?", input.RunID, input.PolicyID, input.AttemptID)
-						return err
-					}); err != nil {
+					var change tracker.ChangeRequest
+					if err := json.Unmarshal(raw, &change); err != nil {
 						t.Fatal(err)
 					}
-					var published any
-					if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-						if _, err := f.service.approveChangeReviewPolicyCommand(ctx, tx, scope, tracker.ApproveChangeReviewPolicy{Policy: tracker.ChangeReviewPolicy{PolicyID: input.PolicyID}}); err != nil {
-							return fmt.Errorf("approve review policy: %w", err)
-						}
-						created, err := f.service.createChangeCommand(ctx, tx, scope, string(item.WorkItemID), tracker.CreateChange{Title: "Transfer source"}, now)
-						if err != nil {
-							return fmt.Errorf("create change: %w", err)
-						}
-						change := created.(tracker.ChangeRequest)
-						published, err = f.service.publishChangeVersionCommand(ctx, tx, scope, string(item.WorkItemID), change.ID, tracker.PublishChangeVersion{ChangeVersionInput: input, SourceBundle: bundle}, now)
-						if err != nil {
-							return fmt.Errorf("publish source: %w", err)
-						}
-						return nil
-					}); err != nil {
+					raw, err = f.service.publishChangeVersionRecordCommand(ctx, scope, string(item.WorkItemID), change.ID, "key-transfer-publish", tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "transfer-version"}, ChangeVersionInput: input, SourceBundle: bundle})
+					if err != nil {
 						t.Fatal(err)
 					}
-					fields["version_id"] = published.(tracker.ChangeVersion).ID
+					var version tracker.ChangeVersion
+					if err := json.Unmarshal(raw, &version); err != nil {
+						t.Fatal(err)
+					}
+					fields["version_id"] = version.ID
 				case operatortool.RestoreItem:
 					_, err := f.service.setNativeArchiveCommand(t.Context(), scope, string(item.WorkItemID), archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive"}, ExpectedRevision: item.Revision}, true)
 					if err != nil {

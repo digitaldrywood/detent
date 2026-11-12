@@ -243,37 +243,7 @@ func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope nativeS
 		if err := s.requireRunnerAdministrationTenant(ctx, w, scope); err != nil {
 			return err
 		}
-		identity, err := w.RunnerIdentity(ctx, resource)
-		if err != nil {
-			return err
-		}
-		if identity.RemovedAt != nil {
-			return nil
-		}
-		now := s.config.now().UTC()
-		busy, err := w.RunnerHasActiveLease(ctx, resource, now)
-		if err != nil {
-			return err
-		}
-		if busy {
-			return nativePublicInvalid("This runner has active work. Drain it and wait for its leases to finish or expire before removing it.")
-		}
-		credential, err := w.AccessCredential(ctx, identity.TokenID)
-		if err != nil {
-			return err
-		}
-		if credential.RevokedAt == nil {
-			if err := w.RevokeAccessCredential(ctx, identity.TokenID, now); err != nil {
-				return err
-			}
-			if err := w.RecordRunnerIdentityEvent(ctx, runnerstore.Event{OrganizationID: scope.organization, RunnerID: resource, ActorID: scope.credential.ID, Kind: "revoked", OccurredAt: now}); err != nil {
-				return err
-			}
-		}
-		if err := w.RemoveRunnerIdentity(ctx, resource, now); err != nil {
-			return err
-		}
-		return s.applyRunnerTenantUsage(ctx, w, now, resource, true, false)
+		return s.revokeRunnerIdentityTenant(ctx, w, scope.organization, resource, scope.credential.ID, s.config.now().UTC())
 	})
 	if err != nil {
 		return nil, err
@@ -284,41 +254,37 @@ func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope nativeS
 	return struct{}{}, nil
 }
 
-func revokeRunnerIdentityInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, resource string, now time.Time) error {
-	result, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ?, updated_at = ? WHERE revoked_at IS NULL AND id IN
-(SELECT token_id FROM runner_identities WHERE id = ? AND organization_id = ?)`, formatHubTime(now), formatHubTime(now), resource, string(scope.organization))
-	if err := requireRunnerUpdate(result, err); err != nil {
-		return err
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT l.lease_id FROM leases l JOIN lease_runners lr ON lr.lease_id=l.lease_id JOIN runner_identities r ON r.id=lr.runner_id
-WHERE r.id=? AND r.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)`, resource, scope.organization, formatHubTime(now))
+func (s *Service) revokeRunnerIdentityTenant(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, resource, actorID string, now time.Time) error {
+	identity, err := w.RunnerIdentity(ctx, resource)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	var ids []tracker.LeaseID
-	for rows.Next() {
-		var id tracker.LeaseID
-		if err := rows.Scan(&id); err != nil {
-			return err
-		}
-		ids = append(ids, id)
+	if identity.RemovedAt != nil {
+		return nil
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	busy, err := w.RunnerHasActiveLease(ctx, resource, now)
+	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		lease, found, err := readLeaseByID(ctx, tx, id)
-		if err != nil {
+	if busy {
+		return nativePublicInvalid("This runner has active work. Drain it and wait for its leases to finish or expire before removing it.")
+	}
+	credential, err := w.AccessCredential(ctx, identity.TokenID)
+	if err != nil {
+		return err
+	}
+	if credential.RevokedAt == nil {
+		if err := w.RevokeAccessCredential(ctx, identity.TokenID, now); err != nil {
 			return err
 		}
-		if found {
-			if err := releaseLeaseRow(ctx, tx, lease, "cancelled", now); err != nil {
-				return err
-			}
+		if err := w.RecordRunnerIdentityEvent(ctx, runnerstore.Event{OrganizationID: organization, RunnerID: resource, ActorID: actorID, Kind: "revoked", OccurredAt: now}); err != nil {
+			return err
 		}
 	}
-	return recordRunnerEvent(ctx, tx, resource, scope.credential.ID, "revoked", now)
+	if err := w.RemoveRunnerIdentity(ctx, resource, now); err != nil {
+		return err
+	}
+	return s.applyRunnerTenantUsage(ctx, w, now, resource, true, false)
 }
 
 func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind string, now time.Time) error {

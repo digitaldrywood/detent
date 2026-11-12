@@ -2,10 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"net/http"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -46,39 +43,10 @@ func (s *Service) updateMonthlyBudget(c echo.Context) error {
 	}
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
-	if s.database.billingRepository != nil {
-		return s.updateMonthlyBudgetRecord(c, scope, request)
+	if s.database == nil || s.database.billingRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
 	}
-	result, err := s.executeNativeMutation(c.Request().Context(), scope, nativeCommandOptions{OperationID: "PUT " + c.Request().URL.EscapedPath(), Feature: "collaboration"}, request.Mutation, request, updateMonthlyBudgetOperation(request))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	s.startSpritePoolForQueue(scope)
-	return c.JSONBlob(http.StatusOK, result)
-}
-
-func updateMonthlyBudgetOperation(request monthlyBudgetRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
-	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		if err := request.Policy.Validate(); err != nil {
-			return nil, nativePublicInvalid(err.Error())
-		}
-		current, err := readMonthlyBudgetSettings(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if current.Revision != request.ExpectedRevision {
-			return nil, nativeConflict(current.Revision)
-		}
-		raw, err := json.Marshal(request.Policy)
-		if err != nil {
-			return nil, err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO monthly_budget_policies(organization_id,project_id,revision,policy_json,actor_id,updated_at) VALUES(?,?,?,?,?,?)`, scope.organization, scope.project, current.Revision+1, string(raw), scope.credential.ID, formatHubTime(now))
-		if err != nil {
-			return nil, err
-		}
-		return readMonthlyBudgetSettings(ctx, tx, scope)
-	}
+	return s.updateMonthlyBudgetRecord(c, scope, request)
 }
 
 func (s *Service) organizationMonthlyBudgetScope(c echo.Context) error {

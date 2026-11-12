@@ -23,13 +23,13 @@ WITH candidates AS (
     FROM issue_dependencies d
     WHERE d.organization_id=sqlc.arg(organization_id) AND d.blocker_project_id=sqlc.arg(project_id) AND d.blocker_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(native_id))
     UNION ALL
-    SELECT 'related'::text, 'related'::text,
-        CASE WHEN first_issue_id=source.id THEN second_project_id ELSE first_project_id END,
-        CASE WHEN first_issue_id=source.id THEN second_issue_id ELSE first_issue_id END,
-        r.created_at
+    SELECT 'related'::text, 'related'::text, r.second_project_id, r.second_issue_id, r.created_at
     FROM issue_relationships r
-    JOIN issues source ON source.organization_id=r.organization_id AND source.id IN (r.first_issue_id,r.second_issue_id)
-    WHERE r.organization_id=sqlc.arg(organization_id) AND source.project_id=sqlc.arg(project_id) AND source.native_id=sqlc.arg(native_id)
+    WHERE r.organization_id=sqlc.arg(organization_id) AND r.first_project_id=sqlc.arg(project_id) AND r.first_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(native_id))
+    UNION ALL
+    SELECT 'related'::text, 'related'::text, r.first_project_id, r.first_issue_id, r.created_at
+    FROM issue_relationships r
+    WHERE r.organization_id=sqlc.arg(organization_id) AND r.second_project_id=sqlc.arg(project_id) AND r.second_issue_id=(SELECT i.id FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(native_id))
 )
 SELECT c.relationship_type,c.direction,c.related_project_id,target.native_id,c.created_at,target.number,target.title,target.workflow_state_name,COALESCE(states.terminal,false),COALESCE(states.dispatchable,false),target.actor_principal_id,COALESCE(organizations.slug,'') AS organization_slug,projects.slug AS project_slug,
     COALESCE(closed.closed_at,'0001-01-01 00:00:00+00'::timestamptz) AS closed_at,
@@ -70,13 +70,15 @@ WITH requested AS (
     JOIN issues source ON source.organization_id=sqlc.arg(organization_id) AND source.project_id=sqlc.arg(project_id) AND source.native_id=requested.native_id
     JOIN issue_dependencies d ON d.organization_id=source.organization_id AND d.blocker_project_id=source.project_id AND d.blocker_issue_id=source.id
     UNION ALL
-    SELECT source.native_id, 'related'::text, 'related'::text,
-        CASE WHEN r.first_issue_id=source.id THEN r.second_project_id ELSE r.first_project_id END,
-        CASE WHEN r.first_issue_id=source.id THEN r.second_issue_id ELSE r.first_issue_id END,
-        r.created_at
+    SELECT source.native_id, 'related'::text, 'related'::text, r.second_project_id, r.second_issue_id, r.created_at
     FROM requested
     JOIN issues source ON source.organization_id=sqlc.arg(organization_id) AND source.project_id=sqlc.arg(project_id) AND source.native_id=requested.native_id
-    JOIN issue_relationships r ON r.organization_id=source.organization_id AND source.id IN (r.first_issue_id,r.second_issue_id)
+    JOIN issue_relationships r ON r.organization_id=source.organization_id AND r.first_project_id=source.project_id AND r.first_issue_id=source.id
+    UNION ALL
+    SELECT source.native_id, 'related'::text, 'related'::text, r.first_project_id, r.first_issue_id, r.created_at
+    FROM requested
+    JOIN issues source ON source.organization_id=sqlc.arg(organization_id) AND source.project_id=sqlc.arg(project_id) AND source.native_id=requested.native_id
+    JOIN issue_relationships r ON r.organization_id=source.organization_id AND r.second_project_id=source.project_id AND r.second_issue_id=source.id
 )
 SELECT c.work_item_id,c.relationship_type,c.direction,c.related_project_id,target.native_id,c.created_at,target.number,target.title,target.workflow_state_name,COALESCE(states.terminal,false),COALESCE(states.dispatchable,false),target.actor_principal_id,COALESCE(organizations.slug,'') AS organization_slug,projects.slug AS project_slug,
     COALESCE(closed.closed_at,'0001-01-01 00:00:00+00'::timestamptz) AS closed_at,
@@ -111,6 +113,12 @@ FOR NO KEY UPDATE;
 INSERT INTO issue_dependencies (organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id,provenance,created_at,updated_at)
 VALUES (sqlc.arg(organization_id),sqlc.arg(dependent_project_id),sqlc.arg(dependent_issue_id),sqlc.arg(blocker_project_id),sqlc.arg(blocker_issue_id),sqlc.arg(provenance),sqlc.arg(created_at),sqlc.arg(updated_at))
 ON CONFLICT DO NOTHING;
+
+-- name: UpsertHubDependency :exec
+INSERT INTO issue_dependencies (organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id,provenance,created_at,updated_at)
+VALUES (sqlc.arg(organization_id),sqlc.arg(dependent_project_id),sqlc.arg(dependent_issue_id),sqlc.arg(blocker_project_id),sqlc.arg(blocker_issue_id),'hub',sqlc.arg(created_at),sqlc.arg(created_at))
+ON CONFLICT (organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id)
+DO UPDATE SET provenance=EXCLUDED.provenance, updated_at=EXCLUDED.updated_at;
 
 -- name: ImportDependency :exec
 INSERT INTO issue_dependencies (organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id,provenance,source_version,created_at,updated_at)

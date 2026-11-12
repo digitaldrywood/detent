@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sync"
 	"time"
 
@@ -17,7 +17,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
-	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -31,24 +33,26 @@ func immutableContentStorageError(err error) error {
 }
 
 type changeContent struct {
-	encoder       *attachment.ArchiveEncoder
-	mu            sync.Mutex
-	call          entryauthority.ContentHandler
-	store         attachment.DetailStore
-	register      func(context.Context, string, attachment.ArchiveReference, bool) error
-	prepared      map[string]attachment.ArchiveReference
-	query         nativeQueryer
-	payloads      map[string][]byte
-	references    map[string]attachment.ArchiveReference
-	ids           map[string]string
-	idPositions   map[string]int
-	generatedAt   time.Time
-	organization  string
-	stableHistory bool
-	completion    bool
-	mutationDepth int
-	payloadBytes  int64
-	writing       bool
+	encoder          *attachment.ArchiveEncoder
+	mu               sync.Mutex
+	call             entryauthority.ContentHandler
+	store            attachment.DetailStore
+	register         func(context.Context, string, attachment.ArchiveReference, bool) error
+	readOrganization string
+	readReference    func(context.Context, string) (attachment.ArchiveReference, error)
+	prepared         map[string]attachment.ArchiveReference
+	query            nativeQueryer
+	payloads         map[string][]byte
+	references       map[string]attachment.ArchiveReference
+	ids              map[string]string
+	idPositions      map[string]int
+	generatedAt      time.Time
+	organization     string
+	stableHistory    bool
+	completion       bool
+	mutationDepth    int
+	payloadBytes     int64
+	writing          bool
 }
 
 func (s *Service) contentContext(ctx context.Context) context.Context {
@@ -60,7 +64,30 @@ func (s *Service) contentContext(ctx context.Context) context.Context {
 	if call == nil && store == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, changeContentKey{}, &changeContent{encoder: &s.archiveEncoder, call: call, store: store, register: s.registerChangeContent})
+	organization := s.accessOrganization()
+	readReference := func(ctx context.Context, key string) (attachment.ArchiveReference, error) {
+		if organization == "" || s.config.TenantRepository == nil {
+			return attachment.ArchiveReference{}, errContentStorageUnconfigured
+		}
+		var ref attachment.ArchiveReference
+		err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+			reader, ok := r.(attemptArchiveReader)
+			if !ok {
+				return errContentStorageUnconfigured
+			}
+			object, err := reader.ArchiveObjectByKey(ctx, key)
+			if err != nil {
+				return err
+			}
+			ref = object.Reference
+			if object.OrganizationID != organization || ref.Key != key || ref.Validate(string(organization)) != nil || ref.CustomerOwned || ref.BindingID != "" || ref.SchemaVersion != 1 {
+				return artifact.ErrIntegrity
+			}
+			return nil
+		})
+		return ref, err
+	}
+	return context.WithValue(ctx, changeContentKey{}, &changeContent{encoder: &s.archiveEncoder, call: call, store: store, register: s.registerChangeContent, readOrganization: string(organization), readReference: readReference})
 }
 
 func (s *Service) changeContentMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -175,12 +202,9 @@ func readChangeContentObject(ctx context.Context, organization string, ref attac
 	cached, found := content.payloads[ref.Key]
 	cachedRef := content.references[ref.Key]
 	content.mu.Unlock()
-	if writing || claimWriting(ctx) {
+	if writing {
 		if found && cachedRef == ref {
 			return bytes.Clone(cached), nil
-		}
-		if claimWriting(ctx) {
-			return nil, errClaimHintStale
 		}
 		return nil, &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
 			raw, err := readChangeContent(ctx, organization, ref)
@@ -191,32 +215,6 @@ func readChangeContentObject(ctx context.Context, organization string, ref attac
 			defer content.mu.Unlock()
 			return content.rememberPayload(ref, raw)
 		}}
-	}
-	data, readErr := readPublishedContent(ctx, content, organization, ref)
-	if readErr == nil {
-		return data, nil
-	}
-	query := content.query
-	if scoped, ok := ctx.Value(payloadQueryKey{}).(nativeQueryer); ok {
-		query = scoped
-	}
-	if query == nil {
-		return nil, readErr
-	}
-	var pending []byte
-	err := query.QueryRowContext(ctx, pendingContentSelection, organization, ref.Key, organization, ref.Key).Scan(&pending)
-	if errors.Is(err, sql.ErrTxDone) && content.query != nil {
-		err = content.query.QueryRowContext(ctx, pendingContentSelection, organization, ref.Key, organization, ref.Key).Scan(&pending)
-	}
-	if err == nil {
-		prepared, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(pending))
-		if err != nil || prepared != ref {
-			return nil, artifact.ErrIntegrity
-		}
-		return pending, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
 	}
 	return readPublishedContent(ctx, content, organization, ref)
 }
@@ -254,138 +252,6 @@ func readPublishedContent(ctx context.Context, content *changeContent, organizat
 
 func contentReference() attachment.ArchiveReference {
 	return attachment.ArchiveReference{Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
-}
-
-func persistCommandOutput(ctx context.Context, tx *sql.Tx, organization string, version, review, role string, position int, command *gate.CommandResult) error {
-	if command == nil || command.Output == "" {
-		return nil
-	}
-	var ref attachment.ArchiveReference
-	if prepared := preparedChangeMutation(ctx); prepared != nil {
-		var found bool
-		ref, found = prepared.outputs[fmt.Sprintf("%s.%d", role, position)]
-		if !found {
-			return errors.New("command output was not prepared")
-		}
-	} else {
-		var err error
-		if _, err := storedPayloadKey(ctx, organization, []byte(command.Output)); err != nil {
-			return err
-		}
-		ref, err = preparedChangeContent(ctx, organization, []byte(command.Output))
-		if err != nil {
-			return err
-		}
-	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO change_command_outputs(version_id,review_id,role,position,organization_id,object_key,object_sha256,object_bytes,content_bytes) VALUES(?,?,?,?,?,?,?,?,?)`, version, review, role, position, organization, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)
-	if err == nil {
-		command.Output = ""
-	}
-	return err
-}
-
-func hydrateChangeRecord(ctx context.Context, query nativeQueryer, value any) error {
-	ctx = payloadQueryContext(ctx, query)
-	var version, review string
-	var commands map[string][]gate.CommandResult
-	switch record := value.(type) {
-	case *tracker.ChangeVersion:
-		version = record.ID
-		var revision, scope string
-		err := query.QueryRowContext(ctx, `SELECT v.policy_revision_id,c.organization_id||'/'||c.project_id FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE v.id=?`, version).Scan(&revision, &scope)
-		if err != nil {
-			return err
-		}
-		if revision != "" {
-			var raw string
-			if err := query.QueryRowContext(ctx, `SELECT metadata_json FROM policy_revisions WHERE scope=? AND policy_id=?`, scope, revision).Scan(&raw); err != nil {
-				return err
-			}
-			if err := decodeStorageJSON(ctx, []byte(raw), &record.Policy); err != nil {
-				return err
-			}
-			if err := record.Policy.Validate(); err != nil {
-				return err
-			}
-			if record.Policy.ID != record.PolicyID || revision != record.PolicyID {
-				return errors.New("version policy reference mismatch")
-			}
-			if record.ReviewPolicy.PolicyID == "" {
-				record.ReviewPolicy.PolicyID = record.PolicyID
-			}
-			if record.ReviewPolicy.RequiredChecks == nil && len(record.Checks) > 0 {
-				record.ReviewPolicy.RequiredChecks = make([]tracker.ChangeCheckSpec, len(record.Checks))
-				for i, check := range record.Checks {
-					record.ReviewPolicy.RequiredChecks[i] = check.ChangeCheckSpec
-				}
-			}
-		}
-		if validation := record.Validation; validation != nil {
-			slots := make(map[string][]attributionSlot)
-			commandAttributionSlots(slots, "validation", validation)
-			if err := readAttributionSlots(ctx, query, version, version, slots); err != nil {
-				return err
-			}
-			commands = map[string][]gate.CommandResult{"validation": {*validation}}
-		}
-	case *tracker.ChangeReview:
-		version, review = record.VersionID, record.ID
-		if err := readAttributionSlots(ctx, query, version, review, reviewAttributionSlots(record)); err != nil {
-			return err
-		}
-		commands = make(map[string][]gate.CommandResult)
-		if record.Validator != nil {
-			commands["validator"] = record.Validator.Commands
-		}
-		if record.ImplementationReview != nil {
-			commands["implementation_review"] = record.ImplementationReview.Commands
-		}
-	default:
-		return nil
-	}
-	if len(commands) == 0 || claimPrepared(ctx) != nil || explanationRead(ctx) {
-		return nil
-	}
-	rows, err := query.QueryContext(ctx, `SELECT role,position,organization_id,object_key,object_sha256,object_bytes,content_bytes FROM change_command_outputs WHERE version_id=? AND review_id=? ORDER BY role,position`, version, review)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type output struct {
-		role, organization string
-		position           int
-		ref                attachment.ArchiveReference
-	}
-	var outputs []output
-	for rows.Next() {
-		row := output{ref: contentReference()}
-		if err := rows.Scan(&row.role, &row.position, &row.organization, &row.ref.Key, &row.ref.SHA256, &row.ref.CompressedSize, &row.ref.UncompressedSize); err != nil {
-			return err
-		}
-		outputs = append(outputs, row)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	for _, row := range outputs {
-		list := commands[row.role]
-		if row.position >= len(list) {
-			return errors.New("command output reference mismatch")
-		}
-		data, err := readChangeContent(ctx, row.organization, row.ref)
-		if err != nil {
-			return fmt.Errorf("read command output: %w", err)
-		}
-		list[row.position].Output = string(data)
-	}
-	if record, ok := value.(*tracker.ChangeVersion); ok && record.Validation != nil {
-		validation := commands["validation"]
-		if len(validation) != 1 {
-			return errors.New("version validation reference mismatch")
-		}
-		*record.Validation = validation[0]
-	}
-	return nil
 }
 
 func compactChangeVersion(version tracker.ChangeVersion) (string, error) {
@@ -432,31 +298,131 @@ func preparedChangeContent(ctx context.Context, organization string, data []byte
 }
 
 func (s *Service) registerChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference, billable bool) error {
-	billableValue := 0
-	if billable {
-		billableValue = 1
+	if err := ref.Validate(organization); err != nil {
+		return err
 	}
-	return s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		before, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes")
+	if s.config.TenantRepository == nil {
+		return attachmentAccountingUnavailable()
+	}
+	return s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
+		return s.registerChangeContentRecord(ctx, w, organization, ref, billable)
+	})
+}
+
+func changeContentCompletion(ctx context.Context) bool {
+	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+		content.mu.Lock()
+		defer content.mu.Unlock()
+		return content.completion
+	}
+	return false
+}
+
+func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore.Writer, organization string, ref attachment.ArchiveReference, billable bool) error {
+	if err := ref.Validate(organization); err != nil {
+		return err
+	}
+	completion := changeContentCompletion(ctx)
+	now := s.config.now().UTC()
+	limit := int64(math.MaxInt64)
+	plans := s.database.plans()
+	var entitlement HostedEntitlement
+	if plans != nil {
+		var err error
+		entitlement, err = s.database.hostedEntitlementRecord(ctx, w, now)
 		if err != nil {
 			return err
 		}
-		if err := insertContentRegistration(ctx, tx, organization, ref, billableValue); err != nil {
+		if allowance, ok := entitlement.Allowances["collaboration_bytes"]; ok && !completion {
+			limit = allowance
+		}
+	}
+	if billable {
+		if err := w.LockArchiveAccounting(ctx); err != nil {
 			return err
 		}
-		if s.database.plans() == nil {
-			return nil
+	}
+	object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: tracker.OrganizationID(organization), ID: newNativeID("archive"), Reference: ref, CreatedAt: now})
+	if err != nil {
+		return err
+	}
+	if billable {
+		usage, err := w.ChargeArchiveObject(ctx, object.ID, limit)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return attachmentAccountingUnavailable()
 		}
-		completion := false
-		if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-			content.mu.Lock()
-			completion = content.completion
-			content.mu.Unlock()
-		}
-		after, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes")
 		if err != nil {
 			return err
 		}
-		return s.database.validateHostedConsumptionGrowth(ctx, tx, before, after, now, completion)
+		if !usage.Allowed {
+			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+		}
+	}
+	if plans != nil && !completion && ctx.Value(runnerRequestBudgetContext{}) != true {
+		window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
+		used, err := w.BillingUsage(ctx, window, "api_mutations")
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if used >= entitlement.Allowances["api_mutations"] {
+			return &hostedLimitError{Resource: "api_mutations", Allowance: entitlement.Allowances["api_mutations"], Consumption: used}
+		}
+	}
+	return nil
+}
+
+func (s *Service) checkChangeContentAllowance(ctx context.Context, organization string, refs map[string]attachment.ArchiveReference, next attachment.ArchiveReference) error {
+	if s.config.TenantRepository == nil {
+		return attachmentAccountingUnavailable()
+	}
+	plans := s.database.plans()
+	if plans == nil || changeContentCompletion(ctx) {
+		return nil
+	}
+	now := s.config.now().UTC()
+	return s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(organization), corestore.Serving, func(r tenantstore.Reader) error {
+		entitlement, err := s.database.hostedEntitlementRecord(ctx, r, now)
+		if err != nil {
+			return err
+		}
+		if limit, limited := entitlement.Allowances["collaboration_bytes"]; limited {
+			used, err := r.CollaborationBytes(ctx)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return attachmentAccountingUnavailable()
+			}
+			if err != nil {
+				return err
+			}
+			pending := []attachment.ArchiveReference{next}
+			for _, ref := range refs {
+				if ref != next {
+					pending = append(pending, ref)
+				}
+			}
+			for _, ref := range pending {
+				object, err := r.ArchiveObjectByReference(ctx, ref)
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				if ref.CustomerOwned || err == nil && object.CollaborationBytes != 0 {
+					continue
+				}
+				if ref.CompressedSize > math.MaxInt64-used || used+ref.CompressedSize > limit {
+					return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
+				}
+				used += ref.CompressedSize
+			}
+		}
+		if ctx.Value(runnerRequestBudgetContext{}) != true {
+			window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
+			used, err := r.BillingUsage(ctx, window, "api_mutations")
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if used >= entitlement.Allowances["api_mutations"] {
+				return &hostedLimitError{Resource: "api_mutations", Allowance: entitlement.Allowances["api_mutations"], Consumption: used}
+			}
+		}
+		return nil
 	})
 }

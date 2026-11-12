@@ -319,7 +319,7 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 	if cfg.Billing != nil {
 		prices = cfg.Billing.Prices
 	}
-	if err := d.applyRuntimeRecords(ctx, config, prices, "configuration", "startup configuration", "", false); err != nil {
+	if err := d.applyRuntimeRecordsAtRevision(ctx, config, prices, "configuration", "startup configuration", "", false, hostedRuntimeInitializePlans, nil); err != nil {
 		return err
 	}
 	err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
@@ -410,13 +410,38 @@ func (d *database) loadHostedPlan(ctx context.Context, ref PlanReference, read f
 	if err != nil {
 		return plan, err
 	}
+	plan.Allowances = maps.Clone(plan.Allowances)
+	plan.Features = slices.Clone(plan.Features)
 	if plan.Allowances == nil {
 		plan.Allowances = make(map[string]int64)
 	}
 	if _, exists := plan.Allowances["unarchived_issues"]; !exists {
 		plan.Allowances["unarchived_issues"] = hostedOpenIssueGuard
 	}
-	return plan, err
+	if tier, ok := hostedTierFor(ref); ok {
+		return tier.apply(plan), nil
+	}
+	if ref.Version != 1 || !slices.Contains([]string{"pilot_free", "comp_team"}, ref.ID) {
+		return plan, nil
+	}
+	if _, _, err := read(ctx, PlanReference{ID: "starter", Version: 1}); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return plan, nil
+		}
+		return plan, err
+	}
+	plan.Allowances["unarchived_issues"] = max(plan.Allowances["unarchived_issues"], hostedOpenIssueGuard)
+	plan.Allowances["history_records"] = max(plan.Allowances["history_records"], 2000000)
+	for _, resource := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
+		delete(plan.Allowances, resource)
+	}
+	if plan.Name == "" {
+		plan.Name = "Legacy complimentary pilot"
+		if ref.ID == "comp_team" {
+			plan.Name = "Legacy Team"
+		}
+	}
+	return plan, nil
 }
 
 func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, now time.Time) (HostedEntitlement, error) {

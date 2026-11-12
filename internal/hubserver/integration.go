@@ -10,7 +10,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -148,107 +147,7 @@ func (s *Service) updateProjectIntegration(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
-	return s.nativeMutation(c, request.Mutation, request, s.updateProjectIntegrationOperation(request))
-}
-
-func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegrationRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
-	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		current, err := readProjectIntegration(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if current.Revision != request.ExpectedRevision {
-			return nil, nativeConflict(current.Revision)
-		}
-		automaticIntake := current.Profile == "native" && (current.Repository != "" || current.CheckoutRepository != "")
-		preserveIntake := automaticIntake && request.Intake == ""
-		if (!preserveIntake && request.Intake != "disabled" && request.Intake != "manual") || (request.Projection != "disabled" && request.Projection != "summary") {
-			return nil, nativePublicInvalid("Intake must be disabled or manual; projection must be disabled or summary")
-		}
-		completed, err := archivePeriod(request.ArchiveCompletedAfterDays, current.ArchiveCompletedAfterDays)
-		if err != nil {
-			return nil, err
-		}
-		cancelled, err := archivePeriod(request.ArchiveCancelledAfterDays, current.ArchiveCancelledAfterDays)
-		if err != nil {
-			return nil, err
-		}
-		currentIntake := "disabled"
-		if current.ManualImportEnabled {
-			currentIntake = "manual"
-		}
-		agingEnabled := current.AgingEnabled
-		if request.AgingEnabled != nil {
-			agingEnabled = *request.AgingEnabled
-		}
-		duplicateChallenge := current.DuplicateChallenge
-		if request.DuplicateChallenge != nil {
-			duplicateChallenge = *request.DuplicateChallenge
-		}
-		archiveSettingsSupplied := request.AgingEnabled != nil || request.DuplicateChallenge != nil || len(request.ArchiveCompletedAfterDays) != 0 || len(request.ArchiveCancelledAfterDays) != 0
-		integrationChanged := request.States != nil || request.WorkflowMarkdown != nil || (!preserveIntake && request.Intake != currentIntake) || request.Projection != current.Projection || request.RepositoryEnabled != current.RepositoryEnabled
-		if archiveSettingsSupplied && !integrationChanged {
-			if _, err := tx.ExecContext(ctx, "UPDATE projects SET integration_revision=integration_revision+1, archive_completed_after_days=?, archive_cancelled_after_days=?, duplicate_challenge=?, aging_enabled=? WHERE organization_id=? AND id=?", completed, cancelled, duplicateChallenge, agingEnabled, scope.organization, scope.project); err != nil {
-				return nil, err
-			}
-			return readProjectIntegration(ctx, tx, scope)
-		}
-		if current.RepositoryID == 0 && ((!preserveIntake && request.Intake != "disabled" && !automaticIntake) || request.Projection != "disabled" || request.RepositoryEnabled) {
-			return nil, nativePublicInvalid("Attach a GitHub repository before enabling intake, summaries or repository integration")
-		}
-		if current.Profile == "github_compatible" && request.Projection != "disabled" {
-			return nil, nativePublicInvalid("Summary projection requires native authority; use explicit cutover first")
-		}
-		if err := requireIntegrationIdle(ctx, tx, scope, now); err != nil {
-			return nil, err
-		}
-		if request.States != nil && request.WorkflowMarkdown != nil {
-			return nil, nativeWorkflowInvalid("Supply workflow_markdown or states, not both")
-		}
-		if request.WorkflowMarkdown != nil {
-			if current.WorkflowSource != "" {
-				return nil, nativeWorkflowInvalid("Workflow is controlled by the repository; edit its definition and approve the new repository policy")
-			}
-			if len(*request.WorkflowMarkdown) > 128*1024 {
-				return nil, nativeWorkflowInvalid("Workflow Markdown is limited to 128 KiB")
-			}
-			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(*request.WorkflowMarkdown)})
-			if err != nil {
-				return nil, nativeWorkflowInvalid(err.Error())
-			}
-			if workflow.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
-				return nil, nativeWorkflowInvalid("Cloud workflow must use tracker.kind hub_native")
-			}
-			if err := workflow.Config.Validate(); err != nil {
-				return nil, nativeWorkflowInvalid(err.Error())
-			}
-			if err := workflow.Config.ValidateNativeWorkflow(); err != nil {
-				return nil, nativeWorkflowInvalid(err.Error())
-			}
-			if err := updateNativeProjectStates(ctx, tx, scope, workflow.Config.NativeWorkflowStates(), now); err != nil {
-				return nil, err
-			}
-			if _, err := tx.ExecContext(ctx, "UPDATE projects SET workflow_markdown=? WHERE organization_id=? AND id=?", *request.WorkflowMarkdown, scope.organization, scope.project); err != nil {
-				return nil, err
-			}
-		}
-		if request.States != nil {
-			if current.WorkflowMarkdown != "" {
-				return nil, nativeWorkflowInvalid("Workflow is authored in Markdown; update workflow_markdown instead of competing state arrays")
-			}
-			if err := updateNativeProjectStates(ctx, tx, scope, *request.States, now); err != nil {
-				return nil, err
-			}
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE projects SET integration_revision = integration_revision + 1, github_intake = COALESCE(NULLIF(?, ''), github_intake), github_projection = ?, github_repository_enabled = ?, archive_completed_after_days = ?, archive_cancelled_after_days = ?, duplicate_challenge = ?, aging_enabled = ? WHERE id = ?`, request.Intake, request.Projection, request.RepositoryEnabled, completed, cancelled, duplicateChallenge, agingEnabled, scope.project)
-		if err != nil {
-			return nil, err
-		}
-		if err := supersedeDisallowedOutbox(ctx, tx, scope, now); err != nil {
-			return nil, err
-		}
-		return readProjectIntegration(ctx, tx, scope)
-	}
+	return s.nativeMutation(c, request.Mutation, request, nil)
 }
 
 func archivePeriod(raw json.RawMessage, current *int) (*int, error) {

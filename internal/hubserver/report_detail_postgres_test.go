@@ -3,15 +3,20 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -21,6 +26,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/usagecost"
 )
+
+type completionCostFailureReader struct {
+	tenantstore.Reader
+	err error
+}
+
+func (r completionCostFailureReader) ReadCompletionCosts(context.Context, reportstore.CompletionCostQuery) ([]reportstore.CompletionCostFact, error) {
+	return nil, r.err
+}
 
 func TestPostgresHostedReportUsesTypedFactsAndMarksMissingSubtabData(t *testing.T) {
 	from := time.Date(2026, time.November, 3, 10, 0, 0, 0, time.UTC)
@@ -120,6 +134,60 @@ func TestPostgresHostedReportUsesTypedFactsAndMarksMissingSubtabData(t *testing.
 	if got.Cost != 4.5 || got.Tokens != 33 || len(got.Stages) != 1 || got.Stages[0].Sessions != 2 || got.Stages[0].Cost != 4.5 || got.Stages[0].Duration.P50Seconds != 450 || len(got.Runners) != 1 || got.Runners[0].Cost != 4.5 || got.Failures[0].Cost != 3 || got.Rework[0].Cost != 3 || got.Series[0].StageCost["merge"] != 4.5 {
 		t.Fatalf("typed usage report = cost %.2f tokens %d stages %+v runners %+v failures %+v rework %+v", got.Cost, got.Tokens, got.Stages, got.Runners, got.Failures, got.Rework)
 	}
+	t.Run("completion costs preserve lifetime spend and explicit coverage", func(t *testing.T) {
+		priorAt := prior.From.Add(10 * time.Minute)
+		work := []reportstore.OverviewFact{facts[0], {ProjectID: project, WorkItemID: "wi_prior_complete", PreviousCompletedAt: &priorAt, PreviousCompletedState: "Done"}}
+		for _, complete := range []bool{true, false} {
+			report := hostedReportsReport{Cost: 9, PriorCost: new(7.0), Series: []reportsSeriesBucket{{StageCost: map[string]float64{"implement": 6}, NotShippedCost: 3}}}
+			costs := map[reportstore.CompletionCostItem]reportstore.CompletionCostFact{
+				{ProjectID: project, WorkItemID: item}:                {Cost: 8, PriorCost: 2, Complete: complete},
+				{ProjectID: project, WorkItemID: "wi_prior_complete"}: {Cost: 11, PriorCost: 5, Complete: true},
+			}
+			applyPostgresReportCompletionCosts(&report, work, costs, w, prior, true)
+			if report.Completion.Cost != 8 || report.Previous.Cost != 5 || report.Cost != 9 || report.PriorCost == nil || *report.PriorCost != 7 || report.Series[0].NotShippedCost != 3 || report.Series[0].StageCost["implement"] != 6 {
+				t.Fatalf("completion/window costs changed: current%+v previous%+v report%.2f prior%v series%+v", report.Completion, report.Previous, report.Cost, report.PriorCost, report.Series[0])
+			}
+			if complete {
+				if report.Completion.CostP50 == nil || *report.Completion.CostP50 != 8 || report.Completion.CostP90 == nil || *report.Completion.CostP90 != 8 || report.Completion.Partial {
+					t.Fatalf("complete lifetime cost quantiles=%+v", report.Completion)
+				}
+			} else if report.Completion.CostP50 != nil || report.Completion.CostP90 != nil || !report.Completion.Partial || !slices.Contains(report.Unavailable, "completion_usage") {
+				t.Fatalf("incomplete lifetime usage presented as complete: completion%+v unavailable%v", report.Completion, report.Unavailable)
+			}
+		}
+	})
+
+	t.Run("typed lifetime overflow only degrades completion figures", func(t *testing.T) {
+		storageFailure := errors.New("Example storage failure")
+		for _, check := range []struct {
+			name   string
+			err    error
+			refuse bool
+		}{
+			{"typed population overflow", reportstore.ErrPopulationExceeded, false},
+			{"wrapped population overflow", fmt.Errorf("read completion costs: %w", reportstore.ErrPopulationExceeded), false},
+			{"other storage failure", storageFailure, true},
+		} {
+			t.Run(check.name, func(t *testing.T) {
+				costs, err := readPostgresReportCompletionCosts(t.Context(), completionCostFailureReader{err: check.err}, reportstore.OverviewQuery{Principal: "reporter_example"}, facts, w, prior, true)
+				if check.refuse {
+					if !errors.Is(err, storageFailure) {
+						t.Fatalf("unrelated storage failure was hidden: %v", err)
+					}
+					return
+				}
+				if err != nil || len(costs) != 1 {
+					t.Fatalf("bounded completion population refused entire report: costs%v error%v", costs, err)
+				}
+				report := hostedReportsReport{Completion: reportsCompletion{Done: 1}, Cost: 9, PriorCost: new(7.0), Series: []reportsSeriesBucket{{StageCost: map[string]float64{"implement": 6}, NotShippedCost: 3}}}
+				applyPostgresReportCompletionCosts(&report, facts, costs, w, prior, true)
+				if report.Completion.Done != 1 || !report.Completion.Partial || report.Completion.CostP50 != nil || report.Completion.CostP90 != nil || !slices.Contains(report.Unavailable, "completion_usage") || !slices.Contains(report.Analytics.Unavailable, "completion_usage") || report.Cost != 9 || report.PriorCost == nil || *report.PriorCost != 7 || report.Series[0].StageCost["implement"] != 6 || report.Series[0].NotShippedCost != 3 {
+					t.Fatalf("lifetime overflow changed available report facts: completion%+v window%.2f prior%v unavailable%v", report.Completion, report.Cost, report.PriorCost, report.Unavailable)
+				}
+			})
+		}
+	})
+
 }
 
 func timePointer(value time.Time) *time.Time {
@@ -398,6 +466,87 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 					}
 					assertReport(t, report)
 				}},
+				{"report reads committed state while a PostgreSQL writer is held", func(t *testing.T) {
+					want, readable, err := service.readProjectReport(ctx, credential, string(project), window, reportsFilter{})
+					if err != nil || !readable {
+						t.Fatalf("report before held PostgreSQL writer readable=%t error=%v", readable, err)
+					}
+					ready, finished := make(chan struct{}), make(chan struct{})
+					var writerError error
+					release := make(chan struct{})
+					abort := errors.New("rollback held report writer")
+					go func() {
+						defer close(finished)
+						writerError = repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+							item, err := w.WorkItem(t.Context(), project, "wi_partial")
+							if err != nil {
+								return err
+							}
+							item.Title = "Uncommitted report title"
+							if _, err := w.UpdateWorkItem(t.Context(), item); err != nil {
+								return err
+							}
+							close(ready)
+							<-release
+							return abort
+						})
+					}()
+					t.Cleanup(func() {
+						close(release)
+						<-finished
+						if !errors.Is(writerError, abort) {
+							t.Errorf("held writer rollback=%v", writerError)
+						}
+					})
+					select {
+					case <-ready:
+					case <-finished:
+						t.Fatalf("writer exited before holding the row: %v", writerError)
+					}
+					report, readable, err := service.readProjectReport(ctx, credential, string(project), window, reportsFilter{})
+					if err != nil || !readable {
+						t.Fatalf("report under held PostgreSQL writer readable=%t error=%v", readable, err)
+					}
+					if !reflect.DeepEqual(report, want) {
+						t.Fatalf("report changed beside held PostgreSQL writer: got%+v want%+v", report, want)
+					}
+					assertReport(t, report)
+				}},
+				{"revoked project grant", func(t *testing.T) {
+					if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.DeleteAccessProjectGrant(t.Context(), user, project)
+					}); err != nil {
+						t.Fatal(err)
+					}
+					restored := false
+					t.Cleanup(func() {
+						if restored {
+							return
+						}
+						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+						defer cancel()
+						if err := repository.WriteTenant(cleanup, organization, corestore.Serving, func(w tenantstore.Writer) error {
+							return w.SetAccessProjectGrant(cleanup, accessstore.ProjectGrant{OrganizationID: organization, UserID: user, ProjectID: project})
+						}); err != nil {
+							t.Error(err)
+						}
+					})
+					report, readable, err := service.readProjectReport(ctx, credential, string(project), window, reportsFilter{})
+					if err != nil || readable || len(report.Titles) != 0 || report.Completion.Done != 0 || report.OpenWork.Count != 0 {
+						t.Fatalf("revoked report readable=%t error=%v data=%+v", readable, err, report)
+					}
+					if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: user, ProjectID: project})
+					}); err != nil {
+						t.Fatal(err)
+					}
+					restored = true
+					report, readable, err = service.readProjectReport(ctx, credential, string(project), window, reportsFilter{})
+					if err != nil || !readable {
+						t.Fatalf("regranted report readable=%t error=%v", readable, err)
+					}
+					assertReport(t, report)
+				}},
 				{"missing report owner", func(t *testing.T) {
 					unavailable := &Service{database: &database{}, config: Config{Hosted: service.config.Hosted}}
 					if _, readable, err := unavailable.readProjectReport(ctx, credential, string(project), window, reportsFilter{}); err == nil || readable {
@@ -451,6 +600,116 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 					test.read(t)
 				})
 			}
+			t.Run("completed report retains prior-window spend", func(t *testing.T) {
+				closed := now.Add(2 * time.Hour)
+				var attempt leasestore.Attempt
+				var item corestore.WorkItem
+				if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					attempt, err = r.Attempt(t.Context(), "attempt_partial")
+					if err != nil {
+						return err
+					}
+					item, err = r.WorkItem(t.Context(), project, "wi_partial")
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				fence := leasestore.Fence{LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}
+				run := tracker.NativeRunData{AttemptID: attempt.ID, RunID: attempt.RunID, LeaseID: tracker.LeaseID(attempt.LeaseID), FencingToken: tracker.FencingToken(attempt.FencingToken), Sequence: 2, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Identity{Role: "implement", ResolvedModel: agentidentity.NewValue("example-model", agentidentity.ProvenanceRuntime)}}}
+				raw, err := json.Marshal(run)
+				if err != nil {
+					t.Fatal(err)
+				}
+				runRef, err := objects.StoreDetail(t.Context(), string(organization), raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: item.NativeID, Number: int(item.Number), Revision: tracker.Revision(item.Revision + 1), Profile: "native"}, Title: item.Title, Body: "Example accepted report source", State: "Done", Terminal: true, Actor: tracker.Actor{Kind: "human", PrincipalID: principal}, CreatedAt: item.CreatedAt, UpdatedAt: closed, ClosedAt: &closed}
+				raw, err = json.Marshal(issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				content := eventstore.NewContent(objects)
+				version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: project, WorkItemID: item.NativeID, RecordID: string(item.NativeID), Revision: int64(issue.Revision)}, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				events := []eventstore.Event{}
+				for _, event := range []tracker.CollaborationEvent{
+					{ID: "partial_created", Type: "issue.created", RecordedAt: now, Data: tracker.CollaborationData{ToState: "Todo"}},
+					{ID: "partial_finished", Type: "run.finished", RecordedAt: closed.Add(-time.Second), Data: tracker.CollaborationData{Run: &run}},
+					{ID: "partial_closed", Type: "workflow.transitioned", RecordedAt: closed, Data: tracker.CollaborationData{FromState: "Todo", ToState: "Done"}},
+				} {
+					event.OrganizationID, event.ProjectID, event.AggregateID, event.SchemaVersion, event.Actor = organization, project, item.NativeID, 1, issue.Actor
+					raw, err := json.Marshal(event)
+					if err != nil {
+						t.Fatal(err)
+					}
+					prepared, err := content.PrepareEvent(t.Context(), organization, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					events = append(events, prepared)
+				}
+				observation := usagecost.Observation{Provider: "example", ProviderAccount: "runner", SourceID: "attempt_partial:model", ResourceID: attempt.ID, AttemptID: attempt.ID, WorkItemID: string(item.NativeID), Model: "example-model", Bucket: "runner_api", Metric: "example-model", Unit: "token", Currency: "USD", Revision: 1, From: now.Add(-time.Minute), To: now, AmountMicros: new(int64(5000000)), Coverage: "complete", Input: 10, Output: 1}
+				raw, err = json.Marshal(observation)
+				if err != nil {
+					t.Fatal(err)
+				}
+				costRef, err := objects.StoreDetail(t.Context(), string(organization), raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				usage := billingstore.CostObservation{OrganizationID: organization, ProjectID: project, Observation: observation, Reference: billingstore.AuditReferenceFromArchive(costRef), ReceivedAt: now}
+				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: attempt.ID, RunID: attempt.RunID, Fence: fence, Sequence: 2, Status: "succeeded", StartedAt: attempt.StartedAt, PayloadObjectKey: runRef.Key, PayloadReference: runRef}); err != nil {
+						return err
+					}
+					if _, err := w.Release(t.Context(), fence, "completed"); err != nil {
+						return err
+					}
+					configuration, err := w.ProjectRecord(t.Context(), project)
+					if err != nil {
+						return err
+					}
+					configuration.States = append(configuration.States, tracker.NativeState{Name: "Done", Terminal: true})
+					if _, err := w.UpdateProjectRecord(t.Context(), configuration); err != nil {
+						return err
+					}
+					item.WorkflowStateName, item.UpdatedAt = &issue.State, closed
+					updated, err := w.UpdateWorkItem(t.Context(), item)
+					if err != nil {
+						return err
+					}
+					if updated.Revision != version.Revision {
+						t.Fatalf("accepted report source revision=%d canonical=%d", version.Revision, updated.Revision)
+					}
+					if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+						return err
+					}
+					for _, event := range events {
+						if _, err := w.AppendEvent(t.Context(), event); err != nil {
+							return err
+						}
+					}
+					return (tenantNativeRunEventParticipant{}).ApplyNativeRunEvent(t.Context(), w, NativeRunEventAuthority{UsageCosts: []billingstore.CostObservation{usage}})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				window := operatortool.AnalyticsWindow{From: now.Add(time.Hour), To: now.Add(3 * time.Hour), Bucket: time.Hour}
+				report, readable, err := service.readProjectReport(ctx, credential, string(project), window, reportsFilter{})
+				if err != nil || !readable {
+					t.Fatalf("completed reporter report readable=%t error=%v", readable, err)
+				}
+				if report.Completion.Done != 1 || report.Completion.Cost != 5 || report.Previous.Cost != 0 || report.Cost != 0 || report.PriorCost == nil || *report.PriorCost != 5 || report.Completion.CostP50 == nil || *report.Completion.CostP50 != 5 || report.Completion.CostP90 == nil || *report.Completion.CostP90 != 5 || slices.Contains(report.Unavailable, "completion_usage") || report.Titles["wi_partial"] != string(organization) {
+					t.Fatalf("public completion lifetime/window costs=%+v current%v prior%v titles%v unavailable%v", report.Completion, report.Cost, report.PriorCost, report.Titles, report.Unavailable)
+				}
+				if _, exists := report.Titles["wi_private"]; exists {
+					t.Fatal("completion lifetime report includes another reporter's item")
+				}
+			})
+
 		})
 	}
 }

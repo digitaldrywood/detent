@@ -24,21 +24,6 @@ func writeAttemptSummary(ctx context.Context, tx *sql.Tx, id string, data tracke
 	return err
 }
 
-func writeCheckpointSummary(ctx context.Context, tx *sql.Tx, id string, checkpoint *tracker.NativeCheckpoint) error {
-	if checkpoint == nil {
-		return nil
-	}
-	var change, version, head, publication string
-	if checkpoint.Change != nil {
-		change, version, head = checkpoint.Change.ChangeID, checkpoint.Change.VersionID, checkpoint.Change.HeadSHA
-	}
-	if checkpoint.Publication != nil {
-		publication = checkpoint.Publication.VersionID
-	}
-	_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET checkpoint_summary_ready=1,checkpoint_resume=?,checkpoint_availability=?,checkpoint_storage=?,checkpoint_worktree_state=?,checkpoint_head_sha=?,checkpoint_workspace_digest=?,checkpoint_expected_head_sha=?,checkpoint_external_effect=?,checkpoint_effect_state=?,checkpoint_effect_id=?,checkpoint_ref=?,checkpoint_commit_sha=?,checkpoint_base_sha=?,checkpoint_tree_sha=?,checkpoint_change_id_summary=?,checkpoint_version_id_summary=?,checkpoint_change_head_sha=?,checkpoint_publication_version_id=? WHERE id=?`, checkpoint.Resume, checkpoint.Availability, checkpoint.Storage, checkpoint.WorktreeState, checkpoint.HeadSHA, checkpoint.WorkspaceDigest, checkpoint.ExpectedHeadSHA, checkpoint.ExternalEffect, checkpoint.EffectState, checkpoint.EffectID, checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA, change, version, head, publication, id)
-	return err
-}
-
 func readTypedNativeRun(ctx context.Context, q nativeQueryer, id string) (tracker.NativeRunData, *tracker.NativeCheckpoint, error) {
 	var run tracker.NativeRunData
 	var provider, model, effort, role, failureClass, failureStage string

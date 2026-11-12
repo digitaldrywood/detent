@@ -2,7 +2,9 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -39,10 +41,60 @@ func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
 			problems := make([]runnerauth.Problem, size)
 			states := make([]string, size)
 			for i := range size {
-				problems[i] = runnerauth.Problem{Code: "backend_missing", Subject: fmt.Sprint(i), Message: "Example", FixHint: "Retry", ReportedAt: now, FirstSeen: now}
+				problems[i] = runnerauth.Problem{Code: "backend_missing", Subject: fmt.Sprint(i), Message: "Example", FixHint: "Retry", ReportedAt: now, FirstSeen: now, CachedCapabilities: i%2 == 0}
 				states[i] = fmt.Sprintf("State %d", i)
 			}
-			for _, kind := range []string{"problems", "admission", "backend", "workspace"} {
+			assertProblems := func(actual []runnerauth.Problem) {
+				t.Helper()
+				if len(actual) != len(problems) {
+					t.Fatalf("problem roundtrip count = %d, want %d", len(actual), len(problems))
+				}
+				expected := make(map[string]runnerauth.Problem, len(problems))
+				for _, problem := range problems {
+					expected[problem.Subject] = problem
+				}
+				for _, problem := range actual {
+					want, ok := expected[problem.Subject]
+					problem.ReportedAt, problem.FirstSeen = problem.ReportedAt.UTC(), problem.FirstSeen.UTC()
+					want.ReportedAt, want.FirstSeen = want.ReportedAt.UTC(), want.FirstSeen.UTC()
+					if !ok || !reflect.DeepEqual(problem, want) {
+						t.Fatalf("problem discriminator or details changed: actual=%+v want=%+v", problem, want)
+					}
+					delete(expected, problem.Subject)
+				}
+			}
+			checkProblemReaders := func() {
+				t.Helper()
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+					problems, err := reader.RunnerProblems(t.Context(), "runner_shared")
+					if err != nil {
+						return err
+					}
+					assertProblems(problems)
+					record, err := reader.(runnerstore.RoutingReader).RunnerRoutingRecord(t.Context(), "runner_shared", now)
+					if err != nil {
+						return err
+					}
+					if record.Record.Identity.OrganizationID != org || record.Record.Identity.RunnerID != "runner_shared" {
+						t.Fatalf("problem routing owner escaped scope: %+v", record.Record.Identity)
+					}
+					assertProblems(record.Record.Problems)
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := counted.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
+					problems, err := w.RunnerProblems(ctx, "runner_shared")
+					if err != nil {
+						return err
+					}
+					assertProblems(problems)
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, kind := range []string{"problems", "admission", "backend", "workspace", "checkout"} {
 				table := "runner_problem_reports"
 				if kind == "admission" {
 					table = "runner_native_admission_selectors"
@@ -53,6 +105,10 @@ func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
 				}
 				if kind == "workspace" {
 					table = "runner_workspace_reports"
+					wantCount = 1
+				}
+				if kind == "checkout" {
+					table = "runner_checkout_repositories"
 					wantCount = 1
 				}
 				var before string
@@ -69,6 +125,8 @@ func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
 								report[fmt.Sprintf("example_%d", i)] = []string{isolation.NativeTrusted}
 							}
 							err = w.ReplaceRunnerBackendIsolation(ctx, "runner_shared", report)
+						case "checkout":
+							err = w.ReplaceRunnerCheckoutReport(ctx, runnerstore.CheckoutReport{OrganizationID: org, RunnerID: "runner_shared", ProjectID: "project_shared", Repository: "example-org/" + string(org), ReportedAt: now})
 						case "workspace":
 							err = w.ReplaceRunnerWorkspaceReport(ctx, "runner_shared", workspacesession.Capabilities{Terminal: true, Files: true, Git: true}, "sandbox")
 						default:
@@ -95,7 +153,41 @@ func TestRunnerHeartbeatReportsAvoidRowAmplification(t *testing.T) {
 					if repeat && versions != before {
 						t.Errorf("unchanged %s rewrote report rows", kind)
 					}
+					if kind == "checkout" {
+						if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+							row, err := reader.RunnerCheckoutReport(t.Context(), "runner_shared", "project_shared")
+							if err != nil {
+								return err
+							}
+							if row.OrganizationID != org || row.RunnerID != "runner_shared" || row.ProjectID != "project_shared" || row.Repository != "example-org/"+string(org) || !row.ReportedAt.Equal(now) {
+								t.Fatalf("selected checkout escaped tenant/runner/project: %+v", row)
+							}
+							for _, missing := range []struct {
+								runner  string
+								project tracker.ProjectID
+							}{{"other_runner", "project_shared"}, {"runner_shared", "other_project"}} {
+								if _, err := reader.RunnerCheckoutReport(t.Context(), missing.runner, missing.project); !errors.Is(err, corestore.ErrNotFound) {
+									t.Fatalf("selected checkout escaped exact scope: %+v error=%v", missing, err)
+								}
+							}
+							return nil
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if kind == "problems" {
+						checkProblemReaders()
+					}
 					before = versions
+				}
+				if kind == "problems" {
+					problems[0].CachedCapabilities = !problems[0].CachedCapabilities
+					if err := counted.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
+						return w.ReplaceRunnerProblems(ctx, "runner_shared", problems)
+					}); err != nil {
+						t.Fatal(err)
+					}
+					checkProblemReaders()
 				}
 			}
 		}

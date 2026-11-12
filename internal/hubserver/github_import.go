@@ -111,11 +111,7 @@ func (s *Service) startGitHubImport(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, s.startGitHubImportOperation(request))
-}
-
-func (s *Service) startGitHubImportOperation(request startGitHubImportRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
-	return nil
+	return s.nativeMutation(c, request.Mutation, request, nil)
 }
 
 func (s *Service) getGitHubImport(c echo.Context) error {
@@ -169,34 +165,6 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 }
 func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeScope, id string, revision tracker.Revision, key string) (json.RawMessage, error) {
 	return s.advanceGitHubImportRecord(ctx, scope, id, revision, key)
-}
-
-func importGitHubComment(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, record GitHubImportRecord, now time.Time) error {
-	now = payloadTimestamp(ctx, now)
-	var exists int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM native_comments WHERE project_id = ? AND work_item_id = ? AND source_key = ?", scope.project, item, "github:"+record.Provenance.ExternalID).Scan(&exists); err != nil {
-		return err
-	}
-	if exists != 0 {
-		return nil
-	}
-	comment := tracker.NativeComment{ID: payloadNativeID(ctx, "cmt"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), Revision: 1, Body: record.Body, Actor: scope.actor(), Provenance: &record.Provenance, CreatedAt: now, UpdatedAt: now}
-	if err := tx.QueryRowContext(ctx, "SELECT event_sequence + 1 FROM issues WHERE native_id = ?", item).Scan(&comment.Sequence); err != nil {
-		return err
-	}
-	actor, err := marshalNative(comment.Actor)
-	if err != nil {
-		return err
-	}
-	provenance, err := marshalNative(record.Provenance)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO native_comments (id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, provenance_json, source_key, created_at, updated_at,change_actor_kind,change_edited_by_kind) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?,?,'')`, comment.ID, scope.organization, scope.project, item, comment.Sequence, comment.Body, actor, provenance, "github:"+record.Provenance.ExternalID, formatHubTime(now), formatHubTime(now), comment.Actor.Kind)
-	if err != nil {
-		return err
-	}
-	return recordNativeChange(ctx, tx, scope, comment, item, 1, "comment.imported", tracker.CollaborationData{CommentID: comment.ID, Revision: 1}, now)
 }
 
 func (s *Service) listGitHubImportRecords(c echo.Context) error {

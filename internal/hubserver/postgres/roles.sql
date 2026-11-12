@@ -15,9 +15,12 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_search_reader_v2') THEN
         CREATE ROLE detent_search_reader_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_local_bootstrap_reader_v2') THEN
+        CREATE ROLE detent_local_bootstrap_reader_v2 NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    END IF;
     IF EXISTS (
         SELECT 1 FROM pg_roles
-        WHERE rolname IN ('detent_migration_v2', 'detent_runtime_v2', 'detent_platform_v2', 'detent_search_reader_v2')
+        WHERE rolname IN ('detent_migration_v2', 'detent_runtime_v2', 'detent_platform_v2', 'detent_search_reader_v2', 'detent_local_bootstrap_reader_v2')
         AND (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
     ) THEN
         RAISE EXCEPTION 'Detent group roles must be unprivileged and unable to log in';
@@ -31,6 +34,13 @@ BEGIN
         OR EXISTS(SELECT 1 FROM pg_roles r WHERE r.rolname IN ('detent_runtime_v2','detent_platform_v2','detent_migration_v2')
             AND (pg_has_role(r.oid,'detent_search_reader_v2','MEMBER') OR pg_has_role('detent_search_reader_v2',r.oid,'MEMBER'))) THEN
         RAISE EXCEPTION 'Detent database roles must have separate authority';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_roles r
+        WHERE r.rolname = 'detent_local_bootstrap_reader_v2'
+        AND (r.rolinherit OR EXISTS (SELECT 1 FROM pg_auth_members m WHERE r.oid IN (m.roleid, m.member)))
+    ) THEN
+        RAISE EXCEPTION 'Detent local bootstrap reader must have no role memberships';
     END IF;
 END
 $roles$;
@@ -292,3 +302,56 @@ BEGIN
  GRANT EXECUTE ON FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) TO detent_runtime_v2;
 END
 $board_search_provision$;
+
+GRANT USAGE ON SCHEMA public TO detent_local_bootstrap_reader_v2;
+DO $local_bootstrap_provision$
+DECLARE function_checking text := current_setting('check_function_bodies');
+BEGIN
+    PERFORM set_config('check_function_bodies', 'off', true);
+    CREATE OR REPLACE FUNCTION public.lookup_designated_local_organization() RETURNS text
+    LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+    AS $lookup$
+    DECLARE
+        designated text;
+    BEGIN
+        SELECT organization_id INTO STRICT designated FROM public.organizations WHERE local;
+        RETURN designated;
+    EXCEPTION
+        WHEN no_data_found THEN
+            IF EXISTS (SELECT 1 FROM public.organizations) THEN
+                RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = 'populated PostgreSQL database has no designated local organization';
+            END IF;
+            RETURN NULL;
+    END;
+    $lookup$;
+    CREATE OR REPLACE FUNCTION public.operator_organization_metadata_page(credential_id text,credential_hash text,page_offset integer,page_limit integer)
+    RETURNS TABLE(organization_id text,name text,local boolean)
+    LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog, pg_temp AS $operator_directory$
+    DECLARE bound_organization text := NULLIF(current_setting('detent.organization_id',true),'');
+    BEGIN
+     IF page_offset IS NULL OR page_offset<0 OR page_offset>100000 OR page_limit IS NULL OR page_limit<1 OR page_limit>200 THEN
+      RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='organization page is invalid';
+     END IF;
+     IF bound_organization IS NULL OR credential_id IS NULL OR credential_hash IS NULL OR NOT EXISTS (
+      SELECT 1 FROM public.api_tokens c
+      WHERE c.organization_id=bound_organization AND c.id=credential_id AND c.token_hash=credential_hash
+       AND c.scope='admin' AND NOT c.native_only AND COALESCE(c.hosted_user_id,'')='' AND COALESCE(c.operator_key_scope,'') IN ('','read','write','admin')
+       AND c.created_at<=transaction_timestamp() AND c.revoked_at IS NULL
+       AND (c.expires_at IS NULL OR c.expires_at>transaction_timestamp())
+       AND NOT EXISTS(SELECT 1 FROM public.runner_identities r WHERE r.organization_id=c.organization_id AND r.token_id=c.id)
+     ) THEN
+      RAISE EXCEPTION USING ERRCODE='28000',MESSAGE='organization directory access denied';
+     END IF;
+     RETURN QUERY SELECT o.organization_id,o.name,o.local FROM public.organizations o
+     ORDER BY o.organization_id OFFSET page_offset LIMIT page_limit+1;
+    END;
+    $operator_directory$;
+    PERFORM set_config('check_function_bodies', function_checking, true);
+    ALTER FUNCTION public.operator_organization_metadata_page(text,text,integer,integer) OWNER TO detent_local_bootstrap_reader_v2;
+    REVOKE ALL ON FUNCTION public.operator_organization_metadata_page(text,text,integer,integer) FROM PUBLIC,detent_platform_v2,detent_migration_v2,detent_search_reader_v2;
+    GRANT EXECUTE ON FUNCTION public.operator_organization_metadata_page(text,text,integer,integer) TO detent_runtime_v2;
+    ALTER FUNCTION public.lookup_designated_local_organization() OWNER TO detent_local_bootstrap_reader_v2;
+    REVOKE ALL ON FUNCTION public.lookup_designated_local_organization() FROM PUBLIC, detent_platform_v2, detent_migration_v2, detent_search_reader_v2;
+    GRANT EXECUTE ON FUNCTION public.lookup_designated_local_organization() TO detent_runtime_v2;
+END
+$local_bootstrap_provision$;

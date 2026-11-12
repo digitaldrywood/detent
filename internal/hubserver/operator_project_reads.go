@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -11,8 +10,11 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -48,19 +50,15 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	case "list_projects":
 		value, err = s.operatorProjectList(ctx, scope, r)
 	case "get_native_project":
-		if s.config.TenantRepository != nil {
-			var record projectstore.Record
-			record, err = s.readHostedProjectRecord(ctx, scope)
-			if err == nil {
-				value, err = s.projectRecordNative(ctx, record)
-			}
-		} else {
-			value, err = readNativeProject(ctx, s.database.reader, scope)
+		var record projectstore.Record
+		record, err = s.readHostedProjectRecord(ctx, scope)
+		if err == nil {
+			value, err = s.projectRecordNative(ctx, record)
 		}
 	case operatortool.GetSpritePool:
 		value, err = s.spritePoolResponse(ctx, scope)
 	case operatortool.GetProjectSpriteAllocation:
-		value, err = readProjectSpriteAllocation(ctx, s.database.reader, scope)
+		value, err = s.readProjectSpriteAllocation(ctx, scope)
 	case "get_onboarding":
 		value, err = s.projectOnboarding(ctx, scope)
 	case "get_git_hub_batch":
@@ -73,10 +71,8 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		value, err = s.projectIntegration(ctx, scope)
 	case "get_cutover_receipt":
 		value, err = s.readCutoverReceipt(ctx, scope)
-		if errors.Is(err, sql.ErrNoRows) {
-			if _, err = readNativeProject(ctx, s.database.reader, scope); err == nil {
-				err = &operatortool.RequestError{Code: "not_found", Message: "No cutover receipt exists for this project"}
-			}
+		if errors.Is(err, corestore.ErrNotFound) {
+			err = &operatortool.RequestError{Code: "not_found", Message: "No cutover receipt exists for this project"}
 		}
 	case "get_git_hub_import":
 		if r.ImportID == "" {
@@ -91,33 +87,21 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	case "list_git_hub_import_records":
 		value, err = s.readProjectImportRecords(ctx, scope, r)
 	case "get_project_policy":
-		if s.config.TenantRepository != nil {
-			var record projectstore.Record
-			record, err = s.readHostedProjectRecord(ctx, scope)
-			if err == nil && r.RepositoryPolicy && (record.Core.Profile != "native" || record.Settings.CheckoutRepository == "") {
-				err = &operatortool.RequestError{Code: "invalid_request", Message: "Project has no linked repository policy; use repository_policy:false for its project policy"}
-			}
+		var record projectstore.Record
+		record, err = s.readHostedProjectRecord(ctx, scope)
+		if err == nil && r.RepositoryPolicy && (record.Core.Profile != "native" || record.Settings.CheckoutRepository == "") {
+			err = &operatortool.RequestError{Code: "invalid_request", Message: "Project has no linked repository policy; use repository_policy:false for its project policy"}
+		}
+		if err == nil {
+			var approval policy.Approval
+			approval, err = s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
 			if err == nil {
-				var approval policy.Approval
-				approval, err = s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
-				if err == nil {
-					value, err = s.tenantProjectPolicyRead(ctx, scope.organization, scope.project, approval, r.Limit, r.After)
-				}
-			}
-		} else {
-			var policyScope string
-			policyScope, err = operatorPolicyScope(ctx, s.database.reader, scope, r.RepositoryPolicy)
-			if err == nil {
-				var approval policy.Approval
-				approval, err = readProjectPolicyHistory(ctx, s.database.reader, policyScope, r.Limit, r.After, false)
-				if err == nil {
-					value, err = s.projectPolicyRead(ctx, s.database.reader, policyScope, approval, true)
-				}
+				value, err = s.tenantProjectPolicyRead(ctx, scope.organization, scope.project, approval, r.Limit, r.After)
 			}
 		}
 	case "project_secret_metadata":
 		var status projectSecretStatus
-		status, err = readSecretStatus(ctx, s.database.reader, scope)
+		status, err = s.readAccessSecretStatus(ctx, scope)
 		value = struct {
 			Metadata projectSecretStatus `json:"metadata"`
 			SetupURL string              `json:"setup_url"`
@@ -324,64 +308,10 @@ func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadR
 func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r operatortool.ProjectReadRequest) (operatorProjectPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if s.config.TenantRepository != nil {
-		return s.operatorProjectListHosted(ctx, scope, r)
+	if s.config.TenantRepository == nil {
+		return operatorProjectPage{}, operatortool.ErrServiceUnavailable
 	}
-	ids := []string{}
-	if s.config.Hosted != nil {
-		projects, err := s.hostedReadableProjects(ctx, scope.credential)
-		if err != nil {
-			return operatorProjectPage{}, err
-		}
-		for _, project := range projects {
-			ids = append(ids, project.ID)
-		}
-		slices.Sort(ids)
-	} else {
-		rows, err := s.database.reader.QueryContext(ctx, "SELECT id FROM projects WHERE deleted_at IS NULL AND organization_id=? ORDER BY id", scope.organization)
-		if err != nil {
-			return operatorProjectPage{}, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				return operatorProjectPage{}, err
-			}
-			ids = append(ids, id)
-		}
-		err = rows.Err()
-		if closeErr := rows.Close(); err == nil {
-			err = closeErr
-		}
-		if err != nil {
-			return operatorProjectPage{}, err
-		}
-	}
-	limit := r.Limit
-	if limit == 0 {
-		limit = 100
-	}
-	page := operatorProjectPage{Projects: []tracker.NativeProject{}}
-	for _, id := range ids {
-		if r.ProjectID != "" && id != r.ProjectID || id <= r.After {
-			continue
-		}
-		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: id}); err != nil {
-			continue
-		}
-		if len(page.Projects) == limit {
-			page.NextCursor = string(page.Projects[len(page.Projects)-1].ID)
-			break
-		}
-		scope.project = tracker.ProjectID(id)
-		p, err := readNativeProject(ctx, s.database.reader, scope)
-		if err != nil {
-			return page, err
-		}
-		page.Projects = append(page.Projects, p)
-	}
-	return page, nil
+	return s.operatorProjectListHosted(ctx, scope, r)
 }
 
 func projectAccessFilter(credential apiCredential, project tracker.ProjectID, after tracker.ProjectID, limit int) accessstore.ProjectAccessFilter {
@@ -494,6 +424,9 @@ func (s *Service) operatorProjectListHosted(ctx context.Context, scope nativeSco
 }
 
 func (s *Service) readHostedProjectRecord(ctx context.Context, scope nativeScope) (projectstore.Record, error) {
+	if s.config.TenantRepository == nil {
+		return projectstore.Record{}, operatortool.ErrServiceUnavailable
+	}
 	filter := projectAccessFilter(scope.credential, scope.project, "", 1)
 	var record projectstore.Record
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -517,14 +450,40 @@ func (s *Service) readHostedProjectRecord(ctx context.Context, scope nativeScope
 func (s *Service) readCutoverReceipt(ctx context.Context, scope nativeScope) (CutoverReceipt, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	var raw string
-	var result CutoverReceipt
-	err := s.database.reader.QueryRowContext(ctx, "SELECT c.receipt_json FROM github_cutovers c JOIN projects p ON p.id=c.project_id WHERE p.organization_id=? AND p.id=?", scope.organization, scope.project).Scan(&raw)
-	if err != nil {
-		return result, err
+	if s.config.TenantRepository == nil {
+		return CutoverReceipt{}, operatortool.ErrServiceUnavailable
 	}
-	err = json.Unmarshal([]byte(raw), &result)
-	return result, err
+	var row postgres.CutoverReceipt
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		if _, err := r.ProjectRecord(ctx, scope.project); err != nil {
+			return projectRecordError(err)
+		}
+		reader, ok := r.(postgres.CutoverReader)
+		if !ok {
+			return operatortool.ErrServiceUnavailable
+		}
+		var err error
+		row, err = reader.LatestProjectCutoverReceipt(ctx, postgres.LatestProjectCutoverReceiptInput{OrganizationID: scope.organization, ProjectID: scope.project})
+		return err
+	})
+	if err != nil {
+		return CutoverReceipt{}, err
+	}
+	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, PayloadObjectKey: row.ReceiptObjectKey, PayloadSHA256: row.ReceiptSha256, PayloadBytes: row.ReceiptBytes, PayloadContentBytes: row.ReceiptContentBytes})
+	if err != nil {
+		return CutoverReceipt{}, err
+	}
+	var result CutoverReceipt
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return CutoverReceipt{}, err
+	}
+	if row.OrganizationID != scope.organization || row.ProjectID != scope.project || result.Checkpoint != row.Checkpoint {
+		return CutoverReceipt{}, artifact.ErrIntegrity
+	}
+	return result, nil
 }
 
 type projectImportRecordPage struct {
@@ -575,37 +534,13 @@ func (s *Service) readProjectImportRecords(ctx context.Context, scope nativeScop
 }
 func (s *Service) projectRepositoryFreshness(ctx context.Context, scope nativeScope) (repositoryFreshnessResponse, error) {
 	record, err := s.readProjectRecord(ctx, scope)
-	integration := projectIntegrationRecord(record)
 	if err != nil {
 		return repositoryFreshnessResponse{}, err
 	}
-	if integration.RepositoryID == 0 {
+	if record.Settings.Repository == "" && record.Settings.CheckoutRepository == "" {
 		return repositoryFreshnessResponse{Repositories: []RepositoryFreshness{}}, nil
 	}
-	result, err := s.database.repositoryFreshness(ctx, s.config.now(), s.config.ReconcileInterval)
-	if err != nil {
-		return result, err
-	}
-	result.Repositories = slices.DeleteFunc(result.Repositories, func(r RepositoryFreshness) bool { return r.ID != integration.RepositoryID })
-	result.Summary = RepositoryHealthSummary{Total: len(result.Repositories)}
-	for i := range result.Repositories {
-		r := &result.Repositories[i]
-		switch r.Status {
-		case "fresh":
-			result.Summary.Fresh++
-		case "stale":
-			result.Summary.Stale++
-		default:
-			result.Summary.Error++
-		}
-		if r.LastWebhookError != nil {
-			r.LastWebhookError.Message = "Repository sync is unavailable"
-		}
-		if r.LastReconcileError != nil {
-			r.LastReconcileError.Message = "Repository sync is unavailable"
-		}
-	}
-	return result, nil
+	return repositoryFreshnessResponse{}, operatortool.ErrServiceUnavailable
 }
 
 // Resolve legacy policy ownership through the authorized project binding, never

@@ -69,7 +69,7 @@ func (r runEventReleaseRow) Scan(_ ...any) error {
 	r.query.QueryRow(func(row pgx.Row) error {
 		var lease pgquery.Lease
 		var applied bool
-		if err := row.Scan(&lease.OrganizationID, &lease.LeaseID, &lease.FencingToken, &lease.IssueID, &lease.MachineID, &lease.SessionID, &lease.WorkItemRevision, &lease.LandingCapacity, &lease.AcquiredAt, &lease.RenewedAt, &lease.ExpiresAt, &lease.ReleasedAt, &lease.ReleaseReason, &applied); err != nil {
+		if err := row.Scan(&lease.OrganizationID, &lease.LeaseID, &lease.FencingToken, &lease.IssueID, &lease.MachineID, &lease.SessionID, &lease.WorkItemRevision, &lease.LandingCapacity, &lease.AcquiredAt, &lease.RenewedAt, &lease.ExpiresAt, &lease.ReleasedAt, &lease.ReleaseReason, &lease.ProjectID, &lease.RunnerID, &applied); err != nil {
 			return err
 		}
 		if !applied {

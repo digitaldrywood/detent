@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,7 +19,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	_ "modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/codex"
@@ -61,12 +59,8 @@ type doctorCheck struct {
 	AutoPromoteCandidates      []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
 	BlockedRecoveryCandidates  []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
 	PermanentlyHeldRecoveries  []doctorBlockedRecoveryCandidateDiagnostic `json:"permanently_held_recoveries,omitempty"`
-	BlockedWithoutRecovery     []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_without_recovery,omitempty"`
 	BackendCapacity            []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
-	ArtifactGateConvergence    []doctorArtifactGateConvergenceDiagnostic  `json:"artifact_gate_convergence,omitempty"`
-	ValidatorFailures          []doctorValidatorFailureDiagnostic         `json:"validator_failures,omitempty"`
 	BacklogAdmission           *doctorAdmissionDiagnostic                 `json:"backlog_admission,omitempty"`
-	OverloadRetriesLastHour    int                                        `json:"overload_retries_last_hour,omitempty"`
 	DependencyCapabilities     []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
 	LaneSignalWarnings         []telemetry.LaneSignalWarning              `json:"lane_signal_warnings,omitempty"`
 	StalenessWarnings          []telemetry.StalenessWarning               `json:"staleness_warnings,omitempty"`
@@ -82,8 +76,6 @@ type doctorCheck struct {
 	ProjectDefinition          *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
 	Capabilities               *doctorCapabilityReport                    `json:"capabilities,omitempty"`
 	WorkflowOptimization       doctorWorkflowOptimizationReport           `json:"-"`
-	ConcurrencyHistory         []doctorConcurrencyDiagnostic              `json:"concurrency_history,omitempty"`
-	RecompletionSources        []doctorRedispatchDiagnostic               `json:"redispatch_loops,omitempty"`
 }
 
 type doctorProjectDefinitionDiagnostic struct {
@@ -219,28 +211,16 @@ func (p *doctorCheckProgress) Updates() <-chan struct{} {
 }
 
 type doctorConfig struct {
-	ConfigPath                string
-	Host                      string
-	ProjectID                 string
-	Flags                     runtimeFlags
-	Output                    io.Writer
-	CheckTimeout              time.Duration
-	Build                     buildinfo.Info
-	AllowWriteProbes          bool
-	WorkflowDiff              bool
-	WorkflowTokenThreshold    int
-	WorkflowProposalThreshold int
-	WorkflowProposeIssues     bool
-}
-
-type doctorStore interface {
-	Close() error
-}
-
-type doctorTelemetryStore interface {
-	doctorStore
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ConfigPath             string
+	Host                   string
+	ProjectID              string
+	Flags                  runtimeFlags
+	Output                 io.Writer
+	CheckTimeout           time.Duration
+	Build                  buildinfo.Info
+	AllowWriteProbes       bool
+	WorkflowDiff           bool
+	WorkflowTokenThreshold int
 }
 
 type doctorDeps struct {
@@ -266,7 +246,6 @@ type doctorDeps struct {
 	ghAuthToken          func(context.Context) (string, error)
 	ghAuthStatus         func(context.Context) (string, error)
 	listen               func(string, string) (net.Listener, error)
-	openSQLiteReadOnly   func(context.Context, string) (doctorTelemetryStore, error)
 	gitWorkTree          func(context.Context, string) error
 	gitWorktrees         func(context.Context, string) ([]doctorGitWorktree, error)
 	gitRemoteURL         func(context.Context, string) (string, error)
@@ -276,7 +255,6 @@ type doctorDeps struct {
 	scheduleOwnership    doctorScheduleOwnershipProbe
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
 	proposalConnector    func(globalconfig.Config, string, workflowconfig.Config) (doctorWorkflowProposalConnector, error)
-	proposalLaneWriter   func(context.Context, string, workflowconfig.Config, connector.Connector, connector.Issue, string) error
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
 	modelCatalogProbe    func(context.Context, workflowconfig.AgentBackend) (int, error)
 	executable           func() (string, error)
@@ -296,9 +274,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	allowWriteProbes := false
 	workflowDiff := false
 	workflowWrite := false
-	workflowProposeIssues := false
 	workflowTokenThreshold := doctorWorkflowDefaultTokenThreshold
-	workflowProposalThreshold := doctorWorkflowProposalDefaultThreshold
 	strict := false
 	startupPreflight := false
 	projectID := ""
@@ -321,17 +297,15 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 				progressOut = cmd.ErrOrStderr()
 			}
 			config := doctorConfig{
-				ConfigPath:                derefString(configPath),
-				Host:                      derefString(host),
-				ProjectID:                 projectID,
-				Output:                    progressOut,
-				CheckTimeout:              timeout,
-				Build:                     opts.build,
-				AllowWriteProbes:          allowWriteProbes,
-				WorkflowDiff:              workflowDiff || workflowWrite,
-				WorkflowTokenThreshold:    workflowTokenThreshold,
-				WorkflowProposalThreshold: workflowProposalThreshold,
-				WorkflowProposeIssues:     workflowProposeIssues,
+				ConfigPath:             derefString(configPath),
+				Host:                   derefString(host),
+				ProjectID:              projectID,
+				Output:                 progressOut,
+				CheckTimeout:           timeout,
+				Build:                  opts.build,
+				AllowWriteProbes:       allowWriteProbes,
+				WorkflowDiff:           workflowDiff || workflowWrite,
+				WorkflowTokenThreshold: workflowTokenThreshold,
 				Flags: runtimeFlags{
 					Env:      runtimeStringFlag{Value: derefString(env), Set: flagChanged(cmd, "env")},
 					LogLevel: runtimeStringFlag{Value: derefString(logLevel), Set: flagChanged(cmd, "log-level")},
@@ -371,8 +345,6 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	cmd.Flags().BoolVar(&workflowDiff, "diff", false, "print proposed WORKFLOW.md frontmatter changes for workflow optimization findings")
 	cmd.Flags().BoolVar(&workflowWrite, "write", false, "apply proposed WORKFLOW.md frontmatter changes after confirmation")
 	cmd.Flags().IntVar(&workflowTokenThreshold, "workflow-token-threshold", doctorWorkflowDefaultTokenThreshold, "warn when a WORKFLOW.md prompt body exceeds this estimated token count")
-	cmd.Flags().IntVar(&workflowProposalThreshold, "proposal-threshold", doctorWorkflowProposalDefaultThreshold, "minimum repeated signal count before emitting a governed self-improvement proposal")
-	cmd.Flags().BoolVar(&workflowProposeIssues, "propose-issues", false, "create governed backlog issue proposals for repeated workflow optimization signals")
 	cmd.Flags().BoolVar(&strict, "strict", false, "fail when checks warn or workflow optimization findings exist")
 	cmd.Flags().BoolVar(&startupPreflight, "startup-preflight", false, "limit checks to candidate startup compatibility")
 	cmd.Flags().StringVar(&projectID, "project", "", "limit project checks to the selected project id")
@@ -551,16 +523,6 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 				return checkDoctorLessonCaptures(jobCtx, globalConfig, deps)
 			},
 		})
-		jobs = append(jobs, doctorCheckJob{
-			Name: "Workflow optimization",
-			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorWorkflowOptimization(jobCtx, resolution, globalConfig, deps, githubToken, doctorWorkflowOptimizationOptions{
-					IncludeDiff:       cfg.WorkflowDiff,
-					ProposalThreshold: cfg.WorkflowProposalThreshold,
-					ProposeIssues:     cfg.WorkflowProposeIssues,
-				})}
-			},
-		})
 
 	}
 	jobs = append(jobs,
@@ -583,12 +545,6 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			},
 		},
 		doctorCheckJob{
-			Name: "Daily budget attribution",
-			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorDailyBudgetAccuracy(jobCtx, resolution, deps, time.Now())}
-			},
-		},
-		doctorCheckJob{
 			Name: "Budget overrides",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorBudgetOverrides(jobCtx, resolution, cfg.ProjectID, time.Now().UTC(), deps)}
@@ -597,7 +553,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		doctorCheckJob{
 			Name: "Backend capacity",
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, resolution, boot, cfg.ProjectID, deps, time.Now())}
+				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, boot, cfg.ProjectID, deps)}
 			},
 		},
 		doctorCheckJob{
@@ -634,12 +590,6 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "Dispatch stalls",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorDispatchStalls(jobCtx, boot, cfg.ProjectID, deps)}
-			},
-		},
-		doctorCheckJob{
-			Name: "Artifact gate convergence",
-			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorArtifactGateConvergence(jobCtx, resolution, cfg.ProjectID, deps)}
 			},
 		},
 	)
@@ -889,7 +839,7 @@ func doctorTimeoutDetail(name string, current string, timeout time.Duration, err
 }
 
 func doctorTimeoutHint() string {
-	return "Rerun detent doctor --timeout 30s --port 0; if this repeats, check network access, GitHub availability, local subprocesses, and SQLite locks."
+	return "Rerun detent doctor --timeout 30s --port 0; if this repeats, check network access, GitHub availability and local subprocesses."
 }
 
 func doctorNormalizedTimeout(timeout time.Duration) time.Duration {
@@ -1280,9 +1230,6 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.listen == nil {
 		d.listen = defaults.listen
 	}
-	if d.openSQLiteReadOnly == nil {
-		d.openSQLiteReadOnly = defaults.openSQLiteReadOnly
-	}
 	if d.gitWorkTree == nil {
 		d.gitWorkTree = defaults.gitWorkTree
 	}
@@ -1351,7 +1298,6 @@ func defaultDoctorDeps() doctorDeps {
 		ghAuthToken:          defaultGHAuthToken,
 		ghAuthStatus:         func(ctx context.Context) (string, error) { return defaultCommandRunner(ctx, "gh", "auth", "status") },
 		listen:               net.Listen,
-		openSQLiteReadOnly:   openDoctorSQLiteReadOnly,
 		gitWorkTree:          defaultGitWorkTree,
 		gitWorktrees:         defaultDoctorGitWorktrees,
 		gitRemoteURL:         defaultGitRemoteURL,
@@ -1371,13 +1317,6 @@ func defaultDoctorDeps() doctorDeps {
 func defaultDoctorHTTPDo(req *http.Request) (*http.Response, error) {
 	client := http.Client{Timeout: doctorCommandTimeout}
 	return client.Do(req)
-}
-
-func doctorSQLitePingError(err, closeErr error) error {
-	if closeErr != nil {
-		return fmt.Errorf("ping sqlite database: %w; close sqlite database: %w", err, closeErr)
-	}
-	return fmt.Errorf("ping sqlite database: %w", err)
 }
 
 func resolveDoctorCommandOnPath(pathValue string, executable string) (string, error) {

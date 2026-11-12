@@ -17,7 +17,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -30,12 +35,32 @@ func TestHubMCPStopRun(t *testing.T) {
 			source := performHubAPIRequest(t, f.service, http.MethodGet, sourcePath, f.token, nil)
 			requireNativeStatus(t, source, http.StatusOK)
 			unrelated := f.create(t, "unrelated")
-			worker := f.worker(t, "worker")
-			lease := claimNativeAttempt(t, f.nativeFixture, worker, "machine", "session", f.issue.WorkItemID)
-			otherLease := claimNativeAttempt(t, f.nativeFixture, worker, "other-machine", "other-session", unrelated.WorkItemID)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", f.project.ID, f.issue.WorkItemID); err != nil {
-				t.Fatal(err)
+			current := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+			transition := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(current.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "start-work"}, ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"})
+			requireNativeStatus(t, transition, http.StatusOK)
+			decodeHubResponse(t, transition, &current)
+			r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
+			r.enroll(t)
+			otherRunner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
+			otherRunner.enroll(t)
+			for _, runner := range []runnerFixture{r, otherRunner} {
+				reportRunnerCapacity(t, f.service, f.base, runner.redemption.Credential, runner.binding.MachineID, "Example runner", isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, 1)
 			}
+			publishCapacity(t, f.nativeFixture, r, capacityReport(f.service.config.now()))
+			otherCapacity := capacityReport(f.service.config.now())
+			otherCapacity.AccountAlias, otherCapacity.SharedAccountAlias = "other", "other-team"
+			publishCapacity(t, f.nativeFixture, otherRunner, otherCapacity)
+			worker := r.redemption.Credential
+			claim := func(runner runnerFixture, item tracker.NativeIssue, session string) tracker.NativeLease {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, providerClaim(runner, item, session))
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				return lease
+			}
+			lease := claim(r, current, "session")
+			otherLease := claim(otherRunner, unrelated, "other-session")
 			start := nativeStartedEvent(lease)
 			checkpoint := start
 			checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence, checkpoint.Data.Handoff = "run.checkpointed", "checkpoint", 2, nativeTestCheckpoint()
@@ -46,42 +71,51 @@ func TestHubMCPStopRun(t *testing.T) {
 			}
 			issue := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
 			unrelated = readWorkItem(t, f.nativeFixture, unrelated.WorkItemID, "")
-			query := f.service.database.reader
-			readLease := func(id tracker.LeaseID) (leaseRecord, bool, error) {
+			readLease := func(id tracker.LeaseID) leasestore.Lease {
 				t.Helper()
-				tx, err := query.BeginTx(t.Context(), nil)
-				if err != nil {
-					return leaseRecord{}, false, err
+				var lease leasestore.Lease
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					var err error
+					lease, err = reader.Lease(t.Context(), string(id))
+					return err
+				}); err != nil {
+					t.Fatal(err)
 				}
-				record, found, err := readLeaseByID(t.Context(), tx, id)
-				if rollbackErr := tx.Rollback(); rollbackErr != nil {
-					t.Fatal(rollbackErr)
+				return lease
+			}
+			active := readLease(lease.ID)
+			if active.ReleasedAt != nil {
+				t.Fatalf("completed attempt lost active lease: %+v", active)
+			}
+			otherBefore := readLease(otherLease.ID)
+			countTransitions := func() int {
+				t.Helper()
+				count := 0
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					events, err := reader.Events(t.Context(), f.project.ID, issue.WorkItemID, 0, 100)
+					for _, event := range events {
+						if event.Type == "workflow.transitioned" {
+							count++
+						}
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
 				}
-				return record, found, err
+				return count
 			}
-			active, found, err := readLease(lease.ID)
-			if err != nil || !found || active.session.ReleasedAt != nil {
-				t.Fatalf("completed attempt lost active lease: %+v %v", active, err)
-			}
-			otherBefore, found, err := readLease(otherLease.ID)
-			if err != nil || !found {
-				t.Fatalf("missing unrelated lease: %v", err)
-			}
+			beforeTransitions := countTransitions()
 			fields := map[string]any{"project_id": f.project.ID, "request_id": "stop", "identifier": issue.WorkItemID, "expected_revision": fmt.Sprint(issue.Revision), "lease_id": lease.ID, "fencing_token": lease.FencingToken, "destination": "Todo", "priority": 2, "reason": "Release completed attempt"}
-			db := f.service.database.db
+			db := usagePostgresAdmin(t, f.service)
 			switch scenario {
 			case "stale revision":
 				fields["expected_revision"] = fmt.Sprint(issue.Revision + 1)
 			case "stale fence":
 				fields["fencing_token"] = lease.FencingToken + 1
 			case "replacement":
-				if _, err := db.ExecContext(t.Context(), "UPDATE leases SET released_at=updated_at WHERE lease_id=?", lease.ID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := db.ExecContext(t.Context(), "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,fencing_token,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'replacement-lease',issue_id,machine_id,'replacement-session',(SELECT max(fencing_token)+1 FROM leases),expires_at,acquired_at,renewed_at,created_at,updated_at FROM leases WHERE lease_id=?", lease.ID); err != nil {
-					t.Fatal(err)
-				}
-				lease.ID = "replacement-lease"
+				coordinatorActionRelease(t, f.service, f.project.OrganizationID, string(lease.ID), "replaced")
+				replacement := claim(r, issue, "replacement-session")
+				lease = replacement
 			case "foreign project":
 				foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign")
 				fields["project_id"] = foreign.project.ID
@@ -95,11 +129,11 @@ func TestHubMCPStopRun(t *testing.T) {
 			case "missing fence":
 				delete(fields, "fencing_token")
 			case "release rollback":
-				if _, err := db.ExecContext(t.Context(), "CREATE TRIGGER fail_stop_release BEFORE UPDATE OF released_at ON leases BEGIN SELECT RAISE(ABORT, 'release failed'); END"); err != nil {
+				if _, err := db.ExecContext(t.Context(), `CREATE FUNCTION fail_stop_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'release failed'; END $$; CREATE TRIGGER fail_stop_release BEFORE UPDATE OF released_at ON leases FOR EACH ROW EXECUTE FUNCTION fail_stop_release()`); err != nil {
 					t.Fatal(err)
 				}
 			case "routing rollback":
-				if _, err := db.ExecContext(t.Context(), "CREATE TRIGGER fail_stop_route BEFORE UPDATE OF workflow_state_id ON issues BEGIN SELECT RAISE(ABORT, 'routing failed'); END"); err != nil {
+				if _, err := db.ExecContext(t.Context(), `CREATE FUNCTION fail_stop_route() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'routing failed'; END $$; CREATE TRIGGER fail_stop_route BEFORE UPDATE OF workflow_state_name ON issues FOR EACH ROW EXECUTE FUNCTION fail_stop_route()`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -231,14 +265,14 @@ func TestHubMCPStopRun(t *testing.T) {
 					t.Fatalf("changed durable replay accepted: %s", raw)
 				}
 			}
-			current := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
+			current = readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
 			if current.ChangeSequence < issue.ChangeSequence {
 				t.Fatal("stop regressed project change sequence")
 			}
 			issue.ChangeSequence = current.ChangeSequence
-			stopped, found, err := readLease(lease.ID)
-			if err != nil || !found || (stopped.session.ReleasedAt != nil) != (scenario == "execute") {
-				t.Fatalf("wrong lease released: %+v %v", stopped, err)
+			stopped := readLease(lease.ID)
+			if (stopped.ReleasedAt != nil) != (scenario == "execute") {
+				t.Fatalf("wrong lease released: %+v", stopped)
 			}
 			if scenario == "execute" && (current.State != "Todo" || current.Revision != issue.Revision+1 || current.Priority == nil || *current.Priority != 1) {
 				t.Fatalf("wrong stop destination: %+v", current)
@@ -246,30 +280,27 @@ func TestHubMCPStopRun(t *testing.T) {
 			if scenario != "execute" && !reflect.DeepEqual(current, issue) {
 				t.Fatal("refused stop changed item")
 			}
-			other, found, err := readLease(otherLease.ID)
+			other := readLease(otherLease.ID)
 			otherItem := readWorkItem(t, f.nativeFixture, unrelated.WorkItemID, "")
 			if otherItem.ChangeSequence < unrelated.ChangeSequence {
 				t.Fatal("stop regressed unrelated project change sequence")
 			}
 			unrelated.ChangeSequence = otherItem.ChangeSequence
-			if err != nil || !found || !reflect.DeepEqual(other, otherBefore) || !reflect.DeepEqual(unrelated, otherItem) {
-				t.Fatalf("unrelated item or lease changed: %+v %v", other, err)
+			if !reflect.DeepEqual(other, otherBefore) || !reflect.DeepEqual(unrelated, otherItem) {
+				t.Fatalf("unrelated item or lease changed: %+v", other)
 			}
 			retained := performHubAPIRequest(t, f.service, http.MethodGet, sourcePath, f.token, nil)
 			requireNativeStatus(t, retained, http.StatusOK)
 			if !bytes.Equal(source.Body.Bytes(), retained.Body.Bytes()) {
 				t.Fatal("stop lost published source")
 			}
-			var transitions int
-			if err := query.QueryRowContext(t.Context(), "SELECT count(*) FROM work_events WHERE kind='lease_released'").Scan(&transitions); err != nil {
-				t.Fatal(err)
-			}
+			transitions := countTransitions() - beforeTransitions
 			want := 0
 			if scenario == "execute" {
 				want = 1
 			}
 			if transitions != want {
-				t.Fatalf("release events=%d, want %d", transitions, want)
+				t.Fatalf("stop transitions=%d, want %d", transitions, want)
 			}
 		})
 	}
@@ -292,12 +323,28 @@ func TestHostedStopRunAuthority(t *testing.T) {
 				f, ctx := newHostedKeyMCPFixture(t, deployment, scenario.role)
 				item := f.seedIssue(t, 1)
 				seedCoordinatorArchiveLease(t, f.service, string(item))
-				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Cancelled','Cancelled',1,0,?,?)", f.project, testTimestamp, testTimestamp)
-				operatorSQL(t, f.hostedSecurityFixture, `UPDATE projects SET states_json='[{"name":"Todo","dispatchable":true,"transitions":["Cancelled"]},{"name":"Cancelled","terminal":true}]' WHERE id=?`, f.project)
-				var fence tracker.FencingToken
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT fencing_token FROM leases WHERE lease_id='archive-lease'").Scan(&fence); err != nil {
-					t.Fatal(err)
+				coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), f.project)
+					if err != nil {
+						return err
+					}
+					project.States = []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Cancelled"}}, {Name: "Cancelled", Terminal: true}}
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				})
+				readLease := func() leasestore.Lease {
+					t.Helper()
+					var lease leasestore.Lease
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						lease, err = r.Lease(t.Context(), "archive-lease")
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					return lease
 				}
+				fence := tracker.FencingToken(readLease().FencingToken)
 				if scenario.scope != "" {
 					issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: f.user.identity.Hosted, Email: f.user.identity.Email}, apikey.HashToken(f.user.token))
 					if err != nil {
@@ -336,7 +383,9 @@ func TestHostedStopRunAuthority(t *testing.T) {
 						t.Fatalf("authorized stop: %s %v", result.Content, err)
 					}
 					if scenario.revoke {
-						operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", f.user.identity.Subject, f.project)
+						coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+							return w.DeleteAccessProjectGrant(t.Context(), f.user.identity.Subject, f.project)
+						})
 						for _, revoked := range []operatortool.Call{call, {Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + receipt.ID + `"}`)}} {
 							if _, err := executor.Execute(ctx, revoked); !errors.Is(err, operatortool.ErrAccessDenied) {
 								t.Fatalf("revoked authority accepted %s: %v", revoked.Name, err)
@@ -344,10 +393,7 @@ func TestHostedStopRunAuthority(t *testing.T) {
 						}
 					}
 				}
-				var released bool
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT released_at IS NOT NULL FROM leases WHERE lease_id='archive-lease'").Scan(&released); err != nil {
-					t.Fatal(err)
-				}
+				released := readLease().ReleasedAt != nil
 				if released == scenario.denied {
 					t.Fatalf("released=%t denied=%t", released, scenario.denied)
 				}

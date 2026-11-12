@@ -2,138 +2,253 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 	"testing/fstest"
 
-	"github.com/pressly/goose/v3"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRecoveryInterruptedMigration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	t.Parallel()
+	fixture := hubPostgresMigrationFixture(t)
+	restoration := pgtest.NewTemplate(func(context.Context, *sql.DB) error { return nil })
+	t.Cleanup(func() {
+		deadline, ok := t.Deadline()
+		if !ok {
+			t.Error("PostgreSQL recovery tests require a process deadline")
+			return
+		}
+		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+		defer cancel()
+		if err := restoration.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	files := fstest.MapFS{}
+	entries, err := os.ReadDir("postgres/migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target, currentVersion, previousVersion int64
+	var targetName string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join("postgres/migrations", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		version, err := strconv.ParseInt(strings.SplitN(entry.Name(), "_", 2)[0], 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[entry.Name()] = &fstest.MapFile{Data: data}
+		currentVersion = max(currentVersion, version)
+		if !bytes.Contains(data, []byte("-- +goose NO TRANSACTION")) && version > target {
+			target, targetName = version, entry.Name()
+		}
+	}
+	before := fstest.MapFS{}
+	for name, file := range files {
+		version, err := strconv.ParseInt(strings.SplitN(name, "_", 2)[0], 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version < target {
+			before[name] = file
+			previousVersion = max(previousVersion, version)
+		}
+	}
+	if previousVersion == 0 || targetName == "" {
+		t.Fatal("PostgreSQL recovery needs an earlier migration boundary")
+	}
 	for _, stage := range []string{"schema", "version"} {
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
-			path := filepath.Join(t.TempDir(), "older.db")
-			db, err := sql.Open("sqlite", path)
-			if err != nil {
+			admin := fixture.Database(t)
+			migration := startupConnection(t, admin, "detent_migration_v2", "")
+			if err := postgres.Migrate(t.Context(), migration, before); err != nil {
 				t.Fatal(err)
 			}
-			files, err := migrationFiles.ReadDir("migrations")
-			if err != nil {
-				t.Fatal(err)
-			}
-			migrations := fstest.MapFS{}
-			for _, file := range files {
-				if file.Name() >= "00016_" {
-					continue
+			for _, organization := range []string{"org_recovery_first", "org_recovery_second"} {
+				for _, statement := range []string{
+					`INSERT INTO organizations(organization_id,name,slug,local,created_at) VALUES($1,$1,$1,false,clock_timestamp())`,
+					`INSERT INTO projects(organization_id,id,name,profile) VALUES($1,'prj_recovery','Recovered project','native')`,
+				} {
+					if _, err := admin.ExecContext(t.Context(), statement, organization); err != nil {
+						t.Fatal(err)
+					}
 				}
-				data, err := migrationFiles.ReadFile("migrations/" + file.Name())
-				if err != nil {
-					t.Fatal(err)
-				}
-				migrations[file.Name()] = &fstest.MapFile{Data: data}
 			}
-			provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()))
-			if err != nil {
+			ledger := hubPostgresMigrationLedger(t, admin)
+			interrupted := fstest.MapFS{}
+			for name, file := range before {
+				interrupted[name] = file
+			}
+			raw := string(files[targetName].Data)
+			up, down, _ := strings.Cut(raw, "-- +goose Down")
+			fault := "\nCREATE TABLE recovery_interruption_probe(id integer PRIMARY KEY);\n"
+			if stage == "schema" {
+				fault += "SELECT recovery_interrupt_session();\n"
+			} else {
+				fault += fmt.Sprintf("-- +goose StatementBegin\nCREATE FUNCTION recovery_interrupt_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM recovery_interrupt_session(); RETURN NEW; END $$;\n-- +goose StatementEnd\nCREATE TRIGGER recovery_interrupt_version AFTER INSERT ON goose_db_version FOR EACH ROW WHEN (NEW.version_id=%d AND NEW.is_applied) EXECUTE FUNCTION recovery_interrupt_version();\n", target)
+			}
+			interrupted[targetName] = &fstest.MapFile{Data: []byte(up + fault + "-- +goose Down" + down)}
+			if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION recovery_interrupt_session() RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog AS 'SELECT pg_terminate_backend(pg_backend_pid())'`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := provider.Up(t.Context()); err != nil {
+			err := postgres.Migrate(t.Context(), migration, interrupted)
+			var terminated *pgconn.PgError
+			if !errors.As(err, &terminated) || terminated.Code != "57P01" {
+				t.Fatalf("interruption helper: expected terminated PostgreSQL session: %v", err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `DROP FUNCTION recovery_interrupt_session()`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.ExecContext(t.Context(), fmt.Sprintf("PRAGMA application_id = %d", hubApplicationID)); err != nil {
+			var probe bool
+			if err := admin.QueryRowContext(t.Context(), "SELECT to_regclass('public.recovery_interruption_probe') IS NOT NULL").Scan(&probe); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
+			if got := hubPostgresMigrationLedger(t, admin); probe || !reflect.DeepEqual(got, ledger) || recoveryPostgresVersion(t, admin) != previousVersion {
+				t.Fatalf("interrupted migration did not roll back: probe=%t ledger=%+v", probe, got)
 			}
-			command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestRecoveryMigrationProcess$")
-			command.Env = append(os.Environ(), "DETENT_TEST_MIGRATION_PATH="+path, "DETENT_TEST_MIGRATION_STAGE="+stage)
-			output, err := command.CombinedOutput()
-			var exitErr *exec.ExitError
-			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 23 {
-				t.Fatalf("interruption helper: %v: %s", err, output)
-			}
-			sourceBefore, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			verified, err := VerifyDatabase(t.Context(), path)
-			if err != nil || verified.SchemaVersion != 15 {
-				t.Fatalf("interrupted migration did not roll back: %+v, %v", verified, err)
-			}
-			backup := filepath.Join(t.TempDir(), "pre-upgrade.db")
-			if err := BackupDatabase(t.Context(), path, backup); err != nil {
-				t.Fatal(err)
-			}
-			verified, err = VerifyDatabase(t.Context(), backup)
-			if err != nil || verified.SchemaVersion != 15 {
-				t.Fatalf("backup migrated the source: %+v, %v", verified, err)
-			}
-			sourceAfter, err := os.ReadFile(path)
-			if err != nil || !bytes.Equal(sourceBefore, sourceAfter) {
-				t.Fatalf("verify or backup changed legacy source: %v", err)
-			}
+			tools := recoveryPostgresTools(t, admin)
+			sourceBefore := recoveryPostgresCanonicalDump(recoveryPostgresTool(t, tools, migration, "pg_dump", "--format=plain", "--no-owner"))
+			backup := filepath.Join(t.TempDir(), "pre-upgrade.dump")
+			recoveryPostgresTool(t, tools, migration, "pg_dump", "--format=custom", "--file="+backup)
 			backupBefore, err := os.ReadFile(backup)
-			if err != nil {
-				t.Fatal(err)
+			if err != nil || len(backupBefore) == 0 {
+				t.Fatalf("backup is unavailable: %v", err)
 			}
-			restored := filepath.Join(t.TempDir(), "restored.db")
-			if _, err := RestoreDatabase(t.Context(), backup, restored, []byte(recoveryTestToken)); err != nil {
+			recoveryPostgresTool(t, tools, migration, "pg_restore", "--no-owner", "--file="+os.DevNull, backup)
+			if recoveryPostgresVersion(t, admin) != previousVersion {
+				t.Fatal("backup migrated the source")
+			}
+			sourceAfter := recoveryPostgresCanonicalDump(recoveryPostgresTool(t, tools, migration, "pg_dump", "--format=plain", "--no-owner"))
+			if !bytes.Equal(sourceBefore, sourceAfter) {
+				t.Fatal("verify or backup changed legacy source")
+			}
+			restored := restoration.Database(t)
+			restoreAdmin := restoration.Connection(t, restored, "", "")
+			recoveryPostgresTool(t, tools, restoreAdmin, "pg_restore", "--exit-on-error", "--dbname="+restoreAdmin.Database, backup)
+			restoreConnection := startupConnection(t, restored, "detent_migration_v2", "")
+			if recoveryPostgresVersion(t, restored) != previousVersion || !reflect.DeepEqual(hubPostgresMigrationLedger(t, restored), ledger) {
+				t.Fatal("backup did not restore the preserved migration state")
+			}
+			if err := postgres.Migrate(t.Context(), restoreConnection, files); err != nil {
 				t.Fatal(err)
 			}
 			backupAfter, err := os.ReadFile(backup)
 			if err != nil || !bytes.Equal(backupBefore, backupAfter) {
 				t.Fatalf("restore changed source: %v", err)
 			}
-			verified, err = VerifyDatabase(t.Context(), restored)
-			if err != nil || verified.SchemaVersion != supportedSchemaVersion(t) {
-				t.Fatalf("migration retry: %+v, %v", verified, err)
+			if got := recoveryPostgresVersion(t, restored); got != currentVersion {
+				t.Fatalf("migration retry: got=%d want=%d", got, currentVersion)
+			}
+			runtime := startupConnection(t, restored, "detent_runtime_v2", "")
+			repository, err := postgres.Open(t.Context(), postgres.Config{Connection: runtime, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}, files)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := repository.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			for _, organization := range []string{"org_recovery_first", "org_recovery_second"} {
+				if err := repository.ReadTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(r tenantstore.Reader) error {
+					project, err := r.Project(t.Context(), "prj_recovery")
+					if err == nil && project.Name != "Recovered project" {
+						return errors.New("recovered project differs")
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}
 }
 
-func TestRecoveryMigrationProcess(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
+func recoveryPostgresVersion(t *testing.T, admin *sql.DB) int64 {
+	t.Helper()
+	var version int64
+	if err := admin.QueryRowContext(t.Context(), "SELECT coalesce(max(version_id),0) FROM goose_db_version WHERE is_applied").Scan(&version); err != nil {
+		t.Fatal(err)
 	}
+	return version
+}
 
-	path := os.Getenv("DETENT_TEST_MIGRATION_PATH")
-	if path == "" {
-		return
+func recoveryPostgresTools(t *testing.T, admin *sql.DB) string {
+	t.Helper()
+	init, err := exec.LookPath("initdb")
+	if err != nil {
+		t.Fatal("PostgreSQL fixture tool directory is unavailable")
 	}
-	db, err := sql.Open("sqlite", path)
+	init, err = filepath.EvalSymlinks(init)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), "PRAGMA journal_mode = WAL"); err != nil {
+	directory := filepath.Dir(init)
+	var server int
+	if err := admin.QueryRowContext(t.Context(), "SELECT current_setting('server_version_num')::integer / 10000").Scan(&server); err != nil {
 		t.Fatal(err)
 	}
-	tx, err := db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := migrationFiles.ReadFile("migrations/00016_artifacts.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), string(data)); err != nil {
-		t.Fatal(err)
-	}
-	if os.Getenv("DETENT_TEST_MIGRATION_STAGE") == "version" {
-		if _, err := tx.ExecContext(t.Context(), "INSERT INTO hub_schema_version(version_id,is_applied) VALUES(16,1)"); err != nil {
-			t.Fatal(err)
+	for _, tool := range []string{"initdb", "pg_dump", "pg_restore"} {
+		path, err := exec.LookPath(filepath.Join(directory, tool))
+		if err != nil {
+			t.Fatalf("PostgreSQL fixture tool %s is unavailable", tool)
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil || filepath.Dir(resolved) != directory {
+			t.Fatalf("PostgreSQL fixture tool %s is outside its declared directory", tool)
+		}
+		output, err := exec.CommandContext(t.Context(), resolved, "--version").Output()
+		if err != nil || !strings.Contains(string(output), fmt.Sprintf("(PostgreSQL) %d.", server)) {
+			t.Fatalf("PostgreSQL fixture tool %s does not match server major %d", tool, server)
 		}
 	}
-	os.Exit(23)
+	return directory
+}
+
+func recoveryPostgresTool(t *testing.T, directory string, connection pgtransport.Connection, tool string, args ...string) []byte {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), filepath.Join(directory, tool), args...)
+	command.Env = append(os.Environ(), "PGHOST="+connection.Host, "PGPORT="+strconv.Itoa(int(connection.Port)), "PGDATABASE="+connection.Database, "PGUSER="+connection.User, "PGPASSWORD="+connection.Password, "PGSSLMODE="+connection.SSLMode, "PGSERVICE=", "PGSERVICEFILE=", "PGPASSFILE=", "PGOPTIONS=")
+	var output, diagnostic bytes.Buffer
+	command.Stdout, command.Stderr = &output, &diagnostic
+	if err := command.Run(); err != nil {
+		t.Fatalf("PostgreSQL fixture tool %s failed: %v", tool, err)
+	}
+	return output.Bytes()
+}
+
+func recoveryPostgresCanonicalDump(raw []byte) []byte {
+	var canonical bytes.Buffer
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		if bytes.HasPrefix(line, []byte("\\restrict ")) || bytes.HasPrefix(line, []byte("\\unrestrict ")) {
+			continue
+		}
+		canonical.Write(line)
+		canonical.WriteByte('\n')
+	}
+	return canonical.Bytes()
 }

@@ -28,17 +28,18 @@ import (
 )
 
 type hubSchedulingOptions struct {
-	hubProcessReceipts bool
-	workspaceSupport   func() workspacerunner.Support
-	processStore       releasedExecutionProcessStore
-	releasedStopped    func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
-	providerUsage      *runner.ProviderUsage
-	applyProjects      func(context.Context, globalconfig.Config) error
-	setupStore         store.ProjectRunnerSetupStore
-	logger             *slog.Logger
-	runtimeConfig      func() globalconfig.Config
-	intakeToken        githubconnector.TokenSource
-	problems           func() []runnerauth.Problem
+	applyProjectConfiguration func(context.Context, string, runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration
+	hubProcessReceipts        bool
+	workspaceSupport          func() workspacerunner.Support
+	processStore              releasedExecutionProcessStore
+	releasedStopped           func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
+	providerUsage             *runner.ProviderUsage
+	applyProjects             func(context.Context, globalconfig.Config) error
+	setupStore                store.ProjectRunnerSetupStore
+	logger                    *slog.Logger
+	runtimeConfig             func() globalconfig.Config
+	intakeToken               githubconnector.TokenSource
+	problems                  func() []runnerauth.Problem
 }
 
 func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version string, options ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
@@ -159,7 +160,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			return releasedExecutionWorkersStopped(ctx, setupOptions.processStore, item, attempt)
 		}
 	}
-	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+	scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{
 		HubProcessReceipts:  setupOptions.hubProcessReceipts,
 		ReleasedStopped:     releasedStopped,
 		PrepareProject:      prepareProject,
@@ -234,6 +235,51 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		HeartbeatInterval: min(clientConfig.HeartbeatInterval(), providercapacity.MaxAge/2),
 		LeaseTTL:          clientConfig.LeaseTTL(),
 	})
+	if err != nil {
+		return nil, err
+	}
+	scheduler.SetProjectConfigurationOwner(func(ctx context.Context, id string, request *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration {
+		view := project.MissingConfigurationOwner(id)
+		view.Authority = "hub_configuration"
+		desired := client.CurrentProjectConfiguration(tracker.ProjectID(id))
+		if request != nil {
+			if request.ProjectID != id || request.Desired == nil {
+				return view
+			}
+			desired = request.Desired
+		}
+		if desired == nil || setupOptions.applyProjectConfiguration == nil {
+			return view
+		}
+		projects.mu.Lock()
+		projects.syncRuntimeLocked()
+		local := ""
+		for name, native := range projects.cfg.Client.NativeProjects {
+			if native == id {
+				if local != "" {
+					projects.mu.Unlock()
+					return view
+				}
+				local = name
+			}
+		}
+		projects.mu.Unlock()
+		if local == "" {
+			return view
+		}
+		view = setupOptions.applyProjectConfiguration(ctx, local, *desired)
+		if !view.Applied && view.Constraint != "" {
+			if previous := client.CurrentProjectConfiguration(tracker.ProjectID(id)); previous != nil && view.EffectivePolicy != nil && previous.EffectivePolicy != nil && view.EffectivePolicy.ID == previous.EffectivePolicy.ID && view.Registered == previous.Registered && view.RuntimeRegistered == previous.Registered && view.Paused == previous.Paused && view.Draining == previous.Draining && view.AllowLocalBinding == previous.AllowLocalBinding {
+				view.ConfigRevision = previous.ConfigRevision
+			}
+		}
+		view.ProjectID = id
+		if request != nil {
+			view.RequestID = request.RequestID
+		}
+		return view
+	})
+	return scheduler, nil
 }
 
 func runnerCheckoutRepository(ctx context.Context, selected globalconfig.Project) string {

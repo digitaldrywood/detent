@@ -34,6 +34,10 @@ func (q *Queries) CommentScanThrough(ctx context.Context, arg CommentScanThrough
 }
 
 const createComment = `-- name: CreateComment :one
+WITH published_source AS MATERIALIZED (
+ SELECT v.revision AS source_revision,v.source_scheduled,v.source_observed_at FROM collaboration_versions v
+ WHERE v.organization_id=$5 AND v.project_id=$7 AND v.work_item_id=$8 AND v.record_id=$6 AND v.revision=COALESCE(NULLIF($4::bigint,0),1) AND v.source_known AND $19::bigint<>COALESCE(NULLIF($4::bigint,0),1)
+)
 INSERT INTO native_comments (
     record_id,
     created_at,
@@ -52,7 +56,10 @@ INSERT INTO native_comments (
     provenance_provider,
     provenance_external_id,
     source_key,
-    deleted
+    deleted,
+    source_revision,
+    source_scheduled,
+    source_observed_at
 )
 VALUES (
     public.allocate_core_record_id('public.native_comments_record_id_seq'::regclass, $1::bigint),
@@ -72,8 +79,11 @@ VALUES (
     $15,
     $16,
     $17,
-    $18
-) RETURNING organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id
+    $18,
+    CASE WHEN $19::bigint=COALESCE(NULLIF($4::bigint,0),1) THEN $19::bigint ELSE COALESCE((SELECT published_source.source_revision FROM published_source),0) END,
+    CASE WHEN $19::bigint=COALESCE(NULLIF($4::bigint,0),1) THEN $20::boolean ELSE COALESCE((SELECT published_source.source_scheduled FROM published_source),false) END,
+    CASE WHEN $19::bigint=COALESCE(NULLIF($4::bigint,0),1) THEN $21::timestamptz ELSE COALESCE((SELECT published_source.source_observed_at FROM published_source),NULL::timestamptz) END
+) RETURNING organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id, source_revision, source_scheduled, source_observed_at
 `
 
 type CreateCommentParams struct {
@@ -95,6 +105,9 @@ type CreateCommentParams struct {
 	ProvenanceExternalID *string
 	SourceKey            *string
 	Deleted              bool
+	SourceRevision       int64
+	SourceScheduled      bool
+	SourceObservedAt     *time.Time
 }
 
 func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (NativeComment, error) {
@@ -117,6 +130,9 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (N
 		arg.ProvenanceExternalID,
 		arg.SourceKey,
 		arg.Deleted,
+		arg.SourceRevision,
+		arg.SourceScheduled,
+		arg.SourceObservedAt,
 	)
 	var i NativeComment
 	err := row.Scan(
@@ -138,6 +154,9 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (N
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.RecordID,
+		&i.SourceRevision,
+		&i.SourceScheduled,
+		&i.SourceObservedAt,
 	)
 	return i, err
 }
@@ -171,7 +190,7 @@ func (q *Queries) DeleteComment(ctx context.Context, arg DeleteCommentParams) (i
 }
 
 const getComment = `-- name: GetComment :one
-SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id, source_revision, source_scheduled, source_observed_at FROM native_comments
 WHERE organization_id=$1
   AND project_id=$2
   AND work_item_id=$3
@@ -212,6 +231,9 @@ func (q *Queries) GetComment(ctx context.Context, arg GetCommentParams) (NativeC
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.RecordID,
+		&i.SourceRevision,
+		&i.SourceScheduled,
+		&i.SourceObservedAt,
 	)
 	return i, err
 }
@@ -249,7 +271,7 @@ func (q *Queries) GetCommentCursor(ctx context.Context, arg GetCommentCursorPara
 }
 
 const listLegacyComments = `-- name: ListLegacyComments :many
-SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id, source_revision, source_scheduled, source_observed_at FROM native_comments
 WHERE organization_id=$1
   AND project_id=$2
   AND work_item_id=$3
@@ -299,6 +321,9 @@ func (q *Queries) ListLegacyComments(ctx context.Context, arg ListLegacyComments
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.RecordID,
+			&i.SourceRevision,
+			&i.SourceScheduled,
+			&i.SourceObservedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -311,7 +336,7 @@ func (q *Queries) ListLegacyComments(ctx context.Context, arg ListLegacyComments
 }
 
 const pageComments = `-- name: PageComments :many
-SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id, source_revision, source_scheduled, source_observed_at FROM native_comments
 WHERE organization_id=$1
   AND project_id=$2
   AND work_item_id=$3
@@ -363,6 +388,9 @@ func (q *Queries) PageComments(ctx context.Context, arg PageCommentsParams) ([]N
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.RecordID,
+			&i.SourceRevision,
+			&i.SourceScheduled,
+			&i.SourceObservedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -375,7 +403,7 @@ func (q *Queries) PageComments(ctx context.Context, arg PageCommentsParams) ([]N
 }
 
 const scanComments = `-- name: ScanComments :many
-SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id, source_revision, source_scheduled, source_observed_at FROM native_comments
 WHERE organization_id=$1
   AND project_id=$2
   AND work_item_id=$3
@@ -427,6 +455,9 @@ func (q *Queries) ScanComments(ctx context.Context, arg ScanCommentsParams) ([]N
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.RecordID,
+			&i.SourceRevision,
+			&i.SourceScheduled,
+			&i.SourceObservedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -439,23 +470,34 @@ func (q *Queries) ScanComments(ctx context.Context, arg ScanCommentsParams) ([]N
 }
 
 const updateComment = `-- name: UpdateComment :one
+WITH published_source AS MATERIALIZED (
+ SELECT v.revision AS source_revision,v.source_scheduled,v.source_observed_at FROM collaboration_versions v
+ WHERE v.organization_id=$15 AND v.project_id=$16 AND v.work_item_id=$17 AND v.record_id=$18 AND v.revision=$2::bigint+1 AND v.source_known AND $1::bigint<>$2::bigint+1
+)
 UPDATE native_comments SET
-    sequence=$1,
-    body_object_key=$2,
-    actor_kind=$3,
-    actor_principal_id=$4,
-    edited_by_kind=$5,
-    edited_by_principal_id=$6,
-    provenance_provider=$7,
-    provenance_external_id=$8,
-    source_key=$9,
-    deleted=$10,
-    revision=revision+1,
+    source_revision=CASE WHEN $1::bigint=$2::bigint+1 THEN $1::bigint ELSE COALESCE((SELECT published_source.source_revision FROM published_source),native_comments.source_revision) END,
+    source_scheduled=CASE WHEN $1::bigint=$2::bigint+1 THEN $3::boolean ELSE COALESCE((SELECT published_source.source_scheduled FROM published_source),native_comments.source_scheduled) END,
+    source_observed_at=CASE WHEN $1::bigint=$2::bigint+1 THEN $4::timestamptz ELSE COALESCE((SELECT published_source.source_observed_at FROM published_source),native_comments.source_observed_at) END,
+    sequence=$5,
+    body_object_key=$6,
+    actor_kind=$7,
+    actor_principal_id=$8,
+    edited_by_kind=$9,
+    edited_by_principal_id=$10,
+    provenance_provider=$11,
+    provenance_external_id=$12,
+    source_key=$13,
+    deleted=$14,
+    revision=native_comments.revision+1,
     updated_at=CURRENT_TIMESTAMP
-WHERE organization_id=$11 AND project_id=$12 AND work_item_id=$13 AND id=$14 AND revision=$15 RETURNING organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id
+WHERE native_comments.organization_id=$15 AND native_comments.project_id=$16 AND native_comments.work_item_id=$17 AND native_comments.id=$18 AND native_comments.revision=$2 RETURNING native_comments.organization_id, native_comments.id, native_comments.project_id, native_comments.work_item_id, native_comments.revision, native_comments.sequence, native_comments.body_object_key, native_comments.actor_kind, native_comments.actor_principal_id, native_comments.edited_by_kind, native_comments.edited_by_principal_id, native_comments.provenance_provider, native_comments.provenance_external_id, native_comments.source_key, native_comments.deleted, native_comments.created_at, native_comments.updated_at, native_comments.record_id, native_comments.source_revision, native_comments.source_scheduled, native_comments.source_observed_at
 `
 
 type UpdateCommentParams struct {
+	SourceRevision       int64
+	ExpectedRevision     int64
+	SourceScheduled      bool
+	SourceObservedAt     *time.Time
 	Sequence             int64
 	BodyObjectKey        string
 	ActorKind            string
@@ -470,11 +512,14 @@ type UpdateCommentParams struct {
 	ProjectID            tracker.ProjectID
 	WorkItemID           tracker.NativeWorkItemID
 	ID                   string
-	ExpectedRevision     int64
 }
 
 func (q *Queries) UpdateComment(ctx context.Context, arg UpdateCommentParams) (NativeComment, error) {
 	row := q.db.QueryRow(ctx, updateComment,
+		arg.SourceRevision,
+		arg.ExpectedRevision,
+		arg.SourceScheduled,
+		arg.SourceObservedAt,
 		arg.Sequence,
 		arg.BodyObjectKey,
 		arg.ActorKind,
@@ -489,7 +534,6 @@ func (q *Queries) UpdateComment(ctx context.Context, arg UpdateCommentParams) (N
 		arg.ProjectID,
 		arg.WorkItemID,
 		arg.ID,
-		arg.ExpectedRevision,
 	)
 	var i NativeComment
 	err := row.Scan(
@@ -511,6 +555,9 @@ func (q *Queries) UpdateComment(ctx context.Context, arg UpdateCommentParams) (N
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.RecordID,
+		&i.SourceRevision,
+		&i.SourceScheduled,
+		&i.SourceObservedAt,
 	)
 	return i, err
 }

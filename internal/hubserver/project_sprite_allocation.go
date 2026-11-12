@@ -6,10 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -44,7 +50,7 @@ func readProjectSpriteAllocation(ctx context.Context, q nativeQueryer, scope nat
 func (s *Service) getProjectSpriteAllocation(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	result, err := readProjectSpriteAllocation(ctx, s.database.reader, nativeRequestScope(c))
+	result, err := s.readProjectSpriteAllocation(ctx, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -62,7 +68,7 @@ func (s *Service) setProjectSpriteAllocation(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope.requireHostedAdmin = true
-	result, err := s.executeNativeMutation(c.Request().Context(), scope, nativeCommandOptions{OperationID: "PUT " + c.Request().URL.EscapedPath(), Feature: "collaboration"}, request.Mutation, request, updateProjectSpriteAllocation(request))
+	result, err := s.setProjectSpriteAllocationRecord(c.Request().Context(), scope, "PUT "+c.Request().URL.EscapedPath(), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -101,91 +107,135 @@ func updateProjectSpriteAllocation(request projectSpriteAllocationRequest) func(
 	}
 }
 
-func readSpriteAllocationProjects(ctx context.Context, q nativeQueryer, scope nativeScope) ([]tracker.ProjectID, error) {
-	rows, err := q.QueryContext(ctx, `SELECT a.project_id FROM project_sprite_allocations a JOIN projects p ON p.id=a.project_id AND p.organization_id=a.organization_id WHERE a.organization_id=? AND p.deleted_at IS NULL ORDER BY julianday(a.requested_at),a.project_id`, scope.organization)
-	if err != nil {
-		return nil, err
+func readSpriteAllocationProjects(ctx context.Context, r tenantstore.Reader, scope nativeScope) ([]tracker.ProjectID, error) {
+	owner, ok := r.(postgres.SpriteReader)
+	if !ok {
+		return nil, workItemStorageUnavailable()
 	}
-	defer rows.Close()
-	var projects []tracker.ProjectID
-	for rows.Next() {
-		var project tracker.ProjectID
-		if err := rows.Scan(&project); err != nil {
+	var allocations []postgres.SpriteAllocation
+	after := tracker.ProjectID("")
+	for {
+		page, err := owner.SpriteAllocations(ctx, after, corestore.MaxPageSize)
+		if err != nil {
 			return nil, err
 		}
-		projects = append(projects, project)
+		for _, allocation := range page {
+			project, err := r.Project(ctx, allocation.ProjectID)
+			if err != nil {
+				return nil, err
+			}
+			if project.DeletedAt == nil {
+				allocations = append(allocations, allocation)
+			}
+		}
+		if len(page) < corestore.MaxPageSize {
+			break
+		}
+		next := page[len(page)-1].ProjectID
+		if next <= after {
+			return nil, corestore.ErrInvalidCursor
+		}
+		after = next
 	}
-	return projects, rows.Err()
+	slices.SortStableFunc(allocations, func(a, b postgres.SpriteAllocation) int {
+		if a.RequestedAt.Before(b.RequestedAt) {
+			return -1
+		}
+		if a.RequestedAt.After(b.RequestedAt) {
+			return 1
+		}
+		return strings.Compare(string(a.ProjectID), string(b.ProjectID))
+	})
+	result := make([]tracker.ProjectID, len(allocations))
+	for i, allocation := range allocations {
+		result[i] = allocation.ProjectID
+	}
+	return result, nil
 }
 
-const spriteProvisionAttempts = 3
+func (s *Service) readSpriteAllocationProjects(ctx context.Context, scope nativeScope) ([]tracker.ProjectID, error) {
+	var result []tracker.ProjectID
+	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		var err error
+		result, err = readSpriteAllocationProjects(ctx, r, scope)
+		return err
+	})
+	return result, err
+}
 
 var errSpriteReservationStale = errors.New("project Sprite count changed before this member was ready")
 
-func spriteAllocationRunnerProject(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID) (tracker.ProjectID, error) {
-	var project tracker.ProjectID
-	err := q.QueryRowContext(ctx, `SELECT m.allocation_project_id FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id WHERE m.organization_id=? AND r.machine_id=? AND m.allocation_project_id<>''`, scope.organization, machine).Scan(&project)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+func spriteAllocationRunnerAllowedRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, record runnerstore.RoutingRecord) (bool, error) {
+	owner, ok := r.(postgres.SpriteReader)
+	if !ok {
+		return false, workItemStorageUnavailable()
 	}
-	return project, err
-}
-
-func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID) (bool, error) {
-	var target int
-	var allocation sql.NullString
-	if err := q.QueryRowContext(ctx, `SELECT COALESCE((SELECT desired_count FROM project_sprite_allocations WHERE organization_id=? AND project_id=?),-1), (SELECT max(m.allocation_project_id) FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id WHERE m.organization_id=? AND r.machine_id=?)`, scope.organization, scope.project, scope.organization, machine).Scan(&target, &allocation); err != nil {
+	target, err := owner.SpriteAllocation(ctx, scope.project)
+	managed := err == nil
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return false, err
 	}
-	if !allocation.Valid || allocation.String == "" {
-		if target < 0 {
+	identity, machine := record.Record.Identity, record.Record.Machine
+	member, err := r.RunnerSpriteMembershipByEnrollment(ctx, identity.EnrollmentID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		if !managed {
 			return true, nil
 		}
-		if allocation.Valid {
-			return false, nil
-		}
-		facts, err := readMachineSpriteFacts(ctx, q, scope.organization, machine)
-		if err != nil {
-			return false, err
-		}
-		name := spriteFactValue(facts.Name)
-		var hostname string
-		if err := q.QueryRowContext(ctx, `SELECT hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&hostname); err != nil {
-			return false, err
-		}
-		if name == hostname && validSpritesSlug(name) {
+		if machine.SpriteName == machine.Hostname && validSpritesSlug(machine.SpriteName) {
 			return true, nil
 		}
-		placement, _, err := readPlacementPolicy(ctx, q, scope)
+		placement, _, err := readPlacementPolicy(ctx, r)
 		return placement.Mode != "sprites_only", err
 	}
-	if target == 0 {
+	if err != nil {
+		return false, err
+	}
+	if member.AllocationProjectID == "" {
+		return !managed, nil
+	}
+	if managed && target.DesiredCount == 0 {
 		return false, nil
 	}
-	var owner tracker.ProjectID
-	var ready, sharing, granted bool
-	var runner string
-	err := q.QueryRowContext(ctx, `SELECT m.allocation_project_id,m.state='enrolled' AND r.state='active' AND COALESCE(a.desired_count,0)>0,p.share_idle_capacity,
- r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?),r.id
- FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id
- LEFT JOIN project_sprite_allocations a ON a.organization_id=m.organization_id AND a.project_id=m.allocation_project_id
- JOIN organization_sprite_pools p ON p.organization_id=m.organization_id
- WHERE m.organization_id=? AND m.allocation_project_id<>'' AND r.machine_id=?`, scope.project, scope.organization, machine).Scan(&owner, &ready, &sharing, &granted, &runner)
-	if errors.Is(err, sql.ErrNoRows) {
+	allocation, err := owner.SpriteAllocation(ctx, member.AllocationProjectID)
+	if errors.Is(err, corestore.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	if !ready || !granted || owner != scope.project && !sharing {
+	pool, err := owner.SpritePool(ctx)
+	if errors.Is(err, corestore.ErrNotFound) {
 		return false, nil
 	}
-	raw, err := readLocalCheckFacts(ctx, q, runner, scope.project)
 	if err != nil {
 		return false, err
 	}
-	checks, observed, err := decodeSpriteMemberChecks(raw)
-	return observed && checks.WorkReady(), err
+	granted := identity.Scope == "organization" || slices.Contains(identity.ProjectIDs, scope.project)
+	if member.State != "enrolled" || identity.State != "active" || allocation.DesiredCount <= 0 || !granted || member.AllocationProjectID != scope.project && !pool.ShareIdleCapacity {
+		return false, nil
+	}
+	checks, err := r.RunnerLocalChecks(ctx, identity.RunnerID, scope.project)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil && checks.WorkReady(), err
+}
+
+func (s *Service) spriteAllocationRunnerAllowed(ctx context.Context, scope nativeScope, runnerID string) (bool, error) {
+	var allowed bool
+	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		owner, ok := r.(runnerstore.RoutingReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		record, err := owner.RunnerRoutingRecord(ctx, runnerID, s.config.now())
+		if err != nil {
+			return err
+		}
+		allowed, err = spriteAllocationRunnerAllowedRecord(ctx, r, scope, record)
+		return err
+	})
+	return allowed, err
 }
 
 func decodeSpriteMemberChecks(raw sql.NullString) (runnerauth.LocalChecks, bool, error) {
@@ -221,9 +271,9 @@ COALESCE((SELECT max_runners FROM organization_sprite_pools WHERE organization_i
 	return ahead < min(desired, max(ceiling-others, 0)), nil
 }
 
-func spritePoolProviderFree(ctx context.Context, q nativeQueryer, scope nativeScope, count int, now time.Time) (int, bool, error) {
+func spritePoolProviderFree(ctx context.Context, r tenantstore.Reader, scope nativeScope, count int, now time.Time) (int, bool, error) {
 	scope.project = ""
-	runners, err := readPlacementRunners(ctx, q, scope, now)
+	runners, err := readPlacementRunners(ctx, r, scope, now)
 	if err != nil {
 		return 0, false, err
 	}
@@ -236,10 +286,11 @@ func spritePoolProviderFree(ctx context.Context, q nativeQueryer, scope nativeSc
 		if !runner.Sprite {
 			continue
 		}
-		var member bool
-		if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM organization_sprite_members WHERE organization_id=? AND enrollment_id=? AND state<>'deleted')`, scope.organization, runner.Enrollment).Scan(&member); err != nil {
+		membership, err := r.RunnerSpriteMembershipByEnrollment(ctx, runner.Enrollment)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return 0, false, err
 		}
+		member := err == nil && membership.State != "deleted"
 		for _, view := range runner.ProviderCapacity {
 			if view.MaxConcurrent <= 0 {
 				continue
@@ -274,8 +325,169 @@ func spritePoolProviderFree(ctx context.Context, q nativeQueryer, scope nativeSc
 	return max(capacity-count, 0), true, nil
 }
 
-func (s *Service) projectSpriteAllocationAuthority(ctx context.Context, q nativeQueryer, scope nativeScope) (bool, error) {
-	var allowed bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM project_sprite_allocations a JOIN api_tokens t ON t.id=a.configured_by AND t.revoked_at IS NULL JOIN projects p ON p.id=a.project_id AND p.organization_id=a.organization_id AND p.deleted_at IS NULL WHERE a.organization_id=? AND a.project_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) AND ((t.scope='admin' AND t.native_only=0) OR EXISTS(SELECT 1 FROM hosted_members m JOIN hosted_project_grants g ON g.user_id=m.user_id AND g.organization_id=a.organization_id AND g.project_id=a.project_id AND g.can_write=1 WHERE m.principal_id=t.id AND m.active=1 AND m.role IN ('owner','admin'))))`, scope.organization, scope.project, formatHubTime(s.config.now())).Scan(&allowed)
-	return allowed, err
+func (s *Service) projectSpriteAllocationAuthority(ctx context.Context, r tenantstore.Reader, scope nativeScope) (bool, error) {
+	owner, ok := r.(postgres.SpriteReader)
+	if !ok {
+		return false, workItemStorageUnavailable()
+	}
+	return owner.SpriteAllocationAuthority(ctx, scope.project, s.config.now())
+}
+
+func projectSpriteAllocationRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope) (projectSpriteAllocation, postgres.SpriteAllocation, error) {
+	result := projectSpriteAllocation{ProjectID: scope.project}
+	owner, ok := r.(postgres.SpriteReader)
+	if !ok {
+		return result, postgres.SpriteAllocation{}, workItemStorageUnavailable()
+	}
+	row, err := owner.SpriteAllocation(ctx, scope.project)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return result, row, nil
+	}
+	if err != nil {
+		return result, row, err
+	}
+	result.Managed, result.DesiredCount, result.ProvisionFailures, result.Revision = true, int(row.DesiredCount), int(row.ProvisionFailures), tracker.Revision(row.Revision)
+	result.AllocatedCount, err = owner.SpriteAllocationSize(ctx, scope.project)
+	if err != nil {
+		return result, row, err
+	}
+	result.Shortfall = max(result.DesiredCount-result.AllocatedCount, 0)
+	return result, row, nil
+}
+
+func (s *Service) readProjectSpriteAllocation(ctx context.Context, scope nativeScope) (projectSpriteAllocation, error) {
+	var result projectSpriteAllocation
+	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		var err error
+		result, _, err = projectSpriteAllocationRecord(ctx, r, scope)
+		return err
+	})
+	return result, projectRecordError(err)
+}
+
+func (s *Service) setProjectSpriteAllocationRecord(ctx context.Context, scope nativeScope, operation string, request projectSpriteAllocationRequest) (json.RawMessage, error) {
+	scope.requireHostedAdmin = true
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return nil, err
+	}
+	if request.DesiredCount < 0 || int64(request.DesiredCount) > 2147483647 || request.ExpectedRevision < 0 {
+		return nil, spritePoolInvalid("Sprite desired count and expected revision must be nonnegative supported values")
+	}
+	hash, err := nativeCommandHash(request)
+	if err != nil {
+		return nil, err
+	}
+	if raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); found || err != nil {
+		return raw, err
+	}
+	var current projectSpriteAllocation
+	var row postgres.SpriteAllocation
+	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+			return err
+		}
+		owner, ok := r.(postgres.SpriteReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		if _, err := owner.SpritePool(ctx); errors.Is(err, corestore.ErrNotFound) {
+			return spritePoolInvalid("Configure the organization Sprite pool before allocating project members")
+		} else if err != nil {
+			return err
+		}
+		var err error
+		current, row, err = projectSpriteAllocationRecord(ctx, r, scope)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if current.Revision != request.ExpectedRevision {
+		return nil, nativeConflict(current.Revision)
+	}
+	actor := scope.credential.ID
+	if scope.credential.HostedPrincipal != "" {
+		actor = scope.credential.HostedPrincipal
+	}
+	row.OrganizationID, row.ProjectID, row.DesiredCount, row.ConfiguredBy = scope.organization, scope.project, int32(request.DesiredCount), actor
+	if row.RequestedAt.IsZero() || request.DesiredCount >= current.AllocatedCount {
+		row.RequestedAt = s.config.now()
+	}
+	result := current
+	result.Managed, result.DesiredCount, result.ProvisionFailures, result.Revision = true, request.DesiredCount, 0, current.Revision+1
+	result.Shortfall = max(result.DesiredCount-result.AllocatedCount, 0)
+	return s.tenantReceiptMutation(ctx, scope, operation, request.Mutation, request, result, func(w tenantstore.Writer) error {
+		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
+			return err
+		}
+		owner, ok := w.(postgres.SpriteWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		if _, err := owner.SpritePool(ctx); err != nil {
+			return err
+		}
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		latest, _, err := projectSpriteAllocationRecord(ctx, w, scope)
+		if err != nil {
+			return err
+		}
+		if latest.Revision != current.Revision || latest.AllocatedCount != current.AllocatedCount {
+			return nativeConflict(latest.Revision)
+		}
+		_, err = owner.PutSpriteAllocation(ctx, row, int64(request.ExpectedRevision))
+		if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, corestore.ErrUniqueViolation) {
+			return nativeConflict(current.Revision)
+		}
+		if errors.Is(err, corestore.ErrInvalidPage) {
+			return spritePoolInvalid("Sprite allocation values are invalid")
+		}
+		return err
+	})
+}
+
+func spriteMemberWantedRecord(ctx context.Context, r tenantstore.Reader, name string) (bool, error) {
+	owner, ok := r.(postgres.SpriteReader)
+	if !ok {
+		return false, workItemStorageUnavailable()
+	}
+	member, err := owner.SpriteMember(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	if member.State != "bootstrapping" && member.State != "enrolled" {
+		return false, nil
+	}
+	if member.AllocationProjectID == "" {
+		return true, nil
+	}
+	projectID := tracker.ProjectID(member.AllocationProjectID)
+	project, err := r.Project(ctx, projectID)
+	if err != nil {
+		return false, err
+	}
+	if project.DeletedAt != nil {
+		return false, nil
+	}
+	allocation, err := owner.SpriteAllocation(ctx, projectID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	pool, err := owner.SpritePool(ctx)
+	if err != nil {
+		return false, err
+	}
+	_, others, ahead, err := owner.SpriteMemberPlacementCounts(ctx, member.Name)
+	if err != nil {
+		return false, err
+	}
+	return ahead < min(int(allocation.DesiredCount), max(int(pool.MaxRunners)-others, 0)), nil
 }

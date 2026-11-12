@@ -71,13 +71,11 @@ func TestRun(t *testing.T) {
 		want      int
 	}{
 		{"success", nil, "", 0},
-		{"timestamp store addition", nil, "internal/store/migrations/20261005120000_feature.sql", 0},
-		{"timestamp Hub addition", nil, "internal/hubserver/migrations/20261005120000_feature.sql", 0},
-		{"historical Hub addition", nil, "internal/hubserver/migrations/00071_migration.sql", 0},
-		{"noncanonical store addition", nil, "internal/store/migrations/00069_feature.sql", 1},
-		{"sequential store addition", nil, "internal/store/migrations/00069_migration.sql", 1},
-		{"sequential Hub addition", nil, "internal/hubserver/migrations/00072_migration.sql", 1},
-		{"noncanonical Hub addition", nil, "internal/hubserver/migrations/00071_feature.sql", 1},
+		{"timestamp PostgreSQL addition", nil, "internal/hubserver/postgres/migrations/20261005120000_feature.sql", 0},
+		{"named sequential PostgreSQL addition", nil, "internal/hubserver/postgres/migrations/00069_feature.sql", 1},
+		{"sequential PostgreSQL addition", nil, "internal/hubserver/postgres/migrations/00069_migration.sql", 1},
+		{"initial sequential PostgreSQL addition", nil, "internal/hubserver/postgres/migrations/00001_migration.sql", 1},
+		{"invalid PostgreSQL timestamp", nil, "internal/hubserver/postgres/migrations/20260230120000_feature.sql", 1},
 		{"missing root", []string{"-root", filepath.Join(t.TempDir(), "missing")}, "", 1},
 		{"unknown flag", []string{"-unknown"}, "", 2},
 		{"positional argument", []string{"unexpected"}, "", 2},
@@ -85,9 +83,7 @@ func TestRun(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			for _, directory := range []string{"internal/store/migrations", "internal/hubserver/migrations"} {
-				writeMigration(t, root, directory+"/00001_initial.sql")
-			}
+			writeMigration(t, root, "internal/hubserver/postgres/migrations/20261001000000_initial.sql")
 			if test.migration != "" {
 				writeMigration(t, root, test.migration)
 			}

@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
@@ -104,6 +105,9 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 	if err != nil {
 		if errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
 			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
+		if errors.Is(err, auth.ErrInvalidSession) && errors.Is(err, auth.ErrHostedIdentity) {
+			return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 		}
 		if errors.Is(err, auth.ErrInvalidSession) {
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrInvalidSession
@@ -228,11 +232,7 @@ func (s *Service) completePendingHostedInvitation(ctx context.Context, session a
 // a downgrade recorded by the tenant applies before the entry's access token
 // carrying the older role expires.
 func lesserHostedRole(a, b string) string {
-	rank := map[string]int{"viewer": 0, "reporter": 1, "member": 2, "admin": 3, "owner": 4}
-	if rank[a] <= rank[b] {
-		return a
-	}
-	return b
+	return hubapi.LesserHostedRole(a, b)
 }
 
 func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Session, hash string) (apiCredential, int, error) {

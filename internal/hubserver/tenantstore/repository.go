@@ -121,3 +121,29 @@ type DispatchRequests interface {
 	RequestDispatch(context.Context, Writer, tracker.ProjectID, string, leasestore.Fence, time.Time) error
 	QueueDispatch(context.Context, Writer, tracker.ProjectID, string, leasestore.Fence, time.Time) error
 }
+
+type ValidationCandidateQuery struct {
+	ProjectID  tracker.ProjectID
+	WorkItemID tracker.NativeWorkItemID
+	Repository string
+	HeadSHA    string
+	ChangeID   string
+	AttemptID  string
+}
+
+type ValidationCandidateRows struct {
+	Change  eventstore.Change
+	Version eventstore.Version
+	Receipt eventstore.LandingReceipt
+	Attempt leasestore.Attempt
+	Event   *eventstore.Event
+}
+
+type ValidationCandidatePage struct {
+	Rows    []ValidationCandidateRows
+	Partial bool
+}
+
+type ValidationCandidateReader interface {
+	ValidationCandidates(context.Context, ValidationCandidateQuery) (ValidationCandidatePage, error)
+}

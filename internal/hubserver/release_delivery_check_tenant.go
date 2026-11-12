@@ -7,9 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -234,6 +236,82 @@ func (s *Service) authorizeReleaseScope(ctx context.Context, r tenantstore.Reade
 		if current.Scope != string(scope.credential.Scope) || current.NativeOnly != scope.credential.NativeOnly {
 			return nativeNotFound()
 		}
+	}
+	return nil
+}
+
+type releaseDeliveryContractFacts struct {
+	delivery        *eventstore.ReleaseDelivery
+	dependsOnSource bool
+	sourceTerminal  bool
+	change          eventstore.Change
+}
+
+func readReleaseDeliveryContractFacts(ctx context.Context, r tenantstore.Reader, scope nativeScope, item tracker.NativeWorkItemID, states []tracker.NativeState) (releaseDeliveryContractFacts, error) {
+	var rows releaseDeliveryContractFacts
+	delivery, err := r.ReleaseDelivery(ctx, scope.project, item)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return rows, nil
+	}
+	if err != nil {
+		return rows, err
+	}
+	if delivery.OrganizationID != scope.organization || delivery.ProjectID != scope.project || delivery.WorkItemID != item {
+		return rows, corestore.ErrNotFound
+	}
+	rows.delivery = &delivery
+	reader, ok := r.(eventstore.ReleaseDeliveryFactsReader)
+	if !ok {
+		return rows, workItemStorageUnavailable()
+	}
+	facts, err := reader.ReleaseDeliveryFacts(ctx, scope.project, item, delivery.ReleasePickInput)
+	if err != nil {
+		return rows, err
+	}
+	rows.dependsOnSource = facts.DependsOnSource
+	source, err := r.WorkItem(ctx, scope.project, delivery.SourceIssueID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return rows, nil
+	}
+	if err != nil {
+		return rows, err
+	}
+	for _, state := range states {
+		if state.Name == stringValue(source.WorkflowStateName) {
+			rows.sourceTerminal = state.Terminal
+			break
+		}
+	}
+	rows.change, err = r.Change(ctx, delivery.SourceChangeID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return rows, nil
+	}
+	return rows, err
+}
+
+func releaseDeliveryContractFactsCurrent(plan nativeClaimPlan, contract config.IssueContract) bool {
+	delegated := plan.issue.IssueContract.ReleaseDelivery
+	rows := plan.releaseDelivery
+	if plan.descriptor.Authored == nil || plan.descriptor.ID != delegated.PolicyID || policy.Digest([]byte(plan.issue.Body)) != delegated.BodySHA256 || !releaseDeliverySectionsMatch(plan.issue.Body, contract.ReleaseDeliveryBody()) {
+		return false
+	}
+	if rows.delivery == nil || plan.issue.IgnoreDependencies || !plan.project.Core.RequireDependencies || !rows.dependsOnSource || !rows.sourceTerminal {
+		return false
+	}
+	change := rows.change
+	return change.OrganizationID == rows.delivery.OrganizationID && change.ProjectID == rows.delivery.ProjectID && change.WorkItemID == rows.delivery.SourceIssueID && change.ID == rows.delivery.SourceChangeID && change.CurrentVersionID != nil && *change.CurrentVersionID != "" && change.LandedVersionID != nil && *change.CurrentVersionID == *change.LandedVersionID && change.LandedBaseRef != nil && *change.LandedBaseRef == "develop" && change.LandedMergeSHA != nil && *change.LandedMergeSHA == rows.delivery.SourceMergeSHA
+}
+
+func readNativeClaimReleaseDeliveryFacts(ctx context.Context, r tenantstore.Reader, scope nativeScope, plans []nativeClaimPlan) error {
+	for i := range plans {
+		if plans[i].item.IssueContractObjectKey == nil {
+			continue
+		}
+		rows, err := readReleaseDeliveryContractFacts(ctx, r, scope, plans[i].item.NativeID, plans[i].project.States)
+		if err != nil {
+			return err
+		}
+		plans[i].releaseDelivery = rows
 	}
 	return nil
 }

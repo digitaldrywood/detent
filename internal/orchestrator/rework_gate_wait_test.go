@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -280,10 +279,6 @@ func TestReworkGateWaitSafetyMatrix(t *testing.T) {
 }
 
 func TestReworkGateWaitReloadReconcilesRepairs(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name         string
@@ -305,11 +300,7 @@ func TestReworkGateWaitReloadReconcilesRepairs(t *testing.T) {
 			issue.PullRequest.MergeableState = tt.mergeability
 			now := time.Date(2026, 9, 5, 19, 18, 8, 0, time.UTC)
 			attempt := successfulReworkGateWaitAttempt(now, issue, autoPromoteReworkSignature{PRNumber: int64(issue.PullRequest.Number), HeadSHA: issue.PullRequest.HeadSHA}, true)
-			path := filepath.Join(t.TempDir(), "restart.db")
-			db, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
+			db := newRuntimeFixture()
 			id, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL, WorkerType: "agent", Lane: "Rework", StartedAt: attempt.StartedAt, PRNumber: attempt.PRNumber})
 			if err != nil {
 				t.Fatal(err)
@@ -326,18 +317,6 @@ func TestReworkGateWaitReloadReconcilesRepairs(t *testing.T) {
 			if _, err := db.RecordSecurityAuditRun(ctx, run); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			db, err = store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := db.Close(); err != nil {
-					t.Error(err)
-				}
-			})
 			orch := securityAuditTestOrchestrator(db)
 			orch.cfg.ActiveStates = []string{"Todo", "In Progress", "Rework"}
 			orch.cfg.AutoPromote.Enabled = true

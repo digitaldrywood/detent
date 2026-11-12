@@ -19,6 +19,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type hostedBillingProvider struct {
@@ -69,7 +72,7 @@ func (p *hostedBillingProvider) Portal(_ context.Context, binding billing.Bindin
 	return billing.Session{ID: "bps_fixture", URL: "https://billing.stripe.com/p/session/test_fixture"}, nil
 }
 
-func newHostedBillingFixture(t *testing.T) (*browserHostedFixture, *hostedBillingProvider) {
+func newHostedBillingFixture(t *testing.T, configure ...func(*HostedBillingConfig, *hostedBillingProvider)) (*browserHostedFixture, *hostedBillingProvider) {
 	t.Helper()
 	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
 	plans := hostedTestPlans(t, f.service, map[string]int64{"projects": 2})
@@ -78,6 +81,9 @@ func newHostedBillingFixture(t *testing.T) (*browserHostedFixture, *hostedBillin
 	f.service.config.Hosted.Billing = &HostedBillingConfig{
 		AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: p,
 		Prices: []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}},
+	}
+	for _, apply := range configure {
+		apply(f.service.config.Hosted.Billing, p)
 	}
 	if err := f.service.config.Hosted.validate(); err != nil {
 		t.Fatal(err)
@@ -313,7 +319,7 @@ func TestHostedBillingReplayAndRecovery(t *testing.T) {
 	}
 	group.Wait()
 	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_events").Scan(&count); err != nil || count != 1 {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_events WHERE organization_id=$1", f.service.accessOrganization()).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("events=%d %v", count, err)
 	}
 	requireNativeStatus(t, f.page(t, "owner", "/organization/billing?checkout=success&customer=cus_other"), http.StatusOK)
@@ -342,7 +348,7 @@ func TestHostedBillingReplayAndRecovery(t *testing.T) {
 	if err != nil || current != first {
 		t.Fatalf("out of order event changed authoritative state: %+v %v", current, err)
 	}
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_audit WHERE action='subscription_reconciled'").Scan(&count); err != nil || count != 2 {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_audit WHERE organization_id=$1 AND action='subscription_reconciled'", f.service.accessOrganization()).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("duplicate audit=%d %v", count, err)
 	}
 	p.during = func() {
@@ -352,7 +358,7 @@ func TestHostedBillingReplayAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.during = nil
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_events WHERE processed_at IS NULL").Scan(&count); err != nil || count != 1 {
+	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_events WHERE organization_id=$1 AND processed_at IS NULL", f.service.accessOrganization()).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("concurrent event was prematurely acknowledged: %d %v", count, err)
 	}
 	p.fail = true
@@ -375,25 +381,28 @@ func TestHostedBillingReplayAndRecovery(t *testing.T) {
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err := openDatabase(t.Context(), f.service.config)
+	reopenConfig := f.service.config
+	reopenConfig.TenantRepository, reopenConfig.AccessRepository, reopenConfig.BillingRepository = nil, nil, nil
+	reopened, err := Open(t.Context(), reopenConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.Close() })
-	if err := store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_events WHERE processed_at IS NULL").Scan(&count); err != nil || count != 1 {
+	t.Cleanup(func() { reopened.Close() })
+	reopened.stopHostedBilling()
+	if err := hostedPostgresAdmin(t, reopened).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_events WHERE organization_id=$1 AND processed_at IS NULL", reopened.accessOrganization()).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("pending event lost after reopen=%d %v", count, err)
 	}
 	p.fail = false
 	p.snapshot = billing.Snapshot{Status: "canceled"}
-	worker := &hostedBillingWorker{service: &Service{database: store, config: f.service.config}}
+	worker := &hostedBillingWorker{service: reopened}
 	if err := worker.reconcile(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	entitlement, err = store.hostedPlanUsage(t.Context(), time.Now())
+	entitlement, err = reopened.database.hostedPlanUsage(t.Context(), time.Now())
 	if err != nil || entitlement.Source != "base" {
 		t.Fatalf("recovery=%+v %v", entitlement, err)
 	}
-	if err := store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_events WHERE processed_at IS NULL").Scan(&count); err != nil || count != 0 {
+	if err := hostedPostgresAdmin(t, reopened).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_events WHERE organization_id=$1 AND processed_at IS NULL", reopened.accessOrganization()).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("recovered event pending=%d %v", count, err)
 	}
 }
@@ -491,8 +500,12 @@ func TestCapacityTestPriceCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var mapped PlanReference
-	if err := d.db.QueryRowContext(t.Context(), "SELECT plan_id,plan_version FROM hosted_billing_prices WHERE price_id='price_legacy49'").Scan(&mapped.ID, &mapped.Version); err != nil {
+	var mapped billingstore.PlanReference
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+		price, err := r.BillingPrice(t.Context(), "price_legacy49")
+		mapped = price.Plan
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if mapped.ID != "comp_team" || after.Plan != before.Plan || !after.PaidThrough.Equal(before.PaidThrough) || len(provider.checkouts) != 0 {
@@ -516,6 +529,7 @@ func TestCapacityPaidPlanChanges(t *testing.T) {
 	d := f.service.database
 	cfg := f.service.config.Hosted
 	plans := capacityHostedPlans()
+	plans.Plans = append(plans.Plans, cfg.Plans.Plans...)
 	cfg.Plans = &plans
 	cfg.Billing.Prices = nil
 	for _, plan := range []PlanReference{{ID: "starter", Version: 1}, {ID: "team", Version: 2}, {ID: "growth", Version: 2}} {
@@ -530,7 +544,14 @@ func TestCapacityPaidPlanChanges(t *testing.T) {
 	if err := d.configureHostedBilling(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id='free',base_version=1"); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		assignment, err := w.BillingAssignment(t.Context())
+		if err != nil {
+			return err
+		}
+		assignment.Base = billingstore.PlanReference{ID: "free", Version: 1}
+		return w.SetBillingAssignment(t.Context(), assignment, assignment.Revision)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {

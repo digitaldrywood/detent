@@ -36,9 +36,9 @@ const recordCurrentChangeEvidenceBySequences = `-- name: RecordCurrentChangeEvid
 WITH requested AS MATERIALIZED (
  SELECT DISTINCT $1::text AS organization_id,$2::text AS change_id,unnest($3::bigint[]) AS sequence
 )
-SELECT evidence.organization_id, evidence.change_id, evidence.sequence, evidence.version_id, evidence.kind, evidence.source_key, evidence.actor_kind, evidence.actor_principal_id, evidence.decision, evidence.created_at, evidence.payload_object_key, evidence.payload_sha256, evidence.payload_bytes, evidence.payload_content_bytes, evidence.payload_format_version, evidence.review_kind, evidence.review_landing, evidence.review_session_known, evidence.review_session_id, evidence.review_session_machine FROM requested
+SELECT evidence.organization_id, evidence.change_id, evidence.sequence, evidence.version_id, evidence.kind, evidence.source_key, evidence.actor_kind, evidence.actor_principal_id, evidence.decision, evidence.created_at, evidence.payload_object_key, evidence.payload_sha256, evidence.payload_bytes, evidence.payload_content_bytes, evidence.payload_format_version, evidence.review_kind, evidence.review_landing, evidence.review_session_known, evidence.review_session_id, evidence.review_session_machine, evidence.project_id, evidence.quality_at FROM requested
 CROSS JOIN LATERAL (
- SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, review_kind, review_landing, review_session_known, review_session_id, review_session_machine FROM change_evidence e
+ SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, review_kind, review_landing, review_session_known, review_session_id, review_session_machine, project_id, quality_at FROM change_evidence e
  WHERE e.organization_id=requested.organization_id AND e.change_id=requested.change_id AND e.sequence=requested.sequence
  LIMIT 1
 ) evidence ORDER BY evidence.sequence
@@ -80,6 +80,8 @@ func (q *Queries) RecordCurrentChangeEvidenceBySequences(ctx context.Context, ar
 			&i.ReviewSessionKnown,
 			&i.ReviewSessionID,
 			&i.ReviewSessionMachine,
+			&i.ProjectID,
+			&i.QualityAt,
 		); err != nil {
 			return nil, err
 		}
@@ -113,7 +115,7 @@ func (q *Queries) RecordCurrentChangePriorApproval(ctx context.Context, arg Reco
 }
 
 const recordCurrentChangeReviewChecks = `-- name: RecordCurrentChangeReviewChecks :many
-SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, review_kind, review_landing, review_session_known, review_session_id, review_session_machine FROM change_evidence
+SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, review_kind, review_landing, review_session_known, review_session_id, review_session_machine, project_id, quality_at FROM change_evidence
 WHERE organization_id=$1 AND change_id=$2 AND version_id=$3
 AND kind='check' AND source_key=ANY($4::text[]) ORDER BY sequence
 `
@@ -160,6 +162,8 @@ func (q *Queries) RecordCurrentChangeReviewChecks(ctx context.Context, arg Recor
 			&i.ReviewSessionKnown,
 			&i.ReviewSessionID,
 			&i.ReviewSessionMachine,
+			&i.ProjectID,
+			&i.QualityAt,
 		); err != nil {
 			return nil, err
 		}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -1180,24 +1179,11 @@ func TestNativeMergeQueueRepeatedRemovalRetries(t *testing.T) {
 }
 
 func TestNativeMergeQueueBudgetSurvivesRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, restartBeforeRetry := range []bool{false, true} {
 		t.Run(fmt.Sprintf("restart_before_retry_%t", restartBeforeRetry), func(t *testing.T) {
 			t.Parallel()
-			path := filepath.Join(t.TempDir(), "queue.db")
-			backend, err := store.Open(t.Context(), store.Config{Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := backend.Close(); err != nil {
-					t.Error(err)
-				}
-			})
+			backend := newRuntimeFixture()
 			issue := nativeMergeQueueTestIssue(2621, "success")
 			first := time.Date(2026, 9, 14, 15, 44, 41, 0, time.UTC)
 			tracker := &nativeMergeQueueConnector{removedHeads: map[string]string{issue.ID: issue.PullRequest.HeadSHA}, removalReason: "failed_checks", removedAt: &first, enqueuedAt: timePointer(first.Add(2 * time.Minute)), autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
@@ -1205,13 +1191,6 @@ func TestNativeMergeQueueBudgetSurvivesRestart(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: backend}
 			state := newState(cfg)
 			restart := func() {
-				if err := backend.Close(); err != nil {
-					t.Fatal(err)
-				}
-				backend, err = store.Open(t.Context(), store.Config{Path: path})
-				if err != nil {
-					t.Fatal(err)
-				}
 				orch = &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: backend}
 				state = newState(cfg)
 			}

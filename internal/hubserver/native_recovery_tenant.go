@@ -60,9 +60,17 @@ func (s *Service) getNativeRecoveryTenant(c echo.Context, params url.Values) err
 		}
 		return c.JSON(http.StatusOK, result)
 	}
-	result, err := s.readNativeRecoveryTenant(ctx, nativeRequestScope(c), c.Param("item"))
+	result, err := s.readNativeRecoveryFactsTenant(ctx, nativeRequestScope(c), c.Param("item"), false)
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	if attemptSummaryRead(ctx) {
+		if err := projectNativeRecovery(&result); err != nil {
+			return s.nativeAPIError(c, fmt.Errorf("project recovery response: %w", err))
+		}
+	} else {
+		slices.Sort(result.Read.Omitted)
+		result.Read.Omitted = slices.Compact(result.Read.Omitted)
 	}
 	result.Issue = s.nativeIssueResponse(result.Issue)
 	return c.JSON(http.StatusOK, result)
@@ -73,6 +81,17 @@ func (s *Service) readNativeRecoveryTenant(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope nativeScope, item string, excludeProgress bool) (tracker.NativeRecovery, error) {
+	result, err := s.readNativeRecoveryFactsTenant(ctx, scope, item, excludeProgress)
+	if err != nil {
+		return result, err
+	}
+	if err := projectNativeRecovery(&result); err != nil {
+		return result, fmt.Errorf("project recovery response: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativeScope, item string, excludeProgress bool) (tracker.NativeRecovery, error) {
 	var result tracker.NativeRecovery
 	var row corestore.WorkItem
 	var version eventstore.CollaborationVersion
@@ -381,7 +400,7 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 	result.Issue.OmittedFields = append(result.Issue.OmittedFields, "change_sequence")
 	if change.ID != "" {
 		var detail tracker.ChangeDetail
-		detail, err = s.hydrateCurrentChangeDetail(ctx, scope, row.NativeID, change, changeVersion, policyRows, s.config.now())
+		detail, err = s.hydrateCurrentChangeDetailSelection(ctx, scope, row.NativeID, change, changeVersion, policyRows, s.config.now(), nil, nil, corestore.Serving, true)
 		if err != nil {
 			return result, fmt.Errorf("hydrate recovery current change: %w", err)
 		}
@@ -554,8 +573,9 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 	if mergeHistoryTruncated && len(result.History) == 0 {
 		result.Read.Omitted = append(result.Read.Omitted, "history")
 	}
-	if err := projectNativeRecovery(&result); err != nil {
-		return result, fmt.Errorf("project recovery response: %w", err)
+	if detail := result.ChangeDetail; detail != nil && attemptSummaryRead(ctx) {
+		detail.Reviews, detail.Checks, detail.Discussion = nil, nil, nil
+		result.Read.Omitted = append(result.Read.Omitted, "change_detail.reviews", "change_detail.checks", "change_detail.discussion")
 	}
 	return result, nil
 }

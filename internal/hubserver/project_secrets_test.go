@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -19,6 +20,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -162,7 +169,7 @@ func TestProjectSecretPermissions(t *testing.T) {
 			member.Role.Slug = role
 			f.provider.members[member.ID] = member
 			f.provider.mu.Unlock()
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET role=? WHERE user_id=?", role, "user_browser_viewer"); err != nil {
+			if err := updateSecretTestMemberRole(t.Context(), f.service, "user_browser_viewer", role); err != nil {
 				t.Fatal(err)
 			}
 			status := http.StatusForbidden
@@ -231,21 +238,38 @@ func TestProjectSecretPermissions(t *testing.T) {
 		}
 		descriptor.SourceRevision = strings.Repeat("b", 64)
 		descriptor = descriptor.WithID()
-		raw, err := json.Marshal(descriptor)
+		organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
+		project := tracker.ProjectID(f.project)
+		revision, err := eventstore.NewContent(f.service.runDetailStore()).PrepareProjectPolicy(t.Context(), organization, descriptor)
 		if err != nil {
 			t.Fatal(err)
 		}
-		scope := f.service.config.Hosted.OrganizationID + "/" + f.project
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, 'fixture', ?)", scope, descriptor.ID, string(raw), formatHubTime(f.service.config.now())); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT(scope) DO UPDATE SET policy_id=excluded.policy_id", scope, descriptor.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO runner_enrollments(id,organization_id,runner_id,machine_id,token_hash,operations_json,created_at,expires_at,created_by) SELECT 'pending-policy-enrollment',organization_id,'pending-policy-runner','pending-policy-machine',?,'[]','2026-01-01T00:00:00Z','2999-01-01T00:00:00Z',configured_by FROM organization_sprite_pools WHERE organization_id=?", strings.Repeat("c", 64), f.service.config.Hosted.OrganizationID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,'pending-policy-sprite','org','pending-policy-enrollment','deleted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", f.service.config.Hosted.OrganizationID); err != nil {
+		revision.ProjectID, revision.ApprovedBy, revision.ApprovedAt = project, "fixture", f.service.config.now()
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			expected := ""
+			current, err := w.ProjectPolicy(t.Context(), project)
+			if err == nil {
+				expected = current.PolicyID
+			} else if !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err := w.ApproveProjectPolicy(t.Context(), revision, expected); err != nil {
+				return err
+			}
+			owner, ok := w.(postgres.SpriteWriter)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			pool, err := owner.SpritePool(t.Context())
+			if err != nil {
+				return err
+			}
+			created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "pending-policy-enrollment", RunnerID: "pending-policy-runner", MachineID: "pending-policy-machine", TokenHash: strings.Repeat("c", 64), Scope: "organization", Operations: []string{}, CreatedAt: created, ExpiresAt: time.Date(2999, 1, 1, 0, 0, 0, 0, time.UTC), CreatedBy: pool.ConfiguredBy}); err != nil {
+				return err
+			}
+			return owner.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: organization, Name: "pending-policy-sprite", ProviderOrganization: "org", EnrollmentID: "pending-policy-enrollment", State: "deleted", IdleSince: created, CreatedAt: created})
+		}); err != nil {
 			t.Fatal(err)
 		}
 		for _, path := range []string{"/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/sprite-pool", strings.TrimSuffix(base, "/secrets/"+flySpritesToken) + "/sprite-pool"} {
@@ -265,7 +289,7 @@ func TestProjectSecretPermissions(t *testing.T) {
 			member.Role.Slug = "member"
 			f.provider.members[member.ID] = member
 			f.provider.mu.Unlock()
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET role='member' WHERE user_id='user_browser_viewer'"); err != nil {
+			if err := updateSecretTestMemberRole(t.Context(), f.service, "user_browser_viewer", "member"); err != nil {
 				t.Fatal(err)
 			}
 			return spritesTestResponse(`{"sprites":[]}`, 200), nil
@@ -346,17 +370,28 @@ func TestProjectSecretLifecycle(t *testing.T) {
 				if slug, err := f.service.checkProjectSprites(t.Context(), scope); err != nil || slug != "detent-test" {
 					t.Fatalf("internal use=%s %v", slug, err)
 				}
-				rows, err := readSecretRows(t.Context(), f.service.database.db)
-				if err != nil {
+				var rows []accessstore.Secret
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					rows, err = r.AccessSecrets(t.Context(), "", "", corestore.MaxPageSize)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
-				if len(rows) != 1 || bytes.Contains(rows[0].envelope.Ciphertext, []byte(spritesSecretSentinel)) {
+				projectRows := rows[:0]
+				for _, row := range rows {
+					if row.ProjectID == scope.project && row.Kind == flySpritesToken {
+						projectRows = append(projectRows, row)
+					}
+				}
+				rows = projectRows
+				if len(rows) != 1 || bytes.Contains(rows[0].Envelope.Ciphertext, []byte(spritesSecretSentinel)) {
 					t.Fatal("stored plaintext")
 				}
 			}
 		})
 	}
-	rows, err := f.service.database.db.QueryContext(t.Context(), "SELECT actor,project_id,kind,key_version,event FROM project_secret_audit ORDER BY id")
+	rows, err := hostedPostgresAdmin(t, f.service).QueryContext(t.Context(), "SELECT actor,project_id,kind,key_version,event FROM project_secret_audit WHERE organization_id=$1 ORDER BY id", f.service.config.Hosted.OrganizationID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,9 +438,21 @@ func TestProjectSecretLifecycle(t *testing.T) {
 }
 
 func TestProjectSecretStartupKeys(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1")})
-	storeSpriteWakeSecret(t, f, spritesSecretSentinel)
+	f := newNativeFixture(t, openTestService(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), Hosted: &HostedConfig{OrganizationID: "org_secret_startup", WorkOSOrganizationID: "provider_secret_startup", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}}), "", "Secret startup")
+	now := f.service.config.now()
+	envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD(f.project.OrganizationID, f.project.ID, flySpritesToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Kind: flySpritesToken, OrganizationSlug: "detent-test", Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Kind: flySpritesToken, Actor: "fixture", Event: "set", KeyVersion: envelope.Version, RecordedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	admin := hostedPostgresAdmin(t, f.service)
 	cfg := f.service.config
+	cfg.TenantRepository, cfg.AccessRepository, cfg.BillingRepository = nil, nil, nil
+	cfg.NativeRunEvents, cfg.ProjectParticipants, cfg.ConversationDispatch, cfg.ChangeVersionAuthority = nil, nil, nil, nil
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -431,18 +478,23 @@ func TestProjectSecretStartupKeys(t *testing.T) {
 			}
 		})
 	}
-	db, err := openDatabase(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.db.ExecContext(t.Context(), "UPDATE project_secrets SET wrapped_data_key=?", []byte("tampered")); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "UPDATE project_secrets SET wrapped_data_key=$4 WHERE organization_id=$1 AND project_id=$2 AND kind=$3", f.project.OrganizationID, f.project.ID, flySpritesToken, []byte("tampered")); err != nil {
 		t.Fatal(err)
 	}
 	if service, err := Open(t.Context(), cfg); err == nil {
 		service.Close()
 		t.Fatal("startup accepted a tampered data key")
 	}
+}
+
+func updateSecretTestMemberRole(ctx context.Context, service *Service, user, role string) error {
+	organization := tracker.OrganizationID(service.config.Hosted.OrganizationID)
+	return service.config.TenantRepository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(ctx, user)
+		if err != nil {
+			return err
+		}
+		member.Role, member.UpdatedAt = role, service.config.now()
+		return w.UpdateAccessMember(ctx, member)
+	})
 }

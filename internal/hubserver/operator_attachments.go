@@ -136,54 +136,33 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 	if err != nil || r.RequestID != action.RequestID || m.Source != "mcp" || m.PrincipalID != i.PrincipalID || m.OrganizationID != i.OrganizationID || m.ProjectID != r.ProjectID || m.ResourceID != r.AttachmentID || m.Action != operatortool.DeleteAttachment || m.CorrelationID == "" || bound.InputHash != m.InputHash || bound.RetryIdentity != m.RetryIdentity {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
-	if e.service.config.TenantRepository != nil {
-		err := e.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
-				return err
-			}
-			if _, err := e.service.attachmentWriteAuthority(ctx, w, scope, nil); err != nil {
-				return err
-			}
-			var record attachment.Metadata
-			if err := e.service.readAttachmentRecordWith(ctx, w, scope, r.AttachmentID, &record); err != nil {
-				return err
-			}
-			binding, err := attachmentBinding(record)
-			if err != nil || binding != action.CurrentState {
-				return mutation.ErrConflict
-			}
-			owner, ok := w.(attachmentstore.DeletionWriter)
-			if !ok {
-				return workItemStorageUnavailable()
-			}
-			return owner.DeleteAttachment(ctx, scope.project, r.AttachmentID, e.service.config.now().UTC())
-		})
-		if err != nil {
-			return chat.ActionExecution{}, hubSafeChangeError(err)
+	repository := e.service.config.TenantRepository
+	if repository == nil {
+		return chat.ActionExecution{}, operatortool.ErrServiceUnavailable
+	}
+	err = repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
 		}
-		return chat.ActionExecution{Message: "Attachment hidden; entry object deletion is pending.", ResourceID: r.AttachmentID, Identifier: r.AttachmentID}, nil
-	}
-	tx, err := e.service.database.db.BeginTx(ctx, nil)
+		if _, err := e.service.attachmentWriteAuthority(ctx, w, scope, nil); err != nil {
+			return err
+		}
+		var record attachment.Metadata
+		if err := e.service.readAttachmentRecordWith(ctx, w, scope, r.AttachmentID, &record); err != nil {
+			return err
+		}
+		binding, err := attachmentBinding(record)
+		if err != nil || binding != action.CurrentState {
+			return mutation.ErrConflict
+		}
+		owner, ok := w.(attachmentstore.DeletionWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		return owner.DeleteAttachment(ctx, scope.project, r.AttachmentID, e.service.config.now().UTC())
+	})
 	if err != nil {
-		return chat.ActionExecution{}, operatortool.ErrServiceUnavailable
-	}
-	defer tx.Rollback()
-	if err := e.service.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return chat.ActionExecution{}, hubSafeChangeError(err)
-	}
-	record, err := readCloudAttachment(ctx, tx, scope, r.AttachmentID)
-	if err != nil {
-		return chat.ActionExecution{}, hubSafeChangeError(err)
-	}
-	binding, err := attachmentBinding(record)
-	if err != nil || binding != action.CurrentState {
-		return chat.ActionExecution{}, mutation.ErrConflict
-	}
-	if err := e.service.deleteCloudAttachmentMetadata(mutation.WithContext(ctx, m), tx, scope, r.AttachmentID); err != nil {
-		return chat.ActionExecution{}, hubSafeChangeError(err)
-	}
-	if err := tx.Commit(); err != nil {
-		return chat.ActionExecution{}, operatortool.ErrServiceUnavailable
 	}
 	return chat.ActionExecution{Message: "Attachment hidden; entry object deletion is pending.", ResourceID: r.AttachmentID, Identifier: r.AttachmentID}, nil
 }
@@ -195,28 +174,27 @@ func (e nativeOperatorExecutor) attachmentActionResult(ctx context.Context, acti
 	if err != nil {
 		return operatortool.Result{}, err
 	}
+	repository := e.service.config.TenantRepository
+	if repository == nil {
+		return operatortool.Result{}, operatortool.ErrServiceUnavailable
+	}
 	state := ""
 	if action.Status == chat.ActionSucceeded {
 		var confirmed bool
-		var err error
-		if e.service.config.TenantRepository != nil {
-			err = e.service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-				if err := e.service.authorizeAccessScope(ctx, reader, scope, false); err != nil {
-					return err
-				}
-				record, err := reader.Attachment(ctx, scope.project, r.AttachmentID)
-				if err != nil {
-					return err
-				}
-				if record.Metadata.DeletedAt == nil {
-					return nativeNotFound()
-				}
-				confirmed = record.ObjectDeletedAt != nil
-				return nil
-			})
-		} else {
-			err = e.service.database.reader.QueryRowContext(ctx, "SELECT object_deleted_at IS NOT NULL FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NOT NULL", scope.organization, scope.project, r.AttachmentID).Scan(&confirmed)
-		}
+		err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			if err := e.service.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+				return err
+			}
+			record, err := reader.Attachment(ctx, scope.project, r.AttachmentID)
+			if err != nil {
+				return err
+			}
+			if record.Metadata.DeletedAt == nil {
+				return nativeNotFound()
+			}
+			confirmed = record.ObjectDeletedAt != nil
+			return nil
+		})
 		if err != nil {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}

@@ -119,9 +119,18 @@ func (s *Service) checkAccessSecretKeys(ctx context.Context) error {
 }
 
 func (s *Service) rewrapAccessSecrets(ctx context.Context) error {
+	if s.config.AccessRepository == nil {
+		return workItemStorageUnavailable()
+	}
+	if s.config.SecretKeys == nil {
+		return nil
+	}
 	var project tracker.ProjectID
 	var kind string
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var page []accessstore.Secret
 		err := s.config.AccessRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Background, func(r tenantstore.Reader) error {
 			var err error
@@ -132,19 +141,24 @@ func (s *Service) rewrapAccessSecrets(ctx context.Context) error {
 			return err
 		}
 		for _, secret := range page {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			project, kind = secret.ProjectID, secret.Kind
 			if secret.Envelope.Version == s.config.SecretKeys.Version() {
 				continue
 			}
 			envelope, err := s.config.SecretKeys.Rewrap(secret.Envelope, accessstore.SecretAAD(secret.OrganizationID, secret.ProjectID, secret.Kind))
-			if err != nil {
-				return err
+			if err == nil {
+				err = s.config.AccessRepository.WriteTenant(ctx, secret.OrganizationID, corestore.Background, func(w tenantstore.Writer) error {
+					return w.RewrapAccessSecret(ctx, secret, envelope, accessstore.SecretAudit{OrganizationID: secret.OrganizationID, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "system:rewrap", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: s.config.now()})
+				})
 			}
-			err = s.config.AccessRepository.WriteTenant(ctx, secret.OrganizationID, corestore.Background, func(w tenantstore.Writer) error {
-				return w.RewrapAccessSecret(ctx, secret, envelope, accessstore.SecretAudit{OrganizationID: secret.OrganizationID, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "system:rewrap", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: s.config.now()})
-			})
 			if err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
-				return err
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				s.config.Logger.Error("rewrap provider secret", "error", err, "organization_id", secret.OrganizationID, "project_id", secret.ProjectID, "kind", secret.Kind, "master_key_version", secret.Envelope.Version)
 			}
 		}
 		if len(page) < 200 {
@@ -174,11 +188,4 @@ func (s *Service) resolveSpritesSecret(ctx context.Context, db nativeQueryer, sc
 	}
 	scope.project = secret.ProjectID
 	return scope, secret.OrganizationSlug, secret.Envelope, nil
-}
-
-func (s *Service) readSecretStatus(ctx context.Context, db nativeQueryer, scope nativeScope) (projectSecretStatus, error) {
-	if s.config.AccessRepository != nil {
-		return s.readAccessSecretStatus(ctx, scope)
-	}
-	return readSecretStatus(ctx, db, scope)
 }

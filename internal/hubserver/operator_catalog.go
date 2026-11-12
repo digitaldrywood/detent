@@ -26,7 +26,7 @@ func (s *Service) withOperatorCatalog(ctx context.Context, credential apiCredent
 	if _, board := entryBoardCredential(ctx); board {
 		catalog.runnerAccess = operatortool.ErrAccessDenied
 	} else if credential.Hosted != nil && credential.HostedRole != "account" {
-		catalog.runnerAccess = s.requireHostedRunnerAdministration(readCtx, s.database.reader, credential)
+		catalog.runnerAccess = s.requireHostedRunnerAdministration(readCtx, credential)
 	}
 	if s.config.Hosted != nil && !s.hostedShared() && credential.Hosted != nil && credential.SessionHash != "" && credential.Hosted.SupportActor == "" {
 		if session, err := s.storedWebSession(readCtx, credential.SessionHash, s.config.now()); err == nil {

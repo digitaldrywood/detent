@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,8 +15,17 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -223,12 +234,168 @@ func TestBoundedProjectPolicyHistory(t *testing.T) {
 	}
 }
 
+func TestHostedProjectCutoverReceiptReads(t *testing.T) {
+	for _, deployment := range []string{"dedicated", "shared"} {
+		t.Run(deployment, func(t *testing.T) {
+			objects := &memoryRunDetails{}
+			configure := func(cfg *Config) { cfg.RunDetails = objects }
+			var f hostedSecurityFixture
+			var shared hostedSharedFixture
+			if deployment == "shared" {
+				shared = newHostedSharedFixture(t, configure)
+				f = shared.hostedSecurityFixture
+			} else {
+				f = newHostedSecurityFixture(t, configure)
+			}
+			owner := f.user(t, "cutover-owner", "owner", "cutover-owner@example.test", "write", "")
+			viewer := f.user(t, "cutover-viewer", "member", "cutover-viewer@example.test", "read", "")
+			captured := make(chan context.Context, 1)
+			f.service.echo.GET("/cutover-read-test", func(c echo.Context) error { captured <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+			connect := func(user hostedSecurityUser, id string) context.Context {
+				t.Helper()
+				if deployment == "shared" {
+					requireNativeStatus(t, shared.serve(t, hostedSharedRequest{user: &user, method: http.MethodGet, target: "/organizations/org_security/cutover-read-test"}), http.StatusOK)
+				} else {
+					requireNativeStatus(t, f.request(t, user, http.MethodGet, "/cutover-read-test", nil), http.StatusOK)
+				}
+				ctx := operatortool.BindConnection(<-captured, id, "cutover receipt fixture")
+				if err := (hubProjectExecutor{f.service}).OpenConnection(ctx); err != nil {
+					t.Fatal(err)
+				}
+				return ctx
+			}
+			ctx, deniedCtx := connect(owner, "cutover-owner"), connect(viewer, "cutover-viewer")
+			repository := f.service.database.postgres
+			organization := tracker.OrganizationID("org_security")
+			create := func(id tracker.ProjectID) {
+				t.Helper()
+				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: string(id), Slug: strings.ReplaceAll(string(id), "_", "-"), Profile: "github_compatible"}, States: nativeFixtureStates()})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				projectFixture := f
+				projectFixture.project = id
+				projectFixture.grant(t, owner, true, false)
+			}
+			call := func(id tracker.ProjectID) operatortool.Call {
+				return operatortool.Call{Name: "get_cutover_receipt", Arguments: json.RawMessage(`{"project_id":"` + string(id) + `"}`)}
+			}
+			for _, id := range []tracker.ProjectID{"prj_cutover_first", "prj_cutover_second"} {
+				create(id)
+				for _, transport := range []string{"stdio", "http"} {
+					t.Run(string(id)+"/missing/"+transport, func(t *testing.T) {
+						reply := hostedContextProtocol(t, f.service, ctx, transport)("tools/call", "get_cutover_receipt", map[string]any{"project_id": string(id)})
+						var result struct {
+							IsError bool                      `json:"isError"`
+							Failure operatortool.RequestError `json:"structuredContent"`
+							Content []struct {
+								Text string `json:"text"`
+							} `json:"content"`
+						}
+						if err := json.Unmarshal(reply.Result, &result); err != nil {
+							t.Fatal(err)
+						}
+						var content operatortool.RequestError
+						if !result.IsError || result.Failure.Code != "not_found" || result.Failure.Message != "No cutover receipt exists for this project" || len(result.Content) != 1 || json.Unmarshal([]byte(result.Content[0].Text), &content) != nil || content != result.Failure {
+							t.Fatalf("missing cutover receipt=%s", reply.Result)
+						}
+					})
+				}
+				checkpoint := artifact.Digest([]byte("stored-cutover-" + string(id)))
+				expected := CutoverReceipt{Checkpoint: checkpoint, Applied: true, Issues: 2, HistoryLimitations: []string{"Example retained limitation"}}
+				raw, err := json.Marshal(expected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref, err := objects.StoreDetail(t.Context(), string(organization), raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.WriteCutover(t.Context(), organization, corestore.Serving, func(w postgres.CutoverWriter) error {
+					project, err := w.ProjectRecord(t.Context(), id)
+					if err != nil {
+						return err
+					}
+					_, err = w.CommitProjectCutover(t.Context(), postgres.CutoverCommit{ExpectedContentRevision: project.Core.ContentSettingsRevision, Receipt: pgquery.StoreCutoverReceiptParams{OrganizationID: organization, ProjectID: id, Checkpoint: checkpoint, SourceProfile: "github_compatible", ExpectedRevision: project.Settings.Revision, ReceiptObjectKey: ref.Key, ReceiptSha256: ref.SHA256, ReceiptBytes: ref.CompressedSize, ReceiptContentBytes: ref.UncompressedSize, ActorID: owner.identity.Subject, CreatedAt: f.service.config.now().UTC()}})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				result, err := (hubProjectExecutor{f.service}).Execute(ctx, call(id))
+				if err != nil || !strings.Contains(string(result.Content), `"observed_at"`) || !strings.Contains(string(result.Content), `"checkpoint":"`+checkpoint+`"`) || !strings.Contains(string(result.Content), `"applied":true`) {
+					t.Fatalf("stored cutover receipt=%s error=%v", result.Content, err)
+				}
+				var page struct {
+					Data CutoverReceipt `json:"data"`
+				}
+				if err := json.Unmarshal(result.Content, &page); err != nil || !reflect.DeepEqual(page.Data, expected) {
+					t.Fatalf("stored cutover payload=%+v error=%v", page.Data, err)
+				}
+				target := "/api/v2/organizations/org_security/projects/" + string(id) + "/integration/cutover"
+				var response *httptest.ResponseRecorder
+				if deployment == "shared" {
+					response = shared.serve(t, hostedSharedRequest{user: &owner, method: http.MethodGet, target: target})
+				} else {
+					response = f.request(t, owner, http.MethodGet, target, nil)
+				}
+				requireNativeStatus(t, response, http.StatusOK)
+				var got CutoverReceipt
+				decodeHubResponse(t, response, &got)
+				if !reflect.DeepEqual(got, expected) {
+					t.Fatalf("HTTP cutover receipt=%+v want=%+v", got, expected)
+				}
+				if _, err := (hubProjectExecutor{f.service}).Execute(deniedCtx, call(id)); !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("ungranted cutover receipt read=%v", err)
+				}
+				scope, err := (hubProjectExecutor{f.service}).projectScope(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scope.project = id
+				objects.mu.Lock()
+				retained := append([]byte(nil), objects.data[ref.Key]...)
+				delete(objects.data, ref.Key)
+				objects.mu.Unlock()
+				_, missingErr := f.service.readCutoverReceipt(t.Context(), scope)
+				objects.mu.Lock()
+				objects.data[ref.Key] = retained
+				objects.mu.Unlock()
+				if !errors.Is(missingErr, artifact.ErrIntegrity) {
+					t.Fatalf("missing receipt object error=%v", missingErr)
+				}
+				mismatch := expected
+				mismatch.Checkpoint = strings.Repeat("0", 64)
+				mismatched, err := json.Marshal(mismatch)
+				if err != nil {
+					t.Fatal(err)
+				}
+				objects.mu.Lock()
+				objects.data[ref.Key] = mismatched
+				objects.mu.Unlock()
+				_, mismatchErr := f.service.readCutoverReceipt(t.Context(), scope)
+				objects.mu.Lock()
+				objects.data[ref.Key] = retained
+				objects.mu.Unlock()
+				if !errors.Is(mismatchErr, artifact.ErrIntegrity) {
+					t.Fatalf("mismatched checkpoint receipt error=%v", mismatchErr)
+				}
+			}
+		})
+	}
+}
+
 func TestHostedProjectTools(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {
 			var f hostedSecurityFixture
 			var shared hostedSharedFixture
-			configure := func(cfg *Config) { cfg.Workspace = &WorkspaceConfig{Enabled: true} }
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			configure := func(cfg *Config) {
+				cfg.Workspace = &WorkspaceConfig{Enabled: true}
+				cfg.Clock = func() time.Time { return now }
+			}
 			if deployment == "shared" {
 				shared = newHostedSharedFixture(t, configure)
 				f = shared.hostedSecurityFixture
@@ -258,7 +425,9 @@ func TestHostedProjectTools(t *testing.T) {
 			ctx := connect("project-tools")
 			e := hubProjectExecutor{f.service}
 			id := string(f.project)
-			operatorSQL(t, f, "DELETE FROM project_policies WHERE scope=?", "org_security/"+id)
+			if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM project_policies WHERE organization_id=$1 AND project_id=$2", "org_security", f.project); err != nil {
+				t.Fatal(err)
+			}
 			read := func(name string) operatortool.Call {
 				return operatortool.Call{Name: name, Arguments: json.RawMessage(`{"project_id":"` + id + `"}`)}
 			}
@@ -266,7 +435,6 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Run("missing reads/"+transport, func(t *testing.T) {
 					call := hostedContextProtocol(t, f.service, ctx, transport)
 					for _, missing := range []struct{ name, code, message string }{
-						{"get_cutover_receipt", "not_found", "No cutover receipt exists for this project"},
 						{operatortool.GetChangeReviewPolicy, "not_found", "No approved Change review policy exists for this project"},
 					} {
 						reply := call("tools/call", missing.name, map[string]any{"project_id": id})
@@ -287,8 +455,7 @@ func TestHostedProjectTools(t *testing.T) {
 					}
 				})
 			}
-			operatorSQL(t, f, "INSERT INTO github_cutovers(project_id,checkpoint,receipt_json,actor_id,created_at) VALUES (?,?,?,?,?)", id, "stored-cutover", `{"checkpoint":"stored-cutover","applied":true}`, owner.identity.Subject, formatHubTime(f.service.config.now()))
-			for _, name := range []string{"get_project_policy", operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup", "get_cutover_receipt"} {
+			for _, name := range []string{"get_project_policy", operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup"} {
 				result, err := e.Execute(ctx, read(name))
 				if err != nil || !strings.Contains(string(result.Content), `"observed_at"`) {
 					t.Fatalf("%s=%s %v", name, result.Content, err)
@@ -296,18 +463,38 @@ func TestHostedProjectTools(t *testing.T) {
 				if name == operatortool.LocalProjectConfiguration && (!strings.Contains(string(result.Content), "not installed or is stopped") || strings.Contains(string(result.Content), `"applied":true`)) {
 					t.Fatalf("Cloud fabricated local application: %s", result.Content)
 				}
-				if name == "get_cutover_receipt" && (!strings.Contains(string(result.Content), `"checkpoint":"stored-cutover"`) || !strings.Contains(string(result.Content), `"applied":true`)) {
-					t.Fatalf("stored cutover receipt=%s", result.Content)
-				}
+
 			}
 			ordinary := projectCall(t, "save_onboarding", id, "progress", operatortool.OnboardingInput{Progress: onboarding.Progress{Repository: "existing"}})
+			scope, err := e.projectScope(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope.project = f.project
+			before, err := f.service.readOnboardingProgressRecord(t.Context(), scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if raw, err := e.command(ctx, ordinary, projectCommandPreview); err != nil || raw != nil {
+				t.Fatalf("onboarding preview=%s err=%v", raw, err)
+			}
+			if after, err := f.service.readOnboardingProgressRecord(t.Context(), scope); err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatalf("preview changed onboarding: before=%+v after=%+v err=%v", before, after, err)
+			}
 			a := projectAction(t, e, ctx, ordinary)
 			if a.Status != chatpkg.ActionSucceeded {
 				t.Fatalf("ordinary=%+v", a)
 			}
+			saved, err := f.service.readOnboardingProgressRecord(t.Context(), scope)
+			if err != nil || saved.Repository != "existing" || saved.Revision != before.Revision+1 || saved.UpdatedAt == "" {
+				t.Fatalf("operator save missing from typed onboarding owner: progress=%+v err=%v", saved, err)
+			}
 			reconnect := connect("project-reconnect")
 			if replay := projectAction(t, e, reconnect, ordinary); replay.Status != chatpkg.ActionSucceeded || replay.Result != a.Result {
 				t.Fatalf("replay=%+v", replay)
+			}
+			if after, err := f.service.readOnboardingProgressRecord(t.Context(), scope); err != nil || !reflect.DeepEqual(after, saved) {
+				t.Fatalf("replay changed onboarding: saved=%+v after=%+v err=%v", saved, after, err)
 			}
 			changed := projectCall(t, "save_onboarding", id, "progress", operatortool.OnboardingInput{Progress: onboarding.Progress{Repository: "generate"}})
 			if _, err := e.Execute(connect("changed-retry"), changed); !errors.Is(err, mutation.ErrConflict) {
@@ -317,6 +504,61 @@ func TestHostedProjectTools(t *testing.T) {
 			if _, err := e.Execute(ctx, stale); !errors.Is(err, mutation.ErrConflict) {
 				t.Fatalf("stale=%v", err)
 			}
+			t.Run("onboarding requires collaboration", func(t *testing.T) {
+				var original billingstore.Plan
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					assignment, err := w.BillingAssignment(t.Context())
+					if err != nil {
+						return err
+					}
+					plan := assignment.Base
+					if assignment.Subscription != nil && assignment.ExpiresAt != nil && assignment.ExpiresAt.After(f.service.config.now()) {
+						plan = *assignment.Subscription
+					}
+					original, err = w.BillingPlan(t.Context(), plan)
+					if err != nil {
+						return err
+					}
+					withoutCollaboration := original
+					withoutCollaboration.Features = slices.DeleteFunc(slices.Clone(original.Features), func(feature string) bool { return feature == "collaboration" })
+					return w.ReplaceBillingPlan(t.Context(), withoutCollaboration)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+					defer cancel()
+					if err := f.service.config.TenantRepository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.ReplaceBillingPlan(cleanup, original)
+					}); err != nil {
+						t.Error(err)
+					}
+				})
+				if raw, err := e.command(ctx, ordinary, projectCommandReplay); err != nil || raw == nil {
+					t.Fatalf("existing onboarding receipt unavailable after feature removal: replay=%s err=%v", raw, err)
+				}
+				requestID := "onboarding-without-collaboration"
+				denied := projectCall(t, "save_onboarding", id, requestID, operatortool.OnboardingInput{Progress: onboarding.Progress{Revision: saved.Revision, Repository: "generate"}})
+				var limited *hostedLimitError
+				if raw, err := e.command(ctx, denied, projectCommandExecute); !errors.As(err, &limited) || limited.Resource != "collaboration" || raw != nil {
+					t.Fatalf("unentitled onboarding save=%s err=%v", raw, err)
+				}
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					current, err := r.ProjectOnboardingProgress(t.Context(), scope.project)
+					if err != nil {
+						return err
+					}
+					if !reflect.DeepEqual(current, saved) {
+						t.Errorf("unentitled onboarding save changed progress: saved=%+v current=%+v", saved, current)
+					}
+					if _, err := r.ReplayReceipt(t.Context(), scope.credential.ID, projectOperationID(scope, "PUT", "/onboarding"), requestID); !errors.Is(err, corestore.ErrNotFound) {
+						t.Errorf("unentitled onboarding save wrote a receipt: %v", err)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
 			policyScope := "org_security/" + id
 			previous, err := f.service.approveTestTenantPolicy(t.Context(), policyScope, operatortool.ConnectionIdentity(ctx).PrincipalID, policy.Change{Policy: hubTestPolicy()})
 			if err != nil {
@@ -336,11 +578,17 @@ func TestHostedProjectTools(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			encoded, err := json.Marshal(candidate)
+			observedRevision, err := eventstore.NewContent(f.service.runDetailStore()).PrepareProjectPolicy(t.Context(), "org_security", candidate)
 			if err != nil {
 				t.Fatal(err)
 			}
-			operatorSQL(t, f, "INSERT INTO project_observed_policies(scope,policy_id,descriptor_json,runner_id,observed_at) VALUES (?,?,?,?,?)", policyScope, candidate.ID, string(encoded), operatortool.ConnectionIdentity(ctx).PrincipalID, formatHubTime(f.service.config.now()))
+			observedRevision.ProjectID = f.project
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.RecordProjectPolicyObservation(t.Context(), policystore.Observation{OrganizationID: "org_security", ProjectID: f.project, RunnerID: operatortool.ConnectionIdentity(ctx).PrincipalID, PolicyID: candidate.ID, ObservedAt: f.service.config.now(), Revision: observedRevision})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			observed, err := e.Execute(ctx, read("get_onboarding"))
 			if err != nil {
 				t.Fatal(err)
@@ -395,18 +643,54 @@ func TestHostedProjectTools(t *testing.T) {
 						} {
 							t.Run(test.name, func(t *testing.T) {
 								consumption := usage.Allowances[test.resource] + 1
-								query := "UPDATE hosted_usage_counters SET value=? WHERE name=?"
-								if test.resource == "api_mutations" {
-									query = "UPDATE hosted_usage_windows SET amount=? WHERE metric=?"
-								}
-								if _, err := f.service.database.db.ExecContext(t.Context(), query, consumption, test.resource); err != nil {
-									t.Fatal(err)
-								}
-								t.Cleanup(func() {
-									if _, err := f.service.database.db.ExecContext(context.WithoutCancel(ctx), query, usage.Usage[test.resource], test.resource); err != nil {
-										t.Error(err)
+								if test.resource == "collaboration_bytes" {
+									var delta int64
+									if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+										used, err := w.CollaborationBytes(t.Context())
+										if err != nil {
+											return err
+										}
+										delta = consumption - used
+										result, err := w.AdjustCollaborationBytes(t.Context(), delta, consumption)
+										if err == nil && (!result.Allowed || result.Used != consumption) {
+											return errors.New("collaboration quota fixture was not applied")
+										}
+										return err
+									}); err != nil {
+										t.Fatal(err)
 									}
-								})
+									t.Cleanup(func() {
+										cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+										defer cancel()
+										if err := f.service.config.TenantRepository.WriteTenant(cleanup, "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+											_, err := w.AdjustCollaborationBytes(cleanup, -delta, consumption)
+											return err
+										}); err != nil {
+											t.Error(err)
+										}
+									})
+								} else {
+									window := usage.WindowEndsAt.Add(-time.Duration(f.service.database.plans().WindowSeconds) * time.Second)
+									admin := hostedPostgresAdmin(t, f.service)
+									var before int64
+									if err := admin.QueryRowContext(t.Context(), "SELECT COALESCE((SELECT amount FROM hosted_usage_windows WHERE organization_id=$1 AND window_start=$2 AND metric=$3),0)", "org_security", window, test.resource).Scan(&before); err != nil {
+										t.Fatal(err)
+									}
+									if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_usage_windows(organization_id,window_start,metric,amount) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,window_start,metric) DO UPDATE SET amount=excluded.amount", "org_security", window, test.resource, consumption); err != nil {
+										t.Fatal(err)
+									}
+									delta := consumption - before
+									t.Cleanup(func() {
+										cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+										defer cancel()
+										result, err := admin.ExecContext(cleanup, "UPDATE hosted_usage_windows SET amount=amount-$4 WHERE organization_id=$1 AND window_start=$2 AND metric=$3 AND amount>=$4", "org_security", window, test.resource, delta)
+										if err != nil {
+											t.Error(err)
+										} else if count, err := result.RowsAffected(); err != nil || count != 1 {
+											t.Errorf("usage fixture cleanup rows=%d error=%v", count, err)
+										}
+									})
+								}
 								reply := call("tools/call", test.name, test.arguments)
 								var result struct {
 									IsError bool `json:"isError"`
@@ -437,20 +721,20 @@ func TestHostedProjectTools(t *testing.T) {
 					})
 				}
 				var comments int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", issue.WorkItemID).Scan(&comments); err != nil || comments != 0 {
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", "org_security", f.project, issue.WorkItemID).Scan(&comments); err != nil || comments != 0 {
 					t.Fatalf("refused comment effects=%d err=%v", comments, err)
 				}
 				for _, table := range []string{"workspace_sessions", "project_actions"} {
 					var effects int
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE project_id=?", f.project).Scan(&effects); err != nil || effects != 0 {
+					if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE organization_id=$1 AND project_id=$2", "org_security", f.project).Scan(&effects); err != nil || effects != 0 {
 						t.Fatalf("refused %s effects=%d err=%v", table, effects, err)
 					}
 				}
 				var receipts int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE command_key IN ('quota-comment','quota-approve-stdio','quota-approve-http')").Scan(&receipts); err != nil || receipts != 0 {
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE organization_id=$1 AND command_key IN ('quota-comment','quota-approve-stdio','quota-approve-http')", "org_security").Scan(&receipts); err != nil || receipts != 0 {
 					t.Fatalf("refused writes persisted receipts=%d err=%v", receipts, err)
 				}
-				unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+				unchanged, err := f.service.readTenantProjectPolicy(t.Context(), "org_security", f.project)
 				if err != nil || !reflect.DeepEqual(unchanged.Policy, previous.Policy) {
 					t.Fatalf("refused approval changed policy=%+v err=%v", unchanged, err)
 				}
@@ -479,7 +763,8 @@ func TestHostedProjectTools(t *testing.T) {
 			if len(policyRead.Data.History) != 1 || policyRead.Data.History[0].PreviousDefinitionDigest != previous.Policy.SourceDigest || policyRead.Data.History[0].DefinitionDigest != candidate.SourceDigest || policyRead.Data.History[0].AppliedBy != attribution.ApprovedBy || policyRead.Data.History[0].AppliedAt == "" {
 				t.Fatalf("MCP lost workflow apply history: %+v", policyRead.Data.History)
 			}
-			integration, err := readProjectIntegration(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project})
+			integrationRecord, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: "org_security", project: f.project})
+			integration := projectIntegrationRecord(integrationRecord)
 			wantStates := append([]tracker.NativeState{{Name: "Triage", Transitions: []string{"Backlog", "Todo", "Cancelled"}}}, candidate.Workflow.States...)
 			if err != nil || integration.Authority["workflow"] != "repository" || integration.WorkflowSource != candidate.Workflow.Source || integration.WorkflowSourceRevision != candidate.SourceRevision || !reflect.DeepEqual(integration.States, wantStates) {
 				t.Fatalf("approved workflow = %+v, %v", integration, err)
@@ -504,15 +789,16 @@ func TestHostedProjectTools(t *testing.T) {
 			if _, err := e.Execute(ctx, stalePolicy); !errors.Is(err, mutation.ErrConflict) {
 				t.Fatalf("stale expected policy = %v", err)
 			}
-			unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+			unchanged, err := f.service.readTenantProjectPolicy(t.Context(), "org_security", f.project)
 			if err != nil || !reflect.DeepEqual(unchanged.Policy, candidate) {
 				t.Fatalf("stale approval changed policy = %+v, %v", unchanged, err)
 			}
-			unchangedIntegration, err := readProjectIntegration(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project})
+			unchangedRecord, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: "org_security", project: f.project})
+			unchangedIntegration := projectIntegrationRecord(unchangedRecord)
 			if err != nil || !reflect.DeepEqual(unchangedIntegration, integration) {
 				t.Fatalf("stale approval changed workflow = %+v, %v", unchangedIntegration, err)
 			}
-			rules, err := readChangePolicy(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project})
+			rules, err := f.service.changeReviewPolicyRecord(t.Context(), nativeScope{organization: "org_security", project: f.project})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -565,12 +851,17 @@ func TestHostedProjectTools(t *testing.T) {
 						t.Fatalf("MCP override refusal = %v", err)
 					}
 				}
-				stored, readErr := readProjectIntegration(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: newProject.ID})
+				storedRecord, readErr := f.service.readProjectRecord(t.Context(), nativeScope{organization: "org_security", project: newProject.ID})
+				stored := projectIntegrationRecord(storedRecord)
 				if readErr != nil || stored.Authority["workflow"] != "repository" || !reflect.DeepEqual(stored.States, states) || stored.Revision != 2 {
 					t.Fatalf("MCP override changed repository workflow: %#v, %v", stored, readErr)
 				}
 			}
-			operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", owner.identity.Subject, newProject.ID)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				return w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, newProject.ID)
+			}); err != nil {
+				t.Fatal(err)
+			}
 			for _, retryCtx := range []context.Context{ctx, connect("create-revoked")} {
 				if _, err := e.Execute(retryCtx, create); !errors.Is(err, operatortool.ErrAccessDenied) {
 					t.Fatalf("created resource revoked replay=%v", err)
@@ -580,14 +871,39 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Fatalf("created resource revoked action result=%v", err)
 			}
 			revoke := projectCall(t, "revoke_project_policy", id, "revoke", operatortool.PolicyRevokeInput{ExpectedID: candidate.ID})
-			operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", owner.identity.Subject)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				member, err := w.AccessMember(t.Context(), owner.identity.Subject)
+				if err != nil {
+					return err
+				}
+				member.Role, member.UpdatedAt = "viewer", f.service.config.now()
+				return w.UpdateAccessMember(t.Context(), member)
+			}); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := e.Execute(ctx, revoke); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("downgraded revoke=%v", err)
 			}
 			if _, err := e.Execute(ctx, ordinary); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("downgraded replay=%v", err)
 			}
-			operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=?", owner.identity.Subject)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				grants, err := w.AccessProjectGrants(t.Context(), owner.identity.Subject, "", 200)
+				if err != nil {
+					return err
+				}
+				if len(grants) >= 200 {
+					return errors.New("project tool fixture grants exceed one bounded page")
+				}
+				for _, grant := range grants {
+					if err := w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, grant.ProjectID); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := e.Execute(ctx, read("get_native_project")); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("revoked direct read=%v", err)
 			}

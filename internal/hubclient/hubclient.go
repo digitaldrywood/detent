@@ -12,7 +12,6 @@ import (
 
 type APIError = api.APIError
 
-type ClaimRequest = api.ClaimRequest
 type Client = api.Client
 
 type Config = api.Config
@@ -39,9 +38,7 @@ var ErrWorkspacesNotServed = api.ErrWorkspacesNotServed
 
 type FleetClient = api.FleetClient
 
-type LeaseRequest = api.LeaseRequest
 type Machine = api.Machine
-type MachineHeartbeat = api.MachineHeartbeat
 
 type NativeClient = api.NativeClient
 type NativeConnector = api.NativeConnector
@@ -65,7 +62,6 @@ func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runn
 	return api.RefreshRunner(ctx, path, rotate)
 }
 
-type WorkItem = api.WorkItem
 type WorkspaceActionRunReport = api.WorkspaceActionRunReport
 type WorkspaceBindRequest = api.WorkspaceBindRequest
 type WorkspaceBindResponse = api.WorkspaceBindResponse

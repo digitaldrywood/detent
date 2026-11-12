@@ -90,7 +90,16 @@ type Provenance struct {
 	ObservedAt        time.Time `json:"observed_at,omitzero"`
 }
 
+type NativeWorkpad struct {
+	Phase     string    `json:"phase"`
+	Body      string    `json:"body"`
+	SyncState string    `json:"sync_state"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type NativeIssue struct {
+	Queue                  *QueueSummary        `json:"queue,omitempty"`
+	Workpad                *NativeWorkpad       `json:"workpad,omitempty"`
 	ChangeSequence         int64                `json:"change_sequence,omitempty"`
 	LatestTransitionReason string               `json:"-"`
 	ReleaseDelivery        *ReleaseDelivery     `json:"release_delivery,omitempty"`
@@ -417,6 +426,7 @@ type Transition struct {
 	State            string   `json:"state"`
 	Reason           string   `json:"reason"`
 	ReasonDetail     string   `json:"reason_detail,omitempty"`
+	WorkflowLabel    string   `json:"workflow_label,omitempty"`
 }
 
 type DependencyMutation struct {
@@ -479,11 +489,11 @@ type EventCompaction struct {
 	RemovedBytes    int64            `json:"removed_bytes"`
 	RemovedByType   map[string]int64 `json:"removed_by_type"`
 	CompactedAt     time.Time        `json:"compacted_at"`
-
-	CompactedActivityEvents int64 `json:"compacted_activity_events,omitempty"`
 }
 
 type NativeIssuePage struct {
+	ContinuationUnavailable   bool       `json:"continuation_unavailable,omitempty"`
+	Partial                   bool       `json:"partial,omitempty"`
 	ProjectionPending         bool       `json:"projection_pending"`
 	ProjectionOldestPendingAt *time.Time `json:"projection_oldest_pending_at,omitempty"`
 	ChangeSequence            int64      `json:"change_sequence"`

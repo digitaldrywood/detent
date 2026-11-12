@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createSpriteAllocation = `-- name: CreateSpriteAllocation :one
@@ -228,6 +229,52 @@ func (q *Queries) SpriteAllocation(ctx context.Context, arg SpriteAllocationPara
 	return i, err
 }
 
+const spriteAllocationAuthority = `-- name: SpriteAllocationAuthority :one
+SELECT EXISTS (
+ SELECT 1 FROM project_sprite_allocations allocation
+ JOIN api_tokens token ON token.organization_id=allocation.organization_id AND token.id=allocation.configured_by
+ JOIN projects project ON project.organization_id=allocation.organization_id AND project.id=allocation.project_id AND project.deleted_at IS NULL
+ WHERE allocation.organization_id=$1 AND allocation.project_id=$2
+ AND token.revoked_at IS NULL AND token.created_at<=$3::timestamptz AND (token.expires_at IS NULL OR token.expires_at>$3::timestamptz)
+ AND ((token.scope='admin' AND NOT token.native_only) OR token.operator_project_access='all' OR EXISTS(SELECT 1 FROM token_grants grant_row WHERE grant_row.organization_id=token.organization_id AND grant_row.token_id=token.id AND grant_row.project_id=allocation.project_id))
+ AND (token.operator_key_scope='' OR token.operator_key_scope='admin')
+ AND ((token.scope='admin' AND NOT token.native_only) OR EXISTS (
+  SELECT 1 FROM hosted_members member JOIN hosted_project_grants grant_row ON grant_row.organization_id=member.organization_id AND grant_row.user_id=member.user_id AND grant_row.project_id=allocation.project_id AND grant_row.can_write
+  WHERE member.organization_id=token.organization_id AND member.principal_id=token.id AND member.active AND member.role IN ('owner','admin')
+ AND EXISTS(SELECT 1 FROM token_grants principal_grant WHERE principal_grant.organization_id=member.organization_id AND principal_grant.token_id=member.principal_id AND principal_grant.project_id=allocation.project_id)
+ ))
+)
+`
+
+type SpriteAllocationAuthorityParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Now            time.Time
+}
+
+func (q *Queries) SpriteAllocationAuthority(ctx context.Context, arg SpriteAllocationAuthorityParams) (bool, error) {
+	row := q.db.QueryRow(ctx, spriteAllocationAuthority, arg.OrganizationID, arg.ProjectID, arg.Now)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const spriteAllocationSize = `-- name: SpriteAllocationSize :one
+SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND allocation_project_id=$2 AND state<>'deleted'
+`
+
+type SpriteAllocationSizeParams struct {
+	OrganizationID      tracker.OrganizationID
+	AllocationProjectID string
+}
+
+func (q *Queries) SpriteAllocationSize(ctx context.Context, arg SpriteAllocationSizeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, spriteAllocationSize, arg.OrganizationID, arg.AllocationProjectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const spriteAllocations = `-- name: SpriteAllocations :many
 SELECT organization_id, project_id, desired_count, revision, provision_failures, requested_at, configured_by FROM project_sprite_allocations WHERE organization_id=$1 AND project_id>$2 ORDER BY project_id LIMIT $3
 `
@@ -264,6 +311,124 @@ func (q *Queries) SpriteAllocations(ctx context.Context, arg SpriteAllocationsPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const spriteLeaseUsage = `-- name: SpriteLeaseUsage :one
+WITH active AS (
+ SELECT l.lease_id,l.machine_id,l.session_id,COALESCE(assignment.runner_id,'') AS runner_id,
+ CASE WHEN lower(trim(COALESCE(i.workflow_state_name,'')))='merging' AND landing_policy.gate_github_pull_request IS FALSE THEN i.project_id ELSE '' END AS capacity_project
+ FROM leases l
+ JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+ JOIN machines machine ON machine.organization_id=l.organization_id AND machine.id=l.machine_id AND machine.sprite_name=machine.hostname AND machine.sprite_name<>''
+ LEFT JOIN runner_lease_assignments assignment ON assignment.organization_id=l.organization_id AND assignment.lease_id=l.lease_id
+ LEFT JOIN LATERAL (
+  SELECT approved.gate_github_pull_request FROM change_issue_links link
+  JOIN change_requests change ON change.organization_id=link.organization_id AND change.project_id=link.project_id AND change.id=link.change_id
+  JOIN change_versions version ON version.organization_id=change.organization_id AND version.change_id=change.id AND version.id=change.current_version_id
+  JOIN policy_revisions approved ON approved.organization_id=version.organization_id AND approved.project_id=i.project_id AND approved.policy_id=version.policy_revision_id
+  JOIN projects project ON project.organization_id=i.organization_id AND project.id=i.project_id AND project.profile='native'
+  WHERE link.organization_id=i.organization_id AND link.project_id=i.project_id AND link.work_item_id=i.native_id
+  ORDER BY link.created_at DESC,link.change_id DESC LIMIT 1
+ ) landing_policy ON true
+ WHERE l.organization_id=$2 AND l.released_at IS NULL AND l.expires_at>$3::timestamptz
+), slots AS (
+ SELECT DISTINCT CASE WHEN capacity_project<>'' AND session_id ~ '^landing/[^/]+/[^/]+$'
+ THEN machine_id||'/'||capacity_project||'/'||split_part(session_id,'/',2)||'/'||runner_id ELSE lease_id END AS slot
+ FROM active
+)
+SELECT count(*) FROM slots WHERE $1::text='' OR slot<>$1::text
+`
+
+type SpriteLeaseUsageParams struct {
+	Joining        string
+	OrganizationID tracker.OrganizationID
+	Now            time.Time
+}
+
+func (q *Queries) SpriteLeaseUsage(ctx context.Context, arg SpriteLeaseUsageParams) (int64, error) {
+	row := q.db.QueryRow(ctx, spriteLeaseUsage, arg.Joining, arg.OrganizationID, arg.Now)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const spriteMember = `-- name: SpriteMember :one
+SELECT organization_id, name, provider_organization, token_project_id, enrollment_id, state, bootstrap_log, idle_since, created_at, allocation_project_id, allocation_revision FROM runner_sprite_memberships WHERE organization_id=$1 AND name=$2
+`
+
+type SpriteMemberParams struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+}
+
+func (q *Queries) SpriteMember(ctx context.Context, arg SpriteMemberParams) (RunnerSpriteMembership, error) {
+	row := q.db.QueryRow(ctx, spriteMember, arg.OrganizationID, arg.Name)
+	var i RunnerSpriteMembership
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.Name,
+		&i.ProviderOrganization,
+		&i.TokenProjectID,
+		&i.EnrollmentID,
+		&i.State,
+		&i.BootstrapLog,
+		&i.IdleSince,
+		&i.CreatedAt,
+		&i.AllocationProjectID,
+		&i.AllocationRevision,
+	)
+	return i, err
+}
+
+const spriteMemberHoldsWork = `-- name: SpriteMemberHoldsWork :one
+SELECT EXISTS (
+ SELECT 1 FROM runner_identities r JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
+ WHERE r.organization_id=$1 AND r.enrollment_id=$2 AND l.released_at IS NULL
+ AND (r.removed_at IS NULL OR EXISTS (SELECT 1 FROM native_attempts n WHERE n.organization_id=l.organization_id AND n.lease_id=l.lease_id AND n.status='interrupted' AND n.checkpoint_object_key IS NOT NULL AND n.cleanup_acknowledged_at IS NULL))
+) OR EXISTS (
+ SELECT 1 FROM runner_identities r JOIN runner_lease_assignments assignment ON assignment.organization_id=r.organization_id AND assignment.runner_id=r.runner_id
+ JOIN native_attempts n ON n.organization_id=assignment.organization_id AND n.lease_id=assignment.lease_id
+ WHERE r.organization_id=$1 AND r.enrollment_id=$2
+ AND (n.status='running' OR n.status='interrupted' AND n.checkpoint_object_key IS NOT NULL AND n.cleanup_acknowledged_at IS NULL)
+)
+`
+
+type SpriteMemberHoldsWorkParams struct {
+	OrganizationID tracker.OrganizationID
+	EnrollmentID   string
+}
+
+func (q *Queries) SpriteMemberHoldsWork(ctx context.Context, arg SpriteMemberHoldsWorkParams) (pgtype.Bool, error) {
+	row := q.db.QueryRow(ctx, spriteMemberHoldsWork, arg.OrganizationID, arg.EnrollmentID)
+	var column_1 pgtype.Bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const spriteMemberPlacementCounts = `-- name: SpriteMemberPlacementCounts :one
+SELECT count(*) FILTER (WHERE other.allocation_project_id=member.allocation_project_id AND other.state NOT IN ('deleted','deleting'))::bigint AS active_count,
+ count(*) FILTER (WHERE other.allocation_project_id<>member.allocation_project_id AND other.state NOT IN ('deleted','deleting'))::bigint AS other_count,
+ count(*) FILTER (WHERE other.allocation_project_id=member.allocation_project_id AND other.name<>member.name AND (other.state='enrolled' OR other.state='bootstrapping' AND (other.created_at<member.created_at OR other.created_at=member.created_at AND other.name<member.name)))::bigint AS ahead_count
+FROM runner_sprite_memberships member JOIN runner_sprite_memberships other ON other.organization_id=member.organization_id
+WHERE member.organization_id=$1 AND member.name=$2
+`
+
+type SpriteMemberPlacementCountsParams struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+}
+
+type SpriteMemberPlacementCountsRow struct {
+	ActiveCount int64
+	OtherCount  int64
+	AheadCount  int64
+}
+
+func (q *Queries) SpriteMemberPlacementCounts(ctx context.Context, arg SpriteMemberPlacementCountsParams) (SpriteMemberPlacementCountsRow, error) {
+	row := q.db.QueryRow(ctx, spriteMemberPlacementCounts, arg.OrganizationID, arg.Name)
+	var i SpriteMemberPlacementCountsRow
+	err := row.Scan(&i.ActiveCount, &i.OtherCount, &i.AheadCount)
+	return i, err
 }
 
 const spriteMembers = `-- name: SpriteMembers :many

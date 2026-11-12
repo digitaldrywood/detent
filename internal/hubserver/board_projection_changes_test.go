@@ -41,7 +41,7 @@ func (r *boardChangeMutationRepository) ReadTenant(ctx context.Context, org trac
 		return context.DeadlineExceeded
 	}
 	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
-		return read(boardChangeMutationReader{Reader: reader, AuditDispositionReader: reader.(eventstore.AuditDispositionReader), ChangeLandingReader: reader.(eventstore.ChangeLandingReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), repository: r, organization: org})
+		return read(boardChangeMutationReader{Reader: reader, AuditDispositionReader: reader.(eventstore.AuditDispositionReader), ChangeLandingReader: reader.(eventstore.ChangeLandingReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), WorkflowTransitionReader: reader.(eventstore.WorkflowTransitionReader), repository: r, organization: org})
 	})
 }
 
@@ -51,7 +51,7 @@ func (r *boardChangeMutationRepository) ReadTenantSnapshot(ctx context.Context, 
 		return context.DeadlineExceeded
 	}
 	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, func(reader tenantstore.Reader) error {
-		return read(boardChangeMutationReader{Reader: reader, AuditDispositionReader: reader.(eventstore.AuditDispositionReader), ChangeLandingReader: reader.(eventstore.ChangeLandingReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), repository: r, organization: org})
+		return read(boardChangeMutationReader{Reader: reader, AuditDispositionReader: reader.(eventstore.AuditDispositionReader), ChangeLandingReader: reader.(eventstore.ChangeLandingReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), WorkflowTransitionReader: reader.(eventstore.WorkflowTransitionReader), repository: r, organization: org})
 	})
 }
 
@@ -60,6 +60,7 @@ type boardChangeMutationReader struct {
 	eventstore.AuditDispositionReader
 	eventstore.ChangeLandingReader
 	tenantstore.WorkItemRelationshipBatchReader
+	eventstore.WorkflowTransitionReader
 	repository   *boardChangeMutationRepository
 	organization tracker.OrganizationID
 }

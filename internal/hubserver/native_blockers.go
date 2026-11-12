@@ -5,9 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"slices"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -119,74 +117,4 @@ func resolveNativeBlockerReference(ctx context.Context, q nativeQueryer, scope n
 	scope.project = tracker.ProjectID(project)
 	issue, _, err := readNativeIssue(ctx, q, scope, id)
 	return issue, err
-}
-
-func normalizeNativeDependencyBlockers(ctx context.Context, q nativeQueryer, scope nativeScope, disposition *tracker.NativeDisposition) error {
-	if disposition == nil || disposition.Status != workpad.StatusBlocked || disposition.HumanAction || disposition.ReasonCode != "" || len(disposition.BlockerEvidence) == 0 {
-		return nil
-	}
-	integration, err := readProjectIntegration(ctx, q, scope)
-	if err != nil {
-		return err
-	}
-	repository := integration.Repository
-	if repository == "" {
-		repository = integration.CheckoutRepository
-	}
-	if repository == "" {
-		return nil
-	}
-	for i := range disposition.BlockerEvidence {
-		blocker := &disposition.BlockerEvidence[i]
-		if blocker.Owner != workpad.BlockerOwnerOrchestrator || blocker.Unverifiable || blocker.Predicate == nil || blocker.Predicate.Type != workpad.PredicateIssueState {
-			continue
-		}
-		for _, reference := range []*string{&blocker.Ref, &blocker.Predicate.Identifier} {
-			parsed, err := workpad.ParseRef(*reference, string(scope.project))
-			if err != nil {
-				continue
-			}
-			if number, ok := strings.CutPrefix(parsed, repository+"#"); ok {
-				*reference = string(scope.project) + "#" + number
-			}
-		}
-	}
-	return nil
-}
-
-func prepareNativeDependencyBlockers(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue, disposition *tracker.NativeDisposition) ([]tracker.NativeWorkItemID, error) {
-	if disposition == nil || disposition.HumanAction {
-		return nil, nil
-	}
-	refs := workpad.IssueDependencyRefs(&workpad.Signal{Status: disposition.Status, ReasonCode: disposition.ReasonCode, Blockers: disposition.BlockerEvidence}, string(scope.project))
-	dependencies := make([]tracker.NativeWorkItemID, 0, len(refs))
-	for _, ref := range refs {
-		dependency, err := resolveNativeBlockerReference(ctx, q, scope, ref)
-		if errors.Is(err, sql.ErrNoRows) || dependency.WorkItemID == issue.WorkItemID {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		dependencies = append(dependencies, dependency.WorkItemID)
-	}
-	return dependencies, nil
-}
-
-func recordNativeDependencyBlockers(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, disposition *tracker.NativeDisposition, now time.Time) (tracker.NativeIssue, error) {
-	dependencies, err := prepareNativeDependencyBlockers(ctx, tx, scope, issue, disposition)
-	if err != nil {
-		return issue, err
-	}
-	for _, id := range dependencies {
-		if slices.Contains(issue.Dependencies, id) {
-			continue
-		}
-		updated, err := changeNativeDependencyTx(ctx, tx, scope, string(issue.WorkItemID), tracker.DependencyMutation{ExpectedRevision: issue.Revision, RelatedWorkItemID: id, Operation: "add"}, now)
-		if err != nil {
-			return issue, err
-		}
-		issue = updated
-	}
-	return issue, nil
 }

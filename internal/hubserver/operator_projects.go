@@ -2,17 +2,16 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -298,6 +297,9 @@ func projectToolError(err error) error {
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.Is(err, mutation.ErrConflict) {
 		return err
 	}
+	if errors.Is(err, accessstore.ErrDenied) {
+		return operatortool.ErrAccessDenied
+	}
 	var failure *nativeError
 	if errors.As(err, &failure) && (failure.status == 401 || failure.status == 403 || failure.status == 404) {
 		return operatortool.ErrAccessDenied
@@ -412,7 +414,6 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 	if err != nil {
 		return nil, err
 	}
-	var operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)
 	var input any
 	var projectID, requestID, resourceID string
 	feature := "collaboration"
@@ -503,7 +504,6 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		request := createNativeProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Name: r.Input.Name, States: r.Input.States, RequireDependencies: r.Input.RequireDependencies}
 		input = request
-		operation = s.createNativeProjectOperation(request)
 	case "create_hosted_project":
 		if s.config.Hosted == nil || scope.credential.Hosted == nil {
 			return nil, errProjectServiceUnavailable
@@ -517,30 +517,27 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, operatortool.ErrInvalidArguments
 		}
 		input = r.Input
-		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			var states []tracker.NativeState
-			if r.Input.States != nil {
-				states = *r.Input.States
-			}
-			id, err := s.createHostedProjectInTx(ctx, tx, scope.credential, strings.TrimSpace(r.Input.Name), states)
-			if err != nil {
-				return nil, err
-			}
-			scope.project = tracker.ProjectID(id)
-			return readNativeProject(ctx, tx, scope)
-		}
+
 	case "save_onboarding":
 		r, err := projectCommandInput[operatortool.OnboardingInput](call.Arguments)
 		if err != nil {
 			return nil, err
 		}
-		projectID, requestID = r.ProjectID, r.RequestID
 		request := saveOnboardingRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Progress: r.Input.Progress}
-		if request.Progress.Validate() != nil {
+		if request.Progress.Validate() != nil || request.Progress.Revision < 0 {
 			return nil, operatortool.ErrInvalidArguments
 		}
-		input = request
-		operation = s.saveOnboardingOperation(request)
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		scope.project = tracker.ProjectID(r.ProjectID)
+		scope.requireHostedAdmin = projectToolScope(call.Name, false) == apikey.ScopeAdmin
+		operationID := projectOperationID(scope, "PUT", "/onboarding")
+		if mode == projectCommandReplay {
+			raw, _, err := s.nativeCommandReplay(ctx, scope, operationID, r.RequestID, request)
+			return raw, err
+		}
+		return s.saveOnboardingProgressCommand(ctx, scope, operationID, request)
 	case "rename_project":
 		r, err := projectCommandInput[operatortool.RenameProjectInput](call.Arguments)
 		if err != nil {
@@ -549,7 +546,6 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		projectID, requestID = r.ProjectID, r.RequestID
 		request := renameProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Name: r.Input.Name, ExpectedRevision: r.Input.ExpectedRevision}
 		input = request
-		operation = s.renameProjectOperation(request)
 	case "set_organization_logo":
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, OrganizationWide: true}); err != nil {
 			return nil, err
@@ -598,7 +594,6 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		feature = "github_integration"
 		request := updateProjectIntegrationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Intake: r.Input.Intake, Projection: r.Input.Projection, RepositoryEnabled: r.Input.RepositoryEnabled, DuplicateChallenge: r.Input.DuplicateChallenge, States: r.Input.States, WorkflowMarkdown: r.Input.WorkflowMarkdown}
 		input = request
-		operation = s.updateProjectIntegrationOperation(request)
 	case "start_git_hub_import":
 		r, err := projectCommandInput[operatortool.ImportStartInput](call.Arguments)
 		if err != nil {
@@ -608,7 +603,6 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		feature = "github_integration"
 		request := startGitHubImportRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, IssueNumber: r.Input.IssueNumber, Restart: r.Input.Restart, ExpectedRevision: r.Input.ExpectedRevision}
 		input = request
-		operation = s.startGitHubImportOperation(request)
 	case "cutover_project":
 		r, err := projectCommandInput[operatortool.CutoverInput](call.Arguments)
 		if err != nil {
@@ -618,7 +612,6 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		feature = "github_integration"
 		request := CutoverRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ClosedState: r.Input.ClosedState, DryRun: r.Input.DryRun, Checkpoint: r.Input.Checkpoint, AcceptPartial: r.Input.AcceptPartial, CloseSource: r.Input.CloseSource, DestinationURL: r.Input.DestinationURL, States: r.Input.States, InitialState: r.Input.InitialState}
 		input = request
-		operation = s.cutoverProjectOperation(request)
 	case "command_git_hub_batch":
 		r, err := projectCommandInput[operatortool.GitHubBatchInput](call.Arguments)
 		if err != nil {
@@ -630,7 +623,6 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		projectID, requestID = r.ProjectID, r.RequestID
 		request := tracker.GitHubBatchCommand{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Revision: r.Input.Revision, Action: r.Input.Action, RunnerID: r.Input.RunnerID, Labels: r.Input.Labels, IncludeClosed: r.Input.IncludeClosed, Numbers: r.Input.Numbers, Destination: r.Input.Destination, AllowDispatch: r.Input.AllowDispatch, LabelLanes: r.Input.LabelLanes}
 		input = request
-		operation = s.commandGitHubBatchOperation(request)
 	case "approve_project_policy":
 		r, err := projectCommandInput[operatortool.PolicyApprovalInput](call.Arguments)
 		if err != nil {
@@ -643,58 +635,51 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if r.Input.ObservedPolicyID == "" && workflowconfig.ValidateSharedPolicy(r.Input.Policy) != nil {
 			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy configuration is invalid or its digest does not match the descriptor"}
 		}
-		if s.config.TenantRepository != nil {
-			scope.project = tracker.ProjectID(r.ProjectID)
-			if mode == projectCommandPreview {
-				return nil, nil
-			}
-			change := policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy}
-			hash, err := nativeCommandHash(struct {
-				Change           policy.Change
-				RepositoryPolicy bool
-			}{change, r.Input.RepositoryPolicy})
-			if err != nil {
-				return nil, err
-			}
-			operation := projectOperationID(scope, "PUT", "/policy")
-			raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, operation, r.RequestID, hash)
-			if err != nil || found {
-				return raw, err
-			}
-			if mode == projectCommandReplay {
-				return nil, nil
-			}
-			if r.Input.RepositoryPolicy {
-				var record projectstore.Record
-				err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-					if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
-						return err
-					}
-					var err error
-					record, err = reader.ProjectRecord(ctx, scope.project)
+		if s.config.TenantRepository == nil {
+			return nil, workItemStorageUnavailable()
+		}
+		scope.project = tracker.ProjectID(r.ProjectID)
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		change := policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy}
+		hash, err := nativeCommandHash(struct {
+			Change           policy.Change
+			RepositoryPolicy bool
+		}{change, r.Input.RepositoryPolicy})
+		if err != nil {
+			return nil, err
+		}
+		operation := projectOperationID(scope, "PUT", "/policy")
+		raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, operation, r.RequestID, hash)
+		if err != nil || found {
+			return raw, err
+		}
+		if mode == projectCommandReplay {
+			return nil, nil
+		}
+		if r.Input.RepositoryPolicy {
+			var record projectstore.Record
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 					return err
-				})
-				if err != nil {
-					return nil, err
 				}
-				if record.Core.Profile != "native" || record.Settings.CheckoutRepository == "" {
-					return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Project has no linked repository policy; use repository_policy:false for its project policy"}
-				}
-			}
-			approval, err := s.approveTenantProjectPolicyWithReceipt(ctx, scope, scope.credential.ID, change, &tenantPolicyCommandReceipt{Operation: operation, Key: r.RequestID, Hash: hash})
+				var err error
+				record, err = reader.ProjectRecord(ctx, scope.project)
+				return err
+			})
 			if err != nil {
 				return nil, err
 			}
-			return json.Marshal(approval)
-		}
-		input = r.Input
-		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			policyScope, err := operatorPolicyScope(ctx, tx, scope, r.Input.RepositoryPolicy)
-			if err != nil {
-				return nil, err
+			if record.Core.Profile != "native" || record.Settings.CheckoutRepository == "" {
+				return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Project has no linked repository policy; use repository_policy:false for its project policy"}
 			}
-			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy}, policyLanding{})
 		}
+		approval, err := s.approveTenantProjectPolicyWithReceipt(ctx, scope, scope.credential.ID, change, &tenantPolicyCommandReceipt{Operation: operation, Key: r.RequestID, Hash: hash})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(approval)
 	case "revoke_project_policy":
 		r, err := projectCommandInput[operatortool.PolicyRevokeInput](call.Arguments)
 		if err != nil {
@@ -702,13 +687,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
 		input = r.Input
-		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			policyScope, err := operatorPolicyScope(ctx, tx, scope, r.Input.RepositoryPolicy)
-			if err != nil {
-				return nil, err
-			}
-			return revokeProjectPolicyInTx(ctx, tx, policyScope, scope.credential.ID, r.Input.ExpectedID, now)
-		}
+
 	case "remove_project_secret":
 		r, err := projectCommandInput[struct{}](call.Arguments)
 		if err != nil {
@@ -719,10 +698,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if !canManageProjectSecrets(scope.credential) {
 			return nil, operatortool.ErrAccessDenied
 		}
-		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			err := removeProjectSecretInTx(ctx, tx, scope, now)
-			return projectSecretStatus{Kind: flySpritesToken}, err
-		}
+
 	case "project_native_summary":
 		r, err := projectCommandInput[operatortool.SummaryInput](call.Arguments)
 		if err != nil {
@@ -731,7 +707,6 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		projectID, requestID, resourceID = r.ProjectID, r.RequestID, r.Input.ItemID
 		request := projectNativeSummaryRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Body: r.Input.Body}
 		input = request
-		operation = s.projectNativeSummaryOperation(request, resourceID)
 	case "bind_native_repository":
 		r, err := projectCommandInput[operatortool.RepositoryInput](call.Arguments)
 		if err != nil {
@@ -811,7 +786,26 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		raw, _, err := s.nativeCommandReplay(ctx, scope, projectOperationID(scope, method, suffix), requestID, input)
 		return raw, err
 	}
-	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: projectOperationID(scope, method, suffix), Feature: feature}, tracker.Mutation{IdempotencyKey: requestID}, input, operation)
+	operation := projectOperationID(scope, method, suffix)
+	if call.Name == "revoke_project_policy" {
+		if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+			return nil, err
+		}
+		return nil, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone, publicMessage: true}
+	}
+	if call.Name == "remove_project_secret" {
+		return s.tenantReceiptMutation(ctx, scope, operation, tracker.Mutation{IdempotencyKey: requestID}, input, projectSecretStatus{Kind: flySpritesToken}, func(w tenantstore.Writer) error {
+			old, err := w.AccessSecret(ctx, scope.project, flySpritesToken)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			return w.DeleteAccessSecret(ctx, scope.project, flySpritesToken, s.accessSecretAudit(scope, "remove", old.Envelope.Version))
+		})
+	}
+	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: feature, Item: resourceID, RequireLease: call.Name == "project_native_summary"}, tracker.Mutation{IdempotencyKey: requestID}, input, nil)
 }
 func projectOperationID(scope nativeScope, method, suffix string) string {
 	path := "/api/v2/organizations/" + string(scope.organization) + "/projects"

@@ -25,6 +25,22 @@ type hostedBillingState struct {
 	GraceUntil  time.Time        `json:"grace_until"`
 }
 
+func (s hostedBillingState) equal(other hostedBillingState) bool {
+	stored := func(value time.Time) time.Time { return value.Truncate(time.Microsecond) }
+	for _, pair := range [][2]time.Time{
+		{s.PaidThrough, other.PaidThrough}, {s.AccessUntil, other.AccessUntil}, {s.GraceUntil, other.GraceUntil},
+		{s.Snapshot.InvoiceCreatedAt, other.Snapshot.InvoiceCreatedAt}, {s.Snapshot.PeriodStart, other.Snapshot.PeriodStart},
+		{s.Snapshot.PeriodEnd, other.Snapshot.PeriodEnd}, {s.Snapshot.TrialEnd, other.Snapshot.TrialEnd}, {s.Snapshot.CancelAt, other.Snapshot.CancelAt},
+	} {
+		if !stored(pair[0]).Equal(stored(pair[1])) {
+			return false
+		}
+	}
+	s.PaidThrough, s.AccessUntil, s.GraceUntil, s.Snapshot.InvoiceCreatedAt, s.Snapshot.PeriodStart, s.Snapshot.PeriodEnd, s.Snapshot.TrialEnd, s.Snapshot.CancelAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}
+	other.PaidThrough, other.AccessUntil, other.GraceUntil, other.Snapshot.InvoiceCreatedAt, other.Snapshot.PeriodStart, other.Snapshot.PeriodEnd, other.Snapshot.TrialEnd, other.Snapshot.CancelAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}
+	return s == other
+}
+
 func resolveHostedBilling(config *HostedBillingConfig, previous hostedBillingState, snapshot billing.Snapshot, now time.Time) hostedBillingState {
 	state := hostedBillingState{Snapshot: snapshot, Status: snapshot.Status}
 	for _, price := range config.Prices {
@@ -127,7 +143,7 @@ func (d *database) commitHostedBilling(ctx context.Context, state hostedBillingS
 			return err
 		}
 		previous := hostedBillingState{Snapshot: account.Snapshot, Status: account.Status, Plan: PlanReference{ID: account.Plan.ID, Version: account.Plan.Version}, PaidThrough: account.PaidThrough, AccessUntil: account.AccessUntil, GraceUntil: account.GraceUntil}
-		if !reflect.DeepEqual(previous, state) {
+		if !previous.equal(state) {
 			if err := writer.CreateBillingAudit(ctx, billingstore.Audit{OrganizationID: d.hostedOrganization, ActorID: "stripe", Action: "subscription_reconciled", RecordedAt: now, Reference: ref}); err != nil {
 				return err
 			}

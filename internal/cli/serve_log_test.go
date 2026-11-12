@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -106,6 +105,8 @@ func TestHubServeHonorsLogLevel(t *testing.T) {
 					return "hub-admin-token"
 				case "LOG_LEVEL":
 					return tt.env
+				case "TEST_HUB_POSTGRES_PASSWORD":
+					return "fixture-password"
 				}
 				return ""
 			}
@@ -115,7 +116,7 @@ func TestHubServeHonorsLogLevel(t *testing.T) {
 			var stderr bytes.Buffer
 			root.SetOut(&bytes.Buffer{})
 			root.SetErr(&stderr)
-			root.SetArgs(append([]string{"hub", "serve", "--database", filepath.Join(t.TempDir(), "hub.db"), "--listen", "127.0.0.1:0"}, tt.args...))
+			root.SetArgs(append([]string{"hub", "serve", "--hosted-config", writeHubServeConfig(t, hubServePostgresConfig), "--listen", "127.0.0.1:0"}, tt.args...))
 			err := root.Execute()
 			if tt.wantError {
 				if err == nil || got != nil {

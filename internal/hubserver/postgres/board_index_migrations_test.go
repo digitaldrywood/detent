@@ -13,6 +13,18 @@ import (
 func TestBoardIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
 	db, _ := migrationDatabaseAtVersion(t, 20261107004841)
 	seedCore(t, db)
+	for _, org := range []string{"org_first", "org_second"} {
+		for _, statement := range []string{
+			`INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES($1,'prj_shared',1,0)`,
+			`INSERT INTO native_board_deltas(organization_id,project_id,sequence,work_item_id,current_object_key,current_sha256,current_bytes,current_content_bytes) VALUES($1,'prj_shared',1,'wi_shared',$1||'/retained/board',repeat('a',64),17,29)`,
+			`INSERT INTO health_findings(organization_id,id,fingerprint,signal,class,subject_kind,subject_id,opened_at,last_seen_at,severity,summary,next_action,evidence_object_key,evidence_sha256,evidence_bytes,evidence_content_bytes) VALUES($1,'finding_retained','retained','example','flow','work_item','wi_shared',now(),now(),'watch','Retained finding','Inspect',$1||'/retained/health',repeat('b',64),19,31)`,
+			`INSERT INTO health_finding_projects(organization_id,finding_id,project_id) VALUES($1,'finding_retained','prj_shared'),($1,'finding_retained','prj_other')`,
+		} {
+			if _, err := db.ExecContext(t.Context(), statement, org); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	indexes := []string{"native_board_page_pending_idx", "native_board_page_refresh_due", "native_board_dirty_oldest", "native_board_list_pending_idx", "native_board_search_title_unicode", "native_work_item_search_body_unicode"}
 	_, err := db.ExecContext(t.Context(), `CREATE TABLE board_index_locks(name text,mode text);
  CREATE FUNCTION capture_board_index_locks() RETURNS event_trigger LANGUAGE plpgsql AS $$
@@ -32,6 +44,19 @@ func TestBoardIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
 	}
 	if _, err = provider.Up(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+	for _, org := range []string{"org_first", "org_second"} {
+		var key, digest, topic, entity string
+		var compressed, content, revision, links int64
+		if err := db.QueryRowContext(t.Context(), `SELECT current_object_key,current_sha256,current_bytes,current_content_bytes,topic,entity_id FROM native_board_deltas WHERE organization_id=$1 AND project_id='prj_shared' AND sequence=1`, org).Scan(&key, &digest, &compressed, &content, &topic, &entity); err != nil || key != org+"/retained/board" || digest != strings.Repeat("a", 64) || compressed != 17 || content != 29 || topic != "card" || entity != "wi_shared" {
+			t.Fatalf("upgrade altered retained board reference: %s %s %d %d %s %s: %v", key, digest, compressed, content, topic, entity, err)
+		}
+		if err := db.QueryRowContext(t.Context(), `SELECT revision,evidence_object_key,evidence_sha256,evidence_bytes,evidence_content_bytes FROM health_findings WHERE organization_id=$1 AND id='finding_retained'`, org).Scan(&revision, &key, &digest, &compressed, &content); err != nil || revision != 1 || key != org+"/retained/health" || digest != strings.Repeat("b", 64) || compressed != 19 || content != 31 {
+			t.Fatalf("upgrade altered retained health evidence: revision=%d key=%s error=%v", revision, key, err)
+		}
+		if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM health_finding_projects WHERE organization_id=$1 AND finding_id='finding_retained' AND project_id IN ('prj_shared','prj_other')`, org).Scan(&links); err != nil || links != 2 {
+			t.Fatalf("upgrade lost typed project scope: links=%d error=%v", links, err)
+		}
 	}
 	for _, name := range indexes {
 		var concurrent, blocking bool

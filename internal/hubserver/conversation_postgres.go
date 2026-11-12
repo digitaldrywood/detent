@@ -497,17 +497,13 @@ func conversationRecordFromStore(record conversationstore.Conversation) conversa
 func conversationMessageFromStore(record conversationstore.Message) conversationMessageRecord {
 	return conversationMessageRecord{
 		Revision: record.Revision, ID: record.ID, ContentID: record.ContentReference,
-		TextBytes: record.TextBytes, StoredTextBytes: conversationStoredInt64(record.StoredTextBytes),
+		TextBytes: record.TextBytes, StoredTextBytes: sql.NullInt64{Int64: record.StoredTextBytes, Valid: !record.StoredTextBytesUnknown},
 		ConversationID: record.ConversationID, Seq: record.Sequence, Role: record.Role,
 		Kind: record.Kind, Text: record.Text, Data: record.Data, Delivery: record.Delivery,
 		AttemptID: record.AttemptID, ThreadID: record.ThreadID, TurnID: record.TurnID,
 		ProviderItemID: record.ProviderItemID, Actor: record.Actor, CommandKey: record.CommandKey,
 		CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
 	}
-}
-
-func conversationStoredInt64(value int64) sql.NullInt64 {
-	return sql.NullInt64{Int64: value, Valid: true}
 }
 
 func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope, id string, before int64, limit int) (conversationPageRead, error) {
@@ -662,6 +658,12 @@ func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope,
 		var payload conversationContent
 		if err := s.readConversationObject(ctx, string(scope.organization), ref, &payload); err != nil {
 			return conversationPageRead{}, err
+		}
+		if message.StoredTextBytes.Valid && message.StoredTextBytes.Int64 != int64(len(payload.Text)) {
+			return conversationPageRead{}, errors.New("message stored text length does not match content")
+		}
+		if message.TextBytes != int64(len(payload.Text)) {
+			return conversationPageRead{}, errors.New("message text length does not match content")
 		}
 		message.Text, message.Data = payload.Text, payload.Data
 	}
@@ -875,6 +877,10 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			}
 			return json.Marshal(prior.Receipt)
 		}
+		question, err = s.hydratePGConversationQuestion(ctx, scope.organization, question)
+		if err != nil {
+			return nil, err
+		}
 		if question.Status == conversation.QuestionSending || question.Status == conversation.QuestionSent || question.Status == conversation.QuestionAnswered {
 			return nil, conversationQuestionAnswered()
 		}
@@ -1043,6 +1049,7 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		}
 		attachmentEventContent = contentArchiveID(string(scope.organization), ref)
 	}
+	questionReference, questionUpdatedAt := question.ContentReference, question.UpdatedAt
 	result := conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: prepared.Delivery, MessageID: message.ID, UpdatedAt: plan.now}
 	if command.Kind == conversation.CommandAnswer {
 		result.QuestionID = question.ID
@@ -1058,6 +1065,11 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 	targetTurnID := ""
 	if command.Kind == conversation.CommandCancel && conversationExecutionLive(current.Execution.Status) {
 		targetTurnID = current.Execution.Owner.TurnID
+	}
+	if command.Kind == conversation.CommandAnswer {
+		if err := plan.prepareQuestion(ctx, conversationQuestionRecord{Question: question.Question}); err != nil {
+			return nil, err
+		}
 	}
 	var stored conversationRecord
 	var receipt conversation.Receipt
@@ -1115,7 +1127,12 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			if lockedQuestion.Owner.AttemptID != question.Owner.AttemptID || lockedQuestion.Owner.ThreadID != question.Owner.ThreadID || lockedQuestion.Owner.TurnID != question.Owner.TurnID {
 				return conversationStale("The question changed; retry the command")
 			}
+			if lockedQuestion.ContentReference != questionReference || !lockedQuestion.UpdatedAt.Equal(questionUpdatedAt) {
+				return conversationStale("The question changed; retry the command")
+			}
+			prompts := question.Prompts
 			question = lockedQuestion
+			question.Prompts = prompts
 			question.Status, question.Answers, question.AnsweredBy, question.UpdatedAt = conversation.QuestionSending, command.Answers, scope.credential.ID, plan.now
 		}
 		if storedConversation.Revision != current.Revision || storedConversation.WorkItemID != current.WorkItemID {
@@ -1217,6 +1234,10 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		}
 		message.Attachments = attachments
 		if command.Kind == conversation.CommandAnswer {
+			question, err = preparedPGConversationQuestion(ctx, question)
+			if err != nil {
+				return err
+			}
 			if err := writer.UpsertQuestion(ctx, question); err != nil {
 				return err
 			}
@@ -1454,11 +1475,46 @@ func (s *Service) commandCreateConversationPG(ctx context.Context, scope nativeS
 }
 
 func (s *Service) commandPatchConversationPG(ctx context.Context, scope nativeScope, id string, request conversationPatchRequest, title string) (json.RawMessage, error) {
+	previous, err := s.readPGConversation(ctx, scope, id)
+	if err != nil {
+		return nil, err
+	}
+	if previous.Visibility == conversation.VisibilityPrivate && previous.OwnerPrincipalID != scope.credential.ID {
+		return nil, nativeNotFound()
+	}
+	var issue conversationPreferenceIssue
+	if request.Preferences != nil {
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			if err := s.authorizeAccessScope(ctx, reader, scope, previous.OwnerPrincipalID != scope.credential.ID); err != nil {
+				return err
+			}
+			return s.validateConversationPreferences(ctx, reader, conversationRecordToStore(previous), request.Preferences.apply(previous.Preferences), s.config.now())
+		})
+		if err != nil {
+			return nil, err
+		}
+		issue, err = s.prepareConversationPreferenceIssue(ctx, scope, previous, request.Preferences.apply(previous.Preferences))
+		if err != nil {
+			return nil, err
+		}
+	}
 	var updated conversationstore.Conversation
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if err := writer.LockAccessOrganization(ctx); err != nil {
+			return err
+		}
+		if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		if err := issue.lock(ctx, writer); err != nil {
+			return err
+		}
 		current, err := writer.LockConversation(ctx, scope.project, id)
 		if err != nil {
 			return err
+		}
+		if current.Revision != previous.Revision || current.WorkItemID != previous.WorkItemID {
+			return conversationStale("The conversation changed; reload and retry")
 		}
 		if current.ReadAudience != "" {
 			audience, err := conversationReadAudienceRecord(ctx, writer, scope.organization, scope.credential)
@@ -1484,10 +1540,18 @@ func (s *Service) commandPatchConversationPG(ctx context.Context, scope nativeSc
 		}
 		if request.Preferences != nil {
 			preferences := request.Preferences.apply(current.Preferences)
-			if err := conversation.ValidatePreferences(preferences, nil); err != nil {
-				return nativePublicInvalid("Conversation preferences are invalid")
+			if err := s.validateConversationPreferences(ctx, writer, current, preferences, s.config.now()); err != nil {
+				return err
 			}
 			current.Preferences = preferences
+		}
+		if issue.changed {
+			if err := s.authorizeWorkItemRecordScope(ctx, writer, scope); err != nil {
+				return err
+			}
+		}
+		if err := issue.write(ctx, writer); err != nil {
+			return err
 		}
 		previousRevision := current.Revision
 		if request.Title != nil || request.Preferences == nil {
@@ -1620,4 +1684,49 @@ func (s *Service) readPGConversationCommandReceipt(ctx context.Context, scope na
 		return nil, translateConversationError(err)
 	}
 	return json.Marshal(command.Receipt)
+}
+
+func preparedPGConversationQuestion(ctx context.Context, question conversationstore.Question) (conversationstore.Question, error) {
+	raw, err := questionPayload(conversationQuestionRecord{Question: question.Question})
+	if err != nil {
+		return question, err
+	}
+	content, err := messageContent(conversationMessageRecord{Data: raw})
+	if err != nil {
+		return question, err
+	}
+	prepared, _ := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
+	if plan, ok := ctx.Value(pgWorkerPublicationKey{}).(*conversationPublicationPlan); ok {
+		prepared = plan.prepared
+	}
+	ref, found := prepared[string(question.OrganizationID)+"/"+artifact.Digest(content)]
+	if !found {
+		return question, errors.New("conversation question was not published before the transaction")
+	}
+	question.ContentReference = contentArchiveID(string(question.OrganizationID), ref)
+	return question, nil
+}
+
+func (s *Service) hydratePGConversationQuestion(ctx context.Context, organization tracker.OrganizationID, question conversationstore.Question) (conversationstore.Question, error) {
+	if question.ContentReference == "" {
+		return question, nil
+	}
+	var reference attachment.ArchiveReference
+	if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		object, err := r.ConversationContent(ctx, question.ContentReference)
+		reference = object.Reference
+		return err
+	}); err != nil {
+		return question, err
+	}
+	var value conversationContent
+	if err := s.readConversationObject(ctx, string(organization), reference, &value); err != nil {
+		return question, err
+	}
+	var payload conversationQuestionContent
+	if err := json.Unmarshal(value.Data, &payload); err != nil {
+		return question, fmt.Errorf("decode question content: %w", err)
+	}
+	question.Prompts, question.Answers = payload.Prompts, payload.Answers
+	return question, nil
 }

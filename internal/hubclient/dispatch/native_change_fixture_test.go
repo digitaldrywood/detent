@@ -68,6 +68,7 @@ const nativeChangeAdminToken = "native-change-admin"
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
+	reopen          func(*testing.T) *NativeClient
 	leaseHolds      atomic.Int64
 	seed            func(func(tenantstore.Writer) error)
 	projectBoard    func()
@@ -286,6 +287,28 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	h.project = project.ID
+	h.reopen = func(t *testing.T) *NativeClient {
+		t.Helper()
+		requests.Lock()
+		defer requests.Unlock()
+		if err := service.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := hubserver.Open(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		service = reopened
+		client, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return adminToken }, HTTPClient: httpClient})
+		if err != nil {
+			t.Fatal(err)
+		}
+		native, err := client.Native(h.organization, h.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return native
+	}
 	if requireDependencies {
 		h.seed(func(w tenantstore.Writer) error {
 			record, err := w.ProjectRecord(t.Context(), h.project)

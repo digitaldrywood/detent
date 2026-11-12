@@ -9,6 +9,9 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -62,7 +65,11 @@ type workspaceRelay struct {
 	// attachments counts every connection that has joined a room, runner and
 	// person alike. It only ever rises, so a reader comparing two values knows
 	// a connection joined in between even if it has already left again.
-	attachments uint64
+	attachments         uint64
+	actionSweepProject  tracker.ProjectID
+	actionSweepID       string
+	actionDispatchAfter *postgres.ActionRunCursor
+	ticketSweepAfter    string
 }
 
 // relayRoom is one workspace's live connections and streams.
@@ -118,10 +125,20 @@ const hubStreamOwner = "relayhub"
 // that one bounds unacknowledged frames waiting for a person, and releasing it
 // on an ack says nothing about how much of the run the hub still has to store.
 type execRunState struct {
-	runID     string
-	actionID  string
-	output    []byte
-	truncated bool
+	runID          string
+	actionID       string
+	organization   tracker.OrganizationID
+	project        tracker.ProjectID
+	workspaceID    string
+	runnerID       string
+	leaseID        string
+	fencingToken   int64
+	claimant       string
+	revision       int64
+	outputSequence int64
+	runnerScope    nativeScope
+	output         []byte
+	truncated      bool
 }
 
 // append adds one span of output, stopping at the cap.
@@ -220,6 +237,8 @@ type relayBufferedFrame struct {
 type relayConnection struct {
 	id          string
 	workspaceID string
+	scope       nativeScope
+	owner       workspacesession.Owner
 	socket      *websocket.Conn
 	runner      bool
 	actor       workspacesession.Actor
@@ -357,7 +376,7 @@ func (r *workspaceRelay) closeWorkspace(ctx context.Context, workspaceID, reason
 	}
 	r.mu.Unlock()
 	if len(orphaned) > 0 {
-		r.service.failExecRuns(ctx, orphaned, r.workspaceRunReason(ctx, workspaceID))
+		r.service.failExecRuns(ctx, orphaned, r.workspaceRunReason(ctx, workspaceID, orphaned))
 	}
 	r.service.finishTerminalRecordings(ctx, recorded)
 	for _, connection := range connections {
@@ -978,14 +997,14 @@ func (room *relayRoom) takeTerminalRecordings(match func(string) bool) []*termin
 // the stream is gone: the teardown that removed either has already taken the
 // runs it knew about, so the caller must fail this one itself. A nil runner
 // accepts whichever runner is attached.
-func (r *workspaceRelay) beginExecRun(workspaceID, streamID, runID, actionID string, runner *relayConnection) bool {
+func (r *workspaceRelay) beginExecRun(workspaceID, streamID string, state *execRunState, runner *relayConnection) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	room := r.rooms[workspaceID]
 	if room == nil || room.runner == nil || (runner != nil && room.runner != runner) || room.streams[streamID] == nil {
 		return false
 	}
-	room.execRuns[streamID] = &execRunState{runID: runID, actionID: actionID}
+	room.execRuns[streamID] = state
 	return true
 }
 
@@ -1034,13 +1053,26 @@ func (r *workspaceRelay) failWorkspaceExecRuns(ctx context.Context, workspaceID,
 // failed. It reads the row because only the row separates a lease the hub gave
 // up on from a workspace somebody closed, and those are different stories for
 // the person reading the run afterwards.
-func (r *workspaceRelay) workspaceRunReason(ctx context.Context, workspaceID string) string {
+func (r *workspaceRelay) workspaceRunReason(ctx context.Context, workspaceID string, states []*execRunState) string {
 	// The read outlives the cancellation of whatever ended the workspace, for
 	// the same reason the write does: the reason is only needed once that has
 	// already happened.
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
 	defer cancel()
-	record, err := readWorkspaceByID(readCtx, r.service.server.database.reader, workspaceID)
+	if len(states) == 0 {
+		return workspacesession.RunReasonWorkspaceEnd
+	}
+	state := states[0]
+	var record postgres.WorkspaceSession
+	err := r.service.server.accessRead(readCtx, state.organization, func(reader tenantstore.Reader) error {
+		owner, ok := reader.(postgres.WorkspaceReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		record, err = owner.WorkspaceSession(readCtx, state.project, workspaceID)
+		return err
+	})
 	if err != nil {
 		return workspacesession.RunReasonWorkspaceEnd
 	}

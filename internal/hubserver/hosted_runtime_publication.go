@@ -156,7 +156,7 @@ func (s *HostedRuntimeSnapshots) Adopt(ctx context.Context, tenant hubmaintenanc
 	if err := ValidateHostedRuntimeUpdate(update); err != nil {
 		return err
 	}
-	return d.applyRuntimeRecordsAtRevision(ctx, *update.Plans, update.Prices, "configuration", update.Reason, update.StageID, false, &expected)
+	return d.applyRuntimeRecordsAtRevision(ctx, *update.Plans, update.Prices, "configuration", update.Reason, update.StageID, false, hostedRuntimeReplacePlans, &expected)
 }
 
 func (d *database) archiveRuntime(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, id string, published bool) (billingstore.RuntimeRevision, error) {
@@ -259,12 +259,13 @@ func (d *database) replacePublishedPlans(ctx context.Context, w tenantstore.Writ
 		if err != nil {
 			return err
 		}
+		if stored.RuntimeID == revision.ID {
+			continue
+		}
 		existing := normalizeHostedPlan(HostedPlan{PlanReference: configured.PlanReference, Name: stored.Name, MonthlyUSDCents: stored.MonthlyUSDCents, Features: stored.Features, Allowances: stored.Allowances})
 		if reflect.DeepEqual(existing, configured) {
-			if stored.RuntimeID == "" {
-				if err := w.SetBillingPlanRuntime(ctx, ref, revision.ID); err != nil {
-					return err
-				}
+			if err := w.SetBillingPlanRuntime(ctx, ref, revision.ID); err != nil {
+				return err
 			}
 			continue
 		}

@@ -463,3 +463,157 @@ func (o *ConfigurationOwner) mutate(ctx context.Context, mutate func(*globalconf
 	}
 	return o.settings.MutateLocalConfiguration(ctx, cfg, mutate)
 }
+
+func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
+	view := desired
+	view.Authority = "hub_configuration"
+	view.Pending = false
+	view.Applied = false
+	view.Saved = false
+	view.ObservedAt = time.Now().UTC()
+	var p *Project
+	fail := func(message string) runnerauth.ProjectConfiguration {
+		view.Constraint = message
+		if p != nil {
+			actual := p.Workflow().Config.Policy
+			view.EffectivePolicy = &actual
+			view.SelectedPolicy = &actual
+			view.Paused = p.Paused()
+			view.RuntimeRegistered = true
+			view.Registered = true
+			view.AllowLocalBinding = p.Workflow().Config.Worker.EffectiveAllowLocalBinding()
+			if orch := p.Orchestrator(); orch != nil && p.Running() {
+				if state, err := orch.State(ctx); err == nil {
+					view.Draining = state.Draining
+					view.UnsettledAttempts = state.UnsettledWork()
+				}
+			}
+		}
+		return view
+	}
+	if desired.Authority != "hub_configuration" || desired.EffectivePolicy == nil || desired.ConfigRevision == "" {
+		return fail("The Hub desired configuration is unavailable.")
+	}
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
+	var exists bool
+	p, exists = m.registry.Get(ID(id))
+	view.RuntimeRegistered = exists && p != nil
+	if !exists || p == nil {
+		if !desired.Registered {
+			view.Applied = true
+			view.Saved = true
+			return view
+		}
+		return fail("The Hub project runtime has not been prepared.")
+	}
+	view.Paused = p.Paused()
+	var state orchestrator.State
+	if orch := p.Orchestrator(); orch != nil && p.Running() {
+		var err error
+		state, err = orch.State(ctx)
+		if err != nil {
+			return fail("The runtime execution state is unavailable.")
+		}
+		view.Draining = state.Draining
+		view.UnsettledAttempts = state.UnsettledWork()
+	}
+	if !desired.Registered {
+		if desired.UnsettledAttempts != 0 || view.UnsettledAttempts != 0 || !view.Paused && !view.Draining {
+			return fail("Active or deferred work must settle through the Hub before detach.")
+		}
+		m.mu.Lock()
+		err := m.removeLocked(ctx, ID(id))
+		m.mu.Unlock()
+		if err != nil {
+			return fail("The runtime project could not be detached.")
+		}
+		view = desired
+		view.RuntimeRegistered = false
+		view.Applied = true
+		view.Saved = true
+		view.Pending = false
+		view.ObservedAt = time.Now().UTC()
+		return view
+	}
+	if err := desired.EffectivePolicy.Validate(); err != nil {
+		return fail("The Hub approved policy is invalid.")
+	}
+	if desired.AllowLocalBinding != p.Workflow().Config.Worker.EffectiveAllowLocalBinding() && (desired.UnsettledAttempts != 0 || view.UnsettledAttempts != 0) {
+		return fail("Active or deferred work must settle through the Hub before changing local binding.")
+	}
+	p.mu.Lock()
+	previousWorker := p.cfg.GlobalWorker
+	p.cfg.GlobalWorker.AllowLocalBinding = new(desired.AllowLocalBinding)
+	p.mu.Unlock()
+	workflow, err := workflowconfig.ApplyNativePolicy(p.Workflow(), *desired.EffectivePolicy)
+	if err != nil {
+		p.mu.Lock()
+		p.cfg.GlobalWorker = previousWorker
+		p.mu.Unlock()
+		return fail("The Hub approved policy cannot be applied to this runtime.")
+	}
+	workflow.Config.Policy = *desired.EffectivePolicy
+	if p.Workflow().Config.Policy.ID != desired.EffectivePolicy.ID || p.Workflow().Config.Worker.EffectiveAllowLocalBinding() != desired.AllowLocalBinding {
+		if err := p.applyWorkflowUpdate(ctx, configwatcher.Update{Workflow: workflow, At: time.Now().UTC()}, true); err != nil {
+			p.mu.Lock()
+			p.cfg.GlobalWorker = previousWorker
+			p.mu.Unlock()
+			return fail("The runtime could not apply the Hub approved policy.")
+		}
+	}
+	if p.Workflow().Config.Policy.ID != desired.EffectivePolicy.ID {
+		return fail("The effective runtime policy does not match the Hub approved policy.")
+	}
+
+	if desired.Paused && !p.Paused() {
+		if err := p.Pause(ctx); err != nil {
+			return fail("The runtime could not pause the Hub project.")
+		}
+	}
+	if !desired.Paused && p.Paused() {
+		if desired.UnsettledAttempts != 0 || view.UnsettledAttempts != 0 {
+			return fail("Active or deferred work must settle through the Hub before resume.")
+		}
+		if err := p.unpause(ctx, desired.Draining); err != nil {
+			return fail("The runtime could not resume the Hub project.")
+		}
+	}
+	if desired.Draining {
+		if orch := p.Orchestrator(); orch != nil && p.Running() {
+			if err := orch.Drain(ctx); err != nil {
+				return fail("The runtime could not drain the Hub project.")
+			}
+		}
+	} else if view.Draining && !p.Paused() {
+		if desired.UnsettledAttempts != 0 || view.UnsettledAttempts != 0 {
+			return fail("Active or deferred work must settle through the Hub before leaving the drained state.")
+		}
+		if err := p.Pause(ctx); err != nil {
+			return fail("The runtime could not stop the drained project.")
+		}
+		if err := p.unpause(ctx, false); err != nil {
+			return fail("The runtime could not leave the drained state.")
+		}
+	}
+	view = desired
+	view.RuntimeRegistered = true
+	view.Paused = p.Paused()
+	view.AllowLocalBinding = p.Workflow().Config.Worker.EffectiveAllowLocalBinding()
+	view.Pending = false
+	view.ObservedAt = time.Now().UTC()
+	if orch := p.Orchestrator(); orch != nil && p.Running() {
+		current, err := orch.State(ctx)
+		if err != nil {
+			return fail("The applied runtime state could not be observed.")
+		}
+		view.Draining = current.Draining
+		view.UnsettledAttempts = current.UnsettledWork()
+	}
+	view.Applied = view.Paused == desired.Paused && view.Draining == desired.Draining && view.AllowLocalBinding == desired.AllowLocalBinding
+	view.Saved = view.Applied
+	if !view.Applied {
+		return fail("The runtime has not reached the Hub desired configuration.")
+	}
+	return view
+}

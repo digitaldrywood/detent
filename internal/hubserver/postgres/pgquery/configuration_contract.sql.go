@@ -63,7 +63,7 @@ const applyConfigurationProject = `-- name: ApplyConfigurationProject :one
 INSERT INTO runner_project_configurations(organization_id,runner_id,project_id,config_revision,policy_id,state,paused,allow_local_binding,local_intake_enabled,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,updated_at)
 SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14
 WHERE ($5::text='' AND NOT EXISTS(SELECT 1 FROM project_policies existing WHERE existing.organization_id=$1 AND existing.project_id=$3)) OR EXISTS(SELECT 1 FROM project_policies p WHERE p.organization_id=$1 AND p.project_id=$3 AND p.policy_id=$5)
-ON CONFLICT(organization_id,runner_id,project_id) DO UPDATE SET config_revision=EXCLUDED.config_revision,policy_id=EXCLUDED.policy_id,state=EXCLUDED.state,paused=EXCLUDED.paused,allow_local_binding=EXCLUDED.allow_local_binding,local_intake_enabled=EXCLUDED.local_intake_enabled,payload_object_key=EXCLUDED.payload_object_key,payload_sha256=EXCLUDED.payload_sha256,payload_bytes=EXCLUDED.payload_bytes,payload_content_bytes=EXCLUDED.payload_content_bytes,revision=runner_project_configurations.revision+1,updated_at=EXCLUDED.updated_at RETURNING organization_id, runner_id, project_id, revision, config_revision, policy_id, state, paused, allow_local_binding, local_intake_enabled, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, observed_config_revision, observed_policy_id, observed_registered, observed_paused, observed_draining, observed_at, updated_at
+ON CONFLICT(organization_id,runner_id,project_id) DO UPDATE SET config_revision=EXCLUDED.config_revision,policy_id=EXCLUDED.policy_id,state=EXCLUDED.state,paused=EXCLUDED.paused,allow_local_binding=EXCLUDED.allow_local_binding,local_intake_enabled=EXCLUDED.local_intake_enabled,payload_object_key=EXCLUDED.payload_object_key,payload_sha256=EXCLUDED.payload_sha256,payload_bytes=EXCLUDED.payload_bytes,payload_content_bytes=EXCLUDED.payload_content_bytes,revision=runner_project_configurations.revision+1,updated_at=EXCLUDED.updated_at RETURNING organization_id, runner_id, project_id, revision, config_revision, policy_id, state, paused, allow_local_binding, local_intake_enabled, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, observed_config_revision, observed_policy_id, observed_registered, observed_paused, observed_draining, observed_at, updated_at, request_id, request_operation, request_actor_id, request_hash, request_runner_revision, request_status, request_payload_object_key, request_payload_sha256, request_payload_bytes, request_payload_content_bytes, observation_payload_observed_at, observation_payload_object_key, observation_payload_sha256, observation_payload_bytes, observation_payload_content_bytes
 `
 
 type ApplyConfigurationProjectParams struct {
@@ -123,6 +123,21 @@ func (q *Queries) ApplyConfigurationProject(ctx context.Context, arg ApplyConfig
 		&i.ObservedDraining,
 		&i.ObservedAt,
 		&i.UpdatedAt,
+		&i.RequestID,
+		&i.RequestOperation,
+		&i.RequestActorID,
+		&i.RequestHash,
+		&i.RequestRunnerRevision,
+		&i.RequestStatus,
+		&i.RequestPayloadObjectKey,
+		&i.RequestPayloadSha256,
+		&i.RequestPayloadBytes,
+		&i.RequestPayloadContentBytes,
+		&i.ObservationPayloadObservedAt,
+		&i.ObservationPayloadObjectKey,
+		&i.ObservationPayloadSha256,
+		&i.ObservationPayloadBytes,
+		&i.ObservationPayloadContentBytes,
 	)
 	return i, err
 }
@@ -191,8 +206,62 @@ func (q *Queries) ConfigurationHeader(ctx context.Context, arg ConfigurationHead
 	return i, err
 }
 
+const configurationProject = `-- name: ConfigurationProject :one
+SELECT organization_id, runner_id, project_id, revision, config_revision, policy_id, state, paused, allow_local_binding, local_intake_enabled, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, observed_config_revision, observed_policy_id, observed_registered, observed_paused, observed_draining, observed_at, updated_at, request_id, request_operation, request_actor_id, request_hash, request_runner_revision, request_status, request_payload_object_key, request_payload_sha256, request_payload_bytes, request_payload_content_bytes, observation_payload_observed_at, observation_payload_object_key, observation_payload_sha256, observation_payload_bytes, observation_payload_content_bytes FROM runner_project_configurations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3
+`
+
+type ConfigurationProjectParams struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+}
+
+func (q *Queries) ConfigurationProject(ctx context.Context, arg ConfigurationProjectParams) (RunnerProjectConfiguration, error) {
+	row := q.db.QueryRow(ctx, configurationProject, arg.OrganizationID, arg.RunnerID, arg.ProjectID)
+	var i RunnerProjectConfiguration
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.RunnerID,
+		&i.ProjectID,
+		&i.Revision,
+		&i.ConfigRevision,
+		&i.PolicyID,
+		&i.State,
+		&i.Paused,
+		&i.AllowLocalBinding,
+		&i.LocalIntakeEnabled,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+		&i.ObservedConfigRevision,
+		&i.ObservedPolicyID,
+		&i.ObservedRegistered,
+		&i.ObservedPaused,
+		&i.ObservedDraining,
+		&i.ObservedAt,
+		&i.UpdatedAt,
+		&i.RequestID,
+		&i.RequestOperation,
+		&i.RequestActorID,
+		&i.RequestHash,
+		&i.RequestRunnerRevision,
+		&i.RequestStatus,
+		&i.RequestPayloadObjectKey,
+		&i.RequestPayloadSha256,
+		&i.RequestPayloadBytes,
+		&i.RequestPayloadContentBytes,
+		&i.ObservationPayloadObservedAt,
+		&i.ObservationPayloadObjectKey,
+		&i.ObservationPayloadSha256,
+		&i.ObservationPayloadBytes,
+		&i.ObservationPayloadContentBytes,
+	)
+	return i, err
+}
+
 const configurationProjects = `-- name: ConfigurationProjects :many
-SELECT c.organization_id, c.runner_id, c.project_id, c.revision, c.config_revision, c.policy_id, c.state, c.paused, c.allow_local_binding, c.local_intake_enabled, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.observed_config_revision, c.observed_policy_id, c.observed_registered, c.observed_paused, c.observed_draining, c.observed_at, c.updated_at FROM runner_project_configurations c JOIN runner_identities r ON r.organization_id=c.organization_id AND r.runner_id=c.runner_id JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id JOIN projects p ON p.organization_id=c.organization_id AND p.id=c.project_id
+SELECT c.organization_id, c.runner_id, c.project_id, c.revision, c.config_revision, c.policy_id, c.state, c.paused, c.allow_local_binding, c.local_intake_enabled, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.observed_config_revision, c.observed_policy_id, c.observed_registered, c.observed_paused, c.observed_draining, c.observed_at, c.updated_at, c.request_id, c.request_operation, c.request_actor_id, c.request_hash, c.request_runner_revision, c.request_status, c.request_payload_object_key, c.request_payload_sha256, c.request_payload_bytes, c.request_payload_content_bytes, c.observation_payload_observed_at, c.observation_payload_object_key, c.observation_payload_sha256, c.observation_payload_bytes, c.observation_payload_content_bytes FROM runner_project_configurations c JOIN runner_identities r ON r.organization_id=c.organization_id AND r.runner_id=c.runner_id JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id JOIN projects p ON p.organization_id=c.organization_id AND p.id=c.project_id
 WHERE c.organization_id=$1 AND c.runner_id=$2 AND c.project_id>$3::text AND r.removed_at IS NULL AND r.expires_at>$4::timestamptz AND t.scope='worker' AND t.key_kind='service' AND t.revoked_at IS NULL AND t.created_at<=$4 AND (t.expires_at IS NULL OR t.expires_at>$4) AND p.deleted_at IS NULL AND (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=p.id)) ORDER BY c.project_id LIMIT $5
 `
 
@@ -241,6 +310,21 @@ func (q *Queries) ConfigurationProjects(ctx context.Context, arg ConfigurationPr
 			&i.ObservedDraining,
 			&i.ObservedAt,
 			&i.UpdatedAt,
+			&i.RequestID,
+			&i.RequestOperation,
+			&i.RequestActorID,
+			&i.RequestHash,
+			&i.RequestRunnerRevision,
+			&i.RequestStatus,
+			&i.RequestPayloadObjectKey,
+			&i.RequestPayloadSha256,
+			&i.RequestPayloadBytes,
+			&i.RequestPayloadContentBytes,
+			&i.ObservationPayloadObservedAt,
+			&i.ObservationPayloadObjectKey,
+			&i.ObservationPayloadSha256,
+			&i.ObservationPayloadBytes,
+			&i.ObservationPayloadContentBytes,
 		); err != nil {
 			return nil, err
 		}
@@ -321,7 +405,7 @@ func (q *Queries) LockConfigurationRunner(ctx context.Context, arg LockConfigura
 
 const observeConfigurationProject = `-- name: ObserveConfigurationProject :one
 UPDATE runner_project_configurations SET observed_config_revision=$1,observed_policy_id=$2,observed_registered=$3,observed_paused=$4,observed_draining=$5,observed_at=$6
-WHERE organization_id=$7 AND runner_id=$8 AND project_id=$9 AND config_revision=$1 AND policy_id=$2 AND (observed_at IS NULL OR observed_at<=$6) RETURNING organization_id, runner_id, project_id, revision, config_revision, policy_id, state, paused, allow_local_binding, local_intake_enabled, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, observed_config_revision, observed_policy_id, observed_registered, observed_paused, observed_draining, observed_at, updated_at
+WHERE organization_id=$7 AND runner_id=$8 AND project_id=$9 AND config_revision=$1 AND policy_id=$2 AND (observed_at IS NULL OR observed_at<=$6) RETURNING organization_id, runner_id, project_id, revision, config_revision, policy_id, state, paused, allow_local_binding, local_intake_enabled, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, observed_config_revision, observed_policy_id, observed_registered, observed_paused, observed_draining, observed_at, updated_at, request_id, request_operation, request_actor_id, request_hash, request_runner_revision, request_status, request_payload_object_key, request_payload_sha256, request_payload_bytes, request_payload_content_bytes, observation_payload_observed_at, observation_payload_object_key, observation_payload_sha256, observation_payload_bytes, observation_payload_content_bytes
 `
 
 type ObserveConfigurationProjectParams struct {
@@ -371,6 +455,21 @@ func (q *Queries) ObserveConfigurationProject(ctx context.Context, arg ObserveCo
 		&i.ObservedDraining,
 		&i.ObservedAt,
 		&i.UpdatedAt,
+		&i.RequestID,
+		&i.RequestOperation,
+		&i.RequestActorID,
+		&i.RequestHash,
+		&i.RequestRunnerRevision,
+		&i.RequestStatus,
+		&i.RequestPayloadObjectKey,
+		&i.RequestPayloadSha256,
+		&i.RequestPayloadBytes,
+		&i.RequestPayloadContentBytes,
+		&i.ObservationPayloadObservedAt,
+		&i.ObservationPayloadObjectKey,
+		&i.ObservationPayloadSha256,
+		&i.ObservationPayloadBytes,
+		&i.ObservationPayloadContentBytes,
 	)
 	return i, err
 }

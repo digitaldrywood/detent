@@ -1,12 +1,12 @@
 package hubserver
 
 import (
-	"database/sql"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -36,6 +36,7 @@ func TestRunnerIsolationClaims(t *testing.T) {
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.redemption.BackendIsolation = test.report
 			r.enroll(t)
+			r.reportCapacity(t)
 			issue := f.create(t, "queued")
 			settings := map[string]any{"expected_revision": 1, "display_name": "Runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}, "isolation_tier": test.tier}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)
@@ -108,7 +109,8 @@ func TestRunnerIsolationHeartbeatWithdrawsTier(t *testing.T) {
 				r.redemption.BackendIsolation["codex"] = append(r.redemption.BackendIsolation["codex"], isolation.Sandbox)
 			}
 			r.enroll(t)
-			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"codex": {isolation.NativeTrusted}}}
+			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"codex": {isolation.NativeTrusted}},
+				"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.now()}}
 			postHeartbeat := func() {
 				t.Helper()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
@@ -149,72 +151,30 @@ func TestRunnerIsolationHeartbeatWithdrawsTier(t *testing.T) {
 	}
 }
 
-func TestIsolationMigrationPreservesRecordings(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "migration.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	if _, err := db.ExecContext(t.Context(), "CREATE TABLE runner_identities (id TEXT PRIMARY KEY); CREATE TABLE lease_runners (lease_id INTEGER PRIMARY KEY)"); err != nil {
-		t.Fatal(err)
-	}
-	legacy, err := migrationFiles.ReadFile("migrations/00033_workspace_terminal_recordings.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), strings.Split(string(legacy), "-- +goose Down")[0]); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO workspace_terminal_recordings
- (id, workspace_id, organization_id, project_id, relay_session_id, stream_id, principal_id, subject, isolation, started_at, terminal_cols, terminal_rows, cast_text, cast_bytes, created_at, updated_at)
- VALUES ('legacy', 'workspace', 'org', 'project', 'relay', 'stream', 'person', 'subject', 'container', 'start', 80, 24, 'recorded output', 15, 'created', 'updated')`); err != nil {
-		t.Fatal(err)
-	}
-	migration, err := migrationFiles.ReadFile("migrations/00045_runner_isolation.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), strings.Split(string(migration), "-- +goose Down")[0]); err != nil {
-		t.Fatal(err)
-	}
-	var tier, cast string
-	if err := db.QueryRowContext(t.Context(), "SELECT isolation, cast_text FROM workspace_terminal_recordings WHERE id = 'legacy'").Scan(&tier, &cast); err != nil {
-		t.Fatal(err)
-	}
-	if tier != "container" || cast != "recorded output" {
-		t.Fatalf("legacy recording = %q %q", tier, cast)
-	}
-	if _, err := db.ExecContext(t.Context(), "UPDATE workspace_terminal_recordings SET isolation = 'sandbox' WHERE id = 'legacy'"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), "UPDATE workspace_terminal_recordings SET isolation = 'invalid' WHERE id = 'legacy'"); err == nil {
-		t.Fatal("invalid isolation accepted")
-	}
-}
-
 func TestRunnerIsolationOmittedHeartbeatClearsReport(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
 		map[string]any{"display_name": "Runner", "capacity": 2, "version": "test"}), http.StatusOK)
-	var report string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT backend_isolation_json FROM runner_identities WHERE id = ?", r.binding.RunnerID).Scan(&report); err != nil {
+	var report isolation.Report
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		report, err = reader.RunnerBackendIsolation(t.Context(), r.binding.RunnerID)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if report != "{}" {
-		t.Fatalf("stale report retained: %s", report)
+	if len(report) != 0 {
+		t.Fatalf("stale report retained: %v", report)
 	}
 }
 
 func TestRunnerIsolationPolicyPinnedToClaim(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
+	r.reportCapacity(t)
 	issue := f.create(t, "queued")
 	descriptor := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)

@@ -120,6 +120,9 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 		return result, err
 	}
 	detail.Summary = summary
+	if err := s.loadChangeExternalRecord(ctx, scope, tracker.NativeWorkItemID(args.ItemID), &detail); err != nil {
+		return result, err
+	}
 	if selected.ID != "" && selection.Section != "versions" {
 		pushes, err := s.readBoundedChangePushes(ctx, scope, args.ItemID, detail.Versions)
 		if err != nil {
@@ -183,7 +186,40 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 	if latest.Revision != change.Revision || latest.CurrentVersion != change.CurrentVersion || !slices.Equal(latest.LinkedIssues, change.LinkedIssues) {
 		return result, mutation.ErrConflict
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.recheckChangeReadAuthority(ctx, scope); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (s *Service) readExactChangeVersionRecord(ctx context.Context, scope nativeScope, item, changeID, versionID string) (tracker.ChangeVersion, error) {
+	change, err := s.readChangeRecord(ctx, scope, item, changeID)
+	if err != nil {
+		return tracker.ChangeVersion{}, err
+	}
+	row, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, versionID)
+	if err != nil {
+		return tracker.ChangeVersion{}, projectRecordError(err)
+	}
+	version, err := s.hydrateChangeVersion(ctx, scope, change.WorkItemID, row)
+	if err != nil {
+		return tracker.ChangeVersion{}, err
+	}
+	latest, err := s.readChangeRecord(ctx, scope, item, change.ID)
+	if err != nil {
+		return tracker.ChangeVersion{}, err
+	}
+	if err := s.recheckChangeReadAuthority(ctx, scope); err != nil {
+		return tracker.ChangeVersion{}, err
+	}
+	if landed := latest.CurrentLanding(); landed != nil && landed.Quality != nil && landed.VersionID == version.ID && landed.HeadSHA == version.HeadSHA {
+		version.LandingQuality = landed.Quality
+	}
+	return version, nil
+}
+
+func (s *Service) recheckChangeReadAuthority(ctx context.Context, scope nativeScope) error {
+	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -197,10 +233,7 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 			}
 		}
 		return nil
-	}); err != nil {
-		return result, err
-	}
-	return result, nil
+	})
 }
 
 func (s *Service) readChangeRecordSection(ctx context.Context, scope nativeScope, args operatortool.ChangeArguments, result *operatortool.ChangeResult, cursor boundedChangeRecordCursor, budget int, single, omitHistory bool) (operatortool.ChangeReadPage, error) {
@@ -497,6 +530,20 @@ func (s *Service) readBoundedChangePushes(ctx context.Context, scope nativeScope
 			})
 			if err != nil {
 				return nil, projectRecordError(err)
+			}
+			if valid {
+				snapshot, err := s.readNativeAttemptSnapshotTenant(ctx, scope, item, run.AttemptID)
+				if err != nil {
+					return nil, err
+				}
+				actual, err := s.readNativeAttemptRunTenant(ctx, snapshot)
+				if err != nil {
+					return nil, err
+				}
+				if mismatch := nativeAttemptRunMismatch(snapshot, actual); mismatch != nil {
+					return nil, mismatch
+				}
+				valid = actual.PolicyID == run.PolicyID && actual.PolicyID == version.PolicyID
 			}
 			if valid {
 				result = append(result, tracker.ChangePublicationPush{Change: reference, RecordingAttemptID: run.AttemptID, EffectID: checkpoint.EffectID})

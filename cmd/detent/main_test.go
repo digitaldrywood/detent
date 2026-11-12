@@ -20,7 +20,6 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/service"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestProtocolProbeWithoutScratch(t *testing.T) {
@@ -227,33 +226,16 @@ func TestRunCLIWritesProblemJSONForUnknownFlag(t *testing.T) {
 func TestRunCLIWritesProblemJSONForProjectNotFound(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "error")
 	root := t.TempDir()
-	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	workdirPath := filepath.Join(root, "repo")
 	configPath := filepath.Join(root, "global.yaml")
-	if err := os.Mkdir(workdirPath, 0o755); err != nil {
-		t.Fatalf("Mkdir() error = %v", err)
+	cfg := globalconfig.Config{
+		Path:       configPath,
+		APIVersion: globalconfig.APIVersion,
+		Kind:       globalconfig.Kind,
+		Global:     globalconfig.Settings{MaxConcurrentAgents: 1, Scheduling: globalconfig.SchedulingWeighted},
+		Projects:   []globalconfig.Project{},
 	}
-	if err := os.WriteFile(workflowPath, []byte("name: test\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(workflow) error = %v", err)
-	}
-	config := "apiVersion: detent/v1\nkind: GlobalConfig\nglobal:\n  max_concurrent_agents: 1\n  scheduling: weighted\n"
-	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(root, "detent.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := globalconfig.Config{Projects: []globalconfig.Project{
-		{ID: "api", Workflow: workflowPath, Workdir: workdirPath, Weight: 1},
-		{ID: "web", Workflow: workflowPath, Workdir: workdirPath, Weight: 1},
-		{ID: "infra", Workflow: workflowPath, Workdir: workdirPath, Weight: 1},
-	}}
-	if _, err := backend.InitializeLocalConfiguration(t.Context(), cfg, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
-		t.Fatalf("WriteFile(config) error = %v", err)
+	if err := globalconfig.Write(configPath, cfg); err != nil {
+		t.Fatalf("Write(config) error = %v", err)
 	}
 
 	var stdout bytes.Buffer
@@ -295,13 +277,11 @@ func TestRunCLIWritesProblemJSONForProjectNotFound(t *testing.T) {
 	if got.ExitCode != code {
 		t.Fatalf("exit_code = %d, want %d", got.ExitCode, code)
 	}
-	for _, want := range []string{"available: api, web, infra", `did you mean "api"?`} {
-		if !strings.Contains(got.SuggestedFix, want) {
-			t.Fatalf("suggested_fix missing %q:\n%s", want, got.SuggestedFix)
-		}
+	if !strings.Contains(got.SuggestedFix, "no projects are configured; run detent hub runner register to enroll this runner") {
+		t.Fatalf("suggested_fix = %q, want enrollment guidance", got.SuggestedFix)
 	}
-	if len(got.DidYouMean) != 1 || got.DidYouMean[0] != "api" {
-		t.Fatalf("did_you_mean = %#v, want api", got.DidYouMean)
+	if len(got.DidYouMean) != 0 {
+		t.Fatalf("did_you_mean = %#v, want none without Hub projects", got.DidYouMean)
 	}
 	if got.DocsURL != "https://detent.dev/docs/cli#project-not-found" {
 		t.Fatalf("docs_url = %q, want project-not-found docs", got.DocsURL)

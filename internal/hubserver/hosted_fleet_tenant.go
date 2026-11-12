@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -45,26 +46,69 @@ func (s *Service) readHostedFleetTenant(ctx context.Context, credential apiCrede
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
+	now := s.config.now().UTC()
+	result, _, err := s.readHostedFleetSnapshotTenant(ctx, credential, projects, "", now)
+	if err != nil {
+		return hostedFleetResponse{}, err
+	}
+	if s.database.plans() != nil {
+		entitlement, readErr := s.database.hostedEntitlement(ctx, nil, now)
+		if readErr != nil {
+			return hostedFleetResponse{}, readErr
+		}
+		if !slices.Contains(entitlement.Features, "native_execution") {
+			for index := range result.Runners {
+				if capacity := result.Runners[index].Capacity; capacity != nil {
+					zero := 0
+					capacity.Limits = append(capacity.Limits, runnerauth.CapacityLimit{Owner: "plan", Limit: &zero, Constraint: "The current plan does not permit native execution.", ObservedAt: now})
+					capacity.Effective = &zero
+					capacity.Status = "partially_applied"
+					for project, projectCapacity := range capacity.Projects {
+						projectCapacity.Effective = &zero
+						capacity.Projects[project] = projectCapacity
+					}
+				}
+			}
+		}
+	}
+	result.Usage, err = s.hostedFleetUsage(ctx)
+	return result, err
+}
+
+func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential apiCredential, projects []appBootstrapProject, selectedProject tracker.ProjectID, now time.Time) (hostedFleetResponse, []scopedProviderAccount, error) {
 	visible := map[tracker.ProjectID]bool{}
 	manageable := map[tracker.ProjectID]bool{}
 	for _, project := range projects {
-		visible[tracker.ProjectID(project.ID)] = true
+		if selectedProject == "" || tracker.ProjectID(project.ID) == selectedProject {
+			visible[tracker.ProjectID(project.ID)] = true
+		}
 		manageable[tracker.ProjectID(project.ID)] = project.CanManageRunners
 	}
-	now := s.config.now().UTC()
+	if selectedProject != "" && !visible[selectedProject] {
+		return hostedFleetResponse{}, nil, operatortool.ErrAccessDenied
+	}
+	reservations := []scopedProviderAccount{}
 	result := hostedFleetResponse{Runners: []hostedFleetRunner{}, RunnerNames: map[string]hostedRunnerName{}, Current: detentVersion(s.config.Version), MinimumRunnerVersion: minimumRunnerVersion(s.config.Version)}
 	read := func(r tenantstore.Reader) error {
+		if selectedProject != "" {
+			scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: selectedProject, credential: credential}
+			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+				return err
+			}
+		}
 		reader, ok := r.(runnerstore.FleetReader)
 		if !ok {
 			return errors.New("runner fleet reader unavailable")
 		}
-		names, err := reader.FleetNames(ctx, 10000)
-		if err != nil {
-			return err
-		}
-		for _, name := range names {
-			if name.Removed {
-				result.RunnerNames[name.RunnerID] = hostedRunnerName{DisplayName: name.DisplayName, Hostname: name.Hostname}
+		if selectedProject == "" {
+			names, err := reader.FleetNames(ctx, 10000)
+			if err != nil {
+				return err
+			}
+			for _, name := range names {
+				if name.Removed {
+					result.RunnerNames[name.RunnerID] = hostedRunnerName{DisplayName: name.DisplayName, Hostname: name.Hostname}
+				}
 			}
 		}
 		records, err := reader.FleetRecords(ctx, 10000)
@@ -103,6 +147,11 @@ func (s *Service) readHostedFleetTenant(ctx context.Context, credential apiCrede
 		leases = slices.DeleteFunc(leases, func(lease runnerstore.FleetLease) bool {
 			return !visible[lease.Lease.ProjectID] || credential.HostedRole == "reporter" && (principal == "" || lease.ActorPrincipalID != principal)
 		})
+		for _, lease := range leases {
+			if lease.Reservation != nil {
+				reservations = append(reservations, scopedProviderAccount{runnerID: lease.RunnerID, Report: lease.Reservation.Report})
+			}
+		}
 		runnerLeases := map[string][]runnerauth.RunnerLease{}
 		hostSlots := map[tracker.MachineID]map[string]bool{}
 		for _, lease := range leases {
@@ -122,6 +171,9 @@ func (s *Service) readHostedFleetTenant(ctx context.Context, credential apiCrede
 		for _, record := range records {
 			identity, machine := record.Identity, record.Machine
 			runner := runnerFromFleetRecord(record, now, urgent)
+			if selectedProject != "" && !runner.AllowsProject(selectedProject) {
+				continue
+			}
 			runner.HostUsed = len(hostSlots[identity.MachineID])
 			runner.ProviderCapacity = providerViews[identity.RunnerID]
 			runner.Leases = runnerLeases[identity.RunnerID]
@@ -223,39 +275,21 @@ func (s *Service) readHostedFleetTenant(ctx context.Context, credential apiCrede
 		return nil
 	}
 	organization := tracker.OrganizationID(s.appOrganizationID())
+	var err error
 	if repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository); ok {
 		err = repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, read)
+	} else if selectedProject != "" {
+		return hostedFleetResponse{}, nil, operatortool.ErrServiceUnavailable
 	} else {
 		err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, read)
 	}
 	if err != nil {
-		return hostedFleetResponse{}, fmt.Errorf("read tenant fleet: %w", err)
+		return hostedFleetResponse{}, nil, fmt.Errorf("read tenant fleet: %w", err)
 	}
 	slices.SortFunc(result.Runners, func(a, b hostedFleetRunner) int {
 		return cmp.Or(cmp.Compare(a.DisplayName, b.DisplayName), cmp.Compare(a.ID, b.ID))
 	})
-	if s.database.plans() != nil {
-		entitlement, readErr := s.database.hostedEntitlement(ctx, nil, now)
-		if readErr != nil {
-			return hostedFleetResponse{}, readErr
-		}
-		if !slices.Contains(entitlement.Features, "native_execution") {
-			for index := range result.Runners {
-				if capacity := result.Runners[index].Capacity; capacity != nil {
-					zero := 0
-					capacity.Limits = append(capacity.Limits, runnerauth.CapacityLimit{Owner: "plan", Limit: &zero, Constraint: "The current plan does not permit native execution.", ObservedAt: now})
-					capacity.Effective = &zero
-					capacity.Status = "partially_applied"
-					for project, projectCapacity := range capacity.Projects {
-						projectCapacity.Effective = &zero
-						capacity.Projects[project] = projectCapacity
-					}
-				}
-			}
-		}
-	}
-	result.Usage, err = s.hostedFleetUsage(ctx)
-	return result, err
+	return result, reservations, nil
 }
 
 func runnerFromFleetRecord(record runnerstore.FleetRecord, now time.Time, urgent runnerstore.UrgentUpdate) runnerauth.Runner {
@@ -309,10 +343,8 @@ func runnerFromFleetRecord(record runnerstore.FleetRecord, now time.Time, urgent
 		runner.Health = "offline"
 	}
 	runner.ConnectionHealth = runner.Health
-	if runner.Health == "online" && len(runner.Problems) > 0 {
-		runner.Health = "needs_attention"
-	}
 	applyUrgentRunnerRouting(&runner, urgentRunnerUpdate{Revision: urgent.Revision, Request: urgent.Request}, machine.Version)
+	applyRunnerProblemView(&runner, machine.SpriteName, now)
 	return runner
 }
 

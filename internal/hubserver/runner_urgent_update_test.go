@@ -9,24 +9,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestUrgentRunnerUpdateReceiptSurvivesReplayExpiry(t *testing.T) {
-	for _, format := range []string{"current", "legacy inline", "legacy object", "legacy typed"} {
+	for _, format := range []string{"current"} {
 		t.Run(format, func(t *testing.T) {
 			start := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 			var clock atomic.Int64
 			clock.Store(start.UnixNano())
 			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, retentionTimeout: frozenRetentionTimeout})
 			s := f.service
-			if err := s.stopGitHubWebhookMaintenance(); err != nil {
-				t.Fatal(err)
-			}
+
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 			r.enroll(t)
-			if _, err := s.database.db.ExecContext(t.Context(), `UPDATE api_tokens SET expires_at=? WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)`, formatHubTime(start.Add(48*time.Hour)), r.binding.RunnerID); err != nil {
+			if _, err := usagePostgresAdmin(t, s).ExecContext(t.Context(), `UPDATE api_tokens SET expires_at=$1 WHERE organization_id=$2 AND id=(SELECT token_id FROM runner_identities WHERE organization_id=$2 AND runner_id=$3)`, start.Add(48*time.Hour), f.project.OrganizationID, r.binding.RunnerID); err != nil {
 				t.Fatal(err)
 			}
 			path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/runner-update/urgent"
@@ -36,43 +35,26 @@ func TestUrgentRunnerUpdateReceiptSurvivesReplayExpiry(t *testing.T) {
 			var urgent urgentRunnerUpdate
 			decodeHubResponse(t, response, &urgent)
 			requireCommandPayloadObject(t, s, f.project.OrganizationID, "urgent_runner_update", "first", response.Body.Bytes())
-			if format != "current" {
-				inline, object := response.Body.String(), ""
-				if format == "legacy object" {
-					ref, err := prepareMeteredContent(s.contentContext(t.Context()), string(f.project.OrganizationID), response.Body.Bytes(), true)
-					if err != nil {
-						t.Fatal(err)
-					}
-					inline, object = "{}", ref.Key
-				}
-				if _, err := s.database.db.ExecContext(t.Context(), `UPDATE native_commands SET response_json=?,response_object_key=?,response_pending=NULL,response_request_id=NULL,response_replay_until_ns=NULL,response_reconciliation_hash=NULL WHERE organization_id=? AND operation='urgent_runner_update' AND command_key='first'`, inline, object, f.project.OrganizationID); err != nil {
-					t.Fatal(err)
-				}
-				if format == "legacy typed" {
-					if _, err := s.database.db.ExecContext(t.Context(), `UPDATE native_commands SET response_pending=0,response_request_id=?,response_replay_until_ns=? WHERE organization_id=? AND operation='urgent_runner_update' AND command_key='first'`, urgent.Request.ID, start.Add(commandReceiptRetention).UnixNano(), f.project.OrganizationID); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
+
 			requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPut, path, testHubAdminToken, urgentRunnerUpdateChange{ExpectedRevision: urgent.Revision, Version: "1.2.5", Confirm: true, IdempotencyKey: "second"}), http.StatusAccepted)
 			clock.Store(start.Add(commandReceiptRetention + time.Second).UnixNano())
 			ctx := s.contentContext(t.Context())
 			if err := s.retainCommandPayloads(ctx, s.config.now()); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.database.populateRunnerFacts(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if err := s.retainCommandPayloads(ctx, s.config.now()); err != nil {
-				t.Fatal(err)
-			}
+
 			requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPut, path, testHubAdminToken, first), http.StatusGone)
-			var inline, object string
-			if err := s.database.reader.QueryRowContext(t.Context(), `SELECT response_json,response_object_key FROM native_commands WHERE organization_id=? AND operation='urgent_runner_update' AND command_key='first'`, f.project.OrganizationID).Scan(&inline, &object); err != nil {
+			var expired bool
+			var requestID, reconciliation, object string
+			if err := usagePostgresAdmin(t, s).QueryRowContext(t.Context(), `SELECT state.response_expired,state.response_request_id,state.response_reconciliation_hash,c.payload_object_key FROM native_command_states state JOIN native_commands c USING(organization_id,actor_id,operation,command_key) WHERE state.organization_id=$1 AND state.operation='urgent_runner_update' AND state.command_key='first'`, f.project.OrganizationID).Scan(&expired, &requestID, &reconciliation, &object); err != nil {
 				t.Fatal(err)
 			}
-			if inline != "{}" || object != "" {
-				t.Fatal("expired urgent update retained its replay payload")
+			if !expired || requestID != urgent.Request.ID || reconciliation == "" || object == "" {
+				t.Fatalf("expired urgent receipt lost typed provenance: expired=%v request=%s reconciliation=%s object=%s", expired, requestID, reconciliation, object)
+			}
+			var owners int
+			if err := usagePostgresAdmin(t, s).QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners owner JOIN archive_objects object ON object.organization_id=owner.organization_id AND object.id=owner.archive_id WHERE owner.organization_id=$1 AND object.object_key=$2 AND owner.owner_kind='native-command'`, f.project.OrganizationID, object).Scan(&owners); err != nil || owners != 0 {
+				t.Fatalf("expired urgent replay retained payload owners=%d error=%v", owners, err)
 			}
 			now := s.config.now()
 			receipt := &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: "refused", FailureReason: "Update was not applied", ObservedAt: now}
@@ -84,14 +66,22 @@ func TestUrgentRunnerUpdateReceiptSurvivesReplayExpiry(t *testing.T) {
 			report.Receipt = &forged
 			response = performHubAPIRequest(t, s, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": build.Version, "os": build.OS, "architecture": build.Architecture, "protocol_major": 2, "update": report, "backend_isolation": r.redemption.BackendIsolation})
 			requireNativeStatus(t, response, http.StatusOK)
-			stored, err := readRunner(ctx, s.database.reader, f.project.OrganizationID, r.binding.RunnerID, now)
+			routingCredential0, routingStatus0, routingError0 := s.authenticateTenantAPIHash(ctx, f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if routingError0 != nil {
+				t.Fatalf("routing reader status=%d error=%v", routingStatus0, routingError0)
+			}
+			stored, err := s.readRunnerRouting(ctx, nativeScope{organization: f.project.OrganizationID, credential: routingCredential0}, r.binding.RunnerID)
 			if err != nil || stored.Update == nil || stored.Update.Receipt != nil {
 				t.Fatalf("expired receipt authenticated a changed request: observation=%+v error=%v", stored.Update, err)
 			}
 			report.Receipt = receipt
 			response = performHubAPIRequest(t, s, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": build.Version, "os": build.OS, "architecture": build.Architecture, "protocol_major": 2, "update": report, "backend_isolation": r.redemption.BackendIsolation})
 			requireNativeStatus(t, response, http.StatusOK)
-			stored, err = readRunner(ctx, s.database.reader, f.project.OrganizationID, r.binding.RunnerID, now)
+			routingCredential1, routingStatus1, routingError1 := s.authenticateTenantAPIHash(ctx, f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if routingError1 != nil {
+				t.Fatalf("routing reader status=%d error=%v", routingStatus1, routingError1)
+			}
+			stored, err = s.readRunnerRouting(ctx, nativeScope{organization: f.project.OrganizationID, credential: routingCredential1}, r.binding.RunnerID)
 			if err != nil || stored.Update == nil || !reflect.DeepEqual(stored.Update.Receipt, receipt) {
 				t.Fatalf("expired superseded urgent update lost runner receipt: observation=%+v error=%v", stored.Update, err)
 			}
@@ -188,7 +178,11 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 	request.Version = "1.2.5"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, path, testHubAdminToken, request), http.StatusConflict)
 	for _, m := range members {
-		stored, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, m.runner.binding.RunnerID, now)
+		routingCredential2, routingStatus2, routingError2 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+		if routingError2 != nil {
+			t.Fatalf("routing reader status=%d error=%v", routingStatus2, routingError2)
+		}
+		stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential2}, m.runner.binding.RunnerID)
 		wantState := m.state
 		if err != nil || stored.State != wantState || (stored.UpdateRequest != nil) != m.older {
 			t.Fatalf("version %s state=%s desired=%+v error=%v", m.version, stored.State, stored.UpdateRequest, err)
@@ -229,7 +223,11 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			if snapshot.Routing.State != m.state {
 				t.Fatalf("failed update did not restore operator state: %+v", snapshot)
 			}
-			stored, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, m.runner.binding.RunnerID, now)
+			routingCredential3, routingStatus3, routingError3 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if routingError3 != nil {
+				t.Fatalf("routing reader status=%d error=%v", routingStatus3, routingError3)
+			}
+			stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential3}, m.runner.binding.RunnerID)
 			if err != nil || stored.State != m.state || stored.Update.Receipt.FailureReason != failure.reason {
 				t.Fatalf("runner lost failure: %+v %v", stored, err)
 			}
@@ -274,10 +272,14 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 		t.Fatalf("late runner escaped urgent release: %+v", snapshot)
 	}
 	now = f.service.config.now()
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", formatHubTime(now.Add(-3*time.Minute)), late.binding.RunnerID); err != nil {
+	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=$1 WHERE organization_id=$2 AND runner_id=$3", now.Add(-3*time.Minute), f.project.OrganizationID, late.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, late.binding.RunnerID, now)
+	routingCredential4, routingStatus4, routingError4 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if routingError4 != nil {
+		t.Fatalf("routing reader status=%d error=%v", routingStatus4, routingError4)
+	}
+	stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential4}, late.binding.RunnerID)
 	if err != nil || stored.State != "active" || stored.UpdateRequest == nil || stored.Health != "offline" {
 		t.Fatalf("offline runner escaped urgent release: %+v error=%v", stored, err)
 	}
@@ -368,7 +370,11 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			if repeated.Revision != snapshot.Revision || repeated.Routing.UpdateRequest == nil || *repeated.Routing.UpdateRequest != *request {
 				t.Fatalf("heartbeat replaced newer delivery: %+v", repeated)
 			}
-			stored, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, now)
+			routingCredential5, routingStatus5, routingError5 := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if routingError5 != nil {
+				t.Fatalf("routing reader status=%d error=%v", routingStatus5, routingError5)
+			}
+			stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential5}, r.binding.RunnerID)
 			if err != nil || stored.UpdateRequest == nil || *stored.UpdateRequest != *request || stored.Update == nil || !reflect.DeepEqual(stored.Update.Receipt, receipt) {
 				t.Fatalf("routing lost request or historical receipt: %+v error=%v", stored, err)
 			}
@@ -432,33 +438,6 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			}
 			if test.state == "active" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusOK)
-			}
-		})
-	}
-}
-
-func TestApplyUrgentRunnerRoutingFollowHubReceipt(t *testing.T) {
-	request := runnerauth.UpdateRequest{ID: "follow-0.129.3", Service: "detent", RequestedAt: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC), Version: "0.129.3", Release: true, FollowHub: true}
-	earlier := request
-	earlier.ID = "follow-0.129.3-earlier"
-	tests := []struct {
-		name    string
-		receipt *runnerauth.UpdateReceipt
-		want    string
-	}{
-		{name: "no receipt stays active", want: "active"},
-		{name: "refused receipt stays active", receipt: &runnerauth.UpdateReceipt{Request: request, Status: "refused", FailureReason: "update is unavailable for unknown installs"}, want: "active"},
-		{name: "uncertain receipt with failure stays active", receipt: &runnerauth.UpdateReceipt{Request: request, Status: "uncertain", FailureReason: "download failed"}, want: "active"},
-		{name: "uncertain receipt without failure stays active", receipt: &runnerauth.UpdateReceipt{Request: request, Status: "uncertain"}, want: "active"},
-		{name: "applied receipt stays active", receipt: &runnerauth.UpdateReceipt{Request: request, Status: "applied"}, want: "active"},
-		{name: "refused receipt for an earlier request stays active", receipt: &runnerauth.UpdateReceipt{Request: earlier, Status: "refused", FailureReason: "update is unavailable for unknown installs"}, want: "active"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			r := runnerauth.Runner{Routing: runnerauth.Routing{State: "active", UpdateRequest: &request}, Update: &runnerauth.UpdateObservation{Running: runnerauth.BuildEvidence{Version: "0.129.2"}, Receipt: test.receipt}}
-			applyUrgentRunnerRouting(&r, urgentRunnerUpdate{}, "0.129.2")
-			if r.State != test.want {
-				t.Fatalf("state = %q, want %q", r.State, test.want)
 			}
 		})
 	}

@@ -15,7 +15,6 @@ require (
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/BurntSushi/toml v1.6.0
-	github.com/Oudwins/tailwind-merge-go v0.2.1
 	github.com/a-h/templ v0.3.1001
 	github.com/aws/aws-sdk-go-v2 v1.46.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.3
@@ -40,7 +39,6 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.8
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
-	github.com/templui/templui v1.12.0
 	github.com/yuin/goldmark v1.7.13
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.57.0
@@ -52,7 +50,6 @@ require (
 	golang.org/x/sys v0.48.0
 	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.51.0
 )
 
 require (
@@ -132,7 +129,4 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.49.0
-	modernc.org/libc v1.72.3
-	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.11.0 // indirect
 )

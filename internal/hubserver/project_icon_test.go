@@ -14,12 +14,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/auth"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -87,8 +90,8 @@ func TestProjectIconLifecycle(t *testing.T) {
 				t.Fatalf("saved icon = %+v", saved.Icon)
 			}
 			if previousImage != "" {
-				var deleted bool
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT deleted_at IS NOT NULL FROM attachments WHERE id=?", previousImage).Scan(&deleted); err != nil || !deleted {
+				stored, err := readProjectIconAttachment(t.Context(), f.service, f.project.OrganizationID, f.project.ID, previousImage)
+				if err != nil || stored.Metadata.DeletedAt == nil {
 					t.Fatalf("replacement did not tombstone old object: %v", err)
 				}
 			}
@@ -100,8 +103,9 @@ func TestProjectIconLifecycle(t *testing.T) {
 				if err != nil || config.Width != 128 || config.Height != 128 || saved.Icon.ImageSHA256 == "" || saved.Icon.URL == "" {
 					t.Fatalf("stored icon=%+v, %+v, %v", saved.Icon, config, err)
 				}
-				var retention string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT retention_class FROM attachments WHERE id=?", previousImage).Scan(&retention); err != nil || retention != "organization" {
+				stored, err := readProjectIconAttachment(t.Context(), f.service, f.project.OrganizationID, f.project.ID, previousImage)
+				retention := stored.Retention
+				if err != nil || retention != "organization" {
 					t.Fatalf("committed icon retention=%q, %v", retention, err)
 				}
 			}
@@ -110,7 +114,7 @@ func TestProjectIconLifecycle(t *testing.T) {
 			if !bytes.Equal(response.Body.Bytes(), replay.Body.Bytes()) {
 				t.Fatal("replay differs")
 			}
-			second, err := readProjectIntegration(t.Context(), f.service.database.reader, nativeScope{organization: other.project.OrganizationID, project: other.project.ID})
+			second, err := readProjectIconIntegration(t.Context(), f.service, nativeScope{organization: other.project.OrganizationID, project: other.project.ID})
 			if err != nil || second.Icon != nil || second.Revision != 1 {
 				t.Fatalf("other project=%+v, %v", second, err)
 			}
@@ -171,9 +175,7 @@ func TestSetProjectIconRefusals(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "mutation":
-				if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER refuse_icon_mutation BEFORE UPDATE OF icon_kind ON projects BEGIN SELECT RAISE(ABORT, 'mutation unavailable'); END`); err != nil {
-					t.Fatal(err)
-				}
+				installProjectIconFailure(t, f, "mutation")
 			case "deadline":
 				store.afterPut = func(context.Context) error {
 					return context.DeadlineExceeded
@@ -181,14 +183,15 @@ func TestSetProjectIconRefusals(t *testing.T) {
 			case "upload", "tombstone":
 				store.afterPut = func(context.Context) error { return errors.New("upload response lost") }
 				if test.failure == "tombstone" {
-					if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER refuse_icon_tombstone BEFORE UPDATE OF deleted_at ON attachments BEGIN SELECT RAISE(ABORT, 'tombstone unavailable'); END`); err != nil {
-						t.Fatal(err)
-					}
+					installProjectIconFailure(t, f, "tombstone")
 				}
 			case "revision":
 				store.afterPut = func(context.Context) error {
-					_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET integration_revision=integration_revision+1 WHERE id=?", f.project.ID)
-					return err
+					response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/icon", token, map[string]any{"icon": projecticon.Icon{Kind: "automatic"}, "expected_revision": "1", "idempotency_key": "concurrent-icon"})
+					if response.Code != http.StatusOK {
+						return fmt.Errorf("concurrent icon update status=%d", response.Code)
+					}
+					return nil
 				}
 			case "replay":
 				store.afterPut = func(context.Context) error {
@@ -202,17 +205,18 @@ func TestSetProjectIconRefusals(t *testing.T) {
 					return nil
 				}
 			}
-			var baseline int64
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&baseline); err != nil {
+			baseline, err := readProjectIconBytes(t.Context(), f.service, f.project.OrganizationID)
+			if err != nil {
 				t.Fatal(err)
 			}
 			store.beforePut = func(organization, id string, content []byte) {
-				var size, used int64
-				var project string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT size,project_id FROM attachments WHERE organization_id=? AND id=? AND deleted_at IS NULL AND object_deleted_at IS NULL", organization, id).Scan(&size, &project); err != nil {
+				stored, err := readProjectIconAttachment(t.Context(), f.service, tracker.OrganizationID(organization), f.project.ID, id)
+				if err != nil || stored.Metadata.DeletedAt != nil || stored.ObjectDeletedAt != nil {
 					t.Fatalf("upload started without committed accounting: %v", err)
 				}
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil {
+				size, project := stored.Metadata.Size, stored.Metadata.ProjectID
+				used, err := readProjectIconBytes(t.Context(), f.service, tracker.OrganizationID(organization))
+				if err != nil {
 					t.Fatal(err)
 				}
 				if size != int64(len(content)) || project != string(f.project.ID) || used < baseline+size {
@@ -222,7 +226,7 @@ func TestSetProjectIconRefusals(t *testing.T) {
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPut, f.base+"/icon", token, body).WithContext(ctx))
 			requireNativeStatus(t, response, test.status)
-			current, err := readProjectIntegration(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			current, err := readProjectIconIntegration(t.Context(), f.service, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -251,12 +255,12 @@ func TestSetProjectIconRefusals(t *testing.T) {
 				}
 			}
 			var count int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE organization_id=? AND project_id=?", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil || count != wantObjects {
+			if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE organization_id=$1 AND project_id=$2", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil || count != wantObjects {
 				t.Fatalf("accounted rows=%d want=%d err=%v", count, wantObjects, err)
 			}
 			sweep := httptest.NewRecorder()
 			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/internal/v1/attachments/expired", nil), sweep)
-			c.Set(hostedSharedClaimsKey, cloudassert.Claims{Kind: cloudassert.KindService})
+			c.Set(hostedSharedClaimsKey, cloudassert.Claims{Kind: cloudassert.KindService, Audience: string(f.project.OrganizationID)})
 			if err := f.service.expiredCloudAttachments(c); err != nil {
 				t.Fatal(err)
 			}
@@ -266,10 +270,11 @@ func TestSetProjectIconRefusals(t *testing.T) {
 			}
 			for key, content := range store.objects {
 				id := strings.TrimPrefix(key, string(f.project.OrganizationID)+"/")
-				var deleted, counted bool
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT deleted_at IS NOT NULL,object_deleted_at IS NULL FROM attachments WHERE id=?", id).Scan(&deleted, &counted); err != nil {
+				stored, err := readProjectIconAttachment(t.Context(), f.service, f.project.OrganizationID, f.project.ID, id)
+				if err != nil {
 					t.Fatal(err)
 				}
+				deleted, counted := stored.Metadata.DeletedAt != nil, stored.ObjectDeletedAt == nil
 				wantDeleted := (current.Icon == nil || current.Icon.ImageKey != id) && test.failure != "tombstone"
 				found := false
 				for _, item := range expired {
@@ -277,8 +282,8 @@ func TestSetProjectIconRefusals(t *testing.T) {
 						found = true
 					}
 				}
-				var used int64
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil {
+				used, err := readProjectIconBytes(t.Context(), f.service, f.project.OrganizationID)
+				if err != nil {
 					t.Fatal(err)
 				}
 				if deleted != wantDeleted || found != wantDeleted || !counted || used < baseline+int64(len(content)) {
@@ -306,7 +311,7 @@ func TestProjectIconMCP(t *testing.T) {
 	if envelope.Result.IsError {
 		t.Fatal(response.Body.String())
 	}
-	saved, err := readProjectIntegration(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+	saved, err := readProjectIconIntegration(t.Context(), f.service, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 	if err != nil || saved.Icon == nil || saved.Icon.Emoji != "🚀" || saved.Revision != 2 {
 		t.Fatalf("MCP icon = %+v %v", saved, err)
 	}
@@ -369,7 +374,7 @@ func TestHostedProjectIcon(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newBrowserHostedFixture(t, true)
 			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
-			before, err := readProjectIntegration(t.Context(), f.service.database.reader, scope)
+			before, err := readProjectIconIntegration(t.Context(), f.service, scope)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -377,7 +382,14 @@ func TestHostedProjectIcon(t *testing.T) {
 				if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_owner", "member"); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET role='member' WHERE user_id='user_browser_owner'"); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					member, err := w.AccessMember(t.Context(), "user_browser_owner")
+					if err != nil {
+						return err
+					}
+					member.Role, member.UpdatedAt = "member", f.service.config.now().UTC()
+					return w.UpdateAccessMember(t.Context(), member)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -389,10 +401,11 @@ func TestHostedProjectIcon(t *testing.T) {
 			response := f.rawAPI(t, test.account, http.MethodPut, browserHostedOrganizationBase+"/projects/"+f.project+"/icon", body, map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies[test.account].Value)})
 			requireNativeStatus(t, response, test.status)
 			if test.status == 200 {
-				projects, err := f.service.hostedReadableProjects(t.Context(), apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_browser_owner"}, HostedRole: "owner"})
-				if err != nil {
-					t.Fatal(err)
-				}
+				bootstrap := f.appRequest(t, "owner", http.MethodGet, "/app/bootstrap")
+				requireNativeStatus(t, bootstrap, http.StatusOK)
+				var payload appBootstrap
+				decodeHubResponse(t, bootstrap, &payload)
+				projects := payload.Projects
 				found := false
 				for _, p := range projects {
 					if p.ID == f.project && p.Icon != nil && p.Icon.Emoji == "🚀" {
@@ -406,11 +419,64 @@ func TestHostedProjectIcon(t *testing.T) {
 					t.Fatal(response.Body.String())
 				}
 			} else {
-				after, err := readProjectIntegration(t.Context(), f.service.database.reader, scope)
+				after, err := readProjectIconIntegration(t.Context(), f.service, scope)
 				if err != nil || after.Icon != nil || after.Revision != before.Revision {
 					t.Fatalf("refusal changed project: %+v %v", after, err)
 				}
 			}
 		})
+	}
+}
+
+func readProjectIconIntegration(ctx context.Context, service *Service, scope nativeScope) (ProjectIntegration, error) {
+	record, err := service.readProjectRecord(ctx, scope)
+	if err != nil {
+		return ProjectIntegration{}, err
+	}
+	return projectIntegrationRecord(record), nil
+}
+
+func readProjectIconAttachment(ctx context.Context, service *Service, organization tracker.OrganizationID, project tracker.ProjectID, id string) (attachmentstore.Record, error) {
+	var record attachmentstore.Record
+	err := service.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		record, err = r.Attachment(ctx, project, id)
+		return err
+	})
+	return record, err
+}
+
+func readProjectIconBytes(ctx context.Context, service *Service, organization tracker.OrganizationID) (int64, error) {
+	var used int64
+	err := service.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		used, err = r.CollaborationBytes(ctx)
+		return err
+	})
+	return used, err
+}
+
+func installProjectIconFailure(t *testing.T, f nativeFixture, failure string) {
+	t.Helper()
+	var table, column, message string
+	switch failure {
+	case "mutation":
+		table, column, message = "project_settings", "icon_kind", "mutation unavailable"
+	case "tombstone":
+		table, column, message = "attachments", "deleted_at", "tombstone unavailable"
+	default:
+		t.Fatalf("unknown icon failure %q", failure)
+	}
+	name := "refuse_icon_" + failure
+	organization := strings.ReplaceAll(string(f.project.OrganizationID), "'", "''")
+	project := strings.ReplaceAll(string(f.project.ID), "'", "''")
+	for _, statement := range []string{
+		fmt.Sprintf("CREATE FUNCTION public.%s() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp AS $$ BEGIN RAISE EXCEPTION '%s' USING ERRCODE='P0001'; END $$", name, message),
+		"GRANT EXECUTE ON FUNCTION public." + name + "() TO " + pgx.Identifier{f.service.config.Postgres.Connection.User}.Sanitize(),
+		fmt.Sprintf("CREATE TRIGGER %s BEFORE UPDATE OF %s ON public.%s FOR EACH ROW WHEN (OLD.organization_id='%s' AND OLD.project_id='%s') EXECUTE FUNCTION public.%s()", name, column, table, organization, project, name),
+	} {
+		if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

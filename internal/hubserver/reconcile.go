@@ -33,14 +33,15 @@ type RepositoryTarget struct {
 }
 
 type ReconcileRequest struct {
-	Profile        string
-	SkipIssues     bool
-	SkipRepository bool
-	Repository     RepositoryTarget
-	Mode           ReconcileMode
-	Since          *time.Time
-	Through        time.Time
-	Hydrations     []HydrationRequest
+	Profile              string
+	SkipIssues           bool
+	SkipRepository       bool
+	Repository           RepositoryTarget
+	Mode                 ReconcileMode
+	Since                *time.Time
+	Through              time.Time
+	TargetedPullRequests bool
+	Hydrations           []HydrationRequest
 }
 
 type HydrationRequest struct {
@@ -54,11 +55,12 @@ type HydrationRequest struct {
 }
 
 type RepositorySource struct {
-	NodeID     string
-	DatabaseID *int64
-	Owner      string
-	Name       string
-	UpdatedAt  time.Time
+	DefaultBranch string
+	NodeID        string
+	DatabaseID    *int64
+	Owner         string
+	Name          string
+	UpdatedAt     time.Time
 }
 
 type IssueSource struct {
@@ -123,27 +125,12 @@ type reconcileTarget struct {
 	Hydrations        []HydrationRequest
 }
 
-func (s *Service) runGitHubReconciliation(ctx context.Context) {
-	close(s.reconcileDone)
-}
-
 func (s *Service) reconcileAllRepositories(ctx context.Context, mode ReconcileMode) {
 
 }
 
 func (s *Service) reconcileRepository(ctx context.Context, target reconcileTarget, mode ReconcileMode) error {
 	return ErrPostgresFeatureUnavailable
-}
-
-func (s *Service) stopGitHubReconciliation() error {
-	if s == nil || s.reconcileCancel == nil || s.reconcileDone == nil {
-		return nil
-	}
-	s.reconcileStopOnce.Do(func() {
-		s.reconcileCancel()
-		<-s.reconcileDone
-	})
-	return nil
 }
 
 func (d *database) reconcileTargets(ctx context.Context) ([]reconcileTarget, error) {

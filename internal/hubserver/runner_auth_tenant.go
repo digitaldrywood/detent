@@ -28,8 +28,16 @@ func runnerIdentityRecord(ctx context.Context, reader tenantstore.Reader, record
 	}, nil
 }
 
+type runnerAuthorityReader interface {
+	ReadRunnerAuthority(context.Context, tenantauth.RequestIdentity, func() time.Time) (tenantauth.Scope, int, error)
+}
+
 func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tracker.OrganizationID, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
-	if s.config.TenantRepository == nil || organization == "" {
+	return s.authenticateRepositoryAPIHash(ctx, s.config.TenantRepository, organization, hash, renewalRunner, renewalOrganization)
+}
+
+func (s *Service) authenticateRepositoryAPIHash(ctx context.Context, repository tenantstore.Repository, organization tracker.OrganizationID, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
+	if repository == nil || organization == "" {
 		return apiCredential{}, http.StatusServiceUnavailable, nativeRunEventStorageUnavailable()
 	}
 	var token accessstore.Credential
@@ -38,15 +46,12 @@ func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tr
 	var provider string
 	var runnerRenewal bool
 	var err error
-	authority, authorityAvailable := s.config.TenantRepository.(tenantauth.Reader)
-	runnerAuthority, runnerAuthorityAvailable := s.config.TenantRepository.(interface {
-		ReadRunnerAuthority(context.Context, tenantauth.RequestIdentity, func() time.Time) (tenantauth.Scope, int, error)
-	})
-	runnerAuthorityAvailable = runnerAuthorityAvailable && ctx.Value(runnerEventAuthorityKey{}) == true
+	authority, authorityAvailable := repository.(tenantauth.Reader)
+	runnerAuthority, runnerAuthorityAvailable := repository.(runnerAuthorityReader)
 	var requestCapacity *int
 	if authorityAvailable || runnerAuthorityAvailable {
 		var scope tenantauth.Scope
-		input := tenantauth.RequestIdentity{Organization: organization, CredentialHash: hash, RenewalRunner: renewalRunner, RenewalOrganization: tracker.OrganizationID(renewalOrganization)}
+		input := tenantauth.RequestIdentity{Local: s.config.Hosted == nil, Organization: organization, CredentialHash: hash, RenewalRunner: renewalRunner, RenewalOrganization: tracker.OrganizationID(renewalOrganization)}
 		if authorityAvailable {
 			scope, err = authority.ReadTenantAuthority(ctx, input)
 		} else {
@@ -65,7 +70,7 @@ func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tr
 			}
 		}
 	} else {
-		err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		err = repository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			var err error
 			token, err = reader.CredentialByHash(ctx, hash)
 			if err != nil {

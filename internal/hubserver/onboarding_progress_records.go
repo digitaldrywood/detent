@@ -32,41 +32,50 @@ func (s *Service) readOnboardingProgressRecord(ctx context.Context, scope native
 }
 
 func (s *Service) saveOnboardingProgressRecord(c echo.Context, request saveOnboardingRequest) error {
-	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.Progress.Revision < 0 {
-		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes and a nonnegative revision are required"))
-	}
-	scope := nativeRequestScope(c)
-	_, viewerKey, err := onboardingViewer(scope.credential)
+	raw, err := s.saveOnboardingProgressCommand(c.Request().Context(), nativeRequestScope(c), c.Request().Method+" "+c.Request().URL.EscapedPath(), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	return c.JSONBlob(http.StatusOK, raw)
+}
+
+func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope nativeScope, operation string, request saveOnboardingRequest) (json.RawMessage, error) {
+	if err := request.Progress.Validate(); err != nil {
+		return nil, nativeInvalid(err.Error())
+	}
+	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.Progress.Revision < 0 {
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes and a nonnegative revision are required")
+	}
+	_, viewerKey, err := onboardingViewer(scope.credential)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	hash, err := nativeCommandHash(request)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
 	if raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); found || err != nil {
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
-		return c.JSONBlob(http.StatusOK, raw)
+		return raw, nil
 	}
 	progress := request.Progress
 	progress.Revision++
 	progress.UpdatedAt = formatHubTime(s.config.now().UTC())
 	raw, err := json.Marshal(progress)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now().UTC()}, raw)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	var replay *eventstore.Receipt
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -82,6 +91,9 @@ func (s *Service) saveOnboardingProgressRecord(c echo.Context, request saveOnboa
 			return nil
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now().UTC()); err != nil {
 			return err
 		}
 		writer, ok := w.(projectstore.OnboardingPageWriter)
@@ -100,24 +112,24 @@ func (s *Service) saveOnboardingProgressRecord(c echo.Context, request saveOnboa
 	if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, corestore.ErrUniqueViolation) {
 		if raw, found, readErr := s.authorizedChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); found || readErr != nil {
 			if readErr != nil {
-				return s.nativeAPIError(c, readErr)
+				return nil, readErr
 			}
-			return c.JSONBlob(http.StatusOK, raw)
+			return raw, nil
 		}
 		current, readErr := s.readOnboardingProgressRecord(ctx, scope)
 		if readErr != nil {
-			return s.nativeAPIError(c, readErr)
+			return nil, readErr
 		}
-		return s.nativeAPIError(c, nativeConflict(current.Revision))
+		return nil, nativeConflict(current.Revision)
 	}
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, projectRecordError(err)
 	}
 	if replay != nil {
 		raw, err = content.Receipt(ctx, *replay)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
-	return c.JSONBlob(http.StatusOK, raw)
+	return raw, nil
 }

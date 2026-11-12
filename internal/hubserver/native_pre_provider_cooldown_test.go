@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -35,7 +34,10 @@ func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 				t.Fatal("unaccepted completion is not claimable before the failure")
 			}
 
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+			r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			r.enroll(t)
+			f.worker = r.redemption.Credential
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &f.lease)
 			f.attempt, f.run = newNativeID("attempt"), newNativeID("run")
@@ -57,8 +59,12 @@ func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 			f.release(t)
 			if test.aged {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET updated_at = ? WHERE id = ?`, formatHubTime(time.Now().UTC().Add(-time.Hour)), f.attempt); err != nil {
+				result, err := nativeAttemptTestDatabase(t, f.nativeFixture).ExecContext(t.Context(), "UPDATE native_attempts SET updated_at=$1 WHERE organization_id=$2 AND id=$3", f.now.Add(-time.Hour), f.project.OrganizationID, f.attempt)
+				if err != nil {
 					t.Fatal(err)
+				}
+				if count, err := result.RowsAffected(); err != nil || count != 1 {
+					t.Fatalf("aged attempt fixture affected%d rows: %v", count, err)
 				}
 			}
 
@@ -80,15 +86,14 @@ func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 				t.Fatalf("candidate = %t, want %t (attribution %q)", got, test.wantCandidate, attribution)
 			}
 
-			r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-			r.enroll(t)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)", f.lease.ID, r.binding.RunnerID); err != nil {
-				t.Fatal(err)
-			}
-			attempts, err := readHealthRateAttempts(t.Context(), f.service.database.db, f.scope(), operatortool.AnalyticsWindow{From: time.Now().UTC().Add(-2 * time.Hour), To: time.Now().UTC().Add(time.Minute)})
+			source, err := f.service.readHealthProjectSource(t.Context(), f.project.OrganizationID, f.project.ID, "", f.now.Add(time.Minute))
 			if err != nil {
 				t.Fatal(err)
 			}
+			if !source.attemptsKnown {
+				t.Fatal("health source did not retain complete typed attempt facts")
+			}
+			attempts := source.rate.Attempts
 			wantSetup := test.preProvider && attribution == "instance"
 			found := false
 			for _, a := range attempts {

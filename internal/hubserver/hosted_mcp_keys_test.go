@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +18,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -68,10 +71,6 @@ func newHostedKeyMCPFixture(t *testing.T, deployment, role string) (hostedKeyMCP
 }
 
 func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite hosted credential integration")
-	}
-
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
 			for _, access := range []hostedProjectAccess{hostedProjectsSelected, hostedProjectsAll} {
@@ -80,9 +79,6 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 						t.Run(scenario, func(t *testing.T) {
 							neverExpires := strings.HasPrefix(scenario, "never expires ")
 							scenario := strings.TrimPrefix(scenario, "never expires ")
-							if access == hostedProjectsSelected && scenario == "no projects at creation" {
-								t.Skip("only all-project keys can be created without projects")
-							}
 							var f hostedSecurityFixture
 							var shared hostedSharedFixture
 							if deployment == "shared" {
@@ -90,6 +86,25 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								f = shared.hostedSecurityFixture
 							} else {
 								f = newHostedSecurityFixture(t)
+							}
+							writeAccess := func(apply func(tenantstore.Writer) error) {
+								t.Helper()
+								if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, apply); err != nil {
+									t.Fatal(err)
+								}
+							}
+							createProject := func(id tracker.ProjectID, principal string) {
+								t.Helper()
+								writeAccess(func(w tenantstore.Writer) error {
+									template, err := w.ProjectRecord(t.Context(), f.project)
+									if err != nil {
+										return err
+									}
+									if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.service.accessOrganization(), ID: id, Name: "Other", Profile: template.Core.Profile, CreatedAt: template.Core.CreatedAt}, States: template.States}); err != nil {
+										return err
+									}
+									return w.InitializeProjectAccess(t.Context(), id, principal)
+								})
 							}
 							user := f.user(t, "operator", "owner", "operator@example.test", "write", "")
 							credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
@@ -114,10 +129,16 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								request.ProjectIDs = nil
 							}
 							if scenario == "no projects at creation" {
-								operatorSQL(t, f, "DELETE FROM hosted_project_grants")
-								operatorSQL(t, f, "DELETE FROM token_grants")
-								operatorSQL(t, f, "DELETE FROM workflow_states")
-								operatorSQL(t, f, "DELETE FROM projects")
+								writeAccess(func(w tenantstore.Writer) error {
+									row, err := w.ProjectRecord(t.Context(), f.project)
+									if err != nil {
+										return err
+									}
+									if err := w.(accessstore.ProjectAccessCleaner).DeleteAccessProjectGrants(t.Context(), f.project); err != nil {
+										return err
+									}
+									return w.RetireProject(t.Context(), f.project, row.Settings.Revision, f.service.config.now())
+								})
 							}
 							if scenario == "machine" || scenario == "worker" {
 								request.Issuer = nil
@@ -128,6 +149,12 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								}
 							}
 							key, err := f.service.createAPITokenFor(t.Context(), request)
+							if access == hostedProjectsSelected && scenario == "no projects at creation" {
+								if !errors.Is(err, accessstore.ErrDenied) {
+									t.Fatalf("selected key without an active project=%v", err)
+								}
+								return
+							}
 							if err != nil {
 								t.Fatal(err)
 							}
@@ -189,19 +216,30 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							requireNativeStatus(t, serve(http.MethodPost, mcpEndpoint, `{"jsonrpc":"2.0","method":"notifications/initialized"}`), http.StatusAccepted)
 
 							project := string(f.project)
+							organization := "org_security"
 							readDenied, writeDenied := false, keyScope == apikey.ScopeRead
 							switch scenario {
 							case "key revoked":
-								operatorSQL(t, f, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(time.Now()), key.ID)
+								writeAccess(func(w tenantstore.Writer) error {
+									return w.RevokeAccessCredential(t.Context(), key.ID, f.service.config.now())
+								})
 								readDenied = true
 							case "key expired":
-								operatorSQL(t, f, "UPDATE api_tokens SET expires_at=? WHERE id=?", formatHubTime(time.Now().Add(-time.Minute)), key.ID)
+								writeAccess(func(w tenantstore.Writer) error {
+									row, err := w.AccessCredential(t.Context(), key.ID)
+									if err != nil {
+										return err
+									}
+									return w.RenewAccessCredential(t.Context(), row.ID, row.Hash, row.Fingerprint, f.service.config.now().Add(-time.Minute), f.service.config.now())
+								})
 								readDenied = true
 							case "key grant removed":
-								operatorSQL(t, f, "DELETE FROM token_grants WHERE token_id=?", key.ID)
+								writeAccess(func(w tenantstore.Writer) error { return w.DeleteAccessTokenGrant(t.Context(), key.ID, f.project) })
 								readDenied = access == hostedProjectsSelected
 							case "user grant removed":
-								operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=?", user.identity.Subject)
+								writeAccess(func(w tenantstore.Writer) error {
+									return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, f.project)
+								})
 								readDenied = true
 							case "provider membership removed":
 								f.provider.mu.Lock()
@@ -209,10 +247,20 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								f.provider.mu.Unlock()
 								readDenied = true
 							case "local membership removed":
-								operatorSQL(t, f, "UPDATE hosted_members SET active=0 WHERE user_id=?", user.identity.Subject)
+								writeAccess(func(w tenantstore.Writer) error {
+									return w.RevokeAccessMember(t.Context(), user.identity.Subject, f.service.config.now())
+								})
 								readDenied = true
 							case "membership replaced":
-								operatorSQL(t, f, "UPDATE hosted_members SET membership_id='replacement' WHERE user_id=?", user.identity.Subject)
+								writeAccess(func(w tenantstore.Writer) error {
+									member, err := w.AccessMember(t.Context(), user.identity.Subject)
+									if err != nil {
+										return err
+									}
+									member.MembershipID = "replacement"
+									member.UpdatedAt = f.service.config.now()
+									return w.UpdateAccessMember(t.Context(), member)
+								})
 								readDenied = true
 							case "provider role downgraded":
 								f.provider.mu.Lock()
@@ -222,15 +270,44 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								f.provider.mu.Unlock()
 								writeDenied = true
 							case "local role downgraded":
-								operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", user.identity.Subject)
+								writeAccess(func(w tenantstore.Writer) error {
+									member, err := w.AccessMember(t.Context(), user.identity.Subject)
+									if err != nil {
+										return err
+									}
+									member.Role = "viewer"
+									member.UpdatedAt = f.service.config.now()
+									return w.UpdateAccessMember(t.Context(), member)
+								})
 								writeDenied = true
 							case "write grant removed":
-								operatorSQL(t, f, "UPDATE hosted_project_grants SET can_write=0 WHERE user_id=?", user.identity.Subject)
+								writeAccess(func(w tenantstore.Writer) error {
+									grant, err := w.AccessProjectGrant(t.Context(), user.identity.Subject, f.project)
+									if err != nil {
+										return err
+									}
+									grant.CanWrite = false
+									return w.SetAccessProjectGrant(t.Context(), grant)
+								})
 								writeDenied = true
-							case "foreign organization":
-								operatorSQL(t, f, "UPDATE api_tokens SET hosted_organization_id=NULL WHERE id=?", key.ID)
-								readDenied = true
-							case "foreign organization route":
+							case "foreign organization", "foreign organization route":
+								foreign, err := f.service.createNativeOrganizationFor(t.Context(), "Foreign")
+								if err != nil {
+									t.Fatal(err)
+								}
+								organization = string(foreign.ID)
+								if err := f.service.config.TenantRepository.WriteTenant(t.Context(), foreign.ID, corestore.Serving, func(w tenantstore.Writer) error {
+									_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: foreign.ID, ID: f.project, Name: "Foreign", Profile: "native"}, States: nativeFixtureStates()})
+									return err
+								}); err != nil {
+									t.Fatal(err)
+								}
+								if err := f.service.config.TenantRepository.ReadTenant(t.Context(), foreign.ID, corestore.Serving, func(r tenantstore.Reader) error {
+									_, err := r.AuthorizeAccess(t.Context(), accessstore.Authority{CredentialID: key.ID, Hash: apikey.HashToken(key.Token), ProjectID: f.project}, f.service.config.now())
+									return err
+								}); !errors.Is(err, accessstore.ErrDenied) {
+									t.Fatalf("foreign tenant credential authority=%v", err)
+								}
 								readDenied = true
 							case "foreign project":
 								project = "prj_foreign"
@@ -238,32 +315,42 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							case "unselected project", "future project", "future project read key", "future project without user grant", "future project without issuer grant":
 								project = "prj_other"
 								seedNativeFixturePolicy(t, f.service, "org_security/"+project)
-								operatorSQL(t, f, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,'other',profile,states_json,created_at FROM projects WHERE id=?", project, f.project)
-								operatorSQL(t, f, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) SELECT ?,source_name,detent_state,terminal,dispatchable,created_at,updated_at FROM workflow_states WHERE project_id=?", project, f.project)
+								createProject(tracker.ProjectID(project), credential.ID)
 								readDenied = access == hostedProjectsSelected
 								if scenario == "future project without user grant" {
-									operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", user.identity.Subject, project)
+									writeAccess(func(w tenantstore.Writer) error {
+										return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, tracker.ProjectID(project))
+									})
 									readDenied = true
 								}
 								if scenario == "future project without issuer grant" {
-									operatorSQL(t, f, "DELETE FROM token_grants WHERE token_id=? AND project_id=?", credential.ID, project)
+									writeAccess(func(w tenantstore.Writer) error {
+										return w.DeleteAccessTokenGrant(t.Context(), credential.ID, tracker.ProjectID(project))
+									})
 									readDenied = true
 								}
 							case "no projects at creation":
-								if err := seedHostedSecurityProject(t.Context(), f.service.database.db, "org_security"); err != nil {
-									t.Fatal(err)
-								}
+								project = "prj_after_empty"
+								seedNativeFixturePolicy(t, f.service, "org_security/"+project)
+								writeAccess(func(w tenantstore.Writer) error {
+									if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.service.accessOrganization(), ID: tracker.ProjectID(project), Name: "After empty", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}}); err != nil {
+										return err
+									}
+									return w.InitializeProjectAccess(t.Context(), tracker.ProjectID(project), credential.ID)
+								})
+								f.base = strings.Replace(f.base, string(f.project), project, 1)
+								f.project = tracker.ProjectID(project)
 								f.grant(t, user, true, false)
 							case "issuer grant removed":
-								operatorSQL(t, f, "DELETE FROM token_grants WHERE token_id=?", credential.ID)
+								writeAccess(func(w tenantstore.Writer) error {
+									return w.DeleteAccessTokenGrant(t.Context(), credential.ID, f.project)
+								})
 								readDenied = true
 							case "issuer principal revoked":
-								operatorSQL(t, f, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(time.Now()), credential.ID)
+								writeAccess(func(w tenantstore.Writer) error {
+									return w.RevokeAccessCredential(t.Context(), credential.ID, f.service.config.now())
+								})
 								readDenied = true
-							}
-							organization := "org_security"
-							if scenario == "foreign organization route" {
-								organization = "org_foreign"
 							}
 							for _, required := range []apikey.Scope{apikey.ScopeRead, apikey.ScopeWrite, apikey.ScopeAdmin} {
 								_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: required, ProjectID: project, OrganizationID: organization})
@@ -272,10 +359,15 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 									t.Fatalf("scope %s denied=%t err=%v", required, denied, err)
 								}
 							}
-							if current, _, err := f.service.authenticateAPIToken(t.Context(), key.Token, "", ""); err == nil && scenario != "foreign organization route" {
+							ownReadDenied := readDenied && organization == "org_security"
+							current, _, currentErr := f.service.authenticateAPIToken(t.Context(), key.Token, "", "")
+							if organization != "org_security" && currentErr != nil {
+								t.Fatalf("own tenant credential changed: %v", currentErr)
+							}
+							if currentErr == nil {
 								projects, every, err := f.service.readableConversationProjects(t.Context(), nativeScope{organization: "org_security", credential: current})
-								if err != nil || every || slices.Contains(projects, tracker.ProjectID(project)) == readDenied {
-									t.Fatalf("project projection denied=%t projects=%v every=%t err=%v", readDenied, projects, every, err)
+								if err != nil || every || slices.Contains(projects, tracker.ProjectID(project)) == ownReadDenied {
+									t.Fatalf("project projection denied=%t projects=%v every=%t err=%v", ownReadDenied, projects, every, err)
 								}
 							}
 							apiBase := strings.Replace(strings.Replace(f.base, string(f.project), project, 1), "org_security", organization, 1)
@@ -293,10 +385,10 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							}
 							for _, readTool := range []string{operatortool.WorkList, operatortool.WorkBulkExport} {
 								_, err = (hostedOperatorExecutor{f.service}).Execute(ctx, operatortool.Call{Name: readTool, Arguments: json.RawMessage(`{"project_id":"` + project + `"}`)})
-								if readDenied && scenario != "foreign organization route" && !errors.Is(err, operatortool.ErrAccessDenied) {
+								if ownReadDenied && !errors.Is(err, operatortool.ErrAccessDenied) {
 									t.Fatalf("MCP read after authority change: %v", err)
 								}
-								if !readDenied && err != nil {
+								if !ownReadDenied && err != nil {
 									t.Fatal(err)
 								}
 							}
@@ -344,10 +436,6 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 }
 
 func TestHostedAPIKeyManagement(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite hosted credential integration")
-	}
-
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
 			var f hostedSecurityFixture
@@ -435,11 +523,15 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 					if (key.ExpiresAt == nil) != test.neverExpires {
 						t.Fatal("unexpected key expiry")
 					}
-					var expiry sql.NullString
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT expires_at FROM api_tokens WHERE id=?", key.ID).Scan(&expiry); err != nil {
+					var stored accessstore.Credential
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						stored, err = r.AccessCredential(t.Context(), key.ID)
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
-					if expiry.Valid == test.neverExpires {
+					if (stored.ExpiresAt != nil) == test.neverExpires {
 						t.Fatal("unexpected stored key expiry")
 					}
 					wantProjects := 0
@@ -517,11 +609,38 @@ func TestHostedProjectRankTools(t *testing.T) {
 		for _, role := range []string{"owner", "admin", "member", "viewer"} {
 			t.Run(deployment+"/"+role, func(t *testing.T) {
 				f, ctx := newHostedKeyMCPFixture(t, deployment, role)
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects (id, organization_id, name, profile, created_at) SELECT 'prj_rank_second', organization_id, 'Second', profile, created_at FROM projects WHERE id = ?", f.project); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+					template, err := w.ProjectRecord(t.Context(), f.project)
+					if err != nil {
+						return err
+					}
+					_, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.service.accessOrganization(), ID: "prj_rank_second", Name: "Second", Profile: template.Core.Profile, CreatedAt: template.Core.CreatedAt}, States: template.States})
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
-				for _, table := range []string{"hosted_project_grants", "token_grants"} {
-					operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM "+table+" WHERE project_id='prj_rank_second'")
+				readStoredRank := func() (organizationProjectRank, error) {
+					var value organizationProjectRank
+					err := f.service.config.TenantRepository.ReadTenant(ctx, f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+						owner := r.(projectstore.OrganizationReader)
+						var err error
+						value.Revision, err = owner.OrganizationSchedulingRevision(ctx)
+						if err != nil {
+							return err
+						}
+						projects, err := owner.OrganizationRankProjects(ctx, 201)
+						if err != nil {
+							return err
+						}
+						if len(projects) > 200 {
+							return corestore.ErrInvalidPage
+						}
+						for _, project := range projects {
+							value.ProjectIDs = append(value.ProjectIDs, project.ID)
+						}
+						return nil
+					})
+					return value, err
 				}
 				executor := hostedOperatorExecutor{f.service}
 				read, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.OrganizationProjectRank, Arguments: json.RawMessage(`{}`)})
@@ -538,7 +657,7 @@ func TestHostedProjectRankTools(t *testing.T) {
 				if !slices.Equal(visible.ProjectIDs, []tracker.ProjectID{f.project}) {
 					t.Fatalf("rank leaked hidden projects: %#v", visible)
 				}
-				before, err := readOrganizationProjectRank(ctx, f.service.database.db, "org_security")
+				before, err := readStoredRank()
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -568,7 +687,7 @@ func TestHostedProjectRankTools(t *testing.T) {
 						t.Fatal("stale revision accepted")
 					}
 				}
-				after, err := readOrganizationProjectRank(ctx, f.service.database.db, "org_security")
+				after, err := readStoredRank()
 				if err != nil {
 					t.Fatal(err)
 				}

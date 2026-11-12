@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -34,8 +35,21 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 	objects := &memoryRunDetails{}
 
 	for _, organization := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
-		copyPath := coreTenantAggregateSourceCopy(t, organization, false)
-		source := TenantCoreImportSource{BundlePath: copyPath, OrganizationID: organization, Catalog: catalog, Objects: objects}
+		fixture := coreFixtureFromBundle(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
+		var issue tracker.NativeIssue
+		var raw string
+		if err := fixture.records["collaboration_versions"][0].Decode(map[string]any{"record_json": &raw}); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(raw), &issue); err != nil {
+			t.Fatal(err)
+		}
+		issue.Provenance = &tracker.Provenance{Provider: "github", ExternalID: "I_unresolved_" + string(organization), AuthorID: "source-author", CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt, ObservedAt: issue.UpdatedAt}
+		fixture.set("issues", map[string]string{"native_id": string(issue.WorkItemID)}, map[string]any{"provenance_json": string(historyTestJSON(t, issue.Provenance))})
+		fixture.set("collaboration_versions", map[string]string{"record_id": string(issue.WorkItemID), "revision": "1"}, map[string]any{"record_json": string(historyTestJSON(t, issue))})
+		copyPath := fixture.write()
+		var logs bytes.Buffer
+		source := TenantCoreImportSource{BundlePath: copyPath, OrganizationID: organization, Catalog: catalog, Objects: objects, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 		var first TenantCoreImportResult
 		for replay := range 2 {
 			result, err := ImportTenantCoreCopy(t.Context(), config, source)
@@ -51,7 +65,130 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 				t.Fatalf("organization %s replay changed result: first=%+v replay=%+v", organization, first, result)
 			}
 		}
+		if !strings.Contains(logs.String(), "GitHub issue reference remains unresolved") || !strings.Contains(logs.String(), string(issue.WorkItemID)) {
+			t.Fatalf("top-level import lost unresolved-reference diagnostic: %s", logs.String())
+		}
+		if strings.Contains(logs.String(), issue.Body) || strings.Contains(logs.String(), issue.Title) {
+			t.Fatalf("import diagnostic exposed source content: %s", logs.String())
+		}
 	}
+
+	var imported, local int
+	if err := admin.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER (WHERE local) FROM organizations WHERE organization_id IN ('org_aggregate_a','org_aggregate_b')`).Scan(&imported, &local); err != nil || imported != 2 || local != 0 {
+		t.Fatalf("hosted tenant imports organizations=%d local=%d error=%v, want 2 organizations and none local", imported, local, err)
+	}
+	t.Run("historical recovery requires authoritative mappings", func(t *testing.T) {
+		store, err := openPostgresDatabase(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := store.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		for _, organization := range []tracker.OrganizationID{"org_historical_a", "org_historical_b"} {
+			project := tracker.ProjectID("prj_historical")
+			seedHistoricalImportTarget(t, store.postgres, organization, project, "github_compatible")
+			fixture := coreHistoricalV7Fixture(t, organization)
+			path := fixture.write()
+			source := TenantCoreImportSource{BundlePath: path, OrganizationID: organization, Catalog: catalog, Objects: objects}
+			result, err := ImportTenantCoreCopy(t.Context(), config, source)
+			if err == nil || !strings.Contains(err.Error(), "verified post-native mapping bundle") || result.CoreImportComplete {
+				t.Fatalf("missing mapping result=%+v error=%v", result, err)
+			}
+			assertUnwritten := func() {
+				t.Helper()
+				if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					rows, err := reader.WorkItems(t.Context(), project, 0, 10)
+					if err != nil {
+						return err
+					}
+					if len(rows) != 0 {
+						return errors.New("identity prerequisite failure wrote work items")
+					}
+					if _, err := reader.Receipt(t.Context(), "production-import", "core-project-source", "source"); !errors.Is(err, corestore.ErrNotFound) {
+						return fmt.Errorf("identity prerequisite failure pinned source: %v", err)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertUnwritten()
+			mapping := coreWorkItemNeutralFixture(t, organization, project, false)
+			coreFixtureAddTables(t, mapping, "projects")
+			mapping.add("projects", map[string]any{"id": project, "organization_id": organization, "repository_id": 1, "name": "Historical mapping", "profile": "github_compatible", "created_at": "2026-09-01T12:00:00Z"})
+			mapping.set("repositories", map[string]string{"id": "1"}, map[string]any{"github_node_id": "R_original"})
+			for index, id := range []int64{41, 43} {
+				suffix := ""
+				if index == 1 {
+					suffix = "_second"
+				}
+				mapping.set("issues", map[string]string{"native_id": "wi_core_import" + suffix}, map[string]any{"github_node_id": "I_original_" + fmt.Sprint(id), "number": index + 1})
+			}
+			bad := mapping.clone(t)
+			bad.set("issues", map[string]string{"native_id": "wi_core_import"}, map[string]any{"github_node_id": "I_foreign"})
+			source.MappingBundlePath = bad.write()
+			result, err = ImportTenantCoreCopy(t.Context(), config, source)
+			if err == nil || result.CoreImportComplete {
+				t.Fatalf("foreign identity mapping result=%+v error=%v", result, err)
+			}
+			assertUnwritten()
+			source.MappingBundlePath = mapping.write()
+			for range 2 {
+				result, err = ImportTenantCoreCopy(t.Context(), config, source)
+				if err != nil || result.CoreImportComplete || result.WorkItems != 2 {
+					t.Fatalf("verified historical recovery result=%+v error=%v", result, err)
+				}
+			}
+			if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				row, err := w.WorkItem(t.Context(), project, "wi_core_import")
+				if err != nil {
+					return err
+				}
+				if row.ID != 41 || row.ProvenanceExternalID == nil || *row.ProvenanceExternalID != "I_original_41" {
+					return errors.New("verified identity was not preserved")
+				}
+				row.Title = "Newer local state"
+				_, err = w.UpdateWorkItem(t.Context(), row)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			source.MappingBundlePath = ""
+			result, err = ImportTenantCoreCopy(t.Context(), config, source)
+			if err != nil || result.CoreImportComplete || result.WorkItems != 2 {
+				t.Fatalf("existing authoritative replay result=%+v error=%v", result, err)
+			}
+			if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				row, err := reader.WorkItem(t.Context(), project, "wi_core_import")
+				if err != nil {
+					return err
+				}
+				if row.Title != "Newer local state" || row.Revision != 2 {
+					return errors.New("historical replay overwrote newer state")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("historical source was not preserved: %v", err)
+			}
+		}
+	})
+
+	t.Run("missing issues table keeps current import route", func(t *testing.T) {
+		organization := tracker.OrganizationID("org_aggregate_c")
+		fixture := coreFixtureFromBundle(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
+		delete(fixture.tables, "issues")
+		delete(fixture.records, "issues")
+		result, err := ImportTenantCoreCopy(t.Context(), config, TenantCoreImportSource{BundlePath: fixture.write(), OrganizationID: organization, Catalog: catalog, Objects: objects})
+		if err == nil || result.CoreImportComplete || result.HubIdentityRows != 1 || result.Projects != 1 {
+			t.Fatalf("missing issues changed current import route: result=%+v error=%v", result, err)
+		}
+	})
 
 	failedCopy := coreTenantAggregateSourceCopy(t, "org_aggregate_failure", true)
 	failedSource := TenantCoreImportSource{BundlePath: failedCopy, OrganizationID: "org_aggregate_failure", Catalog: catalog, Objects: objects}
@@ -144,7 +281,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 
 func coreTenantAggregateSourceCopy(t *testing.T, organization tracker.OrganizationID, unsupportedCreditPeriod bool) string {
 	t.Helper()
-	fixture := newCoreNeutralFixture(t, organization, "ai_credit_accounts", "ai_credit_packs", "ai_credit_periods", "ai_credit_purchases", "ai_credit_transactions", "api_tokens", "artifact_grants", "artifact_references", "artifact_services", "attachments", "attempt_usage", "change_command_outputs", "change_content_objects", "change_evidence", "change_finding_attributions", "change_issue_links", "change_landing_receipts", "change_requests", "change_review_policies", "change_sources", "change_versions", "change_viewed_files", "collaboration_events", "collaboration_versions", "conversation_attachment_blobs", "conversation_attachments", "conversation_audience_events", "conversation_commands", "conversation_events", "conversation_messages", "conversation_prices", "conversation_questions", "conversation_starts", "conversation_tool_revisions", "conversation_turn_batches", "conversation_usage", "conversations", "daily_summary_preferences", "daily_summary_receipts", "hosted_audit", "hosted_audit_times", "hosted_binding_migrations", "hosted_invitations", "hosted_member_reservations", "hosted_members", "hosted_project_grants", "hosted_release_preferences", "hosted_sessions", "hosted_tenant", "hosted_transactions", "hub_identity", "issue_dependencies", "issues", "lease_policies", "lease_runners", "leases", "machines", "message_references", "monthly_budget_admissions", "monthly_budget_leases", "monthly_budget_policies", "native_attempt_events", "native_attempts", "native_comments", "native_pr_publications", "organization_secret_audit", "organization_secrets", "organizations", "policy_revisions", "project_policies", "project_secret_audit", "project_secrets", "projects", "queue_entries", "release_deliveries", "repositories", "runner_enrollment_projects", "runner_enrollments", "runner_identities", "runner_identity_events", "runner_project_capacity_limits", "runner_project_ranks", "token_grants", "usage_cost_observations", "work_events", "workflow_states")
+	fixture := newCoreNeutralFixture(t, organization, "ai_credit_accounts", "ai_credit_packs", "ai_credit_periods", "ai_credit_purchases", "ai_credit_transactions", "api_tokens", "artifact_grants", "artifact_references", "artifact_services", "attachments", "attempt_diff_file_archives", "attempt_diff_files", "attempt_diffs", "attempt_usage", "change_command_outputs", "change_content_objects", "change_evidence", "change_finding_attributions", "change_issue_links", "change_landing_receipts", "change_requests", "change_review_policies", "change_sources", "change_versions", "change_viewed_files", "collaboration_events", "collaboration_versions", "conversation_attachment_blobs", "conversation_attachments", "conversation_audience_events", "conversation_commands", "conversation_events", "conversation_messages", "conversation_prices", "conversation_questions", "conversation_starts", "conversation_tool_revisions", "conversation_turn_batches", "conversation_usage", "conversations", "daily_summary_preferences", "daily_summary_receipts", "hosted_audit", "hosted_audit_times", "hosted_binding_migrations", "hosted_invitations", "hosted_member_reservations", "hosted_members", "hosted_project_grants", "hosted_release_preferences", "hosted_sessions", "hosted_tenant", "hosted_transactions", "hub_identity", "issue_dependencies", "issues", "lease_policies", "lease_runners", "leases", "machines", "message_references", "monthly_budget_admissions", "monthly_budget_leases", "monthly_budget_policies", "native_attempt_events", "native_attempts", "native_comments", "native_pr_publications", "organization_secret_audit", "organization_secrets", "organizations", "policy_revisions", "project_policies", "project_secret_audit", "project_secrets", "projects", "quality_landings", "queue_entries", "release_deliveries", "repositories", "runner_enrollment_projects", "runner_enrollments", "runner_identities", "runner_identity_events", "runner_project_capacity_limits", "runner_project_ranks", "token_grants", "usage_cost_observations", "work_events", "workflow_states")
 	const timestamp = "2026-10-01T00:00:00.000000000Z"
 	states, err := json.Marshal(nativeFixtureStates())
 	if err != nil {

@@ -2,10 +2,12 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -54,15 +56,43 @@ const actionRunDispatchGrace = time.Second
 // and a timer per run would be one goroutine per row for a deadline the tick
 // already visits.
 func (w *workspaceService) dispatchQueuedActionRuns(ctx context.Context) {
-	now := w.now()
-	runs, err := readDispatchableActionRuns(ctx, w.server.database.reader,
-		now.Add(-actionRunDispatchGrace), actionRunDispatchBatch)
+	organization := tracker.OrganizationID(w.server.appOrganizationID())
+	w.relay.mu.Lock()
+	after := w.relay.actionDispatchAfter
+	w.relay.mu.Unlock()
+	var page []postgres.ActionRunDispatchRow
+	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+		owner, ok := reader.(postgres.RelayActionReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		page, err = owner.DispatchableActionRunPage(ctx, w.now().Add(-actionRunDispatchGrace), after, actionRunDispatchBatch)
+		return err
+	})
 	if err != nil {
 		w.logger.Warn("action_run.dispatch_failed", "error", err)
 		return
 	}
-	for _, run := range runs {
-		w.dispatchActionRun(ctx, run)
+	if len(page) == 0 {
+		w.relay.mu.Lock()
+		w.relay.actionDispatchAfter = nil
+		w.relay.mu.Unlock()
+		return
+	}
+	for _, entry := range page {
+		row := entry.ProjectActionRun
+		w.relay.mu.Lock()
+		w.relay.actionDispatchAfter = &postgres.ActionRunCursor{CreatedAt: row.CreatedAt, ID: row.ID}
+		w.relay.mu.Unlock()
+		if !entry.WorkspaceReadOnly && (entry.WorkspaceState == workspacesession.StateReady || entry.WorkspaceState == workspacesession.StateIdle) {
+			run, err := w.server.actionRunRecord(ctx, row, false)
+			if err != nil {
+				w.logger.Warn("action_run.dispatch_failed", "error", err)
+				continue
+			}
+			w.dispatchActionRun(ctx, run)
+		}
 	}
 }
 
@@ -95,38 +125,23 @@ func (w *workspaceService) dispatchActionRun(ctx context.Context, run actionRunR
 			"workspace_id", run.WorkspaceID, "code", code)
 		return
 	}
-	var claimed actionRunRecord
-	err := w.server.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		// The row is re-read inside the transaction: the listing that chose it
-		// is a snapshot, and the person who queued it may have opened the exec
-		// channel for it in between.
-		current, err := readProjectActionRunByID(ctx, tx, run.ID)
-		if err != nil {
-			return err
-		}
-		// claimed_by holds the stream, so an operator reading the row can find
-		// the frames in the relay's own log. It can never collide with a
-		// person's connection id, because hubStreamOwner is not one.
-		claimed, err = claimActionRun(ctx, tx, current, stream.id, now)
-		return err
-	})
-	if err != nil {
+	state, command, refusal := w.claimRelayExecRun(ctx, workspaceRecord{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, ID: run.WorkspaceID}, runner, workspacesession.ExecRun{RunID: run.ID, ActionID: run.ActionID, Command: run.Command}, stream.id)
+	if refusal != "" {
 		w.relay.closeStream(ctx, run.WorkspaceID, stream.id)
-		if !errors.Is(err, errActionRunClaimed) {
-			w.logger.Warn("action_run.not_claimed", "run_id", run.ID,
-				"workspace_id", run.WorkspaceID, "error", err)
+		if refusal != workspacesession.CodeAlreadyRunning {
+			w.logger.Info("action_run.not_claimed", "run_id", run.ID, "workspace_id", run.WorkspaceID, "code", refusal)
 		}
 		return
 	}
 	payload, err := workspacesession.Encode(workspacesession.ExecRun{
-		RunID: claimed.ID, ActionID: claimed.ActionID, Command: claimed.Command})
+		RunID: state.runID, ActionID: state.actionID, Command: command})
 	if err != nil {
 		// The row is already running and nothing will ever carry it, so the
 		// stream is closed rather than left open -- closeStream fails the run
 		// with what it had, which is nothing, instead of leaving a row that
 		// says running for ever.
-		w.logger.Warn("action_run.frame_not_encoded", "run_id", claimed.ID, "error", err)
-		w.failUndeliveredRun(ctx, claimed, stream)
+		w.logger.Warn("action_run.frame_not_encoded", "run_id", state.runID, "error", err)
+		w.failUndeliveredRun(ctx, state, stream)
 		return
 	}
 	// The run is registered before the frame is sent, so the first output span
@@ -134,9 +149,9 @@ func (w *workspaceService) dispatchActionRun(ctx context.Context, run actionRunR
 	// that was looked up must still be the one serving the workspace: one that
 	// detached or was replaced since has already had its runs taken, and this
 	// one would otherwise stay running with nothing to end it.
-	if !w.relay.beginExecRun(run.WorkspaceID, stream.id, claimed.ID, claimed.ActionID, runner) {
-		w.logger.Info("action_run.runner_changed", "run_id", claimed.ID, "workspace_id", claimed.WorkspaceID)
-		w.failUndeliveredRun(ctx, claimed, stream)
+	if !w.relay.beginExecRun(run.WorkspaceID, stream.id, state, runner) {
+		w.logger.Info("action_run.runner_changed", "run_id", state.runID, "workspace_id", state.workspaceID)
+		w.failUndeliveredRun(ctx, state, stream)
 		return
 	}
 	// No actor is stamped. The relay protocol's stamp says which person asked, and
@@ -147,11 +162,11 @@ func (w *workspaceService) dispatchActionRun(ctx context.Context, run actionRunR
 		Channel: workspacesession.ChannelExec, Stream: stream.id,
 		Type: workspacesession.TypeExecRun, Seq: w.relay.nextToRunner(stream), Payload: payload,
 	})
-	w.logger.Info("action_run.dispatched", "run_id", claimed.ID, "action_id", claimed.ActionID,
-		"workspace_id", claimed.WorkspaceID, "stream", stream.id)
+	w.logger.Info("action_run.dispatched", "run_id", state.runID, "action_id", state.actionID,
+		"workspace_id", state.workspaceID, "stream", stream.id)
 }
 
-func (w *workspaceService) failUndeliveredRun(ctx context.Context, run actionRunRecord, stream *relayStream) {
-	w.failExecRuns(ctx, []*execRunState{{runID: run.ID, actionID: run.ActionID}}, workspacesession.RunReasonStreamClosed)
-	w.relay.closeStream(ctx, run.WorkspaceID, stream.id)
+func (w *workspaceService) failUndeliveredRun(ctx context.Context, state *execRunState, stream *relayStream) {
+	w.failExecRuns(ctx, []*execRunState{state}, workspacesession.RunReasonStreamClosed)
+	w.relay.closeStream(ctx, state.workspaceID, stream.id)
 }

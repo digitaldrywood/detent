@@ -63,6 +63,39 @@ func (i *costImporter) step(ctx context.Context, limit int) (CostImportProgress,
 				if _, err := s.RecordBillingCosts(ctx, records); err != nil {
 					return err
 				}
+				selected := newReportBatch(i.organization, "position,project_id,work_item_id,attempt_id", "bigint", "text", "text", "text")
+				for n, record := range records {
+					o := record.Observation
+					if o.Bucket == "runner_api" && o.AttemptID != "" && o.WorkItemID != "" && o.ResourceID == o.AttemptID {
+						selected.add(n, record.ProjectID, o.WorkItemID, o.AttemptID)
+					}
+				}
+				if len(selected.rows) > 0 {
+					found, err := s.db.Query(ctx, selected.source()+`SELECT source.position FROM source JOIN native_attempts a ON a.organization_id=$1 AND a.id=source.attempt_id JOIN issues item ON item.organization_id=a.organization_id AND item.id=a.issue_id AND item.project_id=source.project_id AND item.native_id=source.work_item_id ORDER BY source.position`, selected.args...)
+					if err != nil {
+						return mapError(ctx, err)
+					}
+					reportable := make([]billingstore.CostObservation, 0, len(records))
+					for found.Next() {
+						var n int
+						if err := found.Scan(&n); err != nil {
+							found.Close()
+							return mapError(ctx, err)
+						}
+						reportable = append(reportable, records[n])
+					}
+					readErr := found.Err()
+					found.Close()
+					if readErr != nil {
+						return mapError(ctx, readErr)
+					}
+					if len(reportable) > 0 {
+						if err := s.RefreshReportUsage(ctx, reportable); err != nil {
+							return err
+						}
+					}
+				}
+
 			}
 			next.progress.CurrentSources += int64(len(rows))
 		case 2:

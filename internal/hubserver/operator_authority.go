@@ -308,7 +308,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 				return operatortool.ErrAccessDenied
 			}
 			if credential.Hosted != nil {
-				return s.requireHostedRunnerAdministration(ctx, nil, credential)
+				return s.requireHostedRunnerAdministration(ctx, credential)
 			}
 			if credential.Scope != apiScopeAdmin {
 				return operatortool.ErrAccessDenied

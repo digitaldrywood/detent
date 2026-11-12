@@ -173,6 +173,10 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 			t.Fatal(err)
 		}
 	}
+	deployment, generation := "origin", int64(0)
+	if cfg.Hosted.SharedEntry != nil {
+		deployment, generation = "shared", cfg.Hosted.SharedEntry.Generation
+	}
 	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
 	envelope, err := cfg.SecretKeys.Seal(bytes.Repeat([]byte{2}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
 	if err != nil {
@@ -182,7 +186,7 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: "example", CreatedAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, AllocationGeneration: 1}); err != nil {
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "test_admin", Name: "Example administrator", Hash: apikey.HashToken(string(cfg.InitialAdminToken)), Scope: "operator", NativeOnly: true, UserID: "user_example", MembershipID: "membership_example", CreatedAt: now, UpdatedAt: now, KeyScope: "admin", ProjectAccess: "all", Kind: "personal"}); err != nil {

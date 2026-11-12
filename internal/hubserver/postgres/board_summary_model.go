@@ -85,8 +85,28 @@ func (s *session) boardSummaryQuery(selection viewstore.BoardSelection) (string,
 			return "", nil, corestore.ErrNotFound
 		}
 	}
-	return `WITH readiness AS MATERIALIZED (SELECT EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready) AS pending)
-(SELECT c.kind,c.state,c.total,c.running,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at,coalesce(s.sequence,0) FROM native_board_page_summaries c LEFT JOIN native_board_sequences s ON s.organization_id=c.organization_id AND s.project_id=c.project_id WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 AND NOT (SELECT pending FROM readiness) ORDER BY c.kind,c.state LIMIT 204)
+	return `WITH readiness AS MATERIALIZED (SELECT EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready) AS pending),
+counts AS MATERIALIZED (
+ SELECT c.kind,c.state,c.total,c.running,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at
+ FROM native_board_page_summaries c
+ WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 AND NOT (SELECT pending FROM readiness)
+ ORDER BY c.kind,c.state LIMIT 204
+), completion AS MATERIALIZED (
+ SELECT 'total'::text AS kind,''::text AS state,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at
+ FROM native_board_page_summaries c
+ WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope='all' AND c.exclude_workspace=$5 AND c.kind='total' AND c.state='' AND NOT (SELECT pending FROM readiness)
+)
+(SELECT coalesce(c.kind,'total'),coalesce(c.state,''),coalesce(c.total,0),coalesce(c.running,0),
+ CASE WHEN coalesce(c.kind,'total')='total' THEN coalesce(a.shipped_1h,0) ELSE c.shipped_1h END,
+ CASE WHEN coalesce(c.kind,'total')='total' THEN coalesce(a.shipped_24h,0) ELSE c.shipped_24h END,
+ CASE WHEN coalesce(c.kind,'total')='total' THEN coalesce(a.shipped_7d,0) ELSE c.shipped_7d END,
+ CASE WHEN coalesce(c.kind,'total')='total' THEN coalesce(a.cancelled_1h,0) ELSE c.cancelled_1h END,
+ CASE WHEN coalesce(c.kind,'total')='total' THEN coalesce(a.cancelled_24h,0) ELSE c.cancelled_24h END,
+ CASE WHEN coalesce(c.kind,'total')='total' THEN coalesce(a.cancelled_7d,0) ELSE c.cancelled_7d END,
+ greatest(c.projected_at,a.projected_at),coalesce(s.sequence,0)
+ FROM counts c FULL JOIN completion a ON c.kind=a.kind AND c.state=a.state
+ LEFT JOIN native_board_sequences s ON s.organization_id=$1 AND s.project_id=$2
+ WHERE NOT (SELECT pending FROM readiness) ORDER BY 1,2 LIMIT 204)
 UNION ALL SELECT '','',0,0,0,0,0,0,0,0,'0001-01-01'::timestamptz,-1 WHERE (SELECT pending FROM readiness)`, []any{s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace}, nil
 }
 

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -111,11 +113,24 @@ func TestPostgresRuntimeAdoptionCommitsPlansWithHead(t *testing.T) {
 	repo, admin := projectRecordPostgresWithAdmin(t, 4)
 	plans := pilotHostedPlans()
 	services := configuredPlanPostgresServices(t, plans, repo)
+	stagedPlans := pilotHostedPlans()
+	stagedVersion := stagedPlans.Plans[0]
+	stagedVersion.Version++
+	stagedVersion.Allowances = maps.Clone(stagedVersion.Allowances)
+	stagedPlans.Plans = append(stagedPlans.Plans, stagedVersion)
+	prepared := uuid.NewString()
+	for _, s := range services {
+		if err := s.database.applyRuntimeRecords(t.Context(), stagedPlans, nil, "configuration", "superseded preparation", prepared, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plans = stagedPlans
 	revision := uuid.NewString()
 	if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", revision); err != nil {
 		t.Fatal(err)
 	}
 	plans.Plans[0].Allowances["concurrent_work"] = 17
+	plans.Plans[len(plans.Plans)-1].Allowances["concurrent_work"] = 19
 	for _, s := range services {
 		d := s.database
 		if err := d.applyRuntimeRecords(t.Context(), plans, nil, "configuration", "published adoption", revision, false); err != nil {
@@ -130,6 +145,13 @@ func TestPostgresRuntimeAdoptionCommitsPlansWithHead(t *testing.T) {
 			if err == nil && (head.ID != revision || plan.Allowances["concurrent_work"] != 17) {
 				t.Errorf("%s head=%s allowance=%d; want published head and allowance together", d.hostedOrganization, head.ID, plan.Allowances["concurrent_work"])
 			}
+			if err != nil {
+				return err
+			}
+			retained, err := r.BillingPlan(t.Context(), billingstore.PlanReference{ID: stagedVersion.ID, Version: stagedVersion.Version})
+			if err == nil && (retained.RuntimeID != revision || retained.Allowances["concurrent_work"] != 19) {
+				t.Errorf("%s superseded staged version runtime=%s allowance=%d; want current publication and allowance19", d.hostedOrganization, retained.RuntimeID, retained.Allowances["concurrent_work"])
+			}
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -138,7 +160,7 @@ func TestPostgresRuntimeAdoptionCommitsPlansWithHead(t *testing.T) {
 }
 
 func TestPostgresConfiguredPlanReplacement(t *testing.T) {
-	for _, mode := range []string{"startup", "reload", "publication", "audit refusal"} {
+	for _, mode := range []string{"startup", "startup unpublished", "startup unbound", "reload", "publication", "audit refusal"} {
 		t.Run(mode, func(t *testing.T) {
 			plans := pilotHostedPlans()
 			plans.Plans[0].ID = "free"
@@ -175,6 +197,42 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 					t.Fatalf("old allowance error = %v", err)
 				}
 			}
+			if mode == "startup unpublished" || mode == "startup unbound" {
+				configured := plans.Plans[0]
+				configured.Version++
+				configured.Name = "Authorized startup version"
+				configured.MonthlyUSDCents = new(int64(500))
+				configured.Features = []string{"collaboration"}
+				configured.Allowances = maps.Clone(configured.Allowances)
+				configured.Allowances["api_mutations"] = 0
+				configured.Allowances["collaboration_bytes"] = 64 << 20
+				plans.Plans = append(plans.Plans, configured)
+				stored := configured
+				stored.Name = "Retained legacy version"
+				stored.MonthlyUSDCents = new(int64(900))
+				stored.Features = []string{"collaboration", "model_choice"}
+				stored.Allowances = maps.Clone(configured.Allowances)
+				stored.Allowances["api_mutations"] = 999
+				stored.Allowances["collaboration_bytes"] = 500 << 30
+				for _, s := range services {
+					s.config.Hosted.Plans = &plans
+					if mode == "startup unpublished" {
+						staged := plans
+						staged.Plans = slices.Clone(plans.Plans)
+						staged.Plans[len(staged.Plans)-1] = stored
+						s.config.Hosted.SharedEntry = &HostedSharedEntry{}
+						update := HostedRuntimeUpdate{Plans: &staged, Reason: "unpublished conflicting version", StageID: "00000000-0000-4000-8000-000000000011"}
+						if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
+							t.Fatal(err)
+						}
+						s.config.Hosted.SharedEntry = nil
+					} else if err := s.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+						return w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: s.database.hostedOrganization, PlanReference: billingstore.PlanReference{ID: stored.ID, Version: stored.Version}, Name: stored.Name, MonthlyUSDCents: stored.MonthlyUSDCents, Features: stored.Features, Allowances: stored.Allowances})
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			plans.Plans[0].Name = "Configured plan"
 			plans.Plans[0].MonthlyUSDCents = new(int64(1234))
 			plans.Plans[0].Features = []string{"collaboration", "model_choice"}
@@ -187,9 +245,81 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			readStoredPlans := func(s *Service) []billingstore.Plan {
+				t.Helper()
+				stored := make([]billingstore.Plan, 0, len(plans.Plans))
+				if err := s.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+					for _, configured := range plans.Plans {
+						plan, err := r.BillingPlan(t.Context(), billingstore.PlanReference{ID: configured.ID, Version: configured.Version})
+						if err != nil {
+							return err
+						}
+						stored = append(stored, plan)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return stored
+			}
 			for _, s := range services {
-				if mode == "startup" {
+				if strings.HasPrefix(mode, "startup") {
+					stored := readStoredPlans(s)
+					if mode == "startup unpublished" || mode == "startup unbound" {
+						last := &stored[len(stored)-1]
+						if last.Name != "Retained legacy version" || last.MonthlyUSDCents == nil || *last.MonthlyUSDCents != 900 || last.Allowances["api_mutations"] != 999 || last.Allowances["collaboration_bytes"] != 500<<30 {
+							t.Fatalf("conflicting startup fixture lost its stored terms: %+v", last)
+						}
+						if mode == "startup unpublished" {
+							var published bool
+							if err := s.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+								var err error
+								published, err = r.RuntimePublished(t.Context(), last.RuntimeID)
+								return err
+							}); err != nil {
+								t.Fatal(err)
+							}
+							if published || last.RuntimeID != "00000000-0000-4000-8000-000000000011" {
+								t.Fatal("conflicting startup fixture was already published")
+							}
+							last.Name, last.MonthlyUSDCents = "Authorized startup version", new(int64(500))
+							last.Features = []string{"collaboration"}
+							last.Allowances["api_mutations"] = 0
+							last.Allowances["collaboration_bytes"] = 64 << 20
+						} else if last.RuntimeID != "" {
+							t.Fatal("legacy startup fixture did not retain an empty runtime binding")
+						}
+					}
 					if err := s.database.configureHostedPlans(t.Context(), s.config.Hosted); err != nil {
+						t.Fatal(err)
+					}
+					for read := range 2 {
+						if read != 0 {
+							s.database.hostedRuntime.Store(nil)
+							if err := s.database.refreshRuntime(t.Context()); err != nil {
+								t.Fatal(err)
+							}
+						}
+						retained := readStoredPlans(s)
+						state := s.database.runtimeState()
+						if state == nil {
+							t.Fatal("startup did not retain its runtime snapshot")
+						}
+						for index := range retained {
+							if retained[index].RuntimeID != state.Revision {
+								t.Fatal("startup did not bind the retained plan to its runtime")
+							}
+							retained[index].RuntimeID = stored[index].RuntimeID
+						}
+						if !reflect.DeepEqual(retained, stored) {
+							t.Fatalf("startup or cold refresh changed retained plans: %+v want %+v", retained, stored)
+						}
+					}
+					if err := request(s, "startup-preserved"); !errors.Is(err, denied) {
+						t.Fatalf("startup replaced the existing allowance: %v", err)
+					}
+					update := HostedRuntimeUpdate{Plans: &plans, Reason: "explicit startup catalog update"}
+					if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
 						t.Fatal(err)
 					}
 				} else {
@@ -270,8 +400,22 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 							updates++
 						}
 					}
-					if updates != 1 {
+					wantUpdates := 1
+					if mode == "startup unpublished" || mode == "startup unbound" {
+						wantUpdates = 2
+					}
+					if updates != wantUpdates {
 						return fmt.Errorf("configuration update audits = %d", updates)
+					}
+					if mode == "startup unpublished" || mode == "startup unbound" {
+						configured := plans.Plans[len(plans.Plans)-1]
+						plan, err := r.BillingPlan(t.Context(), billingstore.PlanReference{ID: configured.ID, Version: configured.Version})
+						if err != nil {
+							return err
+						}
+						if plan.Name != "Authorized startup version" || plan.MonthlyUSDCents == nil || *plan.MonthlyUSDCents != 500 || plan.Allowances["api_mutations"] != 0 || plan.Allowances["collaboration_bytes"] != 64<<20 || !slices.Equal(plan.Features, []string{"collaboration"}) {
+							return fmt.Errorf("explicit reload did not apply configured startup version: %+v", plan)
+						}
 					}
 					var limited *hostedLimitError
 					if err := s.database.requireHostedFeatureRecord(t.Context(), r, "native_execution", time.Now()); !errors.As(err, &limited) {

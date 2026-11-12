@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -145,6 +148,7 @@ func TestRunnerClaimFactsRecoverOnlyVerifiedCurrentSource(t *testing.T) {
 						data := leasestore.AttemptEvent{ID: id, Fence: leasestore.Fence{LeaseID: current.LeaseID, FencingToken: current.FencingToken}, RunID: run.RunID, Sequence: 1, Status: status, StartedAt: current.AcquiredAt, PayloadObjectKey: payload.Key, PayloadReference: payload}
 						if retained.Key != "" {
 							data.CheckpointObjectKey, data.CheckpointReference = &retained.Key, retained
+							data.CheckpointPreservesSource = new(true)
 						}
 						var err error
 						attempt, err = w.RecordAttempt(t.Context(), data)
@@ -262,6 +266,164 @@ func TestRunnerClaimFactsRecoverOnlyVerifiedCurrentSource(t *testing.T) {
 					return nil
 				}); err != nil {
 					t.Fatal(err)
+				}
+
+				if test.name == "retained_uncertain_publication" {
+					for _, format := range []string{"modern", "flat", "object", "segment", "foreign_detail", "wrong_entry", "unsupported", "missing"} {
+						t.Run("checkpoint_source/"+format, func(t *testing.T) {
+							checkpoint := &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean", ExternalEffect: "none", EffectState: "none"}
+							want := format == "modern" || format == "object"
+							if want {
+								checkpoint.WorktreeState = "unpushed"
+							}
+							var value any = checkpointPayload{Checkpoint: checkpoint}
+							if format == "flat" {
+								value = checkpoint
+							}
+							if format == "unsupported" {
+								value = map[string]string{"unsupported": "checkpoint"}
+							}
+							if format == "object" || format == "segment" || format == "foreign_detail" || format == "wrong_entry" {
+								run := tracker.NativeRunData{AttemptID: attempt.ID, RunID: attempt.RunID, LeaseID: tracker.LeaseID(attempt.LeaseID), FencingToken: tracker.FencingToken(attempt.FencingToken), Sequence: attempt.Sequence, Handoff: checkpoint}
+								var body any = run
+								if format == "segment" {
+									body = map[string]tracker.NativeRunData{runDetailEntry(run): run}
+								}
+								encoded, err := json.Marshal(body)
+								if err != nil {
+									t.Fatal(err)
+								}
+								ref, err := details.StoreDetail(t.Context(), string(organization), encoded)
+								if err != nil {
+									t.Fatal(err)
+								}
+								detail := newRunDetailReference(ref, string(organization), runDetailEntry(run))
+								if format == "object" || format == "foreign_detail" || format == "wrong_entry" {
+									detail.ObjectKey = ref.Key
+								}
+								if err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+									if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: now}); err != nil {
+										return err
+									}
+									if format == "segment" {
+										_, err := w.PrepareAttachmentArchive(t.Context(), attachmentstore.ArchiveRecord{OrganizationID: organization, ProjectID: project, ID: detail.AttachmentID, Uploader: "example", CreatedAt: now, Reference: ref})
+										return err
+									}
+									return nil
+								}); err != nil {
+									t.Fatal(err)
+								}
+								if format == "foreign_detail" {
+									detail.Organization = "org_foreign"
+								}
+								if format == "wrong_entry" {
+									detail.Entry = "unrelated:1"
+								}
+								value = storedRunCheckpoint{Detail: detail}
+							}
+							raw, err := json.Marshal(value)
+							if err != nil {
+								t.Fatal(err)
+							}
+							ref, err := details.StoreDetail(t.Context(), string(organization), raw)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+								_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: now})
+								return err
+							}); err != nil {
+								t.Fatal(err)
+							}
+							if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_object_key=$3,checkpoint_preserves_source=NULL WHERE organization_id=$1 AND id=$2`, organization, attempt.ID, ref.Key); err != nil {
+								t.Fatal(err)
+							}
+							if format == "missing" {
+								details.mu.Lock()
+								delete(details.data, ref.Key)
+								details.mu.Unlock()
+								t.Cleanup(func() { details.mu.Lock(); details.data[ref.Key] = raw; details.mu.Unlock() })
+							}
+							next, err := service.populateCheckpointSource(t.Context(), organization, "")
+							if next != attempt.ID {
+								t.Fatalf("classifier did not advance past examined attempt: %q want %q", next, attempt.ID)
+							}
+							unavailable := format == "unsupported" || format == "missing" || format == "foreign_detail" || format == "wrong_entry"
+							if format == "missing" && !errors.Is(err, artifact.ErrMissing) {
+								t.Fatalf("missing checkpoint classification error=%v", err)
+							}
+							if (format == "unsupported" || format == "foreign_detail" || format == "wrong_entry") && !errors.Is(err, artifact.ErrIntegrity) {
+								t.Fatalf("unsupported checkpoint classification error=%v", err)
+							}
+							if !unavailable && err != nil {
+								t.Fatal(err)
+							}
+							if err := repository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
+								current, err := r.Attempt(t.Context(), attempt.ID)
+								if err != nil {
+									return err
+								}
+								if unavailable {
+									if current.CheckpointPreservesSource != nil {
+										t.Fatalf("unverified archive became fact: %+v", current)
+									}
+								} else if current.CheckpointPreservesSource == nil || *current.CheckpointPreservesSource != want {
+									t.Fatalf("checkpoint source classification %s: %+v want %t", format, current, want)
+								}
+								return nil
+							}); err != nil {
+								t.Fatal(err)
+							}
+							if !unavailable {
+								err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+									return w.(leasestore.CheckpointSourceWriter).SetCheckpointSource(t.Context(), leasestore.CheckpointSourceFact{AttemptID: attempt.ID, IssueID: attempt.IssueID, Sequence: attempt.Sequence, CheckpointObjectKey: ref.Key, PreservesSource: !want})
+								})
+								if !errors.Is(err, corestore.ErrRevisionConflict) {
+									t.Fatalf("known source fact was replaceable: %v", err)
+								}
+							}
+							if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE organization_id=$1 AND id=$2`, organization, attempt.ID); err != nil {
+								t.Fatal(err)
+							}
+							for _, mismatch := range []string{"sequence", "key", "attempt"} {
+								fact := leasestore.CheckpointSourceFact{AttemptID: attempt.ID, IssueID: attempt.IssueID, Sequence: attempt.Sequence, CheckpointObjectKey: ref.Key, PreservesSource: true}
+								switch mismatch {
+								case "sequence":
+									fact.Sequence++
+								case "key":
+									fact.CheckpointObjectKey = "changed/key"
+								case "attempt":
+									fact.AttemptID += "_missing"
+								}
+								err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+									return w.(leasestore.CheckpointSourceWriter).SetCheckpointSource(t.Context(), fact)
+								})
+								if !errors.Is(err, corestore.ErrRevisionConflict) {
+									t.Fatalf("checkpoint CAS %s error=%v", mismatch, err)
+								}
+							}
+							if err := repository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
+								owner := r.(leasestore.CheckpointSourceReader)
+								page, err := owner.UnclassifiedCheckpointSource(t.Context(), attempt.ID, 1)
+								if err != nil {
+									return err
+								}
+								if page.Candidate != nil {
+									t.Fatal("classifier cursor repeated completed prefix")
+								}
+								current, err := r.Attempt(t.Context(), attempt.ID)
+								if err == nil && current.CheckpointPreservesSource != nil {
+									t.Fatal("mismatched checkpoint CAS wrote a fact")
+								}
+								return err
+							}); err != nil {
+								t.Fatal(err)
+							}
+						})
+					}
+					if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_object_key=$3,checkpoint_preserves_source=true WHERE organization_id=$1 AND id=$2`, organization, attempt.ID, *attempt.CheckpointObjectKey); err != nil {
+						t.Fatal(err)
+					}
 				}
 				if test.name == "planning" {
 					if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET claim_disposition=NULL WHERE organization_id=$1 AND id=$2`, organization, attempt.ID); err != nil {

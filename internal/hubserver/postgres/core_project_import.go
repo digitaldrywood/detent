@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -8,10 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -158,6 +162,15 @@ func prepareCoreProjectImport(ctx context.Context, content *eventstore.Content, 
 	if err := json.Unmarshal([]byte(row.States), &record.States); err != nil {
 		return record, eventstore.Receipt{}, errors.New("invalid imported project states")
 	}
+	workflowMarkdown, changed, err := historicalCloudWorkflow(record, row.Workflow, record.States)
+	if err != nil {
+		return record, eventstore.Receipt{}, fmt.Errorf("import project workflow lanes: %w", err)
+	}
+	if changed {
+		record.Settings.Revision++
+	}
+	normalizeImportedReporterStates(&record, row.Workflow, historicalStateLayoutKnown(row.States))
+	collapseImportedDuplicateTransitions(record.States)
 	if err := policy.ValidateStates(record.States); err != nil {
 		return record, eventstore.Receipt{}, err
 	}
@@ -171,7 +184,7 @@ func prepareCoreProjectImport(ctx context.Context, content *eventstore.Content, 
 	if err != nil {
 		return record, receipt, err
 	}
-	workflow, err := json.Marshal(row.Workflow)
+	workflow, err := json.Marshal(workflowMarkdown)
 	if err != nil {
 		return record, receipt, err
 	}
@@ -195,4 +208,97 @@ func prepareCoreProjectImport(ctx context.Context, content *eventstore.Content, 
 	}
 	record.Core.StatesObjectKey = &statesRef.PayloadObjectKey
 	return record, receipt, nil
+}
+
+func normalizeImportedReporterStates(record *projectstore.Record, workflow string, knownLayout bool) {
+	if record.Core.Profile != "native" {
+		return
+	}
+	if knownLayout {
+		record.States = projectstore.HistoricalHostedStates(record.States)
+	}
+	previous := record.States
+	normalized := projectstore.TriageStates(previous)
+	position := slices.IndexFunc(previous, func(state tracker.NativeState) bool { return state.Name == "Triage" })
+	if (position < 0 || len(previous[position].Transitions) == 0) && !slices.ContainsFunc(previous, func(state tracker.NativeState) bool {
+		return state.Name == "Todo" || state.Name == "Backlog" || state.Name == "Cancelled"
+	}) {
+		fallback := ""
+		for _, state := range previous {
+			if state.Name == "Triage" || state.OperatorOnly {
+				continue
+			}
+			if fallback == "" {
+				fallback = state.Name
+			}
+			if !state.Terminal {
+				fallback = state.Name
+				break
+			}
+		}
+		if fallback != "" {
+			normalized[0].Transitions = []string{fallback}
+		}
+	}
+	if position < 0 {
+		record.States = normalized
+	} else {
+		record.States = slices.Clone(previous)
+		record.States[position] = normalized[0]
+	}
+	expected := []tracker.NativeState{
+		{Name: "Triage", Transitions: []string{"Todo"}},
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done"}},
+		{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+	}
+	if !knownLayout || record.Core.WorkflowSource != "" || workflow != "" || !reflect.DeepEqual(record.States, expected) {
+		return
+	}
+	record.States[0].Transitions = []string{"Todo", "Backlog", "Cancelled"}
+	for index := 1; index < len(record.States); index++ {
+		if !record.States[index].Terminal {
+			record.States[index].Transitions = append(slices.Clone(record.States[index].Transitions), "Cancelled")
+		}
+	}
+	record.States = append(record.States, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}}, tracker.NativeState{Name: "Cancelled", Terminal: true, Transitions: []string{"Todo"}})
+}
+
+func collapseImportedDuplicateTransitions(states []tracker.NativeState) {
+	for index, state := range states {
+		seen := make(map[string]struct{}, len(state.Transitions))
+		unique := make([]string, 0, len(state.Transitions))
+		for _, target := range state.Transitions {
+			if _, duplicate := seen[target]; duplicate {
+				continue
+			}
+			seen[target] = struct{}{}
+			unique = append(unique, target)
+		}
+		if len(unique) != len(state.Transitions) {
+			states[index].Transitions = unique
+		}
+	}
+}
+
+func historicalCloudWorkflow(record projectstore.Record, markdown string, states []tracker.NativeState) (string, bool, error) {
+	if record.Core.Profile != "native" || record.Core.WorkflowSource != "" || markdown == "" {
+		return markdown, false, nil
+	}
+	order := make([]string, 0, len(states))
+	for _, state := range states {
+		order = append(order, state.Name)
+	}
+	upgraded, changed, err := workflowconfig.MigrateTrackerLanes([]byte(markdown), order...)
+	return string(upgraded), changed, err
+}
+
+func historicalStateLayoutKnown(raw string) bool {
+	decoder := json.NewDecoder(bytes.NewReader([]byte(raw)))
+	decoder.DisallowUnknownFields()
+	var states []tracker.NativeState
+	return decoder.Decode(&states) == nil
 }

@@ -223,6 +223,73 @@ func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
 			}
 		})
 	}
+	t.Run("member session cutoff fences board delivery", func(t *testing.T) {
+		organizations := []tracker.OrganizationID{"org_first", "org_second"}
+		cutoff, observed := now.Add(time.Second), now.Add(2*time.Second)
+		check := func(org tracker.OrganizationID, bindings []string, want []bool) {
+			t.Helper()
+			subjects := make([]viewstore.BoardDeliverySubject, len(bindings))
+			for index, binding := range bindings {
+				subjects[index] = viewstore.BoardDeliverySubject{CredentialID: "principal", CredentialHash: "principal_hash", UserID: "user_example", MembershipID: "membership_example", SessionHash: binding}
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				state, err := r.(viewstore.BoardDeliveryReader).BoardDeliveryState(t.Context(), "project_example", subjects, observed)
+				if err != nil {
+					return err
+				}
+				if !state.ProjectLive || len(state.Access) != len(want) {
+					t.Fatalf("board delivery lost fixture authority: tenant=%s state=%+v", org, state)
+				}
+				for index, access := range state.Access {
+					if access.Live != want[index] || access.MemberPrincipalID != "principal" || !access.ExpiresAt.After(observed) {
+						t.Fatalf("board delivery session authority: tenant=%s binding=%s live=%t want=%t access=%+v", org, bindings[index], access.Live, want[index], access)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, org := range organizations {
+			check(org, []string{"binding_example"}, []bool{true})
+		}
+		for index, org := range organizations {
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.RevokeAccessMember(t.Context(), "user_example", cutoff)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			check(org, []string{"binding_example"}, []bool{false})
+			if index == 0 {
+				check(organizations[1], []string{"binding_example"}, []bool{true})
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				member, err := w.AccessMember(t.Context(), "user_example")
+				if err != nil {
+					return err
+				}
+				member.Active, member.UpdatedAt = true, observed
+				if err := w.UpdateAccessMember(t.Context(), member); err != nil {
+					return err
+				}
+				for _, session := range []struct {
+					binding string
+					issued  time.Time
+				}{{"binding_equal", cutoff}, {"binding_fresh", cutoff.Add(time.Microsecond)}} {
+					if err := w.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: org, Hash: session.binding, Email: "member@example.test", Subject: "user_example", ProviderOrganizationID: "provider_" + string(org), SessionID: session.binding, IdentityCreatedAt: session.issued, IdentityExpiresAt: now.Add(time.Hour), CreatedAt: observed, ExpiresAt: now.Add(time.Hour)}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			check(org, []string{"binding_example", "binding_equal", "binding_fresh"}, []bool{false, false, true})
+			if index == 0 {
+				check(organizations[1], []string{"binding_example"}, []bool{true})
+			}
+		}
+	})
 }
 
 type boardSessionWorkerKey struct{}

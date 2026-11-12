@@ -12,28 +12,61 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func coordinatorSettingsArguments(t *testing.T, f hostedSecurityFixture, tool, runnerID string) json.RawMessage {
+func coordinatorSettingsArguments(t *testing.T, f hostedSecurityFixture, tool, runnerID string, organizationRunner ...bool) json.RawMessage {
 	t.Helper()
 	var value any = map[string]any{"input": map[string]any{}}
 	switch tool {
 	case operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerRouting:
-		seedHostedContextRunner(t, f, runnerID, "test", f.service.config.now(), false)
-		operatorSQL(t, f, "UPDATE api_tokens SET expires_at=? WHERE id=?", formatHubTime(f.service.config.now().Add(time.Hour)), "tok_"+runnerID)
-		operatorSQL(t, f, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES(?,'org_security',?)", "tok_"+runnerID, f.project)
 		config := runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.now()}
-		raw, err := json.Marshal(config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		operatorSQL(t, f, "UPDATE runner_identities SET capacity_configuration_json=? WHERE id=?", string(raw), runnerID)
-		r, err := readRunnerWithClock(t.Context(), f.service.database.db, "org_security", runnerID, f.service.config.now)
+		coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+			now := f.service.config.now()
+			token := "tok_" + runnerID
+			machine := "machine_" + runnerID
+			enrollment := "enr_" + runnerID
+			scope := "projects"
+			projects := []tracker.ProjectID{f.project}
+			if len(organizationRunner) > 0 && organizationRunner[0] {
+				scope = "organization"
+				projects = nil
+			}
+			expires := now.Add(time.Hour)
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: token, Name: token, Hash: apikey.HashToken(token), Fingerprint: runnerID, Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+				return err
+			}
+			if scope != "organization" {
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: token, ProjectID: f.project}); err != nil {
+					return err
+				}
+			}
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_security", ID: machine, Hostname: runnerID, DisplayName: runnerID, Capacity: 1, Version: "test"}); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_security", ID: enrollment, TokenHash: apikey.HashToken(enrollment), Scope: scope, Operations: []string{runnerauth.Claim}, ProjectIDs: projects, CreatedAt: now, ExpiresAt: expires, CreatedBy: token}); err != nil {
+				return err
+			}
+			if err := w.RedeemRunnerEnrollment(t.Context(), enrollment, runnerID, tracker.MachineID(machine), now); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_security", RunnerID: runnerID, MachineID: tracker.MachineID(machine), TokenID: token, EnrollmentID: enrollment, Scope: scope, Operations: []string{runnerauth.Claim}, ProjectIDs: projects, CreatedAt: now, ExpiresAt: expires, DisplayName: runnerID, CapacityLimit: 1, ReportedCapacity: 1, OS: "linux", Architecture: "arm64", LastHeartbeatAt: now}); err != nil {
+				return err
+			}
+			return w.UpdateRunnerCapacityConfig(t.Context(), runnerID, config)
+		})
+		r, err := readPostgresTestRunner(t.Context(), f.service, "org_security", runnerID, f.service.config.now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +96,7 @@ func coordinatorSettingsArguments(t *testing.T, f hostedSecurityFixture, tool, r
 
 func coordinatorSettingsProposal(t *testing.T, f hostedSecurityFixture, conversationID string) chat.Action {
 	t.Helper()
-	messages, err := f.service.conversations.store.listMessages(t.Context(), f.service.database.db, conversationID, 0, 100)
+	messages, err := f.service.conversations.coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: conversationID, Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,11 +132,7 @@ func TestCoordinatorSettingsActions(t *testing.T) {
 				}
 				u := f.user(t, "settings-viewer", name, "settings@example.test", "write", "")
 				f.grant(t, u, name != "viewer", role == "runner member")
-				args := coordinatorSettingsArguments(t, f, tool, "settings-runner")
-				if role == "organization owner" {
-					operatorSQL(t, f, "UPDATE runner_identities SET scope='organization' WHERE id='settings-runner'")
-					operatorSQL(t, f, "DELETE FROM token_grants WHERE token_id='tok_settings-runner'")
-				}
+				args := coordinatorSettingsArguments(t, f, tool, "settings-runner", role == "organization owner")
 				tools, _ := coordinatorViewerTools(t, f, record, u)
 				result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: args})
 				want := name == "owner" || name == "admin" || role == "runner member" && hubFleetTool(tool) || name == "member" && tool == "save_onboarding"
@@ -118,7 +147,7 @@ func TestCoordinatorSettingsActions(t *testing.T) {
 				}
 				action := coordinatorSettingsProposal(t, f, record.ID)
 				if hubFleetTool(tool) {
-					r, err := readRunnerWithClock(t.Context(), f.service.database.db, record.OrganizationID, "settings-runner", f.service.config.now)
+					r, err := readPostgresTestRunner(t.Context(), f.service, record.OrganizationID, "settings-runner", f.service.config.now())
 					if err != nil || r.CapacityLimit != 1 || r.Revision != 1 || r.CapacityRequest != nil {
 						t.Fatalf("preview changed runner configuration: %+v, %v", r, err)
 					}
@@ -140,7 +169,7 @@ func TestCoordinatorSettingsActions(t *testing.T) {
 						if !strings.Contains(response.Body.String(), `\"desired\":6`) || !strings.Contains(response.Body.String(), "application evidence") {
 							t.Fatalf("capacity confirmation omitted read-back: %s", response.Body.String())
 						}
-						r, err := readRunnerWithClock(t.Context(), f.service.database.db, record.OrganizationID, "settings-runner", f.service.config.now)
+						r, err := readPostgresTestRunner(t.Context(), f.service, record.OrganizationID, "settings-runner", f.service.config.now())
 						if err != nil || r.CapacityLimit != 6 || r.CapacityRequest == nil || r.CapacityRequest.Capacity != 6 {
 							t.Fatalf("capacity intent not applied: %+v, %v", r, err)
 						}
@@ -168,9 +197,11 @@ func TestCoordinatorSettingsBoundaries(t *testing.T) {
 					}
 					action := coordinatorSettingsProposal(t, f, record.ID)
 					if scenario == "revoked grant" {
-						operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", owner.identity.Subject, f.project)
+						coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+							return w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, f.project)
+						})
 					} else {
-						operatorSQL(t, f, "UPDATE runner_identities SET revision=revision+1 WHERE id='settings-runner'")
+						coordinatorFixtureRouting(t, f.service, "org_security", "settings-runner", func(*runnerstore.Identity) {})
 					}
 					response := f.request(t, owner, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
 					if response.Code == http.StatusOK {
@@ -189,7 +220,13 @@ func TestCoordinatorSettingsBoundaries(t *testing.T) {
 					fields["secret_value"] = json.RawMessage(`"never-store-this"`)
 				}
 				if scenario == "unattached runner" {
-					operatorSQL(t, f, "DELETE FROM token_grants WHERE token_id='tok_settings-runner'")
+					coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+						row, err := w.RunnerIdentity(t.Context(), "settings-runner")
+						if err != nil {
+							return err
+						}
+						return w.DeleteAccessTokenGrant(t.Context(), row.TokenID, f.project)
+					})
 				}
 				raw, err := json.Marshal(fields)
 				if err != nil {
@@ -258,7 +295,7 @@ func TestCoordinatorSettingsCapacityBatch(t *testing.T) {
 			t.Fatalf("capacity preview for %s: %+v, %v", id, result, err)
 		}
 	}
-	messages, err := f.service.conversations.store.listMessages(t.Context(), f.service.database.db, record.ID, 0, 100)
+	messages, err := f.service.conversations.coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +318,7 @@ func TestCoordinatorSettingsCapacityBatch(t *testing.T) {
 		response := f.request(t, owner, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
 		requireNativeStatus(t, response, http.StatusOK)
 		requireNativeStatus(t, f.request(t, owner, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action), http.StatusOK)
-		r, err := readRunnerWithClock(t.Context(), f.service.database.db, record.OrganizationID, action.IssueID, f.service.config.now)
+		r, err := readPostgresTestRunner(t.Context(), f.service, record.OrganizationID, action.IssueID, f.service.config.now())
 		if err != nil || r.CapacityLimit != 6 || r.Revision != 2 {
 			t.Fatalf("runner applied more than once or unchanged: %+v, %v", r, err)
 		}

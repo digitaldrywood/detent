@@ -71,6 +71,7 @@ func TestPostgresMaintenanceRebuildsCurrentReviewsPastUnavailableChange(t *testi
 		cfg.Hosted.WorkOSOrganizationID = "provider_" + string(organization)
 		cfg.RunDetails = objects
 		cfg.WebhookMaintenanceInterval = time.Hour
+		seedHostedStartup(t, cfg)
 		service, err := Open(t.Context(), cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -83,7 +84,6 @@ func TestPostgresMaintenanceRebuildsCurrentReviewsPastUnavailableChange(t *testi
 		if err := service.stopGitHubWebhookMaintenance(); err != nil {
 			t.Fatal(err)
 		}
-		seedStartupOrganization(t, service.config.TenantRepository, organization)
 		content := eventstore.NewContent(objects)
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		var unavailable string
@@ -167,11 +167,17 @@ func TestPostgresMaintenanceRebuildsCurrentReviewsPastUnavailableChange(t *testi
 				ctx, cancel := context.WithCancel(t.Context())
 				done := service.workerDone
 				defer func() { cancel(); <-done }()
+				service.changeColumnAfter = changeColumnCursor{}
 				go service.runPostgresMaintenance(ctx)
 				synctest.Wait()
 				steps := probe.snapshot()
 				if len(steps) != 1 || steps[0].organization != organization || steps[0].id != "a_unavailable" || steps[0].err == nil {
 					t.Fatalf("actual PostgreSQL loop did not attempt the first pending Change: %+v", steps)
+				}
+				service.boardRefresh <- struct{}{}
+				synctest.Wait()
+				if steps = probe.snapshot(); len(steps) != 1 {
+					t.Fatalf("checkpoint turn repeated the review backfill: %+v", steps)
 				}
 				service.boardRefresh <- struct{}{}
 				synctest.Wait()

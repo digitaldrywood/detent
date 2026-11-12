@@ -2,8 +2,8 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 	"sort"
 	"strconv"
@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -77,9 +78,23 @@ func (a hubAdministration) credential(ctx context.Context) (apiCredential, error
 		}
 		return credential, err
 	}
-	var credential apiCredential
-	err = s.database.reader.QueryRowContext(readCtx, "SELECT id,name,token_hash,scope,native_only FROM api_tokens WHERE id=? AND token_hash=? AND revoked_at IS NULL", c.Identity.PrincipalID, c.Identity.CredentialID).Scan(&credential.ID, &credential.Name, &credential.Hash, &credential.Scope, &credential.NativeOnly)
-	return credential, err
+	if c.Identity.OrganizationID == "" {
+		return apiCredential{}, operatortool.ErrAccessDenied
+	}
+	credential, _, err := s.authenticateTenantAPIHash(readCtx, tracker.OrganizationID(c.Identity.OrganizationID), c.Identity.CredentialID, "", "")
+	if errors.Is(err, auth.ErrHostedIdentity) {
+		return apiCredential{}, operatortool.ErrAccessDenied
+	}
+	if err != nil {
+		return apiCredential{}, err
+	}
+	if operatorIdentity(credential, c.Identity.OrganizationID) != c.Identity {
+		return apiCredential{}, operatortool.ErrAccessDenied
+	}
+	if credential.Hosted != nil {
+		credential.HostedRole = lesserHostedRole(credential.HostedRole, authority.Account.Role)
+	}
+	return credential, nil
 }
 
 func (a hubAdministration) Authorize(ctx context.Context, name string, in operatoradmin.Input, resource string) error {
@@ -139,14 +154,20 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 			if resource != "" && (name == operatortool.CredentialCreate || name == operatortool.CredentialRotate) {
 				id = resource
 			}
-			var count int
-			if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM api_tokens WHERE id=? AND NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id)", id).Scan(&count); err != nil || count != 1 {
-				return operatortool.ErrAccessDenied
-			}
-			if resource != "" && (name == operatortool.CredentialCreate || name == operatortool.CredentialRotate) {
-				if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM api_tokens WHERE id=? AND revoked_at IS NULL", id).Scan(&count); err != nil || count != 1 {
+			if err := s.accessRead(readCtx, tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), func(r tenantstore.Reader) error {
+				row, err := r.AccessCredential(readCtx, id)
+				if err != nil {
+					return err
+				}
+				if _, err := r.RunnerIdentityByCredential(readCtx, id); !errors.Is(err, corestore.ErrNotFound) {
 					return operatortool.ErrAccessDenied
 				}
+				if resource != "" && (name == operatortool.CredentialCreate || name == operatortool.CredentialRotate) && row.RevokedAt != nil {
+					return operatortool.ErrAccessDenied
+				}
+				return nil
+			}); err != nil {
+				return operatortool.ErrAccessDenied
 			}
 		}
 		return nil
@@ -216,7 +237,11 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 			}
 			return nil
 		}
-		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members").Scan(&count); err != nil || count != 0 && in.RequestID == "" {
+		if err := s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			members, err := r.AccessMembers(readCtx, "", 1)
+			count = len(members)
+			return err
+		}); err != nil || count != 0 && in.RequestID == "" {
 			return operatortool.ErrAccessDenied
 		}
 		return nil
@@ -237,18 +262,14 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		}
 		var count int
 		var invitationErr error
-		if s.config.AccessRepository != nil {
-			invitationErr = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
-				row, err := r.AccessInvitation(readCtx, in.InvitationID)
-				if err != nil || row.AcceptedUserID != "" && row.AcceptedUserID != credential.Hosted.Subject {
-					return operatortool.ErrAccessDenied
-				}
-				count = 1
-				return nil
-			})
-		} else {
-			invitationErr = s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND (accepted_user_id='' OR accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&count)
-		}
+		invitationErr = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			row, err := r.AccessInvitation(readCtx, in.InvitationID)
+			if err != nil || row.AcceptedUserID != "" && row.AcceptedUserID != credential.Hosted.Subject {
+				return operatortool.ErrAccessDenied
+			}
+			count = 1
+			return nil
+		})
 		if invitationErr != nil || count != 1 {
 			return operatortool.ErrAccessDenied
 		}
@@ -270,19 +291,19 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		return operatortool.ErrAccessDenied
 	}
 	if name == operatortool.InvitationSend && in.Email != "" {
-		if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, strings.ToLower(strings.TrimSpace(in.Email)), in.Grants); err != nil {
+		if err := s.validateHostedInvitationGrants(readCtx, credential, strings.ToLower(strings.TrimSpace(in.Email)), in.Grants); err != nil {
 			return err
 		}
 	}
 	if (name == operatortool.InvitationEdit || name == operatortool.InvitationResend) && in.InvitationID != "" {
-		view, err := s.pendingHostedInvitationFor(readCtx, s.database.reader, credential, in.InvitationID)
+		view, err := s.pendingHostedInvitationFor(readCtx, credential, in.InvitationID)
 		if err != nil {
 			return err
 		}
 		if name == operatortool.InvitationEdit {
-			return s.validateHostedInvitationEdit(readCtx, s.database.reader, credential, view, in.Grants)
+			return s.validateHostedInvitationEdit(readCtx, credential, view, in.Grants)
 		}
-		if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, view.Email, view.Grants); err != nil {
+		if err := s.validateHostedInvitationGrants(readCtx, credential, view.Email, view.Grants); err != nil {
 			return err
 		}
 	}
@@ -302,18 +323,14 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 	if invitation != "" {
 		var count int
 		var invitationErr error
-		if s.config.AccessRepository != nil {
-			invitationErr = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
-				row, err := r.AccessInvitation(readCtx, invitation)
-				if err != nil || row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.now()) {
-					return operatortool.ErrAccessDenied
-				}
-				count = 1
-				return nil
-			})
-		} else {
-			invitationErr = s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", invitation, s.config.Hosted.OrganizationID).Scan(&count)
-		}
+		invitationErr = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			row, err := r.AccessInvitation(readCtx, invitation)
+			if err != nil || row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.now()) {
+				return operatortool.ErrAccessDenied
+			}
+			count = 1
+			return nil
+		})
 		if invitationErr != nil || count != 1 {
 			return operatortool.ErrAccessDenied
 		}
@@ -331,7 +348,7 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 	}
 	switch name {
 	case operatortool.OrganizationProjectRank:
-		return s.readReadableOrganizationProjectRank(ctx, s.database.reader, credential)
+		return s.readOrganizationRankRecord(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential})
 	case operatortool.OrganizationSession:
 		setup := hostedAccountSetup{}
 		if credential.Hosted != nil && credential.SessionHash != "" {
@@ -378,26 +395,13 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 			}
 			return operatoradmin.Page(choices, in), nil
 		}
-		rows, err := s.database.reader.QueryContext(ctx, "SELECT id,name,local FROM organizations WHERE id=? OR ?=0 ORDER BY id", operatortool.ConnectionIdentity(ctx).OrganizationID, credential.NativeOnly)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		var choices []nativeOrganization
-		for rows.Next() {
-			var row nativeOrganization
-			if err := rows.Scan(&row.ID, &row.Name, &row.Local); err != nil {
-				return nil, err
-			}
-			choices = append(choices, row)
-		}
-		return operatoradmin.Page(choices, in), rows.Err()
+		return s.operatorOrganizationMetadata(ctx, credential, in)
 	case operatortool.CredentialList:
 		if s.config.Hosted != nil {
 			keys, err := s.hostedAPIKeysFor(ctx, credential)
 			return operatoradmin.Page(keys, in), err
 		}
-		return s.tokenMetadata(ctx, in)
+		return s.tokenMetadata(ctx, credential, in)
 	default:
 		return nil, operatoradmin.ErrUnavailable
 	}
@@ -414,7 +418,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 	preview := operatoradmin.Preview{Summary: name, Current: in}
 	switch name {
 	case operatortool.OrganizationProjectRankUpdate:
-		current, err := s.readReadableOrganizationProjectRank(ctx, s.database.reader, credential)
+		current, err := s.readOrganizationRankRecord(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential})
 		if err != nil {
 			return preview, err
 		}
@@ -424,7 +428,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 			Input operatoradmin.Input     `json:"input"`
 		}{current, in}
 	case operatortool.InvitationEdit, operatortool.InvitationResend:
-		view, err := s.pendingHostedInvitationFor(ctx, s.database.reader, credential, in.InvitationID)
+		view, err := s.pendingHostedInvitationFor(ctx, credential, in.InvitationID)
 		if err != nil {
 			return preview, err
 		}
@@ -447,26 +451,27 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 			Input  operatoradmin.Input `json:"input"`
 		}{view, in}
 	case operatortool.InvitationRevoke:
-		if s.config.AccessRepository != nil {
-			view, err := s.pendingHostedInvitationFor(ctx, s.database.reader, credential, in.InvitationID)
-			if err != nil {
-				return preview, err
-			}
-			preview.ResourceID = view.ID
-			preview.Current = struct{ Email, Role string }{view.Email, view.Role}
-			break
-		}
-		var email, role string
-		err := s.database.reader.QueryRowContext(ctx, "SELECT email,role FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", in.InvitationID, s.config.Hosted.OrganizationID).Scan(&email, &role)
+		view, err := s.pendingHostedInvitationFor(ctx, credential, in.InvitationID)
 		if err != nil {
 			return preview, err
 		}
-		preview.ResourceID = in.InvitationID
-		preview.Current = struct{ Email, Role string }{email, role}
+		preview.ResourceID = view.ID
+		preview.Current = struct{ Email, Role string }{view.Email, view.Role}
 	case operatortool.OrganizationSwitch:
 		if s.config.Hosted == nil {
+			organization := tracker.OrganizationID(in.OrganizationID)
+			if err := s.authorizeConversationOrganization(ctx, nativeScope{organization: organization, credential: credential}); err != nil {
+				return preview, err
+			}
 			var org nativeOrganization
-			err := s.database.reader.QueryRowContext(ctx, "SELECT id,name,local FROM organizations WHERE id=?", in.OrganizationID).Scan(&org.ID, &org.Name, &org.Local)
+			err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
+				row, err := r.AccessOrganization(ctx)
+				if err != nil {
+					return err
+				}
+				org = nativeOrganization{ID: row.OrganizationID, Name: row.Name, Local: row.Local}
+				return nil
+			})
 			preview.ResourceID = in.OrganizationID
 			preview.Current = org
 			return preview, err
@@ -481,18 +486,14 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 		// The ID identifies the provider invitation, not an identity exchange token.
 		var id, email, role string
 		var err error
-		if s.config.AccessRepository != nil {
-			err = s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-				row, err := r.AccessInvitation(ctx, in.InvitationID)
-				if err != nil || row.AcceptedUserID != "" && row.AcceptedUserID != credential.Hosted.Subject {
-					return nativeNotFound()
-				}
-				id, email, role = row.ID, row.Email, row.Role
-				return nil
-			})
-		} else {
-			err = s.database.reader.QueryRowContext(ctx, "SELECT i.id,i.email,i.role FROM hosted_invitations i WHERE i.id=? AND i.organization_id=? AND (i.accepted_user_id='' OR i.accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&id, &email, &role)
-		}
+		err = s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			row, err := r.AccessInvitation(ctx, in.InvitationID)
+			if err != nil || row.AcceptedUserID != "" && row.AcceptedUserID != credential.Hosted.Subject {
+				return nativeNotFound()
+			}
+			id, email, role = row.ID, row.Email, row.Role
+			return nil
+		})
 		if err != nil {
 			return preview, err
 		}
@@ -504,7 +505,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 			preview.ResourceID, preview.Current = in.CredentialID, key
 			return preview, err
 		}
-		view, err := s.tokenMetadataByID(ctx, in.CredentialID)
+		view, err := s.tokenMetadataByIDFor(ctx, tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), in.CredentialID)
 		if err != nil {
 			return preview, err
 		}
@@ -737,82 +738,150 @@ func (s *Service) hostedSwitchFor(ctx context.Context, identity *auth.HostedIden
 }
 
 // Metadata deliberately omits token hashes and runner credentials.
-func (s *Service) tokenMetadata(ctx context.Context, in operatoradmin.Input) (any, error) {
+func (s *Service) operatorOrganizationMetadata(ctx context.Context, credential apiCredential, in operatoradmin.Input) (any, error) {
+	organization := tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID)
+	if organization == "" || credential.Runner.RunnerID != "" || !credential.NativeOnly && credential.Scope != apiScopeAdmin {
+		return nil, operatortool.ErrAccessDenied
+	}
+	if in.Offset < 0 || in.Offset > 100000 {
+		return nil, operatortool.ErrInvalidArguments
+	}
+	limit := in.Limit
+	if limit < 1 || limit > operatortool.MaxItemLimit {
+		limit = operatortool.DefaultItemLimit
+	}
+	result := operatoradmin.PageResult[nativeOrganization]{Items: []nativeOrganization{}}
+	err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
+		if credential.NativeOnly {
+			if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, credential: credential}, false); err != nil {
+				return operatorAuthorizationError(err)
+			}
+			if _, err := r.RunnerIdentityByCredential(ctx, credential.ID); !errors.Is(err, corestore.ErrNotFound) {
+				return operatortool.ErrAccessDenied
+			}
+			row, err := r.AccessOrganization(ctx)
+			if err != nil {
+				return err
+			}
+			result = operatoradmin.Page([]nativeOrganization{{ID: row.OrganizationID, Name: row.Name, Local: row.Local}}, in)
+			return nil
+		}
+		reader, ok := r.(accessstore.InstanceOrganizationPageReader)
+		if !ok {
+			return operatoradmin.ErrUnavailable
+		}
+		rows, more, err := reader.AccessInstanceOrganizationPage(ctx, credential.ID, credential.Hash, in.Offset, limit)
+		if errors.Is(err, accessstore.ErrDenied) {
+			return operatortool.ErrAccessDenied
+		}
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			result.Items = append(result.Items, nativeOrganization{ID: row.OrganizationID, Name: row.Name, Local: row.Local})
+		}
+		if more {
+			next := in.Offset + len(result.Items)
+			result.NextOffset = &next
+		}
+		return nil
+	})
+	return result, err
+}
+
+func (s *Service) tokenMetadata(ctx context.Context, credential apiCredential, in operatoradmin.Input) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT id FROM api_tokens WHERE NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id) ORDER BY id")
-	if err != nil {
-		return nil, err
+	organization := tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID)
+	if organization == "" || credential.Scope != apiScopeAdmin || credential.NativeOnly || credential.Runner.RunnerID != "" {
+		return nil, operatortool.ErrAccessDenied
 	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
+	if in.Offset < 0 || in.Offset > 100000 {
+		return nil, operatortool.ErrInvalidArguments
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	limit := in.Limit
+	if limit < 1 || limit > operatortool.MaxItemLimit {
+		limit = operatortool.DefaultItemLimit
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
+	repository, ok := s.config.AccessRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, operatoradmin.ErrUnavailable
 	}
-	var views []tokenResponse
-	for _, id := range ids {
-		view, err := s.tokenMetadataByID(ctx, id)
+	result := operatoradmin.PageResult[tokenResponse]{Items: []tokenResponse{}}
+	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		current, err := r.AccessCredential(ctx, credential.ID)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		views = append(views, view)
-	}
-	sort.Slice(views, func(i, j int) bool { return views[i].ID < views[j].ID })
-	return operatoradmin.Page(views, in), nil
+		if current.Scope != string(apiScopeAdmin) || current.NativeOnly {
+			return operatortool.ErrAccessDenied
+		}
+		if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, credential: credential, requireHostedAdmin: true}, false); err != nil {
+			return err
+		}
+		if _, err := r.RunnerIdentityByCredential(ctx, credential.ID); !errors.Is(err, corestore.ErrNotFound) {
+			return operatortool.ErrAccessDenied
+		}
+		reader, ok := r.(accessstore.CredentialMetadataPageReader)
+		if !ok {
+			return operatoradmin.ErrUnavailable
+		}
+		rows, more, err := reader.AccessCredentialMetadataPage(ctx, in.Offset, limit)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			view, err := tokenMetadataRecord(ctx, r, row)
+			if err != nil {
+				return err
+			}
+			result.Items = append(result.Items, view)
+		}
+		if more {
+			next := in.Offset + len(result.Items)
+			result.NextOffset = &next
+		}
+		return nil
+	})
+	return result, err
 }
 
 func (s *Service) tokenMetadataByID(ctx context.Context, id string) (tokenResponse, error) {
-	if s.config.AccessRepository != nil {
-		var row accessstore.Credential
-		err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error { var err error; row, err = r.AccessCredential(ctx, id); return err })
-		return accessTokenResponse(row), err
-	}
+	return s.tokenMetadataByIDFor(ctx, s.accessOrganization(), id)
+}
+
+func (s *Service) tokenMetadataByIDFor(ctx context.Context, organization tracker.OrganizationID, id string) (tokenResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	var view tokenResponse
-	var created string
-	var revoked sql.NullString
-	err := s.database.reader.QueryRowContext(ctx, "SELECT id,name,scope,token_fingerprint,created_at,native_only,revoked_at,CASE WHEN hosted_user_id IS NOT NULL THEN operator_project_access ELSE '' END,key_kind FROM api_tokens WHERE id=?", id).Scan(&view.ID, &view.Name, &view.Scope, &view.Fingerprint, &created, &view.NativeOnly, &revoked, &view.ProjectAccess, &view.Kind)
-	if err != nil {
-		return view, err
-	}
-	view.CreatedAt, err = parseTimeValue(created)
-	if err != nil {
-		return view, err
-	}
-	if revoked.Valid {
-		at, err := parseTimeValue(revoked.String)
+	err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
+		row, err := r.AccessCredential(ctx, id)
 		if err != nil {
-			return view, err
+			return err
 		}
-		view.RevokedAt = &at
-	}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT organization_id,project_id FROM token_grants WHERE token_id=? ORDER BY organization_id,project_id", id)
-	if err != nil {
-		return view, err
-	}
-	defer rows.Close()
-	view.Grants = []tokenGrantResponse{}
-	view.Projects = []string{}
-	for rows.Next() {
-		var grant tokenGrantResponse
-		if err := rows.Scan(&grant.OrganizationID, &grant.ProjectID); err != nil {
-			return view, err
+		view, err = tokenMetadataRecord(ctx, r, row)
+		return err
+	})
+	return view, err
+}
+
+func tokenMetadataRecord(ctx context.Context, r tenantstore.Reader, row accessstore.Credential) (tokenResponse, error) {
+	view := accessTokenResponse(row)
+	var after tracker.ProjectID
+	for {
+		grants, err := r.AccessTokenGrants(ctx, row.ID, after, corestore.MaxPageSize)
+		if err != nil {
+			return tokenResponse{}, err
 		}
-		view.Grants = append(view.Grants, grant)
-		view.Projects = append(view.Projects, grant.ProjectID)
+		for _, grant := range grants {
+			view.Grants = append(view.Grants, tokenGrantResponse{OrganizationID: string(grant.OrganizationID), ProjectID: string(grant.ProjectID)})
+			view.Projects = append(view.Projects, string(grant.ProjectID))
+		}
+		if len(grants) < corestore.MaxPageSize {
+			return view, nil
+		}
+		after = grants[len(grants)-1].ProjectID
 	}
-	return view, rows.Err()
 }
 
 func (s *Service) hostedOrganizationChoicesFor(ctx context.Context, credential apiCredential) ([]nativeOrganization, error) {

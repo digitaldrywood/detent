@@ -9,6 +9,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func TestCoordinatorSpritePoolReplay(t *testing.T) {
@@ -22,7 +24,11 @@ func TestCoordinatorSpritePoolReplay(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			scope := nativeScope{organization: f.project.OrganizationID, credential: apiCredential{Scope: apiScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE token_hash=?", scope.credential.Hash).Scan(&scope.credential.ID); err != nil {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				credential, err := r.CredentialByHash(t.Context(), scope.credential.Hash)
+				scope.credential.ID = credential.ID
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 			ctx := context.WithValue(t.Context(), nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })

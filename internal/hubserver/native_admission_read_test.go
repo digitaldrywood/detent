@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -13,6 +12,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -26,6 +29,8 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		label              string
 		body               string
 		contract           string
+		contractReason     string
+		noRunner           bool
 		reason             string
 		dependency         bool
 		extraDependencies  int
@@ -56,6 +61,8 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		{name: "hosted heartbeat selector refusal", heartbeat: true, label: "excluded", outcome: "skipped", code: "no_claimable_work"},
 		{name: "hosted heartbeat admissible", heartbeat: true, outcome: "ready"},
 		{name: "missing issue contract refuses", heartbeat: true, contract: "missing", outcome: "skipped", code: "issue_contract_unsatisfied", reason: "Add or complete these required issue sections: Acceptance criteria, Must not break, How we know it worked"},
+		{name: "missing issue contract remains actionable without runner", noRunner: true, contract: "missing", contractReason: "Add or complete these required issue sections: Acceptance criteria, Must not break, How we know it worked", outcome: "skipped"},
+		{name: "missing issue contract remains actionable with excluded runner", stale: true, contract: "missing", contractReason: "Add or complete these required issue sections: Acceptance criteria, Must not break, How we know it worked", outcome: "skipped", code: "runner_offline"},
 		{name: "unconfirmed issue contract refuses", heartbeat: true, contract: "unconfirmed", outcome: "skipped", code: "issue_contract_unsatisfied", reason: "A human must confirm the success criteria by editing or saving the issue body"},
 		{name: "no dispatch marker refuses", heartbeat: true, body: "<!-- detent:no-dispatch -->", outcome: "skipped", code: "no_claimable_work", reason: "The issue contains detent:no-dispatch; remove the marker to permit dispatch"},
 		{name: "exempt issue contract stays eligible", heartbeat: true, contract: "exempt", outcome: "ready"},
@@ -93,6 +100,17 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			t.Parallel()
 			now := time.Now().UTC()
 			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), f.project.ID)
+				if err != nil {
+					return err
+				}
+				project.Core.RequireDependencies = true
+				_, err = w.UpdateProjectRecord(t.Context(), project)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			var other runnerFixture
 			if test.another {
@@ -101,7 +119,9 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 					r, other = other, r
 				}
 			}
-			r.enroll(t)
+			if !test.noRunner {
+				r.enroll(t)
+			}
 			issue := f.create(t, "native candidate")
 			var blockers []tracker.NativeIssue
 			if test.dependency {
@@ -112,18 +132,31 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				for index := range 1 + test.extraDependencies {
 					blocker := blockerFixture.create(t, "unfinished blocker "+strconv.Itoa(index))
 					blockers = append(blockers, blocker)
-					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (dependent_issue_id, blocker_issue_id, provenance, created_at, updated_at) SELECT a.id, b.id, 'native', ?, ? FROM issues a, issues b WHERE a.native_id = ? AND b.native_id = ?", testTimestamp, testTimestamp, issue.WorkItemID, blocker.WorkItemID); err != nil {
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, RelatedProjectID: blocker.ProjectID, RelatedWorkItemID: blocker.WorkItemID, Type: "dependency", Direction: "blocked_by"}, "native", now)
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
 			if test.ignoreDependencies {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_dependencies=0 WHERE id=?", f.project.ID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), f.project.ID)
+					if err != nil {
+						return err
+					}
+					project.Core.RequireDependencies = false
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.intake {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO github_imports (id, project_id, issue_number, work_item_id, intake_pending, observed_at) VALUES (?, ?, 1, ?, 1, ?)", newNativeID("import"), f.project.ID, issue.WorkItemID, testTimestamp); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					_, err := w.CreateLinkedSource(t.Context(), eventstore.LinkedSource{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, URL: "https://github.com/example-org/example-project/issues/1"})
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -131,38 +164,49 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if test.label != "" {
 				labelValues = append(labelValues, test.label)
 			}
-			labels, err := json.Marshal(labelValues)
-			if err != nil {
-				t.Fatal(err)
-			}
 			body := "private-body /private/runner credential-sentinel" + issueContractTestSections
 			if test.contract == "missing" || test.contract == "exempt" {
 				body = "private-body /private/runner credential-sentinel"
 			}
-			if test.contract == "unconfirmed" || test.contract == "exempt" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET issue_contract_json = ? WHERE native_id = ?", fmt.Sprintf(`{"exempt":%t}`, test.contract == "exempt"), issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-			}
 			if test.body != "" {
 				body += "\n" + test.body
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET labels_json=?, body=? WHERE native_id=?", string(labels), body, issue.WorkItemID); err != nil {
-				t.Fatal(err)
-			}
-			for _, label := range labelValues {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_filter_values(issue_id,kind,value) SELECT id,'label',? FROM issues WHERE native_id=?", label, issue.WorkItemID); err != nil {
-					t.Fatal(err)
+			issue = writeAdmissionIssue(t, f, issue, func(value *tracker.NativeIssue) {
+				value.Body, value.Labels = body, labelValues
+				if test.contract == "unconfirmed" || test.contract == "exempt" {
+					value.IssueContract = &issuecontract.State{Exempt: test.contract == "exempt"}
 				}
-			}
+			})
 			descriptor := hubTestPolicy()
 			if test.policy == "wrong-runner" {
 				descriptor.Requirements.RunnerID = runnerauth.NewBinding().RunnerID
 				descriptor = descriptor.WithID()
 			}
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			plan := nativeClaimPlan{issue: issue, descriptor: descriptor}
+			evaluation, err := nativeRuntimeIssueContractEvaluation(plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantAllowed := test.contract != "missing" && test.contract != "unconfirmed" && !strings.Contains(strings.ToLower(test.body), "detent:no-dispatch")
+			if evaluation.Allowed != wantAllowed || nativeClaimIssueContractAllowed(plan) != wantAllowed {
+				t.Fatalf("claim and explanation contract disagree: evaluation=%+v allowed=%t", evaluation, wantAllowed)
+			}
 			if test.nondispatchable || test.terminal {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET dispatchable=0, terminal=? WHERE id=(SELECT workflow_state_id FROM issues WHERE native_id=?)", test.terminal, issue.WorkItemID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), f.project.ID)
+					if err != nil {
+						return err
+					}
+					for index := range project.States {
+						if project.States[index].Name == issue.State {
+							project.States[index].Dispatchable = false
+							project.States[index].Terminal = test.terminal
+						}
+					}
+					_, err = w.UpdateProjectRecord(t.Context(), project)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -180,12 +224,12 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			}
 			if test.oldVersion {
 				f.service.config.Version = "v9.0.0"
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET version='v0.117.55' WHERE id=?", r.binding.MachineID); err != nil {
+				if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE machines SET version='v0.117.55' WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			var historyBefore int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events").Scan(&historyBefore); err != nil {
+			if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=$1", f.project.OrganizationID).Scan(&historyBefore); err != nil {
 				t.Fatal(err)
 			}
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/runtime"
@@ -208,7 +252,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				if baseline.Scheduling.Outcome != baselineOutcome || len(baseline.Admission) != 1 || baseline.Admission[0].SelectorObservedAt != nil {
 					t.Fatalf("unknown selectors were invented: %#v", baseline)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json, '$.sprite_name', 'preserved') WHERE id=?", r.binding.MachineID); err != nil {
+				if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE machines SET sprite_name='preserved' WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 				context := current
@@ -224,19 +268,33 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				heartbeat := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, payload)
 				requireNativeStatus(t, heartbeat, http.StatusOK)
 				var preserved string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(capabilities_json, '$.sprite_name') FROM machines WHERE id=?", r.binding.MachineID).Scan(&preserved); err != nil || preserved != "preserved" {
+				if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT sprite_name FROM machines WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, r.binding.MachineID).Scan(&preserved); err != nil || preserved != "preserved" {
 					t.Fatalf("heartbeat overwrote existing metadata: %q %v", preserved, err)
 				}
 				if test.observation == "revision" {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET revision=revision+1 WHERE id=?", r.binding.RunnerID); err != nil {
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+						identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)
+						if err != nil {
+							return err
+						}
+						identity.Tags = append(identity.Tags, "changed-routing")
+						return w.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
 				if test.observation == "project" {
-					if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM runner_admission_observations WHERE runner_id=?`, r.binding.RunnerID); err != nil {
+					if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "DELETE FROM runner_admission_observations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3", f.project.OrganizationID, r.binding.RunnerID, f.project.ID); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(json_remove(capabilities_json, ?), ?, json(?)) WHERE id=?", admissionObservationPath(r.binding.RunnerID, f.project.ID), admissionObservationPath(r.binding.RunnerID, "prj_other"), `{"context":{},"runner_revision":1}`, r.binding.MachineID); err != nil {
+					observationProject := newNativeFixture(t, f.service, f.project.OrganizationID, "other-admission-observation")
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+						identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)
+						if err != nil {
+							return err
+						}
+						return w.ReplaceRunnerAdmissionObservation(t.Context(), r.binding.RunnerID, observationProject.project.ID, tracker.NativeAdmissionObservation{RunnerRevision: identity.Revision, ReceivedAt: now, Context: current})
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -260,13 +318,28 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				path += "?admission=" + url.QueryEscape(string(raw))
 			}
 			token := r.redemption.Credential
+			if test.noRunner {
+				token = f.token
+			}
 			switch test.authority {
 			case "grant":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id = (SELECT token_id FROM runner_identities WHERE id=?) AND project_id=?", r.binding.RunnerID, f.project.ID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					return w.DeleteAccessTokenGrant(t.Context(), identity.TokenID, f.project.ID)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			case "revoked":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE id = (SELECT token_id FROM runner_identities WHERE id=?)", formatHubTime(now), r.binding.RunnerID); err != nil {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					return w.RevokeAccessCredential(t.Context(), identity.TokenID, now)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			case "operator":
@@ -296,6 +369,18 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var evidence tracker.NativeRuntimeEvidence
 			decodeHubResponse(t, response, &evidence)
+			if test.contractReason != "" {
+				explanation := explain.FromNativeEvidence(evidence)
+				if evidence.Scheduling.Outcome != "skipped" || evidence.Scheduling.Reason != test.contractReason || explanation.Eligibility.Current == nil || explanation.Eligibility.Current.Reason != test.contractReason {
+					t.Fatalf("issue contract hidden by runner availability: scheduling=%+v current=%+v", evidence.Scheduling, explanation.Eligibility.Current)
+				}
+			}
+			if test.noRunner {
+				if len(evidence.Admission) != 0 || len(evidence.Capacity) != 0 {
+					t.Fatalf("unenrolled runner became admission evidence: %+v", evidence)
+				}
+				return
+			}
 			if len(evidence.Admission) != 1+map[bool]int{false: 0, true: 1}[test.another] {
 				t.Fatalf("admission is unavailable: %#v", evidence)
 			}
@@ -303,7 +388,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			var expectedDependencies []tracker.NativeDependency
 			if test.dependency && !test.ignoreDependencies && !test.privateDependency {
 				for _, blocker := range blockers {
-					expectedDependencies = append(expectedDependencies, tracker.NativeDependency{Dispatchable: true, Number: blocker.Number, Title: blocker.Title, WebURL: fmt.Sprintf("/local-organization/native/issues/%d", blocker.Number), Identifier: string(blocker.ProjectID) + "#" + strconv.Itoa(blocker.Number), ID: blocker.WorkItemID, ProjectID: blocker.ProjectID, State: blocker.State, Terminal: false})
+					expectedDependencies = append(expectedDependencies, tracker.NativeDependency{Dispatchable: true, Number: blocker.Number, Title: blocker.Title, WebURL: blocker.WebURL, Identifier: string(blocker.ProjectID) + "#" + strconv.Itoa(blocker.Number), ID: blocker.WorkItemID, ProjectID: blocker.ProjectID, State: blocker.State, Terminal: false})
 				}
 				slices.SortFunc(expectedDependencies, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 				expectedDependencies = expectedDependencies[:min(100, len(expectedDependencies))]
@@ -338,16 +423,6 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if test.code == "issue_contract_unsatisfied" {
 				if explanation.Eligibility.Current == nil || explanation.Eligibility.Current.Reason != test.reason {
 					t.Fatalf("contract reason lost: %+v", explanation.Eligibility.Current)
-				}
-				snapshot, err := readHealthSnapshot(t.Context(), f.service.database.db, f.project.OrganizationID, now)
-				if err != nil {
-					t.Fatal(err)
-				}
-				findings := evaluateHealth(now, snapshot)
-				if !slices.ContainsFunc(findings, func(finding healthFinding) bool {
-					return finding.Subject.ID == string(issue.WorkItemID) && finding.Class == "human" && finding.Evidence.Reason == test.code && finding.NextAction == test.reason
-				}) {
-					t.Fatalf("missing human contract finding: %+v", findings)
 				}
 			}
 			if test.outcome == "skipped" && (len(explanation.Eligibility.Refusals) == 0 || !reflect.DeepEqual(explanation.Eligibility.Refusals[0].UnresolvedDependencies, expectedDependencies) || !slices.Equal(explanation.Eligibility.Refusals[0].Unavailable, a.Unavailable)) {
@@ -407,10 +482,10 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				}
 			}
 			var historyAfter, leases int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events").Scan(&historyAfter); err != nil {
+			if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=$1", f.project.OrganizationID).Scan(&historyAfter); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&leases); err != nil || historyAfter != historyBefore || leases != 0 {
+			if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM leases WHERE organization_id=$1", f.project.OrganizationID).Scan(&leases); err != nil || historyAfter != historyBefore || leases != 0 {
 				t.Fatalf("explanation wrote scheduling state: history=%d/%d leases=%d error=%v", historyBefore, historyAfter, leases, err)
 			}
 			if test.dependency && !test.ignoreDependencies && !test.intake && !test.privateDependency && test.extraDependencies < 100 {
@@ -460,4 +535,65 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func writeAdmissionIssue(t *testing.T, f nativeFixture, issue tracker.NativeIssue, change func(*tracker.NativeIssue)) tracker.NativeIssue {
+	t.Helper()
+	row, _, err := f.service.readWorkItemRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}, string(issue.WorkItemID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	change(&issue)
+	issue.Revision++
+	issue.UpdatedAt = f.service.config.now()
+	issue.LastActivityAt = issue.UpdatedAt
+	fields, err := f.service.prepareWorkItemFields(t.Context(), f.project.OrganizationID, workItemRecordPlan{issue: issue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := eventstore.NewContent(f.service.runDetailStore())
+	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "work_item", AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: issue.UpdatedAt, Data: tracker.CollaborationData{Revision: issue.Revision, Fields: []string{"body", "labels"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		row.Title = issue.Title
+		row.BodyObjectKey = &fields.Body
+		row.IssueContractObjectKey = fields.Contract
+		row.ReportContextObjectKey = fields.Report
+		row.WorkflowStateName = &issue.State
+		row.NativeUpdatedAt = issue.UpdatedAt
+		row.UpdatedAt = issue.UpdatedAt
+		row.LastActivityAt = issue.LastActivityAt
+		updated, err := w.UpdateWorkItem(t.Context(), row)
+		if err != nil {
+			return err
+		}
+		if updated.Revision != int64(issue.Revision) {
+			return corestore.ErrRevisionConflict
+		}
+		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+			return err
+		}
+		if err := w.SetWorkItemLabels(t.Context(), f.project.ID, issue.WorkItemID, issue.Labels); err != nil {
+			return err
+		}
+		_, err = w.AppendEvent(t.Context(), event)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return readWorkItem(t, f, issue.WorkItemID, "")
 }

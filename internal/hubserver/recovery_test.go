@@ -53,9 +53,10 @@ func TestSelfHostedRunnerVersionCompatibility(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			issue := f.create(t, "work")
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.redemption.Version = test.version
 			r.enroll(t)
+			reportRunnerCapacity(t, f.service, f.base, r.redemption.Credential, r.binding.MachineID, r.redemption.DisplayName, r.redemption.BackendIsolation, r.redemption.Capacity)
 			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID,
 				MachineID: r.binding.MachineID, SessionID: "version-session", TTLSeconds: 90,
 				ProtocolMajor: test.major, Capabilities: test.capabilities}

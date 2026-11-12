@@ -67,9 +67,10 @@ func TestOperatorReceiptGenericWritesCannotBypassCustody(t *testing.T) {
 func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 	admin := template.Database(t)
 	config := smallPool()
-	config.MaxConnections, config.ServingConnections = 4, 2
+	config.MaxConnections, config.ServingConnections = 5, 3
 	repository, pool := repositoryFor(t, admin, config)
 	content := eventstore.NewContent(newHistoryObjects())
+	keys := accessTestKeys(t, true)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", CreatedAt: historyAt()}); err != nil {
@@ -145,6 +146,22 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			envelope, err := keys.Seal([]byte("example project credential"), accessstore.SecretAAD(org, project, "example"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			secret := accessstore.Secret{OrganizationID: org, ProjectID: project, Kind: "example", OrganizationSlug: "example", Envelope: envelope, UpdatedAt: historyAt()}
+			audit := accessstore.SecretAudit{OrganizationID: org, ProjectID: project, Kind: secret.Kind, Actor: "example-principal", Event: "race", KeyVersion: envelope.Version, RecordedAt: historyAt()}
+			if project == "prj_second" {
+				seedAudit := audit
+				seedAudit.Event = "seed"
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.StoreAccessSecret(t.Context(), secret, seedAudit)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
 			locked, release := make(chan struct{}), make(chan struct{})
 			var releaseOnce sync.Once
 			locker := startRepositoryTask(t, func(ctx context.Context) error {
@@ -175,16 +192,33 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 					return err
 				})
 			})
+
 			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+			var reserverPID int
 			testenv.WaitUntil(t, t.Context(), func() error {
 				select {
 				case <-reserver.done:
 					t.Fatal("reservation completed without waiting for the project retirement lock")
 				default:
 				}
-				var pid int
-				return admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)) AND query LIKE '-- name: LockWorkItemProject :one%'`, pool.Config().ConnConfig.User, lockerPID).Scan(&pid)
+				return admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)) AND query LIKE '-- name: LockWorkItemProject :one%'`, pool.Config().ConnConfig.User, lockerPID).Scan(&reserverPID)
 			})
+			storer := startRepositoryTask(t, func(ctx context.Context) error {
+				return repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.StoreAccessSecret(ctx, secret, audit)
+				})
+			})
+			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+			testenv.WaitUntil(t, t.Context(), func() error {
+				select {
+				case <-storer.done:
+					t.Fatal("secret store completed without waiting for the project retirement lock")
+				default:
+				}
+				var pid int
+				return admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND ($2=ANY(pg_blocking_pids(pid)) OR $3=ANY(pg_blocking_pids(pid))) AND query NOT LIKE '-- name: LockWorkItemProject :one%'`, pool.Config().ConnConfig.User, lockerPID, reserverPID).Scan(&pid)
+			})
+
 			releaseOnce.Do(func() { close(release) })
 			if err := locker.wait(t); err != nil {
 				t.Fatal(err)
@@ -192,6 +226,20 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 			if err := reserver.wait(t); !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, corestore.ErrSerializationFailure) {
 				t.Fatalf("reservation accepted retired project: %v", err)
 			}
+			if err := storer.wait(t); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("secret store did not reject retired project: %v", err)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.AccessSecret(t.Context(), project, secret.Kind)
+				return err
+			}); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("retirement race retained a project secret: %v", err)
+			}
+			var written int
+			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM project_secret_audit WHERE organization_id=$1 AND project_id=$2 AND event='race'`, org, project).Scan(&written); err != nil || written != 0 {
+				t.Fatalf("rejected secret store wrote audit rows: %d %v", written, err)
+			}
+
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				_, err := r.(postgres.OperatorReceiptReader).OperatorReceipt(t.Context(), project, race.Receipt)
 				return err

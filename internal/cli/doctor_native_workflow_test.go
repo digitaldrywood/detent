@@ -2,13 +2,10 @@ package cli
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
 func TestCheckDoctorNativeWorkflowInstructions(t *testing.T) {
@@ -64,24 +61,11 @@ func TestHubPolicyInspectWarnsOnNativeGitHubSteps(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			root := t.TempDir()
-			workflowPath := filepath.Join(root, "WORKFLOW.md")
 			definition := tt.workflow
 			if definition == "" {
 				definition = "---\ntracker:\n  kind: " + tt.kind + "\n---\nKeep the Codex Workpad current and open a pull request.\n"
 			}
-			if err := os.WriteFile(workflowPath, []byte(definition), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			configPath := filepath.Join(root, "global.yaml")
-			cfg, err := globalconfig.DefaultAt(configPath, globalconfig.WithHome(root))
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: root, Weight: 1}}
-			if err := writeLocalConfigurationFile(configPath, cfg); err != nil {
-				t.Fatal(err)
-			}
+			configPath := newEnrolledPolicyProject(t, definition).configPath
 			cmd := newHubPolicyCommand(func(string) string { return "" })
 			var stdout, stderr bytes.Buffer
 			cmd.SetOut(&stdout)

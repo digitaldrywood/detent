@@ -21,7 +21,7 @@ import (
 )
 
 func validateCoreNeutralChangeImport(bundle *postgres.VerifiedNeutralImport) error {
-	return postgres.ValidateNeutralCoreImportTables(bundle, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
+	return postgres.ValidateNeutralCoreImportTables(bundle, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
 }
 
 func coreNeutralPayload(row postgres.NeutralImportRow) (string, error) {
@@ -65,7 +65,7 @@ func coreNeutralBytes(row postgres.NeutralImportRow, column string) ([]byte, err
 }
 
 func (s *coreNeutralImport) changeFilterValue(ctx context.Context, table string, row postgres.NeutralImportRow, column string) (storagecatalog.Cell, error) {
-	if column != "change_id" || table != "change_landing_receipts" && table != "change_viewed_files" {
+	if column != "change_id" || table != "change_landing_receipts" && table != "change_viewed_files" && table != "quality_landings" {
 		return storagecatalog.Cell{}, postgres.ErrNeutralImport
 	}
 	if s.versionChanges == nil {
@@ -219,4 +219,88 @@ func readCoreNeutralArchive(ctx context.Context, source *coreNeutralImport, orga
 		return nil, errors.Join(artifact.ErrIntegrity, err)
 	}
 	return raw, nil
+}
+
+func readCoreQualityLanding(ctx context.Context, source *coreNeutralImport, input CoreChangeImportSource, changeID, versionID string) (*tracker.ChangeLanding, error) {
+	row, err := source.one(ctx, "quality_landings", map[string]string{"version_id": versionID, "change_id": changeID}, []string{"version_id"})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var encoded string
+	var projected sql.NullString
+	if err := row.Decode(map[string]any{"record_json": &encoded, "landed_at": &projected}); err != nil {
+		return nil, err
+	}
+	raw, err := readCoreChangePayload(ctx, source, input, encoded)
+	if err != nil {
+		return nil, err
+	}
+	var landing tracker.ChangeLanding
+	if json.Unmarshal(raw, &landing) != nil || landing.VersionID != versionID || landing.HeadSHA == "" || landing.MergeSHA == "" || landing.BaseRef == "" || landing.LandedAt.IsZero() {
+		return nil, eventstore.ErrInvalidRecord
+	}
+	versionRow, err := source.one(ctx, "change_versions", map[string]string{"id": versionID, "change_id": changeID}, []string{"id"})
+	if err != nil {
+		return nil, err
+	}
+	versionEncoded, err := coreNeutralPayload(versionRow)
+	if err != nil {
+		return nil, err
+	}
+	versionRaw, err := readCoreChangePayload(ctx, source, input, versionEncoded)
+	if err != nil {
+		return nil, err
+	}
+	var version tracker.ChangeVersion
+	if json.Unmarshal(versionRaw, &version) != nil || version.ID != versionID || version.ChangeID != changeID || version.HeadSHA != landing.HeadSHA {
+		return nil, eventstore.ErrInvalidRecord
+	}
+	if projected.Valid {
+		at, err := parseTimeValue(projected.String)
+		if err != nil || !at.Equal(landing.LandedAt) {
+			return nil, eventstore.ErrInvalidRecord
+		}
+	}
+	return &landing, nil
+}
+
+func validateCoreQualityLandings(ctx context.Context, source *coreNeutralImport, input CoreChangeImportSource) error {
+	var after []string
+	for {
+		rows, err := source.bundle.Page(ctx, "quality_landings", after, 100)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, row := range rows {
+			var versionID string
+			if err := row.Decode(map[string]any{"version_id": &versionID}); err != nil {
+				return err
+			}
+			version, err := source.one(ctx, "change_versions", map[string]string{"id": versionID}, []string{"id"})
+			if err != nil {
+				return err
+			}
+			var changeID string
+			if err := version.Decode(map[string]any{"change_id": &changeID}); err != nil {
+				return err
+			}
+			if _, err := source.one(ctx, "change_requests", map[string]string{"id": changeID, "organization_id": string(input.OrganizationID)}, []string{"id"}); err != nil {
+				return err
+			}
+			landing, err := readCoreQualityLanding(ctx, source, input, changeID, versionID)
+			if err != nil {
+				return err
+			}
+			if landing == nil {
+				return eventstore.ErrInvalidRecord
+			}
+		}
+		after = rows[len(rows)-1].Key
+	}
 }

@@ -34,6 +34,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -1027,6 +1028,77 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					t.Fatalf("source POST was not durable: %+v", original)
 				}
 				restorePreparedOwner := func(owner *ownedExecution, savedIssue connector.Issue) *ownedExecution {
+					peer := h.createInProgress(t, "Independent terminal history")
+					peerID := tracker.NativeWorkItemID(peer.ID)
+					peerMachine := "history-machine-" + peer.ID
+					peerAttemptID := "attempt_" + strings.TrimPrefix(peer.ID, "wi_")
+					var peerLease leasestore.Lease
+					h.seed(func(w tenantstore.Writer) error {
+						item, err := w.WorkItemByNativeID(t.Context(), peerID)
+						if err != nil {
+							return err
+						}
+						if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: h.organization, ID: peerMachine, Hostname: "history-host", Capacity: 1, Version: "test"}); err != nil {
+							return err
+						}
+						peerLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: peerMachine, SessionID: "history-session-" + peer.ID, LeaseID: "history-lease-" + peer.ID, TTL: time.Hour})
+						return err
+					})
+					content := eventstore.NewContent(h.config.RunDetails)
+					for _, status := range []string{"running", "succeeded"} {
+						sequence := int64(1)
+						data := tracker.NativeRunData{AttemptID: peerAttemptID, RunID: "run_" + strings.TrimPrefix(peer.ID, "wi_"), LeaseID: tracker.LeaseID(peerLease.LeaseID), FencingToken: tracker.FencingToken(peerLease.FencingToken), Sequence: sequence, PolicyID: h.descriptor.ID}
+						if status == "succeeded" {
+							sequence, data.Sequence, data.Outcome = 2, 2, "succeeded"
+						}
+						raw, err := json.Marshal(data)
+						if err != nil {
+							t.Fatal(err)
+						}
+						payload, err := content.PreparePayload(t.Context(), h.organization, raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						h.seed(func(w tenantstore.Writer) error {
+							_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: peerAttemptID, RunID: data.RunID, Fence: leasestore.Fence{LeaseID: peerLease.LeaseID, FencingToken: peerLease.FencingToken}, Sequence: sequence, Status: status, StartedAt: peerLease.AcquiredAt, PayloadObjectKey: payload.Key, PayloadReference: payload})
+							return err
+						})
+					}
+					h.seed(func(w tenantstore.Writer) error {
+						_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: peerLease.LeaseID, FencingToken: peerLease.FencingToken}, "completed")
+						return err
+					})
+					peerIssue, err := h.admin.Issue(t.Context(), peerID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := h.admin.Transition(t.Context(), peerID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: peerIssue.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+						t.Fatal(err)
+					}
+					readPeer := func() struct {
+						Attempt leasestore.Attempt
+						Lease   leasestore.Lease
+					} {
+						t.Helper()
+						var snapshot struct {
+							Attempt leasestore.Attempt
+							Lease   leasestore.Lease
+						}
+						h.seed(func(w tenantstore.Writer) error {
+							var err error
+							snapshot.Attempt, err = w.Attempt(t.Context(), peerAttemptID)
+							if err != nil {
+								return err
+							}
+							snapshot.Lease, err = w.Lease(t.Context(), peerLease.LeaseID)
+							return err
+						})
+						return snapshot
+					}
+					peerBefore := readPeer()
+					if peerBefore.Attempt.Status != "succeeded" || peerBefore.Attempt.Sequence != 2 || peerBefore.Attempt.PayloadObjectKey == "" || peerBefore.Lease.ReleasedAt == nil {
+						t.Fatalf("independent terminal history was not established: %+v", peerBefore)
+					}
 					transitionAttempts := 0
 					ownerClient := owner.claim.source.NativeClient().Transport()
 					ownerTransport := fixtureClient(ownerClient).requests.Load()
@@ -1070,6 +1142,9 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						t.Fatal(err)
 					}
 					h.connector.worker = ownerConnector
+					if peerAfter := readPeer(); !reflect.DeepEqual(peerAfter, peerBefore) {
+						t.Fatalf("completion restore changed independent terminal history: before=%+v after=%+v", peerBefore, peerAfter)
+					}
 					return h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 				}
 				if test.RestartCompletion {
@@ -2658,7 +2733,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if config.Clock == nil {
 		config.Clock = time.Now
 	}
-	config = hubclientPostgresConfig(t, config, states, requireDependencies)
+	config, markHistoricalCheckpointSourceUnknown := hubclientPostgresConfig(t, config, states, requireDependencies)
 
 	if config.Conversation != nil && config.Conversation.Enabled && config.Conversation.ArchiveContents == nil {
 		conversationConfig := *config.Conversation
@@ -2719,7 +2794,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), project: hubclientPostgresProject(config), descriptor: clientTestPolicy()}
+	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), project: hubclientPostgresProject(config), descriptor: clientTestPolicy(), markHistoricalCheckpointSourceUnknown: markHistoricalCheckpointSourceUnknown}
 	h.restart = func() {
 		t.Helper()
 		requests.Lock()
@@ -2793,23 +2868,24 @@ func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, c
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
-	config          hubserver.Config
-	leaseHolds      atomic.Int64
-	clock           func() time.Time
-	restart         func()
-	seed            func(func(tenantstore.Writer) error)
-	prepareEvidence func(eventstore.Evidence, []byte) (eventstore.Evidence, error)
-	sourceDirectory string
-	review          string
-	organization    tracker.OrganizationID
-	project         tracker.ProjectID
-	descriptor      policy.Descriptor
-	admin           *NativeClient
-	native          *NativeClient
-	connector       *hubclientFixtureConnector
-	scheduler       *Scheduler
-	failChanges     *changeFailingTransport
-	otherWorker     func(*testing.T) *NativeClient
+	markHistoricalCheckpointSourceUnknown func(context.Context, string) error
+	config                                hubserver.Config
+	leaseHolds                            atomic.Int64
+	clock                                 func() time.Time
+	restart                               func()
+	seed                                  func(func(tenantstore.Writer) error)
+	prepareEvidence                       func(eventstore.Evidence, []byte) (eventstore.Evidence, error)
+	sourceDirectory                       string
+	review                                string
+	organization                          tracker.OrganizationID
+	project                               tracker.ProjectID
+	descriptor                            policy.Descriptor
+	admin                                 *NativeClient
+	native                                *NativeClient
+	connector                             *hubclientFixtureConnector
+	scheduler                             *Scheduler
+	failChanges                           *changeFailingTransport
+	otherWorker                           func(*testing.T) *NativeClient
 }
 
 // repolicy approves a changed repository policy, as an operator editing the

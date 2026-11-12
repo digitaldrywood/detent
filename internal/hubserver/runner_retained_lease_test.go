@@ -44,17 +44,7 @@ func TestRunnerRetainedLeaseClaimEligibility(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, owner.identityPath()+"/routing", testHubAdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "draining", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}), http.StatusOK)
 			}
 			if test.revoke {
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback()
-				if err := revokeRunnerIdentityInTx(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, credential: apiCredential{ID: bootstrapTokenID}}, owner.binding.RunnerID, now); err != nil {
-					t.Fatal(err)
-				}
-				if err := tx.Commit(); err != nil {
-					t.Fatal(err)
-				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, owner.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
 			}
 			if test.expire {
 				now = now.Add(600 * time.Second)

@@ -160,8 +160,8 @@ func TestPostgresHostedProjectListingUsesCurrentAccess(t *testing.T) {
 		objectReads.Add(1)
 		return nil
 	}
-	if service.database.db != nil || service.database.reader != nil || service.database.authReader != nil || service.database.claimReader != nil {
-		t.Fatal("Projects fixture retained a legacy database handle")
+	if service.database.postgres == nil || service.config.TenantRepository == nil {
+		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
 	path := "/api/v2/organizations/org_security/projects"
 	response := f.request(t, viewer, http.MethodGet, path, nil)

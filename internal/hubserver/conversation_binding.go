@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -34,11 +35,7 @@ const conversationTranscriptRunes = 2000
 const conversationTranscriptMessages = 20
 
 func boundRunes(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
-	}
-	return string(runes[:limit]) + "…"
+	return hubapi.BoundRunes(value, limit)
 }
 
 // conversationResumeDecision is the bind's answer to "does this attempt

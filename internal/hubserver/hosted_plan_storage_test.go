@@ -1,18 +1,60 @@
 package hubserver
 
 import (
-	"encoding/json"
+	"errors"
+	"reflect"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func TestHostedPlanStorageMigration(t *testing.T) {
 	t.Parallel()
 	f, provider := newHostedBillingFixture(t)
 	d := f.service.database
+	readPlan := func(ref PlanReference) HostedPlan {
+		t.Helper()
+		var plan HostedPlan
+		if err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			var err error
+			plan, err = d.readHostedPlanRecord(t.Context(), r, ref)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return plan
+	}
+	readStoredPlan := func(ref PlanReference) billingstore.Plan {
+		t.Helper()
+		var plan billingstore.Plan
+		if err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			var err error
+			plan, err = r.BillingPlan(t.Context(), billingstore.PlanReference{ID: ref.ID, Version: ref.Version})
+			if err != nil {
+				return err
+			}
+			published, err := r.RuntimePublished(t.Context(), plan.RuntimeID)
+			if err != nil {
+				return err
+			}
+			if plan.RuntimeID == "" || !published {
+				return errors.New("stored plan runtime binding is unavailable")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		plan.RuntimeID = ""
+		return plan
+	}
+	fixturePlans := f.service.config.Hosted.Plans.Plans
 	plans := capacityHostedPlans()
 	for i := range plans.Plans {
 		plan := &plans.Plans[i]
@@ -23,6 +65,7 @@ func TestHostedPlanStorageMigration(t *testing.T) {
 			plan.Allowances["collaboration_bytes"] = 500 << 30
 		}
 	}
+	plans.Plans = append(plans.Plans, fixturePlans...)
 	cfg := *f.service.config.Hosted
 	cfg.Plans = &plans
 	if err := d.configureHostedPlans(t.Context(), &cfg); err != nil {
@@ -53,22 +96,34 @@ func TestHostedPlanStorageMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := make(map[PlanReference]string)
+	legacy := make(map[PlanReference]billingstore.Plan)
 	for _, plan := range plans.Plans {
 		if plan.ID == "pilot_free" || plan.ID == "comp_team" || plan.ID == "scale" || plan.ID == "growth" && plan.Version == 1 {
-			var raw string
-			if err := d.db.QueryRowContext(t.Context(), "SELECT record_json FROM hosted_plans WHERE id=? AND version=?", plan.ID, plan.Version).Scan(&raw); err != nil {
-				t.Fatal(err)
-			}
-			legacy[plan.PlanReference] = raw
+			legacy[plan.PlanReference] = readStoredPlan(plan.PlanReference)
 		}
 	}
-	const file = "20261021130000_hosted_plan_storage.sql"
-	data, err := migrationFiles.ReadFile("migrations/" + file)
+	const file = "20261112124958_historical_plan_storage_floors.sql"
+	data, err := migrationFiles.ReadFile("postgres/migrations/" + file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	migration, err := goose.NewProvider(goose.DialectSQLite3, d.db, fstest.MapFS{file: &fstest.MapFile{Data: data}}, goose.WithDisableGlobalRegistry(true), goose.WithTableName("storage_test_version"), goose.WithSlog(discardLogger()))
+	connection := startupConnection(t, hostedPostgresAdmin(t, f.service), postgres.MigrationRoleName, "")
+	poolConfig, err := connection.PoolConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolConfig.ConnConfig.RuntimeParams["role"] = postgres.MigrationRoleName
+	migrationDB := stdlib.OpenDB(*poolConfig.ConnConfig)
+	t.Cleanup(func() {
+		if err := migrationDB.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	var role string
+	if err := migrationDB.QueryRowContext(t.Context(), "SELECT current_user").Scan(&role); err != nil || role != postgres.MigrationRoleName {
+		t.Fatal("storage upgrade did not select the migration role", role, err)
+	}
+	migration, err := goose.NewProvider(goose.DialectPostgres, migrationDB, postgres.RoleMigrations(fstest.MapFS{file: &fstest.MapFile{Data: data}}), goose.WithDisableGlobalRegistry(true), goose.WithTableName("storage_test_version"), goose.WithSlog(discardLogger()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +131,7 @@ func TestHostedPlanStorageMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	current := capacityHostedPlans()
+	current.Plans = append(current.Plans, fixturePlans...)
 	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &current}); err != nil {
 		t.Fatal(err)
 	}
@@ -89,21 +145,15 @@ func TestHostedPlanStorageMigration(t *testing.T) {
 		{PlanReference{ID: "growth", Version: 2}, 250 << 30},
 	} {
 		t.Run(test.ref.ID, func(t *testing.T) {
-			plan, err := d.readHostedPlan(t.Context(), d.reader, test.ref)
-			if err != nil {
-				t.Fatal(err)
-			}
+			plan := readPlan(test.ref)
 			if plan.Allowances["collaboration_bytes"] != test.storage || plan.Allowances["history_records"] != 2000000 {
 				t.Fatalf("updated catalog = %#v", plan)
 			}
 		})
 	}
 	for ref, before := range legacy {
-		var after string
-		if err := d.db.QueryRowContext(t.Context(), "SELECT record_json FROM hosted_plans WHERE id=? AND version=?", ref.ID, ref.Version).Scan(&after); err != nil {
-			t.Fatal(err)
-		}
-		if after != before {
+		after := readStoredPlan(ref)
+		if !reflect.DeepEqual(after, before) {
 			t.Fatalf("legacy/custom plan changed: %v", ref)
 		}
 	}
@@ -125,10 +175,21 @@ func TestHostedPlanStorageMigration(t *testing.T) {
 	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "custom-storage-plan", Action: "create_plan", ExpectedRevision: after.Revision, Plan: custom.PlanReference, Definition: &custom, Reason: "Custom organization storage"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id='scale',base_version=2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.db.ExecContext(t.Context(), "DELETE FROM hosted_billing_accounts"); err != nil {
+	if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+		assignment, err := w.BillingAssignment(t.Context())
+		if err != nil {
+			return err
+		}
+		assignment.Base = billingstore.PlanReference{ID: "scale", Version: 2}
+		if err := w.SetBillingAssignment(t.Context(), assignment, assignment.Revision); err != nil {
+			return err
+		}
+		account, err := w.BillingAccount(t.Context())
+		if err != nil {
+			return err
+		}
+		return w.DeleteBillingAccountIfMatches(t.Context(), account.Binding.AccountID, account.Binding.CustomerID, account.Mode)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
@@ -145,7 +206,14 @@ func TestHostedPlanStorageMigration(t *testing.T) {
 	if entitlement.Allowances["collaboration_bytes"] != 750<<30 {
 		t.Fatalf("custom Scale storage = %#v", entitlement)
 	}
-	if _, err := d.db.ExecContext(t.Context(), "UPDATE hosted_plans SET record_json=json_set(record_json,'$.allowances.collaboration_bytes',?) WHERE id='team' AND version=2", 200<<30); err != nil {
+	if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+		plan, err := w.BillingPlan(t.Context(), billingstore.PlanReference{ID: "team", Version: 2})
+		if err != nil {
+			return err
+		}
+		plan.Allowances["collaboration_bytes"] = 200 << 30
+		return w.ReplaceBillingPlan(t.Context(), plan)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := migration.Down(t.Context()); err != nil {
@@ -154,14 +222,7 @@ func TestHostedPlanStorageMigration(t *testing.T) {
 	if _, err := migration.Up(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	var raw string
-	if err := d.db.QueryRowContext(t.Context(), "SELECT record_json FROM hosted_plans WHERE id='team' AND version=2").Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var plan HostedPlan
-	if err := json.Unmarshal([]byte(raw), &plan); err != nil {
-		t.Fatal(err)
-	}
+	plan := readPlan(PlanReference{ID: "team", Version: 2})
 	if plan.Allowances["collaboration_bytes"] != 200<<30 {
 		t.Fatal("migration lowered custom paid allowance")
 	}

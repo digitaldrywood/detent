@@ -1,17 +1,20 @@
 package hubserver
 
 import (
-	"database/sql"
 	"encoding/json"
-	"path/filepath"
-	"reflect"
+	"fmt"
+	"os"
 	"slices"
 	"testing"
-	"testing/fstest"
-
-	"github.com/pressly/goose/v3"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -41,45 +44,9 @@ func reporterUpgradedHostedStates() []tracker.NativeState {
 }
 
 func TestReporterAndTriageMigration(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "hub.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(t.Context(), "PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
-	files, err := migrationFiles.ReadDir("migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	migrations := fstest.MapFS{}
-	for _, file := range files {
-		if file.Name() >= "20261013050000_" {
-			continue
-		}
-		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		migrations[file.Name()] = &fstest.MapFile{Data: data}
-	}
-	goMigrations := slices.DeleteFunc(hubGoMigrations(discardLogger()), func(m *goose.Migration) bool { return m.Version >= 20261013050000 })
-	migrate := func() {
-		t.Helper()
-		if _, err := runMigrationsFromFS(t.Context(), db, migrations, discardLogger(), goMigrations); err != nil {
-			t.Fatal(err)
-		}
-	}
-	migrate()
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,created_at) VALUES('org_reporter','Example organization','2026-10-12T00:00:00Z')"); err != nil {
-		t.Fatal(err)
-	}
+	service := newPostgresNativeService(t, Config{})
+	organization := tracker.OrganizationID("org_reporter")
+	source := historicalWorkflowSource(t, organization)
 	before := map[string][]tracker.NativeState{
 		"prj_without":       {{Name: "Backlog", Transitions: []string{"Todo"}}, {Name: "Todo", Dispatchable: true}, {Name: "Cancelled", Terminal: true}},
 		"prj_existing":      {{Name: "Custom", Dispatchable: true}, {Name: "Triage", Transitions: []string{"Custom"}}},
@@ -97,127 +64,212 @@ func TestReporterAndTriageMigration(t *testing.T) {
 	before["prj_repository_default"] = reporterPreviousHostedStates()
 
 	for id, states := range before {
-		raw, err := json.Marshal(states)
-		if err != nil {
+		workflowSource := ""
+		if id == "prj_repository_default" {
+			workflowSource = "detent.yaml"
+		}
+		source.add("projects", map[string]any{"id": id, "organization_id": organization, "name": id, "profile": "native", "states_json": string(historyTestJSON(t, states)), "workflow_source": workflowSource, "created_at": "2026-10-12T00:00:00Z", "integration_revision": 7})
+	}
+	for _, id := range []string{"first", "second"} {
+		source.add("api_tokens", map[string]any{"id": "token_" + id, "name": id, "token_hash": apikey.HashToken("token_" + id), "scope": "operator", "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z", "hosted_user_id": id, "hosted_membership_id": "mem_" + id, "operator_key_scope": "write", "operator_project_access": "selected", "key_kind": "personal"})
+		source.add("hosted_members", map[string]any{"user_id": id, "email": id + "@example.test", "membership_id": "mem_" + id, "role": "member", "principal_id": "token_" + id, "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z"})
+		source.add("hosted_project_grants", map[string]any{"user_id": id, "organization_id": organization, "project_id": "prj_without", "can_write": 1})
+		source.add("token_grants", map[string]any{"token_id": "token_" + id, "organization_id": organization, "project_id": "prj_without"})
+		source.add("hosted_work_view_preferences", map[string]any{"organization_id": organization, "user_id": id, "scope": "project:prj_without", "view_query": "state:Todo"})
+		source.add("hosted_invitations", map[string]any{"id": "inv_" + id, "email": id + "@example.test", "organization_id": organization, "role": "member", "created_at": "2026-10-12T00:00:00Z", "expires_at": "2026-11-12T00:00:00Z", "grants_json": `[{"project_id":"prj_without","write":true}]`})
+	}
+	path := source.write()
+	for replay := range 2 {
+		if err := importHistoricalWorkflowSource(t, service, organization, path); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) VALUES(?,'org_reporter',?,'native',?,'2026-10-12T00:00:00Z')", id, id, string(raw)); err != nil {
-			t.Fatal(err)
-		}
-		for _, state := range states {
-			if _, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,?,?,'2026-10-12T00:00:00Z','2026-10-12T00:00:00Z')", id, state.Name, state.Name, state.Terminal, state.Dispatchable); err != nil {
-				t.Fatal(err)
+		for id, states := range before {
+			record, _ := readHistoricalWorkflowProject(t, service, organization, tracker.ProjectID(id))
+			actual := record.States
+			want := states
+			switch id {
+			case "prj_dispatchable", "prj_terminal":
+				want = []tracker.NativeState{{Name: "Ready", Dispatchable: true}, {Name: "Triage", Transitions: []string{"Ready"}}}
+			case "prj_custom":
+				want = []tracker.NativeState{{Name: "Triage", Transitions: []string{"Ready"}}, {Name: "Ready", Transitions: []string{"Working"}}, {Name: "Working", Dispatchable: true}}
+			case "prj_empty_triage":
+				want = []tracker.NativeState{{Name: "Ready", Transitions: []string{"Working"}}, {Name: "Working", Dispatchable: true}, {Name: "Triage", Transitions: []string{"Ready"}}}
+			case "prj_custom_triage":
+				want = []tracker.NativeState{{Name: "Ready"}, {Name: "Todo", Dispatchable: true}, {Name: "Cancelled", Terminal: true}, {Name: "Triage", Transitions: []string{"Ready", "Todo", "Cancelled"}}}
+			}
+			if id == "prj_without" || id == "prj_custom_default" || id == "prj_repository_default" {
+				transitions := []string{"Backlog", "Todo", "Cancelled"}
+				if id != "prj_without" {
+					transitions = []string{"Todo"}
+				}
+				want = append([]tracker.NativeState{{Name: "Triage", Transitions: transitions}}, states...)
+			}
+			if id == "prj_default_one" || id == "prj_default_two" {
+				want = reporterUpgradedHostedStates()
+			}
+
+			if !historicalWorkflowStatesEqual(actual, want) {
+				t.Fatalf("%s replay%d: got %#v want %#v", id, replay, actual, want)
+			}
+			triage := 0
+			for _, state := range actual {
+				if state.Name == "Triage" && !state.Dispatchable && !state.Terminal && !state.OperatorOnly {
+					triage++
+				}
+			}
+			if triage != 1 {
+				t.Fatalf("%s triage rows=%d", id, triage)
+			}
+			if id == "prj_default_one" || id == "prj_default_two" {
+				for _, target := range []string{"Backlog", "Todo", "Cancelled"} {
+					if err := validateNativeWorkflowTransition(actual, "Triage", target, apiScopeOperator); err != nil {
+						t.Fatalf("%s Triage to %s: %v", id, target, err)
+					}
+					found := false
+					for _, state := range actual {
+						if state.Name == target {
+							found = true
+							if state.Terminal != (target == "Cancelled") || state.Dispatchable != (target == "Todo") {
+								t.Fatalf("%s %s flags: %+v", id, target, state)
+							}
+						}
+					}
+					if !found {
+						t.Fatalf("%s missing %s", id, target)
+					}
+				}
+			}
+			original := readHistoricalWorkflowOriginal(t, service, organization, tracker.ProjectID(id))
+			if original.States != string(historyTestJSON(t, states)) {
+				t.Fatalf("%s historical states changed", id)
 			}
 		}
 	}
-	if _, err := db.ExecContext(t.Context(), "UPDATE projects SET workflow_source='detent.yaml' WHERE id='prj_repository_default'"); err != nil {
+	for _, id := range []string{"first", "second"} {
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			member, err := w.AccessMember(t.Context(), id)
+			if err != nil {
+				return err
+			}
+			member.Role = "reporter"
+			return w.UpdateAccessMember(t.Context(), member)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hostedPostgresAdmin(t, service).ExecContext(t.Context(), `UPDATE hosted_invitations SET role='reporter' WHERE organization_id=$1 AND id=$2`, organization, "inv_"+id); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			member, err := r.AccessMember(t.Context(), id)
+			if err != nil {
+				return err
+			}
+			credential, err := r.AccessCredential(t.Context(), "token_"+id)
+			if err != nil {
+				return err
+			}
+			grant, err := r.AccessProjectGrant(t.Context(), id, "prj_without")
+			if err != nil {
+				return err
+			}
+			preference, err := r.WorkViewPreference(t.Context(), id, "prj_without")
+			if err != nil {
+				return err
+			}
+			invitation, err := r.AccessInvitation(t.Context(), "inv_"+id)
+			if err != nil {
+				return err
+			}
+			invitationGrant, err := r.AccessInvitationGrants(t.Context(), "inv_"+id, "", 2)
+			if err != nil {
+				return err
+			}
+			expires := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+			if member.Role != "reporter" || member.PrincipalID != "token_"+id || member.MembershipID != "mem_"+id || credential.Hash != apikey.HashToken("token_"+id) || credential.UserID != id || !grant.CanWrite || preference != "state:Todo" || invitation.Role != "reporter" || invitation.Email != member.Email || !invitation.ExpiresAt.Equal(expires) || len(invitationGrant) != 1 || invitationGrant[0].ProjectID != "prj_without" || !invitationGrant[0].CanWrite {
+				return fmt.Errorf("preserved member %s changed: member=%+v preference=%q invitation=%+v grants=%+v", id, member, preference, invitation, invitationGrant)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func historicalWorkflowSource(t *testing.T, organization tracker.OrganizationID) *coreNeutralFixture {
+	t.Helper()
+	source := newCoreNeutralFixture(t, organization, "organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_release_preferences", "daily_summary_preferences", "daily_summary_receipts", "hosted_project_grants", "token_grants", "hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations", "hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets", "project_secret_audit", "hosted_audit", "hosted_audit_times", "hosted_work_view_preferences", "projects", "repositories", "policy_revisions", "project_policies", "change_review_policies", "monthly_budget_policies")
+	source.add("organizations", map[string]any{"id": organization, "name": string(organization), "slug": string(organization), "created_at": testTimestamp})
+	return source
+}
+
+func importHistoricalWorkflowSource(t *testing.T, service *Service, organization tracker.OrganizationID, path string) error {
+	t.Helper()
+	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
+	if err != nil {
+		return err
+	}
+	repository := service.config.TenantRepository.(*postgres.Repository)
+	access := postgres.AccessCopyImportSource{BundlePath: path, OrganizationID: organization, Catalog: catalog, Objects: service.runDetailStore()}
+	if err := repository.InitializeAccessCopyOrganization(t.Context(), access); err != nil {
+		return err
+	}
+	if _, err := repository.ImportCoreProjects(t.Context(), postgres.CoreProjectImportSource{BundlePath: path, OrganizationID: organization, Objects: service.runDetailStore()}); err != nil {
+		return err
+	}
+	if _, err := repository.ImportAccessCopy(t.Context(), access); err != nil {
+		return err
+	}
+	_, err = repository.ImportCorePolicies(t.Context(), postgres.CorePolicyImportSource{BundlePath: path, OrganizationID: organization, Objects: service.runDetailStore()})
+	return err
+}
+
+func readHistoricalWorkflowProject(t *testing.T, service *Service, organization tracker.OrganizationID, id tracker.ProjectID) (projectstore.Record, string) {
+	t.Helper()
+	var record projectstore.Record
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		record, err = r.ProjectRecord(t.Context(), id)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-
-	for _, id := range []string{"first", "second"} {
-		for _, statement := range []struct {
-			query string
-			args  []any
-		}{
-			{"INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at) VALUES(?,?,?,'','operator','2026-10-12T00:00:00Z','2026-10-12T00:00:00Z')", []any{"token_" + id, id, apikey.HashToken("token_" + id)}},
-			{"INSERT INTO hosted_members(user_id,email,membership_id,role,principal_id,created_at,updated_at) VALUES(?,?,?,'member',?,'2026-10-12T00:00:00Z','2026-10-12T00:00:00Z')", []any{id, id + "@example.test", "mem_" + id, "token_" + id}},
-			{"INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write) VALUES(?,'org_reporter','prj_without',1)", []any{id}},
-			{"INSERT INTO hosted_work_view_preferences(organization_id,user_id,scope,view_query) VALUES('org_reporter',?,'project:prj_without','state:Todo')", []any{id}},
-			{"INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at,grants_json) VALUES(?,?,'org_reporter','member','2026-10-12T00:00:00Z','2026-11-12T00:00:00Z','[{\"project_id\":\"prj_without\",\"write\":true}]')", []any{"inv_" + id, id + "@example.test"}},
-		} {
-			if _, err := db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	for _, name := range []string{"20261013050000_reporter_role.sql", "20261013050001_native_project_triage.sql", "20261013085000_hosted_reporter_destinations.sql"} {
-		data, err := migrationFiles.ReadFile("migrations/" + name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		migrations[name] = &fstest.MapFile{Data: data}
-	}
-	migrate()
-	migrate()
-	for id, states := range before {
-		var raw string
-		if err := db.QueryRowContext(t.Context(), "SELECT states_json FROM projects WHERE id=?", id).Scan(&raw); err != nil {
-			t.Fatal(err)
-		}
-		var actual []tracker.NativeState
-		if err := json.Unmarshal([]byte(raw), &actual); err != nil {
-			t.Fatal(err)
-		}
-		want := states
-		switch id {
-		case "prj_dispatchable", "prj_terminal":
-			want = []tracker.NativeState{{Name: "Ready", Dispatchable: true}, {Name: "Triage", Transitions: []string{"Ready"}}}
-		case "prj_custom":
-			want = []tracker.NativeState{{Name: "Triage", Transitions: []string{"Ready"}}, {Name: "Ready", Transitions: []string{"Working"}}, {Name: "Working", Dispatchable: true}}
-		case "prj_empty_triage":
-			want = []tracker.NativeState{{Name: "Ready", Transitions: []string{"Working"}}, {Name: "Working", Dispatchable: true}, {Name: "Triage", Transitions: []string{"Ready"}}}
-		case "prj_custom_triage":
-			want = []tracker.NativeState{{Name: "Ready"}, {Name: "Todo", Dispatchable: true}, {Name: "Cancelled", Terminal: true}, {Name: "Triage", Transitions: []string{"Ready", "Todo", "Cancelled"}}}
-		}
-		if id == "prj_without" || id == "prj_custom_default" || id == "prj_repository_default" {
-			transitions := []string{"Backlog", "Todo", "Cancelled"}
-			if id != "prj_without" {
-				transitions = []string{"Todo"}
-			}
-			want = append([]tracker.NativeState{{Name: "Triage", Transitions: transitions}}, states...)
-		}
-		if id == "prj_default_one" || id == "prj_default_two" {
-			want = reporterUpgradedHostedStates()
-		}
-
-		if !reflect.DeepEqual(actual, want) {
-			t.Fatalf("%s: got %#v want %#v", id, actual, want)
-		}
-		var count int
-		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM workflow_states WHERE project_id=? AND detent_state='Triage' AND dispatchable=0 AND terminal=0", id).Scan(&count); err != nil || count != 1 {
-			t.Fatalf("triage rows=%d err=%v", count, err)
-		}
-		if id == "prj_default_one" || id == "prj_default_two" {
-			for _, target := range []string{"Backlog", "Todo", "Cancelled"} {
-				if err := validateNativeWorkflowTransition(actual, "Triage", target, apiScopeOperator); err != nil {
-					t.Fatalf("%s Triage to %s: %v", id, target, err)
-				}
-				var terminal, dispatchable bool
-				if err := db.QueryRowContext(t.Context(), "SELECT terminal,dispatchable FROM workflow_states WHERE project_id=? AND source_name=?", id, target).Scan(&terminal, &dispatchable); err != nil {
-					t.Fatal(err)
-				}
-				if terminal != (target == "Cancelled") || dispatchable != (target == "Todo") {
-					t.Fatalf("%s %s flags: terminal=%v dispatchable=%v", id, target, terminal, dispatchable)
-				}
-			}
-		}
-
-	}
-	for _, id := range []string{"first", "second"} {
-		if _, err := db.ExecContext(t.Context(), "UPDATE hosted_members SET role='reporter' WHERE user_id=?", id); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.ExecContext(t.Context(), "UPDATE hosted_invitations SET role='reporter' WHERE id=?", "inv_"+id); err != nil {
-			t.Fatal(err)
-		}
-		var count int
-		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members m JOIN hosted_project_grants g ON g.user_id=m.user_id JOIN hosted_work_view_preferences v ON v.user_id=m.user_id JOIN hosted_invitations i ON i.email=m.email WHERE m.user_id=? AND m.role='reporter' AND i.role='reporter' AND g.can_write=1 AND v.view_query='state:Todo' AND i.expires_at='2026-11-12T00:00:00Z' AND json_array_length(i.grants_json)=1", id).Scan(&count); err != nil || count != 1 {
-			t.Fatalf("preserved member=%s rows=%d err=%v", id, count, err)
-		}
-	}
-	var foreignKeys int
-	if err := db.QueryRowContext(t.Context(), "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil || foreignKeys != 1 {
-		t.Fatalf("foreign keys=%d err=%v", foreignKeys, err)
-	}
-	rows, err := db.QueryContext(t.Context(), "PRAGMA foreign_key_check")
+	markdown, err := service.projectRecordWorkflow(t.Context(), record)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	if rows.Next() {
-		t.Fatal("migration broke a foreign key")
-	}
-	if err := rows.Err(); err != nil {
+	return record, markdown
+}
+
+func readHistoricalWorkflowOriginal(t *testing.T, service *Service, organization tracker.OrganizationID, id tracker.ProjectID) struct{ States, Workflow string } {
+	t.Helper()
+	var receipt eventstore.Receipt
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		receipt, err = r.Receipt(t.Context(), "production-import", "core-project", string(id))
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
+	raw, err := eventstore.NewContent(service.runDetailStore()).Receipt(t.Context(), receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original struct{ States, Workflow string }
+	if err := json.Unmarshal(raw, &original); err != nil {
+		t.Fatal(err)
+	}
+	return original
+}
+
+func historicalWorkflowStatesEqual(actual, want []tracker.NativeState) bool {
+	if len(actual) != len(want) {
+		return false
+	}
+	for index, state := range actual {
+		expected := want[index]
+		if state.Name != expected.Name || state.Terminal != expected.Terminal || state.Dispatchable != expected.Dispatchable || state.OperatorOnly != expected.OperatorOnly || !slices.Equal(state.Transitions, expected.Transitions) {
+			return false
+		}
+	}
+	return true
 }

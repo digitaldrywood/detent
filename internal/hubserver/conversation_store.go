@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -170,7 +171,7 @@ type conversationQuestionRecord struct {
 // fixed width so that ordering and cursor comparison in SQL match time
 // order. The value stays RFC 3339 and parses with parseTimeValue.
 func conversationTime(value time.Time) string {
-	return value.UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
+	return hubapi.ConversationTime(value)
 }
 
 func conversationNullTime(value *time.Time) any {

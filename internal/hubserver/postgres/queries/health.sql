@@ -28,3 +28,29 @@ SELECT last_tick_at FROM health_detector_ticks WHERE organization_id=$1;
 
 -- name: HealthBaselines :many
 SELECT * FROM health_baseline_unavailable WHERE organization_id=$1 AND project_id=$2 ORDER BY signal,lane LIMIT 10001;
+
+-- name: HealthSourceItems :many
+SELECT i.id,i.project_id,i.native_id FROM issues i
+JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
+WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.workflow_state_name=sqlc.arg(state_name) AND NOT i.archived AND NOT w.terminal AND i.id>sqlc.arg(after_id)::bigint
+ORDER BY i.id LIMIT sqlc.arg('limit');
+
+-- name: HealthSourceQuestions :many
+WITH selected AS MATERIALIZED (
+ SELECT conversation_id,id,attempt_id,status,created_at,expires_at FROM conversation_questions
+ WHERE organization_id=sqlc.arg(organization_id) AND status IN ('pending','sending','sent','unknown') AND (conversation_id,id)>(sqlc.arg(after_conversation_id)::text,sqlc.arg(after_question_id)::text)
+ ORDER BY conversation_id,id LIMIT sqlc.arg('limit')
+)
+SELECT q.conversation_id,q.id,q.attempt_id,q.status,q.created_at,q.expires_at,c.project_id,c.work_item_id,c.status AS conversation_status,c.deleted_at AS conversation_deleted_at,c.archived AS conversation_archived
+FROM selected q JOIN conversations c ON c.organization_id=sqlc.arg(organization_id) AND c.id=q.conversation_id
+ORDER BY q.conversation_id,q.id;
+
+-- name: HealthSourceConversationQuestions :many
+WITH selected AS MATERIALIZED (
+ SELECT conversation_id,id,attempt_id,status,created_at,expires_at FROM conversation_questions
+ WHERE organization_id=sqlc.arg(organization_id) AND conversation_id=sqlc.arg(conversation_id) AND id>sqlc.arg(after_question_id)::text AND status IN ('pending','sending','sent','unknown')
+ ORDER BY id LIMIT sqlc.arg('limit')
+)
+SELECT q.conversation_id,q.id,q.attempt_id,q.status,q.created_at,q.expires_at,c.project_id,c.work_item_id,c.status AS conversation_status,c.deleted_at AS conversation_deleted_at,c.archived AS conversation_archived
+FROM selected q JOIN conversations c ON c.organization_id=sqlc.arg(organization_id) AND c.id=q.conversation_id
+ORDER BY q.id;

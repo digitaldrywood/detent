@@ -20,7 +20,7 @@ import (
 )
 
 func newHubPostgresImportCommand(lookupEnv func(string) string) *cobra.Command {
-	var configPath, bundlePath, organization, repositoryRoot string
+	var configPath, bundlePath, mappingBundlePath, organization, repositoryRoot string
 	cmd := &cobra.Command{
 		Use:          "import-core-postgres",
 		Short:        "Import tenant core records from a verified neutral bundle",
@@ -36,6 +36,10 @@ func newHubPostgresImportCommand(lookupEnv func(string) string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			logger, _, err := serveLogger(cmd, lookupEnv, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
 			catalog, err := readPlatformImportCatalog(repositoryRoot)
 			if err != nil {
 				return err
@@ -48,9 +52,15 @@ func newHubPostgresImportCommand(lookupEnv func(string) string) *cobra.Command {
 			if !ok {
 				return errors.New("tenant import requires immutable archive storage")
 			}
-			result, err := hubserver.ImportTenantCoreCopy(cmd.Context(), *config, hubserver.TenantCoreImportSource{BundlePath: bundlePath, OrganizationID: tracker.OrganizationID(organization), Catalog: catalog, Objects: tenantImportDetails{organization: organization, storage: archive}})
+			result, err := hubserver.ImportTenantCoreCopy(cmd.Context(), *config, hubserver.TenantCoreImportSource{BundlePath: bundlePath, MappingBundlePath: mappingBundlePath, OrganizationID: tracker.OrganizationID(organization), Catalog: catalog, Logger: logger, Objects: tenantImportDetails{organization: organization, storage: archive}})
 			if err != nil {
 				return err
+			}
+			if !result.CoreImportComplete {
+				return output.Write(func(writer io.Writer) error {
+					_, err := fmt.Fprintf(writer, "Recovered historical work items: %d; full tenant import is incomplete\n", result.WorkItems)
+					return err
+				}, result)
 			}
 			return output.Write(func(writer io.Writer) error {
 				_, err := fmt.Fprintf(writer, "Imported tenant core records: hub_identities=%d projects=%d access_rows=%d policy_revisions=%d current_policies=%d review_policies=%d monthly_policies=%d work_items=%d dependencies=%d cost_source_rows=%d cost_current_sources=%d cost_history_rows=%d execution_rows=%d monthly_admissions=%d monthly_leases=%d changes=%d conversation_rows=%d conversation_prices=%d conversation_usage=%d credit_accounts=%d credit_packs=%d credit_transactions=%d\n", result.HubIdentityRows, result.Projects, result.AccessRows, result.PolicyRevisions, result.CurrentPolicies, result.ReviewPolicies, result.MonthlyPolicies, result.WorkItems, result.Dependencies, result.CostSourceRows, result.CostCurrentSources, result.CostHistoryRows, result.ExecutionRows, result.MonthlyAdmissions, result.MonthlyLeases, result.Changes, result.ConversationRows, result.ConversationPrices, result.ConversationUsage, result.CreditAccounts, result.CreditPacks, result.CreditTransactions)
@@ -60,6 +70,7 @@ func newHubPostgresImportCommand(lookupEnv func(string) string) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "entry-config", "", "shared entry PostgreSQL and archive configuration")
 	cmd.Flags().StringVar(&bundlePath, "bundle", "", "verified neutral tenant export directory")
+	cmd.Flags().StringVar(&mappingBundlePath, "mapping-bundle", "", "verified post-native identity source for historical recovery into an existing project")
 	cmd.Flags().StringVar(&organization, "organization", "", "source organization identifier")
 	cmd.Flags().StringVar(&repositoryRoot, "repository-root", "", "checked-out Detent source tree for the mapping catalog")
 	for _, flag := range []string{"entry-config", "bundle", "organization", "repository-root"} {

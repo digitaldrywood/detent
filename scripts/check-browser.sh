@@ -19,11 +19,8 @@ if [ -n "${DETENT_RELEASE_ASSETS_READY_FD:-}" ]; then
     printf 'ready\n' >&"$DETENT_RELEASE_ASSETS_READY_FD"
 fi
 go test -p "$procs" -c -o tmp/hubserver-preview.test ./internal/hubserver
-go test -p "$procs" -c -o tmp/startup-preview.test ./internal/cli
 go test -p "$procs" -c -o tmp/entry-preview.test ./internal/cloudentry
 node_modules/.bin/playwright install chromium
-DETENT_BINARY="$PWD/tmp/detent" \
 DETENT_HOSTED_PREVIEW_BINARY="$PWD/tmp/hubserver-preview.test" \
-DETENT_STARTUP_PREVIEW_BINARY="$PWD/tmp/startup-preview.test" \
 DETENT_ENTRY_PREVIEW_BINARY="$PWD/tmp/entry-preview.test" \
 node_modules/.bin/playwright test --workers="$procs" --retries=0 --max-failures=0 "$@"

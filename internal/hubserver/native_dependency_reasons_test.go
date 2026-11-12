@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -10,6 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,8 +37,17 @@ func TestNativeDependencyReasonCAS(t *testing.T) {
 	}
 	path := f.base + "/work-items/" + string(dependent.WorkItemID) + "/dependency-reasons"
 	drainTestNativeBoard(t, f.service)
-	var beforeSequence int64
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT MAX(sequence) FROM native_board_deltas").Scan(&beforeSequence); err != nil {
+	boardSequence := func() (int64, error) {
+		var sequence int64
+		err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			head, err := r.(viewstore.BoardReader).BoardSequence(t.Context(), f.project.ID)
+			sequence = head.Sequence
+			return err
+		})
+		return sequence, err
+	}
+	beforeSequence, err := boardSequence()
+	if err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -52,7 +69,23 @@ func TestNativeDependencyReasonCAS(t *testing.T) {
 	if current.BlockedReason.Text != "Waits for the shared foundation." || current.Revision != 2 || current.State != dependent.State {
 		t.Fatalf("reason changed issue state or revision: %+v", current)
 	}
-	dirty, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id")
+	dirty := []string{}
+	rows, err := usagePostgresAdmin(t, f.service).QueryContext(t.Context(), "SELECT work_item_id FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY work_item_id", f.project.OrganizationID, f.project.ID)
+	if err == nil {
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				break
+			}
+			dirty = append(dirty, id)
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		if closeErr := rows.Close(); err == nil {
+			err = closeErr
+		}
+	}
 	if err != nil || !slices.Equal(dirty, []string{string(dependent.WorkItemID)}) {
 		t.Fatalf("reason invalidated other items: %v err=%v", dirty, err)
 	}
@@ -73,8 +106,7 @@ func TestNativeDependencyReasonCAS(t *testing.T) {
 	if counts[http.StatusOK] != 1 || counts[http.StatusConflict] != 1 {
 		t.Fatalf("concurrent writers: %v", counts)
 	}
-	var afterSequence int64
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT MAX(sequence) FROM native_board_deltas").Scan(&afterSequence); err != nil || afterSequence != beforeSequence {
+	if afterSequence, err := boardSequence(); err != nil || afterSequence != beforeSequence {
 		t.Fatalf("reason write synchronously projected cards: before=%d after=%d err=%v", beforeSequence, afterSequence, err)
 	}
 	drainTestNativeBoard(t, f.service)
@@ -110,23 +142,67 @@ func TestNativeDependencyBatchReadCost(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	blocker := f.create(t, "Shared foundation")
 	dependent := f.create(t, "Dependent feature")
-	if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE copies(n) AS (
- SELECT 3 UNION ALL SELECT n+1 FROM copies WHERE n<2000)
- INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at)
- SELECT 'wi_batch_' || n,organization_id,project_id,n,workflow_state_id,'Dependent feature ' || n,'','open','1',source_updated_at,synchronized_at,created_at,updated_at
- FROM issues,copies WHERE native_id=?`, dependent.WorkItemID); err != nil {
+	for start := 3; start <= 2000; start += corestore.MaxPageSize {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			for number := start; number < min(start+corestore.MaxPageSize, 2001); number++ {
+				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID,
+					NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_batch_%d", number)), Number: int64(number), Title: fmt.Sprintf("Dependent feature %d", number),
+					WorkflowStateName: new(dependent.State), ActorKind: new(dependent.Actor.Kind), ActorPrincipalID: new(dependent.Actor.PrincipalID)}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for start := 2; start <= 2000; start += corestore.MaxPageSize {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			for number := start; number < min(start+corestore.MaxPageSize, 2001); number++ {
+				id := dependent.WorkItemID
+				if number > 2 {
+					id = tracker.NativeWorkItemID(fmt.Sprintf("wi_batch_%d", number))
+				}
+				for _, relation := range []corestore.Relationship{
+					{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: id, RelatedProjectID: f.project.ID, RelatedWorkItemID: blocker.WorkItemID, Type: "dependency"},
+					{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: id, RelatedProjectID: f.project.ID, RelatedWorkItemID: blocker.WorkItemID, Type: "related"},
+				} {
+					if err := w.SetRelationship(t.Context(), relation, "add", f.service.config.now()); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scope := analyticsTestScope(t, f)
+	connection := startupConnection(t, usagePostgresAdmin(t, f.service), "detent_runtime_v2", "")
+	config, err := connection.PoolConfig()
+	if err != nil {
 		t.Fatal(err)
 	}
-	now := formatHubTime(time.Now())
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO issue_dependencies(blocker_issue_id,dependent_issue_id,provenance,created_at,updated_at)
- SELECT b.id,d.id,'native',?,? FROM issues b JOIN issues d ON d.project_id=b.project_id AND d.id<>b.id WHERE b.native_id=?`, now, now, blocker.WorkItemID); err != nil {
+	pgtransport.Configure(config)
+	config.MaxConns = 3
+	config.ConnConfig.Tracer = runtimeHistoryTrace{}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO issue_relationships(first_issue_id,second_issue_id,relationship_type,created_at)
- SELECT b.id,d.id,'related',? FROM issues b JOIN issues d ON d.project_id=b.project_id AND d.id>b.id WHERE b.native_id=?`, now, blocker.WorkItemID); err != nil {
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+	if err != nil {
+		pool.Close()
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+	original := f.service.config.TenantRepository
+	defer func() {
+		f.service.config.TenantRepository = original
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	f.service.config.TenantRepository = repository
 	for _, size := range []int{2, 2000} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			issues := make([]*tracker.NativeIssue, size)
@@ -135,15 +211,23 @@ func TestNativeDependencyBatchReadCost(t *testing.T) {
 			for index := 2; index < size; index++ {
 				issues[index] = &tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_batch_%d", index+1)), ProjectID: f.project.ID}}
 			}
-			q := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
+			capture := &runtimeHistoryTraceCapture{}
 			start := time.Now()
-			if err := readNativeDependencyDetailsBatch(t.Context(), q, scope, issues); err != nil {
+			if err := f.service.hydrateWorkItemRelationshipFactsPage(context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture), scope, issues); err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("hydrated %d issues in %s with %d queries", size, time.Since(start), len(q.statements))
-			if len(q.statements) != 3 {
-				t.Fatalf("dependency query count scales with cards: %d", len(q.statements))
+			capture.mu.Lock()
+			statements := slices.Clone(capture.statements)
+			capture.mu.Unlock()
+			queries := 0
+			for _, statement := range statements {
+				if strings.HasPrefix(strings.TrimSpace(strings.ToUpper(statement.query)), "SELECT") || strings.Contains(statement.query, "-- name: RelationshipBatch :many") {
+					if !strings.Contains(statement.query, "set_config(") {
+						queries++
+					}
+				}
 			}
+			t.Logf("hydrated %d issues in %s with %d queries", size, time.Since(start), queries)
 			if len(issues[0].Dependents) != 1999 || !issues[0].DependencyReady || len(issues[0].Blockers) != 0 {
 				t.Fatalf("blocker hydration: dependents=%d ready=%v", len(issues[0].Dependents), issues[0].DependencyReady)
 			}
@@ -151,6 +235,9 @@ func TestNativeDependencyBatchReadCost(t *testing.T) {
 				if len(issue.Blockers) != 1 || issue.Blockers[0].ID != blocker.WorkItemID || issue.Blockers[0].Title != "Shared foundation" || issue.DependencyReady || len(issue.Related) != 1 || issue.Related[0].ID != blocker.WorkItemID {
 					t.Fatalf("dependent hydration: %+v", issue)
 				}
+			}
+			if queries != 3 {
+				t.Fatalf("dependency query count scales with cards: %d", queries)
 			}
 		})
 	}
