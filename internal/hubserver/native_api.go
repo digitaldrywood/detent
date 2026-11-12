@@ -367,7 +367,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 		e.GET(hostedOrganizationBase+"/attachment-metadata/:attachment", s.getOrganizationLogoAttachment, organization)
 		e.GET(hostedOrganizationBase+"/logo-metadata", s.getCurrentOrganizationLogoAttachment, organization)
 	}
-	e.GET(nativeBase+"/labels", s.listNativeLabels, read)
+	s.registerNativeLabelRoutes(e, read)
 	e.GET(nativeBase+"/work-items", s.listNativeIssues, read)
 	e.GET(nativeBase+"/board/counts", s.boardModelCounts, read)
 	e.GET(nativeBase+"/board/status", s.boardModelStatus, read)
