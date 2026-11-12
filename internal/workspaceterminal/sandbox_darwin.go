@@ -68,11 +68,11 @@ func mountWithinRoot(root, mount string) (bool, error) {
 	return containsPath(root, canonical), nil
 }
 
-func sandboxCommand(cmd *exec.Cmd, root, tty string) error {
+func sandboxCommand(cmd *exec.Cmd, root string, aliases []string, tty string) error {
 	if err := validateSandboxRoot(root); err != nil {
 		return err
 	}
-	args := []string{"/usr/bin/sandbox-exec", "-p", sandboxProfile(root, tty), "/bin/sh", "-c",
+	args := []string{"/usr/bin/sandbox-exec", "-p", sandboxProfile(root, aliases, tty), "/bin/sh", "-c",
 		`cd "$1" || exit 125; shift; printf '\001' >&3 || exit 125; exec 3>&-; exec "$@"`, "terminal", cmd.Dir, cmd.Path}
 	cmd.Args = append(args, cmd.Args[1:]...)
 	cmd.Path = "/usr/bin/sandbox-exec"
@@ -80,7 +80,7 @@ func sandboxCommand(cmd *exec.Cmd, root, tty string) error {
 	return nil
 }
 
-func sandboxProfile(root, tty string) string {
+func sandboxProfile(root string, aliases []string, tty string) string {
 	var profile strings.Builder
 	profile.WriteString(`(version 1)
 (deny default)
@@ -105,6 +105,9 @@ func sandboxProfile(root, tty string) string {
 		if parent == "/" {
 			break
 		}
+	}
+	for _, alias := range aliases {
+		profile.WriteString(" (literal " + strconv.Quote(alias) + ")")
 	}
 	profile.WriteString(")\n(allow file-read* file-write* file-map-executable (subpath " + strconv.Quote(root) + "))\n")
 	profile.WriteString(`(allow file-read* file-write-data

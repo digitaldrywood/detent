@@ -38,7 +38,7 @@ const Supported = true
 // that asks isatty would answer no and switch to its non-interactive behaviour.
 // Setsid also puts the shell in a session and a process group of its own, which
 // is what lets the teardown signal the whole group.
-func startPTY(cmd *exec.Cmd, cols, rows int, isolation, worktree string) (*os.File, error) {
+func startPTY(cmd *exec.Cmd, cols, rows int, isolation, worktree string, aliases []string) (*os.File, error) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
@@ -85,7 +85,7 @@ func startPTY(cmd *exec.Cmd, cols, rows int, isolation, worktree string) (*os.Fi
 			}
 		}()
 		cmd.ExtraFiles = []*os.File{ready}
-		if err := sandboxCommand(cmd, worktree, tty.Name()); err != nil {
+		if err := sandboxCommand(cmd, worktree, aliases, tty.Name()); err != nil {
 			return nil, errors.Join(err, file.Close())
 		}
 	}

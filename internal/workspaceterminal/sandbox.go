@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -103,6 +104,51 @@ func sandboxEnvironment(root string, cols, rows int) []string {
 		fmt.Sprintf("LINES=%d", rows),
 		"LANG=C",
 	}
+}
+
+func symlinkAliases(path string) []string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil
+	}
+	var aliases []string
+	pending := pathComponents(absolute)
+	current := string(filepath.Separator)
+	for hops := 0; len(pending) > 0; {
+		next := filepath.Join(current, pending[0])
+		pending = pending[1:]
+		info, err := os.Lstat(next)
+		if err != nil {
+			return aliases
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+		if hops++; hops > 32 {
+			return aliases
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return aliases
+		}
+		aliases = append(aliases, next)
+		if filepath.IsAbs(target) {
+			current = string(filepath.Separator)
+		}
+		pending = append(pathComponents(target), pending...)
+	}
+	return aliases
+}
+
+func pathComponents(path string) []string {
+	var components []string
+	for _, component := range strings.Split(path, string(filepath.Separator)) {
+		if component != "" && component != "." {
+			components = append(components, component)
+		}
+	}
+	return components
 }
 
 func containsPath(root, path string) bool {

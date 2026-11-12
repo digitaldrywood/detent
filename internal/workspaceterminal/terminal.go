@@ -74,6 +74,7 @@ type Service struct {
 	// construction rather than per open, because it is a fact about what this
 	// runner can provide and not about one request.
 	isolation string
+	aliases   []string
 	logger    *slog.Logger
 }
 
@@ -102,6 +103,7 @@ func newService(ctx context.Context, worktree string, shellName string, isolatio
 	if err != nil {
 		return nil, fmt.Errorf("resolve worktree %q: %w", worktree, err)
 	}
+	aliases := symlinkAliases(worktree)
 	// #nosec G703 -- construction intentionally inspects the runner-assigned worktree root.
 	info, err := os.Stat(canonical)
 	if err != nil {
@@ -129,6 +131,7 @@ func newService(ctx context.Context, worktree string, shellName string, isolatio
 		worktree:  canonical,
 		shell:     shell.Normalize(shellName),
 		isolation: isolation,
+		aliases:   aliases,
 		logger:    logger.With("component", "workspace_terminal"),
 	}, nil
 }
@@ -226,7 +229,7 @@ func (s *Service) Open(
 		}
 		cmd.Env = sandboxEnvironment(s.worktree, options.Cols, options.Rows)
 	}
-	file, err := startPTY(cmd, options.Cols, options.Rows, s.isolation, s.worktree)
+	file, err := startPTY(cmd, options.Cols, options.Rows, s.isolation, s.worktree, s.aliases)
 	if err != nil {
 		return nil, refuse(startCode(err), fmt.Errorf("start terminal: %w", err))
 	}

@@ -10,8 +10,14 @@ import (
 
 func TestSandboxTerminalContainment(t *testing.T) {
 	base := t.TempDir()
-	root := filepath.Join(base, "worktree")
-	outside := filepath.Join(base, "runner-home")
+	if err := os.Mkdir(filepath.Join(base, "real"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(base, "alias", "worktree")
+	outside := filepath.Join(base, "alias", "runner-home")
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -34,6 +40,7 @@ func TestSandboxTerminalContainment(t *testing.T) {
 		command string
 	}{
 		{name: "worktree writes", command: "printf allowed > allowed && test \"$(cat allowed)\" = allowed"},
+		{name: "worktree alias path writes", command: "printf alias > " + shellQuote(filepath.Join(root, "via-alias")) + " && test \"$(cat via-alias)\" = alias"},
 		{name: "relative credential read", command: "! cat ../runner-home/credentials"},
 		{name: "absolute credential read", command: "! cat " + shellQuote(private)},
 		{name: "relative write escape", command: "! (printf escaped > ../runner-home/credentials)"},

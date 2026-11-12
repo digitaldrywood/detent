@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -145,5 +146,40 @@ func TestSandboxChildHelper(t *testing.T) {
 	}
 	if _, err := unix.SysctlRaw("kern.procargs2", os.Getppid()); err == nil {
 		t.Fatal("sandbox exposed another process's arguments and environment")
+	}
+}
+
+func TestSymlinkAliases(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "real", "worktree"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range []struct{ name, target string }{
+		{name: "absolute", target: filepath.Join(base, "real")},
+		{name: "relative", target: "real"},
+		{name: "chain", target: "relative"},
+	} {
+		if err := os.Symlink(link.target, filepath.Join(base, link.name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		name string
+		path string
+		want []string
+	}{
+		{name: "canonical path", path: filepath.Join(base, "real", "worktree")},
+		{name: "absolute link", path: filepath.Join(base, "absolute", "worktree"), want: []string{filepath.Join(base, "absolute")}},
+		{name: "relative link", path: filepath.Join(base, "relative", "worktree"), want: []string{filepath.Join(base, "relative")}},
+		{name: "link chain", path: filepath.Join(base, "chain", "worktree"), want: []string{filepath.Join(base, "chain"), filepath.Join(base, "relative")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := symlinkAliases(test.path); !slices.Equal(got, test.want) {
+				t.Fatalf("symlinkAliases(%q) = %q, want %q", test.path, got, test.want)
+			}
+		})
 	}
 }
