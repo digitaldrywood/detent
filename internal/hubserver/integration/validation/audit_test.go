@@ -155,6 +155,14 @@ func TestPostgresValidationAuditReadsIssueCommentsAndAttemptLandingWithoutLegacy
 			event := nativeStartedEvent(tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), PolicyID: descriptor.ID, FencingToken: tracker.FencingToken(lease.FencingToken)})
 			event.Data.SessionID = lease.SessionID
 			event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: int64(number * 100), Phase: "implement", HeartbeatAt: now}
+			runRaw, err := json.Marshal(event.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runPayload, err := content.PreparePayload(t.Context(), org, runRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
 			collaboration := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: org, ProjectID: "example", AggregateID: id, AggregateType: "issue", Type: "run.started", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: now, Data: tracker.CollaborationData{Run: &event.Data}}
 			eventRow, err := content.PrepareEvent(t.Context(), org, mustMarshalAuditEvent(t, collaboration))
 			if err != nil {
@@ -217,7 +225,7 @@ func TestPostgresValidationAuditReadsIssueCommentsAndAttemptLandingWithoutLegacy
 				t.Fatal(err)
 			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: event.Data.AttemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: event.Data.RunID, Sequence: 1, Status: "running", StartedAt: now, PayloadObjectKey: eventRow.PayloadObjectKey}); err != nil {
+				if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: event.Data.AttemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: event.Data.RunID, Sequence: 1, Status: "running", StartedAt: now, PayloadObjectKey: runPayload.Key, PayloadReference: runPayload, LocalAttemptID: event.Data.Runtime.LocalAttemptID, RuntimeHeartbeatAt: &now}); err != nil {
 					return err
 				}
 				if _, err := w.AppendEvent(t.Context(), eventRow); err != nil {
