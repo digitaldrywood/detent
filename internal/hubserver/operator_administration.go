@@ -307,6 +307,14 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 			return err
 		}
 	}
+	if name == operatortool.MemberRemove || name == operatortool.InvitationRevoke {
+		if output, found, err := a.committedDeletionOutput(ctx, credential, name, in); err != nil || found {
+			if err != nil || resource != "" && output.ResourceID != resource {
+				return operatortool.ErrAccessDenied
+			}
+			return nil
+		}
+	}
 	if in.MemberID != "" {
 		if name == operatortool.MemberRole || name == operatortool.MemberRemove {
 			if _, err := s.hostedManagedMemberFor(ctx, credential, in.MemberID, name == operatortool.MemberRemove || in.Role != "owner"); err != nil {
@@ -416,6 +424,12 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 		return operatoradmin.Preview{}, err
 	}
 	preview := operatoradmin.Preview{Summary: name, Current: in}
+	if name == operatortool.MemberRemove || name == operatortool.InvitationRevoke {
+		if output, found, err := a.committedDeletionOutput(ctx, credential, name, in); err != nil || found {
+			preview.ResourceID = output.ResourceID
+			return preview, err
+		}
+	}
 	switch name {
 	case operatortool.OrganizationProjectRankUpdate:
 		current, err := s.readOrganizationRankRecord(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential})
@@ -933,4 +947,27 @@ func (s *Service) operatorSessionDestination(credential apiCredential) string {
 		return s.config.Hosted.PublicURL + "/organization"
 	}
 	return s.config.Hosted.PublicURL + "/"
+}
+
+func (a hubAdministration) committedDeletionOutput(ctx context.Context, credential apiCredential, name string, in operatoradmin.Input) (operatoradmin.Output, bool, error) {
+	identity := operatortool.ConnectionIdentity(ctx)
+	metadata := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: in.ProjectID, Action: name}
+	bound, err := metadata.Bind(in.RequestID, in)
+	if err != nil {
+		return operatoradmin.Output{}, false, err
+	}
+	command := hostedCommand{organization: identity.OrganizationID, actor: credential.ID, operation: name, key: bound.RetryIdentity, input: in}
+	raw, found, err := a.service.readHostedOperationRecord(ctx, command)
+	if err != nil || !found {
+		return operatoradmin.Output{}, false, err
+	}
+	var output operatoradmin.Output
+	resource := in.MemberID
+	if name == operatortool.InvitationRevoke {
+		resource = in.InvitationID
+	}
+	if json.Unmarshal(raw, &output) != nil || output.ResourceID == "" || output.ResourceID != resource {
+		return operatoradmin.Output{}, false, operatortool.ErrAccessDenied
+	}
+	return output, true, nil
 }

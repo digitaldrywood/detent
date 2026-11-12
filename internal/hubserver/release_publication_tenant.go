@@ -1,11 +1,10 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
-
-	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -13,24 +12,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) recordReleasePublication(c echo.Context, request tracker.PublishReleasePick, result tracker.ReleasePickPublication) error {
-	ctx, scope := c.Request().Context(), nativeRequestScope(c)
-	operation := releasePublicationOperation(scope, c.Param("item"))
+func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope nativeScope, item string, request tracker.PublishReleasePick, result tracker.ReleasePickPublication) (json.RawMessage, error) {
+	operation := releasePublicationOperation(scope, item)
 	hash, err := nativeCommandHash(request)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	var replay *eventstore.Receipt
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -64,13 +62,13 @@ func (s *Service) recordReleasePublication(c echo.Context, request tracker.Publi
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, projectRecordError(err)
 	}
 	if replay != nil {
 		raw, err = content.Receipt(ctx, *replay)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
-	return c.JSONBlob(http.StatusOK, raw)
+	return raw, nil
 }

@@ -206,6 +206,29 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		if err != nil {
 			return result, err
 		}
+	case operatortool.AssociateReleasePick:
+		if args.ReleasePick == nil {
+			return result, operatortool.ErrInvalidArguments
+		}
+		request := tracker.AssociateReleasePick{Mutation: command, ExpectedRevision: tracker.Revision(args.ExpectedRevision), ReleasePickInput: *args.ReleasePick}
+		result.Receipt, err = s.associateReleasePickTenant(ctx, scope, args.ItemID, http.MethodPost+" "+result.URL+"/release-pick", request)
+	case operatortool.PublishReleasePick:
+		if args.ReleasePick == nil {
+			return result, operatortool.ErrInvalidArguments
+		}
+		request := tracker.PublishReleasePick{Mutation: command, ExpectedRevision: tracker.Revision(args.ExpectedRevision), ReleasePickInput: *args.ReleasePick}
+		var publication tracker.ReleasePickPublication
+		publication, err = s.prepareReleasePublication(ctx, scope, args.ItemID, request)
+		if err == nil {
+			result.Receipt, err = s.recordReleasePublicationCommand(ctx, scope, args.ItemID, request, publication)
+		}
+	case operatortool.BindArtifactService:
+		if args.Binding == nil {
+			return result, operatortool.ErrInvalidArguments
+		}
+		request := bindArtifactServiceRequest{Mutation: command, Binding: *args.Binding}
+		options := nativeCommandOptions{OperationID: http.MethodPut + " " + result.URL + "/artifact-services/" + url.PathEscape(args.Binding.ServiceID)}
+		result.Receipt, err = s.executeProjectRecordMutation(ctx, scope, options, command, request)
 	case operatortool.CreateChange:
 		request := tracker.CreateChange{Mutation: command, Title: args.Title, Body: args.Body, LinkedIssues: args.LinkedIssues}
 		result.Receipt, err = s.createChangeRecordCommand(ctx, scope, args.ItemID, http.MethodPost+" "+result.URL+"/changes", request)
@@ -276,7 +299,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	default:
 		return result, operatortool.ErrServiceUnavailable
 	}
-	return result, nil
+	return result, err
 }
 
 func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope nativeScope, args operatortool.ChangeArguments) (json.RawMessage, error) {

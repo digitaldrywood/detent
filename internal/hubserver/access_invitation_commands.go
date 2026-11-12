@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -315,6 +316,10 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential apiCred
 	if current.Role == "owner" && credential.HostedRole != "owner" {
 		return operatortool.ErrAccessDenied
 	}
+	audit, err := s.prepareAccessAudit(ctx, credential.Hosted, "action", "DELETE "+hostedOrganizationBase+"/members/invitations/:invitation", "", http.StatusNoContent)
+	if err != nil {
+		return err
+	}
 	if err := auth.RevokeInvitationID(ctx, s.config.Hosted.Provider, id); err != nil {
 		return errors.Join(operatortool.ErrProviderUnavailable, err)
 	}
@@ -330,6 +335,10 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential apiCred
 			return operatortool.ErrAccessDenied
 		}
 		if _, err := w.DeleteAccessInvitation(ctx, id); err != nil {
+			return err
+		}
+		if audit != nil {
+			_, err := w.RecordAccessAudit(ctx, *audit)
 			return err
 		}
 		return nil

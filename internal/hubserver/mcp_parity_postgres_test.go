@@ -85,27 +85,19 @@ func TestPostgresMCPChangeParity(t *testing.T) {
 				operatortool.GetChange, operatortool.GetChangeVersion, operatortool.DiscussChange,
 				operatortool.GetChangeReviewPolicy,
 				operatortool.ListWorkItemPullRequests, operatortool.ArtifactServices,
-				operatortool.ArtifactReferences, operatortool.AssociateReleasePick, operatortool.PublishReleasePick,
-				operatortool.BindArtifactService,
+				operatortool.ArtifactReferences,
 			} {
 				t.Run(name, func(t *testing.T) {
 					args := operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), ChangeID: f.change.ID, VersionID: version.ID, RequestID: "parity-" + name, Body: "Example discussion", FileSHA256: strings.Repeat("a", 64), Viewed: true, ExpectedRevision: int64(f.change.Revision), ExpectedPolicyID: f.rules.ID, Policy: &f.rules, AttemptID: "attempt", Sequence: 1, Bundle: &tracker.ChangeReviewBundle{ArtifactID: artifact.NewID("artifact"), Revision: 1, SHA256: strings.Repeat("a", 64), HeadSHA: version.HeadSHA}, Binding: &artifact.Binding{ServiceID: artifact.NewID("service"), Origin: "https://artifacts.example.test", PublisherTokenID: "publisher", Mode: "customer"}, ReleasePick: &tracker.ReleasePickInput{SourceIssueID: f.issue.WorkItemID, SourceChangeID: f.change.ID, SourceMergeSHA: strings.Repeat("a", 40), Repository: "example-org/example-project", PRNumber: 1, HeadRef: "release-pick", HeadSHA: strings.Repeat("b", 40), BaseRef: "release/v1.0", BaseSHA: strings.Repeat("a", 40), FrozenSHA: strings.Repeat("a", 40)}}
 					call := parityToolCall(t, name, args)
 					result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, call)
-					switch name {
-					case operatortool.AssociateReleasePick, operatortool.PublishReleasePick, operatortool.BindArtifactService:
-						if !errors.Is(err, operatortool.ErrServiceUnavailable) {
-							t.Fatalf("incomplete PostgreSQL handler: %v", err)
-						}
-					default:
-						paritySuccess(t, result, err)
-						var got operatortool.ChangeResult
-						if err := json.Unmarshal(result.Content, &got); err != nil {
-							t.Fatal(err)
-						}
-						if got.OrganizationID != string(f.project.OrganizationID) || got.ProjectID != string(f.project.ID) {
-							t.Fatal("change result escaped tenant")
-						}
+					paritySuccess(t, result, err)
+					var got operatortool.ChangeResult
+					if err := json.Unmarshal(result.Content, &got); err != nil {
+						t.Fatal(err)
+					}
+					if got.OrganizationID != string(f.project.OrganizationID) || got.ProjectID != string(f.project.ID) {
+						t.Fatal("change result escaped tenant")
 					}
 					definitions, listErr := (hostedOperatorExecutor{f.service}).ListTools(ctx)
 					if listErr != nil {
@@ -313,9 +305,7 @@ func TestPostgresMCPHostedParity(t *testing.T) {
 					}
 					result, err := e.Execute(ctx, parityToolCall(t, test.name, test.args))
 					if test.name == operatortool.MemberRemove || test.name == operatortool.InvitationRevoke {
-						if !errors.Is(err, operatortool.ErrAccessDenied) {
-							t.Fatalf("incomplete deletion adapter: %v", err)
-						}
+						paritySuccess(t, result, err)
 						if test.name == operatortool.MemberRemove && f.provider.members[targetID].Status != "inactive" {
 							t.Fatal("member removal did not commit before result reauthorization")
 						}
@@ -510,8 +500,8 @@ func TestPostgresMCPCatalogAuthorities(t *testing.T) {
 		{"artifact_access", "local owner shared member viewer staff admin"},
 		{"artifact_references", "local owner shared member viewer staff admin"},
 		{"artifact_services", "local owner shared member viewer staff admin"},
-		{"associate_release_pick", ""},
-		{"bind_artifact_service", ""},
+		{"associate_release_pick", "local owner shared member admin"},
+		{"bind_artifact_service", "local owner shared staff admin"},
 		{"change_viewed_files", "local owner shared member viewer staff admin"},
 		{"discuss_change", "local owner shared member admin"},
 		{"get_artifact_reference", "local owner shared member viewer staff admin"},
@@ -522,7 +512,7 @@ func TestPostgresMCPCatalogAuthorities(t *testing.T) {
 		{"get_native_run", "local owner shared member viewer staff admin"},
 		{"get_work_item_diff", "local owner shared member viewer staff admin"},
 		{"list_work_item_pull_requests", "local owner shared member viewer staff admin"},
-		{"publish_release_pick", ""},
+		{"publish_release_pick", "local owner shared member admin"},
 		{"view_change_file", "local owner shared member admin"},
 		{"session_logout", "owner member viewer staff admin"},
 		{"credential_create", "owner shared member viewer admin"},
@@ -542,8 +532,8 @@ func TestPostgresMCPCatalogAuthorities(t *testing.T) {
 		{"local_project_configuration", "local owner shared member viewer staff admin"},
 		{"resume_local_project", "local owner shared admin"},
 		{"invitation_accept", "owner member viewer staff admin"},
-		{"invitation_revoke", ""},
-		{"member_remove", ""},
+		{"invitation_revoke", "owner shared admin"},
+		{"member_remove", "owner shared admin"},
 		{"organization_list", "local owner shared member viewer staff admin"},
 		{"organization_project_rank", "owner shared admin"},
 		{"organization_project_rank_update", "owner shared admin"},

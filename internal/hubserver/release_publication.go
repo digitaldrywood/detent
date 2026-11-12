@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -98,5 +99,9 @@ func (s *Service) publishReleasePick(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return s.recordReleasePublication(c, r, result)
+	raw, err := s.recordReleasePublicationCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), r, result)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, raw)
 }

@@ -76,6 +76,8 @@ func TestPostgresEntryKeyAdministrationCatalog(t *testing.T) {
 				{operatortool.InvitationResend, map[string]any{"invitation_id": "invitation_1"}},
 				{operatortool.MemberRole, map[string]any{"member_id": org + "_member", "role": "viewer"}},
 				{operatortool.MemberGrant, map[string]any{"member_id": org + "_member", "project_id": "project", "write": true}},
+				{operatortool.InvitationRevoke, map[string]any{"invitation_id": "invitation_1"}},
+				{operatortool.MemberRemove, map[string]any{"member_id": org + "_member"}},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					definition, _ := operatortool.Lookup(test.name)
@@ -117,26 +119,16 @@ func TestPostgresEntryKeyAdministrationCatalog(t *testing.T) {
 					}
 				})
 			}
-			for _, name := range []string{operatortool.InvitationRevoke, operatortool.MemberRemove} {
-				if entryKeyHasDefinition(definitions, name) {
-					t.Fatal("incomplete deletion adapter advertised")
-				}
-				body, err := json.Marshal(map[string]any{"name": name, "connection_id": org + "_admin", "arguments": map[string]any{"request_id": name, "invitation_id": "invitation_1", "member_id": org + "_member"}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				requireNativeStatus(t, f.request(t, org, "/internal/v1/keys/call", string(body), keyClaims), http.StatusForbidden)
-			}
 			if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 				member, err := r.AccessMember(t.Context(), org+"_member")
-				if err == nil && (!member.Active || member.Role != "viewer") {
+				if err == nil && (member.Active || member.Role != "viewer") {
 					t.Error("member role did not persist")
 				}
 				return err
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if provider.invitations["invitation_1"].State != "pending" || provider.members[org+"_member"].Role.Slug != "viewer" {
+			if provider.invitations["invitation_1"].State != "revoked" || provider.members[org+"_member"].Role.Slug != "viewer" {
 				t.Fatal("provider mutations did not complete")
 			}
 		})

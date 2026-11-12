@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -116,7 +117,24 @@ func (s *Service) removeHostedMemberFor(ctx context.Context, credential apiCrede
 	if err != nil {
 		return err
 	}
-	if err := s.revokeHostedMemberLocally(ctx, member.UserID); err != nil {
+	scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
+	audit, err := s.prepareAccessAudit(ctx, credential.Hosted, "action", "DELETE "+hostedOrganizationBase+"/members/:member", "", http.StatusNoContent)
+	if err != nil {
+		return err
+	}
+	if err := s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		if err := w.RevokeAccessMember(ctx, member.UserID, s.config.now()); err != nil {
+			return err
+		}
+		if audit != nil {
+			_, err := w.RecordAccessAudit(ctx, *audit)
+			return err
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 	return s.config.Hosted.Provider.RevokeMembership(ctx, member.ID)

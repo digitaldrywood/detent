@@ -41,6 +41,8 @@ changes_artifacts approve_change_review_policy
 changes_artifacts artifact_access
 changes_artifacts artifact_references
 changes_artifacts artifact_services
+changes_artifacts associate_release_pick
+changes_artifacts bind_artifact_service
 changes_artifacts change_viewed_files
 changes_artifacts create_change
 changes_artifacts discuss_change
@@ -54,6 +56,7 @@ changes_artifacts get_work_item_diff
 changes_artifacts list_changes
 changes_artifacts list_work_item_pull_requests
 changes_artifacts publish_change_version
+changes_artifacts publish_release_pick
 changes_artifacts review_change
 changes_artifacts view_change_file
 connection app_bootstrap_payload
@@ -92,8 +95,10 @@ local_projects resume_local_project
 local_projects runner_project_diagnostics
 organization invitation_edit
 organization invitation_resend
+organization invitation_revoke
 organization invitation_send
 organization member_grant
+organization member_remove
 organization member_role
 organization membership_list
 organization organization_list

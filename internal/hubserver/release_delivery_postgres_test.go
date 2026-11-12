@@ -38,9 +38,15 @@ type releaseTenantFixture struct {
 func newReleaseTenantFixture(t *testing.T) *releaseTenantFixture {
 	t.Helper()
 	repo, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 4)
+	return newReleaseTenantFixtureFor(t, repo, f, owner)
+}
+
+func newReleaseTenantFixtureFor(t *testing.T, repo tenantstore.Repository, f hostedSecurityFixture, owner hostedSecurityUser) *releaseTenantFixture {
+	t.Helper()
+	organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
 	fixture := &releaseTenantFixture{repository: repo, f: f, owner: owner}
 	f.service.database.hostedRuntime.Store(&hostedRuntimeConfig{})
-	if err := repo.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+	if err := repo.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), f.project)
 		if err != nil {
 			return err
@@ -69,21 +75,21 @@ func newReleaseTenantFixture(t *testing.T) *releaseTenantFixture {
 	decodeHubResponse(t, response, &fixture.change)
 	content := eventstore.NewContent(f.service.runDetailStore())
 	now := f.service.config.now().UTC()
-	if err := repo.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+	if err := repo.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		hash := apikey.HashToken("example-release-runner")
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: "release-runner-token", Name: "Runner", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "all", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "release-runner-token", Name: "Runner", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "all", Kind: "service"}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_security", ID: "release-enrollment", RunnerID: "release-runner", MachineID: "release-machine", TokenHash: apikey.HashToken("example-enrollment"), Scope: "organization", Operations: []string{"read"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "example-admin"}); err != nil {
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "release-enrollment", RunnerID: "release-runner", MachineID: "release-machine", TokenHash: apikey.HashToken("example-enrollment"), Scope: "organization", Operations: []string{"read"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "example-admin"}); err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_security", ID: "release-machine", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "release-machine", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_security", RunnerID: "release-runner", MachineID: "release-machine", TokenID: "release-runner-token", EnrollmentID: "release-enrollment", Scope: "organization", Operations: []string{"read"}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, OS: "linux", Architecture: "amd64", CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: "release-runner", MachineID: "release-machine", TokenID: "release-runner-token", EnrollmentID: "release-enrollment", Scope: "organization", Operations: []string{"read"}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, OS: "linux", Architecture: "amd64", CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
 			return err
 		}
-		return w.ReplaceRunnerCheckoutReport(t.Context(), runnerstore.CheckoutReport{OrganizationID: "org_security", RunnerID: "release-runner", ProjectID: f.project, Repository: "example-org/example-project", ReportedAt: now})
+		return w.ReplaceRunnerCheckoutReport(t.Context(), runnerstore.CheckoutReport{OrganizationID: organization, RunnerID: "release-runner", ProjectID: f.project, Repository: "example-org/example-project", ReportedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -93,11 +99,11 @@ func newReleaseTenantFixture(t *testing.T) *releaseTenantFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	version, err := content.PrepareVersion(t.Context(), "org_security", raw)
+	version, err := content.PrepareVersion(t.Context(), organization, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = repo.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+	err = repo.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), f.project)
 		if err != nil {
 			return err
@@ -131,7 +137,7 @@ func newReleaseTenantFixture(t *testing.T) *releaseTenantFixture {
 		if _, err = w.UpdateChange(t.Context(), change); err != nil {
 			return err
 		}
-		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: "org_security", ProjectID: f.project, WorkItemID: fixture.delivery.WorkItemID, RelatedProjectID: f.project, RelatedWorkItemID: fixture.source.WorkItemID, Type: "dependency"}, "add", now)
+		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: organization, ProjectID: f.project, WorkItemID: fixture.delivery.WorkItemID, RelatedProjectID: f.project, RelatedWorkItemID: fixture.source.WorkItemID, Type: "dependency"}, "add", now)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -458,11 +464,11 @@ func seedReleaseTenantAudit(t *testing.T, f *releaseTenantFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, err := eventstore.NewContent(f.f.service.runDetailStore()).PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: "org_security", ChangeID: f.change.ID, Kind: "review"}, raw)
+	row, err := eventstore.NewContent(f.f.service.runDetailStore()).PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: tracker.OrganizationID(f.f.service.config.Hosted.OrganizationID), ChangeID: f.change.ID, Kind: "review"}, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), row); return err }); err != nil {
+	if err = f.repository.WriteTenant(t.Context(), tracker.OrganizationID(f.f.service.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), row); return err }); err != nil {
 		t.Fatal(err)
 	}
 }

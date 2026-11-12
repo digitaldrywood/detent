@@ -36,6 +36,8 @@ changes_artifacts approve_change_review_policy
 changes_artifacts artifact_access
 changes_artifacts artifact_references
 changes_artifacts artifact_services
+changes_artifacts associate_release_pick
+changes_artifacts bind_artifact_service
 changes_artifacts change_viewed_files
 changes_artifacts create_change
 changes_artifacts discuss_change
@@ -49,6 +51,7 @@ changes_artifacts get_work_item_diff
 changes_artifacts list_changes
 changes_artifacts list_work_item_pull_requests
 changes_artifacts publish_change_version
+changes_artifacts publish_release_pick
 changes_artifacts review_change
 changes_artifacts view_change_file
 connection connection_info
