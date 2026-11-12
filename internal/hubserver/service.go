@@ -762,15 +762,6 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 					s.config.Logger.WarnContext(ctx, "maintain PostgreSQL native retention", "error", err)
 				}
 				lastCleanup = now
-			} else {
-				err := s.runNativeRetentionStages(ctx, []nativeRetentionStage{
-					{"archive closed issues", func(ctx context.Context) error {
-						return s.retainClosedWorkItems(ctx, tracker.OrganizationID(s.appOrganizationID()), now)
-					}},
-				})
-				if err != nil && !errors.Is(err, context.Canceled) {
-					s.config.Logger.WarnContext(ctx, "maintain PostgreSQL work item retention", "error", err)
-				}
 			}
 		}
 	}
