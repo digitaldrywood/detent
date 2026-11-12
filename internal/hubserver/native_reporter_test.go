@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -62,7 +63,7 @@ func TestReporterReadIsolation(t *testing.T) {
 						want = 0
 					}
 				}
-				if page.Total != want || len(page.Items) != want {
+				if page.Total != -1 || len(page.Items) != want {
 					t.Fatalf("page=%s", r.Body.String())
 				}
 				for _, item := range page.Items {
@@ -71,12 +72,18 @@ func TestReporterReadIsolation(t *testing.T) {
 					}
 				}
 				if page.Work != nil {
+					response := v.request(t, v.users[user], http.MethodGet, v.base+"/board/counts", nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var summary viewstore.BoardSummaryPage
+					decodeHubResponse(t, response, &summary)
 					total := 0
-					for _, lane := range page.Work.Lanes {
-						total += lane.Total
+					for _, lane := range summary.Rows {
+						if lane.Kind == "lane" {
+							total += int(lane.Total)
+						}
 					}
 					if total != want {
-						t.Fatalf("lanes=%+v", page.Work.Lanes)
+						t.Fatalf("lanes=%+v", summary.Rows)
 					}
 				}
 			})
@@ -131,7 +138,7 @@ func TestReporterReadIsolation(t *testing.T) {
 	requireNativeStatus(t, r, http.StatusOK)
 	var empty tracker.NativeIssuePage
 	decodeHubResponse(t, r, &empty)
-	if empty.Total != 0 || len(empty.Items) != 0 {
+	if empty.Total != -1 || len(empty.Items) != 0 {
 		t.Fatalf("created_by bypass: %s", r.Body.String())
 	}
 	r = v.request(t, v.users["reporter"], http.MethodGet, "/api/v2/organizations/org_security/work-items/"+string(other.WorkItemID), nil)
@@ -372,7 +379,7 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 				requireNativeStatus(t, r, http.StatusOK)
 				var page tracker.NativeIssuePage
 				decodeHubResponse(t, r, &page)
-				if page.Total != 2 || len(page.Items) != 2 || strings.Contains(r.Body.String(), string(other.WorkItemID)) {
+				if page.Total != -1 || len(page.Items) != 2 || strings.Contains(r.Body.String(), string(other.WorkItemID)) {
 					t.Fatalf("identity list=%s", r.Body.String())
 				}
 				requireNativeStatus(t, reporterEntryRequest(t, f, deployment, key.Token, transport, http.MethodGet, f.base+"/work-items/"+string(other.WorkItemID), nil, nil), http.StatusNotFound)
