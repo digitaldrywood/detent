@@ -8,18 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/agentidentity"
-	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
-	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/isolation"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
-	"github.com/digitaldrywood/detent/internal/securityaudit"
-	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/runner/sshexec"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 type SSHRunRequest struct {
@@ -279,18 +273,7 @@ func (e *sshExecution) Step(ctx context.Context, binding tracker.NativeStepRecei
 func (*sshExecution) Finish(context.Context, string) error { return nil }
 func (e *sshExecution) Recovery() tracker.NativeRecovery   { return e.recovery }
 
-type SSHBudgetGuard struct{ Peer *SSHPeer }
-
-func (b SSHBudgetGuard) CheckDispatch(ctx context.Context, request budget.DispatchRequest) (budget.Decision, error) {
-	var result budget.Decision
-	err := b.Peer.Call(ctx, "budget.check", &result, request)
-	return result, err
-}
-func (b SSHBudgetGuard) EstimateDispatch(ctx context.Context, project string) (budget.TokenEstimate, error) {
-	var result budget.TokenEstimate
-	err := b.Peer.Call(ctx, "budget.estimate", &result, project)
-	return result, err
-}
+type SSHBudgetGuard = sshexec.BudgetGuard
 
 // ResolveSSHWorkflow resolves the selected credentials on the orchestrator,
 // before crossing SSH. Configuration and secrets are sent only over stdin.
@@ -342,103 +325,15 @@ func (r *Runner) SSHCallbackHandler(request RunRequest) func(context.Context, st
 }
 
 const (
-	sshGoTestReceiptAttest = "go_test_receipts.attest"
-	sshGoTestReceiptLookup = "go_test_receipts.lookup"
-	sshGoTestReceiptRecord = "go_test_receipts.record"
+	sshGoTestReceiptAttest = sshexec.GoTestReceiptAttest
+	sshGoTestReceiptLookup = sshexec.GoTestReceiptLookup
+	sshGoTestReceiptRecord = sshexec.GoTestReceiptRecord
 )
 
-type SSHGoTestReceipts struct{ Peer *SSHPeer }
-
-func (s SSHGoTestReceipts) Attest(ctx context.Context) (gotestreceipt.Attestation, error) {
-	var attestation gotestreceipt.Attestation
-	err := s.Peer.Call(ctx, sshGoTestReceiptAttest, &attestation)
-	return attestation, err
-}
-
-func (s SSHGoTestReceipts) Lookup(ctx context.Context, key string) ([]gotestreceipt.Candidate, error) {
-	var candidates []gotestreceipt.Candidate
-	err := s.Peer.Call(ctx, sshGoTestReceiptLookup, &candidates, key)
-	return candidates, err
-}
-
-func (s SSHGoTestReceipts) Record(ctx context.Context, receipt gotestreceipt.Receipt) error {
-	return s.Peer.Call(ctx, sshGoTestReceiptRecord, nil, receipt)
-}
+type SSHGoTestReceipts = sshexec.GoTestReceipts
 
 func (r *Runner) GoTestReceiptsEnabled() bool {
 	return r.goTestReceipts.Store != nil
 }
 
-// SSHSessionStore forwards session data, but has no local process-registration
-// interface: numeric PIDs from another host are never local reap authorities.
-type SSHSessionStore struct{ Peer *SSHPeer }
-
-func (s SSHSessionStore) StartSession(ctx context.Context, input store.SessionStart) (int64, error) {
-	var result int64
-	err := s.Peer.Call(ctx, "store.StartSession", &result, input)
-	return result, err
-}
-func (s SSHSessionStore) FinishSession(ctx context.Context, id int64, input store.SessionFinish) error {
-	return s.Peer.Call(ctx, "store.FinishSession", nil, id, input)
-}
-func (s SSHSessionStore) RecordUsageEvent(ctx context.Context, input store.UsageEvent) (int64, error) {
-	var result int64
-	err := s.Peer.Call(ctx, "store.RecordUsageEvent", &result, input)
-	return result, err
-}
-
-func (s SSHSessionStore) UpdateSessionIdentity(ctx context.Context, id int64, input agentidentity.Identity) error {
-	return s.Peer.Call(ctx, "store.UpdateSessionIdentity", nil, id, input)
-}
-
-func (s SSHSessionStore) UpdateSessionProviderIdentity(ctx context.Context, id int64, input store.SessionProviderIdentity) error {
-	return s.Peer.Call(ctx, "store.UpdateSessionProviderIdentity", nil, id, input)
-}
-
-func (s SSHSessionStore) UpdateSessionResumeState(ctx context.Context, id int64, input store.SessionResumeState) error {
-	return s.Peer.Call(ctx, "store.UpdateSessionResumeState", nil, id, input)
-}
-
-func (s SSHSessionStore) RecordWorkflowPhaseEvent(ctx context.Context, input store.WorkflowPhaseEvent) (int64, error) {
-	var result int64
-	err := s.Peer.Call(ctx, "store.RecordWorkflowPhaseEvent", &result, input)
-	return result, err
-}
-
-func (s SSHSessionStore) SaveWorkflowActivityProfile(ctx context.Context, id int64, input store.WorkflowPhaseEvent, profile workflowmetrics.ActivityProfile) (int64, error) {
-	var result int64
-	err := s.Peer.Call(ctx, "store.SaveWorkflowActivityProfile", &result, id, input, profile)
-	return result, err
-}
-
-func (s SSHSessionStore) SessionProgress(ctx context.Context, id int64) (store.SessionProgress, error) {
-	var result store.SessionProgress
-	err := s.Peer.Call(ctx, "store.SessionProgress", &result, id)
-	return result, err
-}
-
-func (s SSHSessionStore) SaveSessionProgress(ctx context.Context, id int64, input store.SessionProgress) error {
-	return s.Peer.Call(ctx, "store.SaveSessionProgress", nil, id, input)
-}
-
-func (s SSHSessionStore) SessionPolicy(ctx context.Context, project string, id int64) (policy.Descriptor, error) {
-	var result policy.Descriptor
-	err := s.Peer.Call(ctx, "store.SessionPolicy", &result, project, id)
-	return result, err
-}
-
-func (s SSHSessionStore) LatestAgentResumeState(ctx context.Context, lookup store.AgentResumeLookup) (store.AgentResumeState, error) {
-	var result store.AgentResumeState
-	err := s.Peer.Call(ctx, "store.LatestAgentResumeState", &result, lookup)
-	return result, err
-}
-func (s SSHSessionStore) LatestIssueAgentResumeState(ctx context.Context, issue store.IssueIdentity) (store.AgentResumeState, error) {
-	var result store.AgentResumeState
-	err := s.Peer.Call(ctx, "store.LatestIssueAgentResumeState", &result, issue)
-	return result, err
-}
-func (s SSHSessionStore) ListSecurityAuditDispositions(ctx context.Context, id int64) ([]securityaudit.Disposition, error) {
-	var result []securityaudit.Disposition
-	err := s.Peer.Call(ctx, "store.ListSecurityAuditDispositions", &result, id)
-	return result, err
-}
+type SSHSessionStore = sshexec.SessionStore
