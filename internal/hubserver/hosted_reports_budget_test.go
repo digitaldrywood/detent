@@ -182,7 +182,7 @@ func installReportsBudgetTrace(t *testing.T, s *Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := postgres.NewRepository(t.Context(), pool, s.config.Postgres.Pool)
+	repository, err := postgres.NewRepository(t.Context(), pool, s.config.Postgres.Pool, s.config.Postgres.LeaseClock)
 	if err != nil {
 		pool.Close()
 		t.Fatal(err)
