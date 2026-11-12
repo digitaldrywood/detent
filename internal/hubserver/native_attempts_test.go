@@ -1269,6 +1269,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", fmt.Sprintf("checkpoint-%d", index), 2
 		checkpoint.Data.Handoff = nativeTestCheckpoint()
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+		now = now.Add(time.Millisecond)
 		finish := start
 		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", fmt.Sprintf("finish-%d", index), 3, "succeeded"
 		finish.Data.CompletionBody = "Completed attempt details"
