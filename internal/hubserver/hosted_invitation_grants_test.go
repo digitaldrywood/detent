@@ -70,6 +70,9 @@ func TestHostedInvitationGrants(t *testing.T) {
 				actorRole = "admin"
 			}
 			owner := f.user(t, "owner", actorRole, "owner@example.test", test.actorGrant, "")
+			if test.actorGrant == "" {
+				f.withoutProjectAccess(t, owner)
+			}
 			if test.actorGrant == "runner" || test.actorGrant == "all" {
 				f.grant(t, owner, test.actorGrant == "all", true)
 			}
@@ -82,8 +85,14 @@ func TestHostedInvitationGrants(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					_, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_second", Name: "Second project", Profile: primary.Core.Profile}, States: primary.States})
-					return err
+					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_second", Name: "Second project", Profile: primary.Core.Profile}, States: primary.States}); err != nil {
+						return err
+					}
+					creator, err := w.AccessMember(t.Context(), owner.identity.Subject)
+					if err != nil {
+						return err
+					}
+					return w.InitializeProjectAccess(t.Context(), "prj_second", creator.PrincipalID)
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -173,6 +182,9 @@ func TestHostedInvitationGrants(t *testing.T) {
 				editor := owner
 				if test.editAdmin {
 					editor = f.user(t, "admin", "admin", "admin@example.test", "write", "")
+					second := f
+					second.project = "prj_second"
+					second.withoutProjectAccess(t, editor)
 				}
 				editStatus := http.StatusNoContent
 				if test.edit == "write" || test.editAdmin {
@@ -316,6 +328,9 @@ func TestHostedInvitationGrants(t *testing.T) {
 				t.Fatalf("visible projects = %#v, want grants %v", projects, grants)
 			}
 			writeStatus := http.StatusNotFound
+			if len(grants) > 0 {
+				writeStatus = http.StatusForbidden
+			}
 			if len(grants) > 0 && grants[0].Write {
 				writeStatus = http.StatusOK
 			}

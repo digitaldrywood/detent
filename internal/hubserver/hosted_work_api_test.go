@@ -42,6 +42,9 @@ func TestHostedWorkAccess(t *testing.T) {
 				email = "member@example.test"
 			}
 			user := f.user(t, "member", test.role, email, test.grant, "")
+			if test.grant == "" {
+				f.withoutProjectAccess(t, user)
+			}
 			switch test.revoke {
 			case "session":
 				if err := f.provider.RevokeSession(t.Context(), user.identity.Hosted.SessionID); err != nil {
