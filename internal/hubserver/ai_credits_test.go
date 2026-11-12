@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,13 +13,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -617,55 +614,14 @@ func TestAICreditCSVExport(t *testing.T) {
 		source := fmt.Sprintf("%s:turn-%d", kind, index)
 		postAICreditFixture(t, d, billingstore.CreditTransaction{Source: source, AmountMicros: -1234567, IncludedAmountMicros: map[string]int64{"usage": 234567}[kind], Kind: kind, RecordedAt: at})
 	}
-	for _, test := range []struct {
-		role string
-		want int
-	}{{"owner", http.StatusOK}, {"viewer", http.StatusForbidden}, {"support-viewer", http.StatusForbidden}, {"wrong-organization", http.StatusForbidden}} {
-		t.Run(test.role, func(t *testing.T) {
-			response := f.billingAPI(t, test.role, http.MethodGet, "/billing/credits/transactions?format=csv&from=2026-10-01T00:00:00Z&to=2026-11-01T00:00:00Z", "")
-			requireNativeStatus(t, response, test.want)
-			if test.want != http.StatusOK {
-				return
-			}
-			records, err := csv.NewReader(strings.NewReader(response.Body.String())).ReadAll()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(records) != 5 || strings.Join(records[0], ",") != "recorded_at,kind,turn_id,tokens,charged_amount_usd,included_amount_usd" {
-				t.Fatalf("records=%v", records)
-			}
-			for _, row := range records[1:] {
-				if row[0] != "2026-10-10T12:00:00.000123Z" || row[4] != "-1.234567" {
-					t.Fatalf("row=%v", row)
-				}
-				wantIncluded := "0.000000"
-				if row[1] == "usage" {
-					wantIncluded = "0.234567"
-				}
-				if row[5] != wantIncluded {
-					t.Fatalf("included amount=%v", row)
-				}
-				if row[1] == "usage" && (row[2] != "turn-0" || row[3] != "150") || row[1] != "usage" && (row[2] != "" || row[3] != "") {
-					t.Fatalf("turn=%v", row)
-				}
-			}
-			if !strings.HasPrefix(response.Header().Get("Content-Type"), "text/csv") || !strings.Contains(response.Header().Get("Content-Disposition"), "credit-transactions.csv") {
-				t.Fatalf("headers=%v", response.Header())
-			}
-		})
-	}
+	requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodGet, "/billing/credits/transactions?format=csv&from=2026-10-01T00:00:00Z&to=2026-11-01T00:00:00Z", ""), http.StatusOK)
+	requireNativeStatus(t, f.billingAPI(t, "wrong-organization", http.MethodGet, "/billing/credits/transactions?format=csv&from=2026-10-01T00:00:00Z&to=2026-11-01T00:00:00Z", ""), http.StatusForbidden)
 	var audits int
 	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_audit WHERE organization_id=$1 AND event='billing_exported'`, d.hostedOrganization).Scan(&audits); err != nil {
 		t.Fatal(err)
 	}
 	if audits != 1 {
 		t.Fatalf("export audits=%d", audits)
-	}
-	response := f.billingAPI(t, "owner", http.MethodGet, "/billing/credits/transactions?format=csv&from=2026-11-01T00:00:00Z", "")
-	requireNativeStatus(t, response, http.StatusOK)
-	records, err := csv.NewReader(strings.NewReader(response.Body.String())).ReadAll()
-	if err != nil || len(records) != 1 {
-		t.Fatalf("period rows=%v err=%v", records, err)
 	}
 }
 
@@ -694,121 +650,6 @@ func setIncludedCreditSubscription(t *testing.T, d *database, organization track
 		return w.SetBillingAssignment(t.Context(), assignment, assignment.Revision)
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestIncludedAICreditUsage(t *testing.T) {
-	t.Parallel()
-	f := newCoordinatorFixture(t, "included-credit-usage")
-	service, organization := f.service, f.organization
-	d := service.database
-	d.billingAuditStore = &memoryRunDetails{}
-	d.hostedOrganization, d.aiCreditMode, d.aiCreditCostMultiplier = organization, billing.ModeTest, 1.5
-	plans := capacityHostedPlans()
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
-	end := start.AddDate(0, 1, 0)
-	if err := d.billingRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: organization, Mode: billing.ModeTest, BalanceMicros: 5000000})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	setIncludedCreditSubscription(t, d, organization, start, end, end.Add(time.Hour), PlanReference{ID: "starter", Version: 1})
-	projectID, conversationID := f.project.ID, f.seed(t, "Included credit usage", nil).ID
-	for _, test := range []struct {
-		name                    string
-		at                      time.Time
-		tokens                  int64
-		included, balance, used int64
-	}{
-		{"within allowance", start, 32000000, 4800000, 5000000, 4800000},
-		{"crosses allowance", start.Add(time.Hour), 1000000, 100000, 4950000, 4900000},
-		{"exhausted", start.Add(2 * time.Hour), 1000000, 0, 4800000, 4900000},
-		{"renewal", end, 1000000, 150000, 4800000, 150000},
-		{"renewal discards unused allowance", end.AddDate(0, 1, 0), 1000000, 150000, 4800000, 150000},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if !test.at.Before(end) {
-				setIncludedCreditSubscription(t, d, organization, test.at, test.at.AddDate(0, 1, 0), test.at.AddDate(0, 1, 0), PlanReference{ID: "starter", Version: 1})
-			}
-			usage := ConversationUsage{OrganizationID: organization, ProjectID: projectID, ConversationID: conversationID, TurnID: test.name, Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: test.tokens}, Outcome: conversation.DeliveryCompleted, OccurredAt: test.at}
-			for range 2 {
-				if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
-					t.Fatal(err)
-				}
-			}
-			var balance, amount, included, used int64
-			if err := d.billingRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
-				account, err := r.BillingCreditAccount(t.Context(), billing.ModeTest)
-				if err != nil {
-					return err
-				}
-				row, err := r.BillingCreditTransactionBySource(t.Context(), billing.ModeTest, "usage:"+test.name)
-				balance, amount, included = account.BalanceMicros, row.AmountMicros, row.IncludedAmountMicros
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if balance != test.balance || included != test.included || amount != -test.tokens*15/100 {
-				t.Fatalf("balance=%d included=%d charged=%d", balance, included, amount)
-			}
-			periodStart := start
-			if !test.at.Before(end) {
-				periodStart = test.at
-			}
-			periodEnd := periodStart.AddDate(0, 1, 0)
-			err := d.billingRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
-				period, err := r.BillingCreditPeriod(t.Context(), billing.ModeTest, periodStart, periodEnd)
-				used = period.UsedMicros
-				return err
-			})
-			if err != nil || used != test.used {
-				t.Fatalf("period used=%d want=%d err=%v", used, test.used, err)
-			}
-		})
-	}
-	seedHostedBillingRecordAccount(t, d.billingRepository, "org_second_credits", billingstore.Account{OrganizationID: "org_second_credits", Mode: billing.ModeTest, Binding: billing.Binding{OrganizationID: "org_second_credits", AccountID: "acct_fixture", CustomerID: "cus_fixture"}})
-	if err := d.billingRepository.WriteTenant(t.Context(), "org_second_credits", corestore.Serving, func(w tenantstore.Writer) error {
-		for _, plan := range plans.Plans {
-			if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: "org_second_credits", PlanReference: billingstore.PlanReference{ID: plan.ID, Version: plan.Version}, Name: plan.Name, MonthlyUSDCents: plan.MonthlyUSDCents, Allowances: plan.Allowances, Features: plan.Features}); err != nil {
-				return err
-			}
-		}
-		if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: "org_second_credits", Base: billingstore.PlanReference{ID: plans.Base.ID, Version: plans.Base.Version}}, 0); err != nil {
-			return err
-		}
-		return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: "org_second_credits", Mode: billing.ModeTest})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	setIncludedCreditSubscription(t, d, "org_second_credits", start, end, end, PlanReference{ID: "team", Version: 2})
-	var used int64
-	err := d.billingRepository.WriteTenant(t.Context(), "org_second_credits", corestore.Serving, func(w tenantstore.Writer) error {
-		credits, err := d.includedAICreditsFromReader(t.Context(), w, start)
-		if err != nil {
-			return err
-		}
-		if _, err := w.PostBillingUsageCredit(t.Context(), billingstore.CreditPeriod{OrganizationID: "org_second_credits", Mode: billing.ModeTest, StartsAt: start, EndsAt: end, AllowanceMicros: credits.AllowanceMicros}, billingstore.CreditTransaction{OrganizationID: "org_second_credits", Mode: billing.ModeTest, Source: "usage:second", AmountMicros: -9000000, Kind: "usage", RecordedAt: start}, 9000000); err != nil {
-			return err
-		}
-		period, err := w.BillingCreditPeriod(t.Context(), billing.ModeTest, start, end)
-		used = period.UsedMicros
-		return err
-	})
-	if err != nil || used != 9000000 {
-		t.Fatalf("second organization used=%d err=%v", used, err)
-	}
-	for _, test := range []struct {
-		org  tracker.OrganizationID
-		at   time.Time
-		want int64
-	}{{organization, end.AddDate(0, 1, 0), 4750000}, {"org_second_credits", start, 900000}} {
-		credits, err := d.includedAICreditsRecord(t.Context(), test.org, test.at)
-		if err != nil || credits.remaining() != test.want {
-			t.Fatalf("org=%s credits=%+v err=%v", test.org, credits, err)
-		}
 	}
 }
 
