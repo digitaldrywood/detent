@@ -476,7 +476,7 @@ func TestConversationPublicationRechecksTokenExpiry(t *testing.T) {
 	calls := 0
 	objects.onIO = func() error {
 		calls++
-		if calls == 2 {
+		if calls == 1 {
 			clockMu.Lock()
 			now = now.Add(2 * time.Minute)
 			clockMu.Unlock()
@@ -487,8 +487,8 @@ func TestConversationPublicationRechecksTokenExpiry(t *testing.T) {
 	if response.Code == http.StatusAccepted || response.Code == http.StatusOK {
 		t.Fatalf("expired credential committed after publication: status=%d", response.Code)
 	}
-	if calls < 2 {
-		t.Fatal("fixture did not advance the clock after planning")
+	if calls < 1 {
+		t.Fatal("fixture did not advance the clock during publication")
 	}
 	var messages, events int
 	if err := nativeAttemptTestDatabase(t, f.nativeFixture).QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2),(SELECT count(*) FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2)", f.project.OrganizationID, record.ID).Scan(&messages, &events); err != nil || messages != 0 || events != 0 {
