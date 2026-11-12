@@ -466,6 +466,14 @@ func conversationContentUnavailable() error {
 	return conversationUnsupported("Conversation content references require the attachments migration")
 }
 
+func (c *conversationService) logReceipt(conversationID, attemptID string, receipt conversation.Receipt) {
+	attributes := []any{"conversation_id", conversationID, "command_key", receipt.Key, "kind", receipt.Kind, "status", receipt.Status, "attempt_id", attemptID}
+	if receipt.Error != nil {
+		attributes = append(attributes, "error_code", receipt.Error.Code)
+	}
+	c.logger.Info("conversation.receipt", attributes...)
+}
+
 func (s *Service) readConversationObject(ctx context.Context, organization string, ref attachment.ArchiveReference, target any) error {
 	if s.conversations.store.contents == nil {
 		return conversationContentUnavailable()
@@ -1339,6 +1347,7 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 	}); err != nil {
 		return nil, err
 	}
+	service.logReceipt(id, stored.Execution.Owner.AttemptID, result)
 	if command.Kind == conversation.CommandCancel {
 		service.broker.notify(stored.ID)
 		if err := service.wakeCoordinator(ctx, id); err != nil {
@@ -1469,6 +1478,7 @@ func (s *Service) commandCreateConversationPG(ctx context.Context, scope nativeS
 		return nil, err
 	}
 	if created && receipt != nil {
+		s.conversations.logReceipt(stored.ID, stored.Execution.Owner.AttemptID, *receipt)
 		s.conversations.committed(stored)
 	}
 	return json.Marshal(conversationCreatedResponse{Conversation: resource, Receipt: receipt})
