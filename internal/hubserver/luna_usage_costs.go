@@ -36,7 +36,7 @@ func readLunaCostObservations(ctx context.Context, query nativeQueryer, organiza
 				o.EstimateSource = "conversation_prices:" + strconv.FormatInt(*priceID, 10)
 			}
 		}
-		observations = append(observations, attributedCostObservation{ProjectID: project, costObservation: o})
+		observations = append(observations, attributedCostObservation{ProjectID: project, Observation: o})
 	}
 	return observations, rows.Err()
 }

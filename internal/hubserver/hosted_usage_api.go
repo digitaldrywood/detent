@@ -91,14 +91,6 @@ func (s *Service) usageReadableProjects(ctx context.Context, credential apiCrede
 	return ids, nil
 }
 
-type usageWindow struct {
-	From time.Time `json:"from"`
-	To   time.Time `json:"to"`
-	// Hourly reports the series per hour rather than per day: the client
-	// draws the 24h range from hourly buckets (contracts/usage.ts, isHourly).
-	Hourly bool `json:"-"`
-}
-
 type usageTotal struct {
 	Cost     float64 `json:"cost"`
 	Tokens   int64   `json:"tokens"`

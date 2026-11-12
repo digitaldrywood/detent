@@ -1,4 +1,4 @@
-package hubserver
+package usagecosts
 
 import (
 	"encoding/json"
@@ -8,17 +8,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPostgresMonthlyCostsTenantScope(t *testing.T) {
-	repo := projectRecordPostgres(t)
+	repo := hubtest.Repository(t)
 	objects := &memoryRunDetails{}
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		observation := costTestObservation("cpu", from, from.Add(time.Hour))
-		if err := normalizeCostObservation(&observation, from.Add(time.Hour)); err != nil {
+		if err := Normalize(&observation, from.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 		raw, err := json.Marshal(observation)
@@ -43,16 +44,16 @@ func TestPostgresMonthlyCostsTenantScope(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	d := &database{billingRepository: repo, billingAuditStore: objects}
+	d := New(Deps{Repository: repo, Details: objects})
 	for _, org := range []string{"org_first", "org_second"} {
-		report, err := d.monthlyCosts(t.Context(), org, "organization", nil, usageWindow{From: from, To: from.AddDate(0, 1, 0)}, from.Add(time.Hour))
+		report, err := d.Monthly(t.Context(), org, "organization", nil, Window{From: from, To: from.AddDate(0, 1, 0)}, from.Add(time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(report.Sources) != 1 || report.OrganizationID != org || report.Sources[0].AmountMicros == nil || *report.Sources[0].AmountMicros != 20000 {
 			t.Fatalf("report=%+v", report)
 		}
-		empty, err := d.monthlyCosts(t.Context(), org, "project", []string{"prj_other"}, usageWindow{From: from, To: from.AddDate(0, 1, 0)}, from.Add(time.Hour))
+		empty, err := d.Monthly(t.Context(), org, "project", []string{"prj_other"}, Window{From: from, To: from.AddDate(0, 1, 0)}, from.Add(time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}

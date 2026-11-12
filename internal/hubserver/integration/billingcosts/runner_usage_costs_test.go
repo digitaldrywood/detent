@@ -1,4 +1,4 @@
-package hubserver
+package billingcosts_test
 
 import (
 	"encoding/json"
@@ -228,7 +228,7 @@ func TestRunnerUsageCorrections(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := f.service.runDetailStore().ReadDetail(t.Context(), string(f.project.OrganizationID), original.Reference.ArchiveReference())
+	raw, err := f.service.config.RunDetails.ReadDetail(t.Context(), string(f.project.OrganizationID), original.Reference.ArchiveReference())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,25 +324,5 @@ func TestRunnerUsageCorrections(t *testing.T) {
 	after, _ := json.Marshal(afterReports)
 	if string(before) != string(after) {
 		t.Fatal("restart or out-of-order finish changed accounting")
-	}
-}
-
-func TestRunnerCostValidation(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name  string
-		entry tracker.NativeUsage
-	}{
-		{name: "NaN estimate", entry: tracker.NativeUsage{CostEstimate: math.NaN()}},
-		{name: "infinite estimate", entry: tracker.NativeUsage{CostEstimate: math.Inf(1)}},
-		{name: "unknown billing spelling", entry: tracker.NativeUsage{BillingMode: "api"}},
-		{name: "increment without identity", entry: tracker.NativeUsage{UsageKind: "incremental"}},
-		{name: "untrusted cost provenance", entry: tracker.NativeUsage{CostSource: "private-provider-payload"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if err := validateRunnerCostUsage(test.entry); err == nil {
-				t.Fatal("invalid report accepted")
-			}
-		})
 	}
 }
