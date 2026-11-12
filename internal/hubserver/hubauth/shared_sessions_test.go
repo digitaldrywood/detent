@@ -3,6 +3,11 @@ package hubauth_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -13,10 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-	"time"
 )
 
 func TestSharedAccessSessionReadsExistingBindingWithoutWriting(t *testing.T) {

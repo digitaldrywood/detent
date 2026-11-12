@@ -7,7 +7,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
@@ -26,7 +25,7 @@ func (s *Service) Accept(ctx context.Context, identity auth.Identity, token stri
 		invitation, err = s.deps.Provider.Invitation(ctx, token)
 	}
 	if err != nil {
-		return hubauth.Classify(err)
+		return s.deps.Classify(err)
 	}
 	var stored accessstore.Invitation
 	err = s.read(ctx, s.deps.Organization, func(r tenantstore.Reader) error {
@@ -65,7 +64,7 @@ func (s *Service) Accept(ctx context.Context, identity auth.Identity, token stri
 				return errors.Join(tenantauth.ErrUnavailable, err, lookupErr)
 			}
 			if current.State == "pending" {
-				if errors.Is(hubauth.Classify(err), operatortool.ErrAccessDenied) {
+				if errors.Is(s.deps.Classify(err), operatortool.ErrAccessDenied) {
 					return err
 				}
 				return errors.Join(tenantauth.ErrUnavailable, err)

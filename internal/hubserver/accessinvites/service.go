@@ -2,6 +2,8 @@ package accessinvites
 
 import (
 	"context"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessmembers"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -9,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"time"
 )
 
 type Deps struct {
@@ -20,10 +21,16 @@ type Deps struct {
 	Auth         *hubauth.Authenticator
 	Members      *accessmembers.Service
 	StaffEmails  []string
+	Classify     func(error) error
 }
 type Service struct{ deps Deps }
 
-func New(deps Deps) *Service { return &Service{deps: deps} }
+func New(deps Deps) *Service {
+	if deps.Classify == nil {
+		deps.Classify = hubauth.Classify
+	}
+	return &Service{deps: deps}
+}
 func (s *Service) read(ctx context.Context, organization tracker.OrganizationID, read func(tenantstore.Reader) error) error {
 	if s.deps.Repository == nil {
 		return hubapi.WorkItemStorageUnavailable()

@@ -4,13 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 func (s *Service) RecoverPending(ctx context.Context, session auth.Session) (bool, error) {
@@ -44,21 +44,21 @@ func (s *Service) RecoverPending(ctx context.Context, session auth.Session) (boo
 	}
 	cancel()
 	if err != nil {
-		if !errors.Is(hubauth.Classify(err), operatortool.ErrAccessDenied) {
-			return false, hubauth.Classify(err)
+		if !errors.Is(s.deps.Classify(err), operatortool.ErrAccessDenied) {
+			return false, s.deps.Classify(err)
 		}
 		return false, nil
 	}
 	invitation, err := auth.LookupInvitationID(ctx, s.deps.Provider, id)
-	if err != nil && !errors.Is(hubauth.Classify(err), operatortool.ErrAccessDenied) {
-		return false, hubauth.Classify(err)
+	if err != nil && !errors.Is(s.deps.Classify(err), operatortool.ErrAccessDenied) {
+		return false, s.deps.Classify(err)
 	}
 	if err != nil || invitation.State != "accepted" || invitation.AcceptedUserID != session.Identity.Subject {
 		return false, nil
 	}
 	if err := s.Accept(ctx, auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, id, true); err != nil {
-		if !errors.Is(hubauth.Classify(err), operatortool.ErrAccessDenied) {
-			return false, hubauth.Classify(err)
+		if !errors.Is(s.deps.Classify(err), operatortool.ErrAccessDenied) {
+			return false, s.deps.Classify(err)
 		}
 	}
 	return true, nil

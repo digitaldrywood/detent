@@ -3,13 +3,14 @@ package hubauth_test
 import (
 	"context"
 	"errors"
+	"reflect"
+	"testing"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"reflect"
-	"testing"
-	"time"
 )
 
 type featureScopeReader struct {

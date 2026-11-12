@@ -5,10 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/labstack/echo/v4"
 )
 
 func TestRunnerOperationAllowed(t *testing.T) {

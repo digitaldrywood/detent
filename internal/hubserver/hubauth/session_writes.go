@@ -3,6 +3,7 @@ package hubauth
 import (
 	"context"
 	"errors"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"

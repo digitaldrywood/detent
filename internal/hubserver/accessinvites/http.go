@@ -2,13 +2,14 @@ package accessinvites
 
 import (
 	"errors"
+	"net/http"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/labstack/echo/v4"
-	"net/http"
 )
 
 type HTTPOptions struct {
@@ -38,8 +39,8 @@ func (s *Service) AcceptHTTP(c echo.Context, claims cloudassert.Claims, ok bool,
 	} else {
 		err = auth.ErrHostedIdentity
 	}
-	if err != nil && !errors.Is(hubauth.Classify(err), operatortool.ErrAccessDenied) {
-		return options.Error(c, hubauth.Classify(err))
+	if err != nil && !errors.Is(s.deps.Classify(err), operatortool.ErrAccessDenied) {
+		return options.Error(c, s.deps.Classify(err))
 	}
 	if err != nil {
 		return options.Refuse(c, http.StatusForbidden, "invitation_unavailable", "This invitation is expired, already used, or intended for another account or organization", hubauth.Response{Code: "invitation_unavailable", Message: "This invitation is expired, already used, or intended for another account or organization"})
