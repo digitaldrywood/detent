@@ -251,7 +251,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 		}
 		return nil
 	})
-	heartbeat := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", worker, map[string]any{"capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation})
+	heartbeat := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", worker, map[string]any{"display_name": runner.redemption.DisplayName, "capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation})
 	requireNativeStatus(t, heartbeat, http.StatusOK)
 	event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome, event.Data.Handoff = "run.finished", "finish", 7, "succeeded", nil
 	event.Data.CompletionBody = strings.Repeat("completion response\n", 2000)
