@@ -34,8 +34,8 @@ func readIssueBrowserPath(ctx context.Context, query nativeQueryer, id string) (
 	return issueBrowserPath(organization, project, number), nil
 }
 
-func (s *Service) issueBrowserURL(ctx context.Context, id string) (string, error) {
-	path, err := s.readIssueBrowserPath(ctx, id)
+func (s *Service) issueBrowserURL(ctx context.Context, organization tracker.OrganizationID, id string) (string, error) {
+	path, err := s.readIssueBrowserPath(ctx, organization, id)
 	if err != nil {
 		return "", err
 	}
@@ -178,7 +178,7 @@ func (s *Service) canonicalBrowserLink(ctx context.Context, link string) (string
 	path := ""
 	for i, part := range parts {
 		if strings.HasPrefix(part, "wi_") && i > 0 && (parts[i-1] == "i" || parts[i-1] == "issues" || parts[i-1] == "work-items") {
-			path, err = s.readIssueBrowserPath(ctx, part)
+			path, err = s.readIssueBrowserPath(ctx, tracker.OrganizationID(s.appOrganizationID()), part)
 			if err != nil {
 				return "", err
 			}
@@ -194,7 +194,7 @@ func (s *Service) canonicalBrowserLink(ctx context.Context, link string) (string
 		}
 		id, err := s.readableRecordReference(ctx, nativeScope{organization: tracker.OrganizationID(s.appOrganizationID())}, parts, false)
 		if err == nil {
-			path, err = s.readIssueBrowserPath(ctx, id)
+			path, err = s.readIssueBrowserPath(ctx, tracker.OrganizationID(s.appOrganizationID()), id)
 			if err != nil {
 				return "", err
 			}

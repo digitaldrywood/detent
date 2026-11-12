@@ -109,7 +109,7 @@ func (s *Service) readWorkItem(ctx context.Context, scope nativeScope, id string
 	}
 	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
 	if err == nil {
-		issue.WebURL, err = s.issueBrowserURL(ctx, string(row.NativeID))
+		issue.WebURL, err = s.issueBrowserURL(ctx, row.OrganizationID, string(row.NativeID))
 	}
 	if err == nil {
 		err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue)

@@ -265,12 +265,11 @@ func (s *Service) readablePageRecord(ctx context.Context, credential apiCredenti
 	return string(scope.project), item, canonical, nil
 }
 
-func (s *Service) readIssueBrowserPath(ctx context.Context, id string) (string, error) {
+func (s *Service) readIssueBrowserPath(ctx context.Context, organization tracker.OrganizationID, id string) (string, error) {
 	if s.config.TenantRepository == nil {
 		return "", workItemStorageUnavailable()
 	}
-	organization := tracker.OrganizationID(s.appOrganizationID())
-	var projectSlug string
+	var organizationSlug, projectSlug string
 	var number int64
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		row, err := r.WorkItemByNativeID(ctx, tracker.NativeWorkItemID(id))
@@ -284,17 +283,18 @@ func (s *Service) readIssueBrowserPath(ctx context.Context, id string) (string, 
 		if project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
+		tenant, err := r.AccessOrganization(ctx)
+		if err != nil {
+			return err
+		}
+		organizationSlug = tenant.Slug
 		projectSlug, number = project.Slug, row.Number
 		return nil
 	})
 	if err != nil {
 		return "", projectRecordError(err)
 	}
-	slug, err := s.readableOrganizationSlug(ctx)
-	if err != nil {
-		return "", err
-	}
-	return "/" + slug + "/" + projectSlug + "/issues/" + strconv.FormatInt(number, 10), nil
+	return "/" + organizationSlug + "/" + projectSlug + "/issues/" + strconv.FormatInt(number, 10), nil
 }
 
 func (s *Service) projectBrowserPath(ctx context.Context, id tracker.ProjectID) (string, error) {

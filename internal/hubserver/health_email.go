@@ -60,7 +60,7 @@ func (s *Service) renderHealthEmail(ctx context.Context, f healthFinding) (auth.
 	link := s.config.Hosted.PublicURL + s.hostedPath("/fleet")
 	if f.Subject.Kind == "work_item" {
 		var err error
-		link, err = s.issueBrowserURL(ctx, f.Subject.ID)
+		link, err = s.issueBrowserURL(ctx, s.accessOrganization(), f.Subject.ID)
 		if errors.Is(err, sql.ErrNoRows) {
 			link = s.config.Hosted.PublicURL + s.hostedPath("/diagnostics")
 		} else if err != nil {
