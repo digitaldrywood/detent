@@ -132,6 +132,11 @@ func registrationCatalogGolden(t *testing.T, name string, lines []string) {
 	slices.Sort(lines)
 	actual := strings.Join(lines, "\n") + "\n"
 	path := filepath.Join("testdata", "registration_catalog", name+".golden")
+	if os.Getenv("UPDATE_ROUTE_GOLDENS") == "1" && strings.HasSuffix(name, "_routes") {
+		if err := os.WriteFile(path, []byte(actual), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	expected, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

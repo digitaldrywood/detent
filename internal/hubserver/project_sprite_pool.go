@@ -835,6 +835,9 @@ func (s *Service) readSpritePoolSnapshot(ctx context.Context, scope nativeScope,
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, corestore.ErrNotFound) {
+			return view, row, errors.Join(projectRecordError(err), err)
+		}
 		return view, row, projectRecordError(err)
 	}
 	placement := policy.Placement{Mode: row.PlacementMode, TodoThreshold: int(row.TodoThreshold), OverflowSlots: int(row.OverflowSlots), MaxSpriteSlots: int(row.MaxSpriteSlots)}.Resolved()

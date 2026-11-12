@@ -27,71 +27,10 @@ import (
 
 func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 	if s.config.Hosted != nil {
-		s.registerReadableRoutes(e)
-		e.GET("/", s.hostedLanding)
-		e.GET("/organization", s.hostedHome)
-		e.POST("/projects", s.createHostedProject)
-		e.POST("/organization/invite", s.inviteHostedMember)
-		e.POST("/organization/members/:member/revoke", s.revokeHostedMember)
-		e.POST("/organization/members/:member/role", s.changeHostedRole)
-		e.POST("/organization/grants", s.changeHostedGrant)
-		e.POST("/organization/billing/checkout", s.hostedBillingCheckout)
-		e.POST("/organization/billing/portal", s.hostedBillingPortal)
-		e.GET(hostedOrganizationBase+"/api-keys", s.hostedAPIKeys)
-		e.POST(hostedOrganizationBase+"/api-keys", s.createHostedAPIKey)
-		e.DELETE(hostedOrganizationBase+"/api-keys/:key", s.revokeHostedAPIKey)
-		e.GET(hostedOrganizationBase+"/plan", s.hostedPlanJSON, s.hostedSessionOnly)
-		e.POST(hostedOrganizationBase+"/switch", s.switchHostedOrganizationJSON, s.hostedSessionOnly)
-		e.GET(hostedOrganizationBase+"/billing", s.hostedBillingJSON)
-		e.POST(hostedOrganizationBase+"/billing/checkout", s.hostedBillingCheckout)
-		e.POST(hostedOrganizationBase+"/billing/portal", s.hostedBillingPortal)
-		s.registerWorkViewRoutes(e)
-		e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, s.hostedSessionOnly)
-		s.registerOrganizationSettingsRecordRoutes(e)
-		e.GET(hostedOrganizationBase+"/logo", s.getOrganizationLogo, s.hostedSessionOnly)
-		e.PUT(hostedOrganizationBase+"/logo", s.setOrganizationLogo, s.hostedAdministrationSession)
-		e.GET(hostedOrganizationBase+"/attachment-metadata/:attachment", s.getOrganizationLogoAttachment, s.hostedSessionOnly)
-		e.GET(hostedOrganizationBase+"/logo-metadata", s.getCurrentOrganizationLogoAttachment, s.hostedSessionOnly)
-		e.GET(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.getSpritePool), s.hostedSessionOnly)
-		e.PUT(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.setSpritePool), s.hostedAdministrationSession)
-		e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, s.hostedSessionOnly)
-		e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, s.hostedAdministrationSession)
-		e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, s.hostedAdministrationSession)
-		s.registerOrganizationVisibleRoutes(e)
-		s.registerHostedAccountPreferenceRoutes(e)
-		s.registerHostedMemberAndSecretRoutes(e)
-		s.registerOrganizationBudgetReadRoutes(e)
-		s.registerMonthlyBudgetWriteRoutes(e)
-		s.registerHostedCreditReadRoutes(e)
-		s.registerHostedCreditWriteRoutes(e)
-		e.GET("/daily-summary/unsubscribe", s.unsubscribeDailySummary)
-		if s.config.Hosted.SharedEntry != nil {
-			e.POST("/internal/v1/daily-summary/unsubscribe", s.unsubscribeDailySummary)
-		}
-		e.GET("/projects/:project/events", s.hostedEvents)
-		e.GET(hostedOrganizationBase+"/activity", s.hostedActivity, s.operatorAuthority)
-		e.GET(hostedOrganizationBase+"/fleet", s.hostedFleet, s.hostedSessionOnly)
-		e.GET(hostedOrganizationBase+"/usage", s.hostedUsageReport, s.usageSessionOnly)
-		e.GET(hostedOrganizationBase+"/diagnostics", s.hostedDiagnostics, s.usageSessionOnly, s.operatorAuthority)
-		e.GET(hostedOrganizationBase+"/diagnostics/requests", s.hostedRequestMetrics, s.operatorAuthority)
-		e.GET(hostedOrganizationBase+"/reports", s.hostedReports, s.usageSessionOnly, s.operatorAuthority)
-		e.GET(hostedOrganizationBase+"/reports/options", s.hostedReportOptions, s.usageSessionOnly, s.operatorAuthority)
-		e.GET("/app/bootstrap", s.postgresAppBootstrapPayload)
-		e.GET("/chat/bootstrap", s.postgresAppBootstrapPayload)
-		e.GET("/app/updates", s.appUpdates)
+		s.registerHostedRoutes(e)
+	} else {
+		s.registerLocalAppRoutes(e)
 	}
-	e.Any("/*", s.postgresAppFallback)
-}
-
-func (s *Service) postgresAppFallback(c echo.Context) error {
-	path := c.Request().URL.Path
-	if appReserved(path) || path == "/internal" || strings.HasPrefix(path, "/internal/") {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if s.config.Hosted == nil || s.config.TenantRepository == nil || s.config.AccessRepository == nil {
-		return s.postgresFeatureUnavailable(c)
-	}
-	return s.postgresAppShell(c)
 }
 
 func (s *Service) postgresAppBootstrapPayload(c echo.Context) error {
@@ -304,8 +243,14 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential apiCredent
 
 func (s *Service) postgresAppShell(c echo.Context) error {
 	path := c.Request().URL.Path
-	if !hostedReadRequest(c) || s.config.Hosted == nil || s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+	if !hostedReadRequest(c) || appReserved(path) || path == "/internal" || strings.HasPrefix(path, "/internal/") || s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return s.nativeAPIError(c, nativeNotFound())
+	}
+	if s.config.Hosted == nil {
+		if _, status, err := s.localAppCredential(c); err != nil {
+			return s.localAppUnauthorized(c, status)
+		}
+		return s.servePostgresAppShell(c, path)
 	}
 	if path == "/login" {
 		return s.servePostgresAppShell(c, path)
@@ -390,7 +335,7 @@ func (s *Service) servePostgresAppShell(c echo.Context, path string) error {
 	shell := conversationClientShellFor(content, s.hostedBase(), s.hostedSignInPath())
 	firstSegment := strings.Split(strings.Trim(path, "/"), "/")[0]
 	_, readableShared := c.Get("readable_organization_slug").(string)
-	if path != "/login" && (readableShared || readableurl.Validate(firstSegment) == nil) {
+	if s.config.Hosted != nil && path != "/login" && (readableShared || readableurl.Validate(firstSegment) == nil) {
 		organization, err := s.readPostgresAccessOrganization(c.Request().Context())
 		if err != nil {
 			return s.nativeAPIError(c, err)

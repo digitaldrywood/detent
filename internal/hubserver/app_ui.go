@@ -444,6 +444,9 @@ type appBootstrapRefusalDetails struct {
 }
 
 func (s *Service) appBootstrapPayload(c echo.Context) error {
+	if s.config.Hosted == nil {
+		return s.localAppBootstrap(c)
+	}
 	return s.postgresAppBootstrapPayload(c)
 }
 

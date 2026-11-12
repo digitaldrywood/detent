@@ -18,7 +18,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -57,59 +56,22 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 	e.POST("/api/v1/webhooks/github", s.githubWebhook)
 	e.GET("/api/v2/organizations/:organization/secrets/status", s.hostedSecretStatus, s.hostedSecretStatusAuthority)
 	if s.config.Hosted != nil {
-		if s.config.Hosted.SharedEntry == nil {
-			e.GET("/auth/oidc/start", s.startHostedLogin)
-			e.GET("/auth/oidc/callback", s.completeHostedLogin)
-			e.GET("/invite", s.startHostedInvitation)
-			e.POST("/logout", s.logoutHosted)
-			e.POST("/support/start", s.startHostedSupport)
-			e.GET("/support", s.hostedSupportPage)
-			e.POST("/organization/create", s.createHostedOrganization)
-			e.POST("/organization/switch", s.switchHostedOrganization)
-		}
 		if s.config.Hosted.SharedEntry != nil {
 			e.Pre(s.hostedSharedEntry)
 		}
 		e.Use(s.hostedBoundary)
-		e.GET("/api/cloud/metadata", s.hostedMetadata)
-		e.GET("/api/cloud/billing", s.hostedBilling)
-		e.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime, s.refreshHostedRuntime)
-		e.POST("/api/v2/organizations/:organization/entitlements/runtime", s.reloadHostedRuntime, s.refreshHostedRuntime)
-		e.GET("/api/v2/organizations/:organization/entitlements", s.hostedPlanReport, s.refreshHostedRuntime)
-		e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan, s.refreshHostedRuntime)
-		e.POST("/api/v2/organizations/:organization/artifact-allowances/:service", s.hostedArtifactAllowances)
 	}
 	e.GET("/health", s.health, s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
-	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(s.config.staticFiles()))))
 	s.registerNativeRoutes(e)
 	s.registerArtifactCatalogRoutes(e)
 	s.registerProjectSecretRoutes(e)
+	s.registerSpritePoolRoutes(e)
 	s.registerRunnerRoutes(e)
 	s.registerCostUsageRoutes(e)
 	s.registerConversationRoutes(e)
 	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
 		s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now))
-		e.POST("/internal/v1/keys/catalog", s.entryKeyCatalog, s.operatorAuthority)
-		e.POST("/internal/v1/keys/call", s.entryKeyCall, s.entryKeyReadAuthority)
-		e.POST("/internal/v1/keys/admin", s.entryKeyAdmin)
-		e.POST("/internal/v1/keys/context", s.entryKeyContext)
-		e.POST("/internal/v1/keys/audit", s.entryKeyAudit)
-		e.POST("/internal/v1/platform/members", s.platformTenantMembers)
-		e.POST("/internal/v1/platform/runners", s.platformTenantRunners)
-		e.POST("/internal/v1/platform/projects", s.platformTenantProjects)
-		e.POST("/internal/v1/platform/usage", s.platformTenantUsage)
-		e.POST("/internal/v1/platform/users", s.hostedPlatformUsers)
-		e.POST("/internal/v1/platform/ai-credits", s.adjustPlatformAICredits)
-		e.POST("/internal/v1/platform/ai-credits/balance", s.platformTenantAICreditBalance)
-		e.POST("/internal/v1/billing/binding", s.hostedSharedBillingBinding)
-		e.POST("/internal/v1/billing/events", s.hostedSharedBillingEvent)
-		e.POST("/internal/v1/sessions/revoke", s.revokeHostedSharedSessions)
-		e.POST("/internal/v1/invitations/accept", s.acceptHostedSharedInvitation)
-		e.POST("/internal/v1/health", s.hostedSharedHealth)
-		e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
-		e.POST("/internal/v1/github/repositories", s.hostedGitHubRepositories)
-		e.POST("/internal/v1/github/receipt", s.hostedGitHubReceipt)
-		e.POST("/internal/v1/github/webhook", s.hostedGitHubWebhook)
+		s.registerHostedSharedRoutes(e)
 	}
 	s.registerTeamThreadRoutes(e)
 	s.registerOperatorTools(e)

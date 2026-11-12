@@ -22,6 +22,7 @@ DELETE /mcp
 GET /
 GET /*
 GET /api/cloud/billing
+GET /api/cloud/billing/subscription
 GET /api/cloud/metadata
 GET /api/v2/capabilities
 GET /api/v2/github/requests
@@ -38,6 +39,7 @@ GET /api/v2/organizations/:organization/diagnostics/requests
 GET /api/v2/organizations/:organization/entitlements
 GET /api/v2/organizations/:organization/entitlements/runtime
 GET /api/v2/organizations/:organization/fleet
+GET /api/v2/organizations/:organization/integrations/slack
 GET /api/v2/organizations/:organization/issue-notification-preference
 GET /api/v2/organizations/:organization/logo
 GET /api/v2/organizations/:organization/logo-metadata
@@ -86,6 +88,8 @@ GET /api/v2/organizations/:organization/projects/:project/secrets/:kind
 GET /api/v2/organizations/:organization/projects/:project/security-audits/:session/dispositions
 GET /api/v2/organizations/:organization/projects/:project/security-audits/evidence
 GET /api/v2/organizations/:organization/projects/:project/slug
+GET /api/v2/organizations/:organization/projects/:project/sprite-pool
+GET /api/v2/organizations/:organization/projects/:project/sprite-pool/allocation
 GET /api/v2/organizations/:organization/projects/:project/usage/monthly
 GET /api/v2/organizations/:organization/projects/:project/work-items
 GET /api/v2/organizations/:organization/projects/:project/work-items/:item
@@ -133,6 +137,7 @@ GET /api/v2/organizations/:organization/runners/:runner/update/receipt
 GET /api/v2/organizations/:organization/secrets/:kind
 GET /api/v2/organizations/:organization/secrets/status
 GET /api/v2/organizations/:organization/slug
+GET /api/v2/organizations/:organization/sprite-pool
 GET /api/v2/organizations/:organization/threads
 GET /api/v2/organizations/:organization/threads/:thread
 GET /api/v2/organizations/:organization/threads/unread
@@ -151,8 +156,12 @@ GET /chat/bootstrap
 GET /daily-summary/unsubscribe
 GET /health
 GET /invite
+GET /issue-notifications/unsubscribe
+GET /login
 GET /mcp
 GET /organization
+GET /organization/billing
+GET /organization/plan
 GET /projects/:project/events
 GET /static/*
 GET /support
@@ -181,6 +190,8 @@ POST /api/v2/organizations/:organization/billing/credits/checkout
 POST /api/v2/organizations/:organization/billing/portal
 POST /api/v2/organizations/:organization/entitlements
 POST /api/v2/organizations/:organization/entitlements/runtime
+POST /api/v2/organizations/:organization/integrations/slack/test
+POST /api/v2/organizations/:organization/invitations/accept
 POST /api/v2/organizations/:organization/mcp
 POST /api/v2/organizations/:organization/members/invitations
 POST /api/v2/organizations/:organization/members/invitations/:invitation/resend
@@ -254,6 +265,7 @@ POST /api/v2/organizations/:organization/runner-enrollments/redeem
 POST /api/v2/organizations/:organization/runners/:runner/renew
 POST /api/v2/organizations/:organization/runners/:runner/rotate
 POST /api/v2/organizations/:organization/runners/:runner/update/apply
+POST /api/v2/organizations/:organization/support/start
 POST /api/v2/organizations/:organization/switch
 POST /api/v2/organizations/:organization/threads
 POST /api/v2/organizations/:organization/threads/:thread/posts
@@ -283,6 +295,7 @@ PUT /*
 PUT /api/v2/organizations/:organization/billing/credits/auto-fund
 PUT /api/v2/organizations/:organization/configuration/project-rank
 PUT /api/v2/organizations/:organization/daily-summary-preference
+PUT /api/v2/organizations/:organization/integrations/slack
 PUT /api/v2/organizations/:organization/issue-notification-preference
 PUT /api/v2/organizations/:organization/logo
 PUT /api/v2/organizations/:organization/machines/:machine/routing
@@ -310,6 +323,8 @@ PUT /api/v2/organizations/:organization/projects/:project/onboarding/policy
 PUT /api/v2/organizations/:organization/projects/:project/policy
 PUT /api/v2/organizations/:organization/projects/:project/secrets/:kind
 PUT /api/v2/organizations/:organization/projects/:project/slug
+PUT /api/v2/organizations/:organization/projects/:project/sprite-pool
+PUT /api/v2/organizations/:organization/projects/:project/sprite-pool/allocation
 PUT /api/v2/organizations/:organization/projects/:project/work-view-preference
 PUT /api/v2/organizations/:organization/release-notes/seen
 PUT /api/v2/organizations/:organization/runner-update/urgent
@@ -318,6 +333,7 @@ PUT /api/v2/organizations/:organization/runners/:runner/routing
 PUT /api/v2/organizations/:organization/runners/:runner/update/receipt
 PUT /api/v2/organizations/:organization/secrets/:kind
 PUT /api/v2/organizations/:organization/slug
+PUT /api/v2/organizations/:organization/sprite-pool
 PUT /api/v2/organizations/:organization/work-view-preference
 PUT /api/v2/organizations/:organization/work-views/:view
 PUT /api/v2/organizations/:organization/work-views/:view/favorite

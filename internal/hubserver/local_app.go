@@ -9,7 +9,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -20,7 +19,7 @@ import (
 )
 
 func (s *Service) registerLocalAppRoutes(e *echo.Echo) {
-	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(s.config.staticFiles()))))
 	s.registerAppRoutes(e)
 	e.GET(hostedOrganizationBase+"/project-rank", s.hostedProjectRank, s.localAppOnly)
 	e.PUT(hostedOrganizationBase+"/project-rank", s.updateHostedProjectRank, s.localAppOnly)

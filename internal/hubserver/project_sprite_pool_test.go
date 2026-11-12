@@ -901,7 +901,7 @@ func TestSpritePoolAccessSettings(t *testing.T) {
 		{"legacy switch approved", new("native-trusted"), true, http.StatusOK, "native-trusted"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
+			f := newNativeFixture(t, newLocalHTTPService(t), "", "Example project")
 			path := f.base + "/sprite-pool"
 			var before spritePoolView
 			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), &before)

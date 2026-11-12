@@ -9,7 +9,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -19,7 +18,7 @@ import (
 )
 
 func (s *Service) registerHostedRoutes(e *echo.Echo) {
-	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(s.config.staticFiles()))))
 	e.GET("/", s.hostedLanding)
 	e.GET("/login", s.appShell)
 	e.GET("/auth/oidc/start", s.startHostedLogin)
@@ -54,10 +53,10 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/projects/:project/events", s.hostedEvents)
 	e.GET("/api/cloud/metadata", s.hostedMetadata)
 	e.GET("/api/cloud/billing", s.hostedBilling)
-	e.GET("/api/v2/organizations/:organization/entitlements", s.hostedPlanReport)
-	e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan)
-	e.POST("/api/v2/organizations/:organization/entitlements/runtime", s.reloadHostedRuntime)
-	e.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime)
+	e.GET("/api/v2/organizations/:organization/entitlements", s.hostedPlanReport, s.refreshHostedRuntime)
+	e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan, s.refreshHostedRuntime)
+	e.POST("/api/v2/organizations/:organization/entitlements/runtime", s.reloadHostedRuntime, s.refreshHostedRuntime)
+	e.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime, s.refreshHostedRuntime)
 	e.POST("/api/v2/organizations/:organization/artifact-allowances/:service", s.hostedArtifactAllowances)
 	s.registerHostedUsageRoutes(e)
 	s.registerHostedOrganizationRoutes(e)

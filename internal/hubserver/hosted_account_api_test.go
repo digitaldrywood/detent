@@ -68,6 +68,40 @@ func TestHostedAccountAPI(t *testing.T) {
 		response := f.rawAPI(t, "owner", http.MethodGet, "/api/v2/organizations/org_other/plan", "", nil)
 		browserHostedStatus(t, response, http.StatusNotFound)
 	})
+	t.Run("support start", func(t *testing.T) {
+		for _, test := range []struct {
+			account string
+			status  int
+		}{{"", http.StatusForbidden}, {"owner", http.StatusForbidden}, {"staff", http.StatusForbidden}, {"support-staff", http.StatusOK}} {
+			t.Run(test.account, func(t *testing.T) {
+				if test.account == "" {
+					browserHostedStatus(t, f.rawAPI(t, "", http.MethodPost, browserHostedOrganizationBase+"/support/start", `{"idempotency_key":"support"}`, nil), test.status)
+					return
+				}
+				f.api(t, test.account, http.MethodPost, browserHostedOrganizationBase+"/support/start", map[string]string{"idempotency_key": "support"}, test.status)
+			})
+		}
+	})
+	t.Run("accept invitation", func(t *testing.T) {
+		var invitation hostedInvitationView
+		browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/members/invitations", map[string]string{"email": "invitee@example.test", "role": "member", "idempotency_key": "invite"}, http.StatusCreated), &invitation)
+		for _, test := range []struct {
+			account string
+			status  int
+		}{{"", http.StatusForbidden}, {"owner", http.StatusForbidden}, {"invitee", http.StatusOK}, {"invitee", http.StatusOK}} {
+			t.Run(test.account, func(t *testing.T) {
+				if test.account == "" {
+					browserHostedStatus(t, f.rawAPI(t, "", http.MethodPost, browserHostedOrganizationBase+"/invitations/accept", `{"token":"`+invitation.ID+`","idempotency_key":"accept"}`, nil), test.status)
+					return
+				}
+				f.api(t, test.account, http.MethodPost, browserHostedOrganizationBase+"/invitations/accept", map[string]string{"token": invitation.ID, "idempotency_key": "accept"}, test.status)
+			})
+		}
+		var subject string
+		if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT accepted_user_id FROM hosted_invitations WHERE organization_id=$1 AND id=$2`, f.service.accessOrganization(), invitation.ID).Scan(&subject); err != nil || subject != "user_browser_invitee" {
+			t.Fatalf("accepted subject=%q error=%v", subject, err)
+		}
+	})
 }
 
 func TestHostedSharedAccountAPI(t *testing.T) {

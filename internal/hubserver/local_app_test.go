@@ -1,11 +1,14 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -16,7 +19,7 @@ import (
 
 func TestLocalAppAuthentication(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
-	f := newNativeFixture(t, nil, "", "Example project")
+	f := newNativeFixture(t, newLocalHTTPService(t), "", "Example project")
 	second := newNativeFixture(t, f.service, f.project.OrganizationID, "Second project")
 	workerToken := tokenResponse{Token: f.worker(t, "example-worker")}
 	for _, test := range []struct {
@@ -34,6 +37,7 @@ func TestLocalAppAuthentication(t *testing.T) {
 		{name: "fleet", path: "/fleet", token: testHubAdminToken, status: 200},
 		{name: "bearer board", path: "/work", token: testHubAdminToken, bearer: true, status: 200},
 		{name: "anonymous bootstrap", path: "/app/bootstrap", status: 401},
+		{name: "anonymous chat bootstrap", path: "/chat/bootstrap", status: 401},
 		{name: "saved views", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/work-views", token: testHubAdminToken, status: 200},
 		{name: "fleet names", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/fleet?include=names", token: testHubAdminToken, status: 200},
 		{name: "fleet data", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/fleet", token: testHubAdminToken, status: 200},
@@ -53,12 +57,13 @@ func TestLocalAppAuthentication(t *testing.T) {
 		{name: "headless operator API", path: f.base, token: f.token, bearer: true, status: 200},
 		{name: "updates", path: "/app/updates", token: testHubAdminToken, status: 200},
 		{name: "bootstrap", path: "/app/bootstrap", token: testHubAdminToken, status: 200},
+		{name: "chat bootstrap", path: "/chat/bootstrap", token: testHubAdminToken, status: 200},
 		{name: "native project", path: f.base, token: testHubAdminToken, status: 200},
 		{name: "cross site read", path: f.base, token: testHubAdminToken, site: "cross-site", status: 403},
-		{name: "cross origin write", method: "POST", path: "/api/v1/tokens", token: testHubAdminToken, origin: "https://other.example", status: 403},
-		{name: "missing origin write", method: "POST", path: "/api/v1/tokens", token: testHubAdminToken, status: 403},
-		{name: "same origin write reaches handler", method: "POST", path: "/api/v1/tokens", token: testHubAdminToken, origin: "http://example.com", status: 422},
-		{name: "bearer write unchanged", method: "POST", path: "/api/v1/tokens", token: testHubAdminToken, bearer: true, status: 422},
+		{name: "cross origin write", method: "PUT", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/name", token: testHubAdminToken, origin: "https://other.example", status: 403},
+		{name: "missing origin write", method: "PUT", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/name", token: testHubAdminToken, status: 403},
+		{name: "same origin write reaches handler", method: "PUT", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/name", token: testHubAdminToken, origin: "http://example.com", status: 422},
+		{name: "bearer write unchanged", method: "PUT", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/name", token: testHubAdminToken, bearer: true, status: 422},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			method := test.method
@@ -111,14 +116,25 @@ func TestLocalAppAuthentication(t *testing.T) {
 			t.Fatal(err)
 		}
 		base := "/api/v2/organizations/" + string(f.project.OrganizationID)
-		request := func(token, method, path, body string) *httptest.ResponseRecorder {
+		checked := map[string]bool{}
+		request := func(token, method, path, body string, want ...int) *httptest.ResponseRecorder {
 			t.Helper()
+			if key := method + " " + strings.Split(path, "?")[0]; !checked[key] {
+				anonymous := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(anonymous, httptest.NewRequest(method, path, strings.NewReader(body)))
+				requireNativeStatus(t, anonymous, http.StatusUnauthorized)
+				checked[key] = true
+			}
 			req := httptest.NewRequest(method, path, strings.NewReader(body))
 			req.SetBasicAuth("operator", token)
 			req.Header.Set("Origin", "http://example.com")
 			rec := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(rec, req)
-			requireNativeStatus(t, rec, http.StatusOK)
+			status := http.StatusOK
+			if len(want) > 0 {
+				status = want[0]
+			}
+			requireNativeStatus(t, rec, status)
 			return rec
 		}
 		f.service.releaseNotes = testReleaseBuilds()
@@ -241,6 +257,83 @@ func TestLocalAppAuthentication(t *testing.T) {
 			if after != before {
 				t.Fatalf("repeated local write changed membership: before=%+v after=%+v", before, after)
 			}
+		}
+		f.service.config.SpritesHTTPClient = &http.Client{Transport: spritesTestTransport(func(*http.Request) (*http.Response, error) {
+			return spritesTestResponse(`{"sprites":[]}`, http.StatusOK), nil
+		})}
+
+		for _, test := range []struct{ method, path, body string }{
+			{http.MethodPut, base + "/name", `{"name":"Example organization","idempotency_key":"rename"}`},
+			{http.MethodGet, base + "/slug", ""},
+			{http.MethodPut, base + "/slug", `{"expected_slug":"local-organization","slug":"example-organization"}`},
+			{http.MethodGet, f.base + "/slug", ""},
+			{http.MethodPut, f.base + "/slug", `{"expected_slug":"` + f.project.Slug + `","slug":"example-project"}`},
+			{http.MethodPut, base + "/secrets/fly_sprites_token", `{"token":"example-org/org-id/token-id/EXAMPLE","idempotency_key":"secret"}`},
+			{http.MethodDelete, base + "/secrets/fly_sprites_token", ""},
+			{http.MethodPut, base + "/model-selection", `{"idempotency_key":"models","expected_revision":"0","selection":{"normal_model":"example-model"}}`},
+			{http.MethodPut, base + "/monthly-budget", `{"idempotency_key":"budget","expected_revision":"0","policy":{"mode":"drain_issue","total_micros":1000000}}`},
+			{http.MethodGet, f.base + "/work-view-preference", ""},
+			{http.MethodPut, f.base + "/work-view-preference", `{"query":"view=list"}`},
+			{http.MethodDelete, f.base + "/work-view-preference", ""},
+			{http.MethodDelete, base + "/work-view-preference", ""},
+		} {
+			t.Run(test.method+" "+test.path, func(t *testing.T) {
+				request(testHubAdminToken, test.method, test.path, test.body)
+			})
+		}
+		issue := f.create(t, "Example readable issue")
+		for _, path := range []string{base + "/readable/example-project", base + "/readable/example-project/issues/" + strconv.Itoa(issue.Number)} {
+			request(testHubAdminToken, http.MethodGet, path, "")
+		}
+
+		for _, token := range []string{testHubAdminToken, other.Token} {
+			var views savedWorkViewsPage
+			decodeHubResponse(t, request(token, http.MethodGet, base+"/work-views", ""), &views)
+			view := views.Views[0]
+			path := base + "/work-views/" + view.ID
+			body, err := json.Marshal(view)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, test := range []struct{ method, path, body string }{
+				{http.MethodGet, path, ""},
+				{http.MethodPut, path, string(body)},
+				{http.MethodPut, path + "/favorite", `{"favorite":false}`},
+			} {
+				request(token, test.method, test.path, test.body)
+			}
+			request(token, http.MethodDelete, path, "", http.StatusNoContent)
+		}
+
+	})
+	t.Run("project event stream", func(t *testing.T) {
+		path := "/projects/" + string(f.project.ID) + "/events"
+		anonymous := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, path, nil))
+		requireNativeStatus(t, anonymous, http.StatusUnauthorized)
+		ctx, cancel := context.WithCancel(t.Context())
+		request := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
+		request.SetBasicAuth("operator", testHubAdminToken)
+		input, output := io.Pipe()
+		done := make(chan struct{})
+		headers := make(chan *http.Response, 1)
+		t.Cleanup(func() {
+			cancel()
+			input.Close()
+			<-done
+		})
+		go func() {
+			defer close(done)
+			defer output.Close()
+			f.service.Handler().ServeHTTP(hostedStreamWriter{ResponseRecorder: httptest.NewRecorder(), output: output, headers: headers}, request)
+		}()
+		select {
+		case response := <-headers:
+			if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
+				t.Fatalf("stream response=%d type=%s", response.StatusCode, response.Header.Get("Content-Type"))
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
 		}
 	})
 
