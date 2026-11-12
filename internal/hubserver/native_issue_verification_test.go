@@ -448,6 +448,7 @@ func TestVerifyFixMCP(t *testing.T) {
 	first, second := done("first"), done("second")
 	list := func() []operatortool.NativeItem {
 		t.Helper()
+		drainTestNativeBoard(t, f.service)
 		result, err := call(operatortool.WorkList, map[string]any{"project_id": f.project.ID, "created_by": "me", "verification": "pending"})
 		if err != nil {
 			t.Fatal(err)
