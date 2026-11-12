@@ -1,4 +1,4 @@
-package cli
+package doctor
 
 import (
 	"context"
@@ -11,14 +11,13 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"gopkg.in/yaml.v3"
-
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"gopkg.in/yaml.v3"
 )
 
-var doctorJobLabelConditionPatterns = []*regexp.Regexp{
+var jobLabelConditionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)github\.event\.label\.name\s*==\s*'([^']*)'`),
 	regexp.MustCompile(`(?i)github\.event\.label\.name\s*==\s*"([^"]*)"`),
 	regexp.MustCompile(`(?i)'([^']*)'\s*==\s*github\.event\.label\.name`),
@@ -27,45 +26,45 @@ var doctorJobLabelConditionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)contains\(\s*github\.event\.pull_request\.labels\.\*\.name\s*,\s*"([^"]*)"\s*\)`),
 }
 
-type doctorShipSkill struct {
+type ShipSkill struct {
 	Version string
 	Path    string
 }
 
-func checkDoctorWorkflowLint(ctx context.Context, projectID string, project globalconfig.Project, cfg workflowconfig.Config, prompt string, workflowTokenThreshold int, deps doctorDeps) []doctorCheck {
-	workflowPath := doctorWorkflowLintPath(project)
-	checks := make([]doctorCheck, 0)
-	if sizeCheck, ok := checkDoctorWorkflowPromptSize(projectID, workflowPath, prompt, cfg.Agent.Skills.Path, workflowTokenThreshold); ok {
+func CheckWorkflowLint(ctx context.Context, projectID string, project globalconfig.Project, cfg workflowconfig.Config, prompt string, workflowTokenThreshold int, deps Deps) []Check {
+	workflowPath := workflowLintPath(project)
+	checks := make([]Check, 0)
+	if sizeCheck, ok := checkWorkflowPromptSize(projectID, workflowPath, prompt, cfg.Agent.Skills.Path, workflowTokenThreshold); ok {
 		checks = append(checks, sizeCheck)
 	}
 	if len(cfg.ConfiguredSubsettings("budget")) == 0 {
-		if budgetCheck, ok := checkDoctorDisabledBudgetCaps(projectID, cfg.Budget); ok {
+		if budgetCheck, ok := checkDisabledBudgetCaps(projectID, cfg.Budget); ok {
 			budgetCheck.Detail = workflowPath + " " + budgetCheck.Detail
 			budgetCheck.Hint = fmt.Sprintf("Set budget.enabled: true in %s, or remove the configured budget caps.", workflowPath)
 			checks = append(checks, budgetCheck)
 		}
 	}
-	checks = append(checks, checkDoctorInertWorkflowBlocks(projectID, workflowPath, cfg)...)
-	checks = append(checks, checkDoctorRequiredCheckTriggers(projectID, project, cfg)...)
-	checks = append(checks, checkDoctorGateCommand(ctx, projectID, workflowPath, project, cfg, deps)...)
-	checks = append(checks, checkDoctorShipSkill(projectID, workflowPath, cfg, deps)...)
+	checks = append(checks, checkInertWorkflowBlocks(projectID, workflowPath, cfg)...)
+	checks = append(checks, checkRequiredCheckTriggers(projectID, project, cfg)...)
+	checks = append(checks, checkGateCommand(ctx, projectID, workflowPath, project, cfg, deps)...)
+	checks = append(checks, checkShipSkill(projectID, workflowPath, cfg, deps)...)
 	return checks
 }
 
-type doctorRequiredCheckTrigger struct {
+type requiredCheckTrigger struct {
 	matched    bool
 	safe       bool
 	labelGated bool
 	risks      []string
 }
 
-func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Project, cfg workflowconfig.Config) []doctorCheck {
-	required := uniqueDoctorStrings(cfg.Gate.RequiredStatusChecks)
+func checkRequiredCheckTriggers(projectID string, project globalconfig.Project, cfg workflowconfig.Config) []Check {
+	required := UniqueStrings(cfg.Gate.RequiredStatusChecks)
 	ciTriggerLabel := gate.Effective(cfg.Gate).CITriggerLabel
 	if len(required) == 0 || cfg.Deliverable.Kind != workflowconfig.DeliverablePullRequest {
 		return nil
 	}
-	root, err := expandDoctorWorkspacePath(projectSourceRoot(project, cfg))
+	root, err := ExpandWorkspacePath(ProjectSourceRoot(project, cfg))
 	if err != nil {
 		return nil
 	}
@@ -74,12 +73,12 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 	if err != nil {
 		return nil
 	}
-	triggers := make(map[string]doctorRequiredCheckTrigger, len(required))
+	triggers := make(map[string]requiredCheckTrigger, len(required))
 	for _, name := range required {
-		triggers[name] = doctorRequiredCheckTrigger{}
+		triggers[name] = requiredCheckTrigger{}
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !doctorWorkflowYAMLFile(entry.Name()) {
+		if entry.IsDir() || !workflowYAMLFile(entry.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -92,21 +91,21 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 			continue
 		}
 		rootNode := document.Content[0]
-		on := doctorYAMLMapValue(rootNode, "on")
-		workflowRisks := doctorRequiredCheckTriggerRisks(on)
-		jobs := doctorYAMLMapValue(rootNode, "jobs")
+		on := YAMLMapValue(rootNode, "on")
+		workflowRisks := requiredCheckTriggerRisks(on)
+		jobs := YAMLMapValue(rootNode, "jobs")
 		if jobs == nil || jobs.Kind != yaml.MappingNode {
 			continue
 		}
 		for index := 0; index+1 < len(jobs.Content); index += 2 {
 			jobID := strings.TrimSpace(jobs.Content[index].Value)
 			jobNode := jobs.Content[index+1]
-			jobName := doctorYAMLScalarValue(doctorYAMLMapValue(jobNode, "name"))
-			labelGated := doctorRequiredCheckLabelGated(on, jobNode)
+			jobName := YAMLScalarValue(YAMLMapValue(jobNode, "name"))
+			labelGated := requiredCheckLabelGated(on, jobNode)
 			risks := append([]string(nil), workflowRisks...)
-			jobRequiresLabelEvent := doctorJobRequiresLabelEvent(jobNode)
-			jobUsesTriggerLabel := doctorJobUsesTriggerLabel(jobNode)
-			jobMatchesTriggerLabel := !jobUsesTriggerLabel || ciTriggerLabel == "" || doctorJobConditionMatchesLabel(jobNode, ciTriggerLabel)
+			jobRequiresLabelEvent := jobRequiresLabelEvent(jobNode)
+			jobUsesTriggerLabel := jobUsesTriggerLabel(jobNode)
+			jobMatchesTriggerLabel := !jobUsesTriggerLabel || ciTriggerLabel == "" || jobConditionMatchesLabel(jobNode, ciTriggerLabel)
 			if jobUsesTriggerLabel {
 				if jobRequiresLabelEvent {
 					risks = append(risks, "job condition requires labeled event")
@@ -118,7 +117,7 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 				}
 			}
 			for _, requiredName := range required {
-				if !doctorRequiredCheckMatchesJob(requiredName, jobID, jobName) {
+				if !RequiredCheckMatchesJob(requiredName, jobID, jobName) {
 					continue
 				}
 				trigger := triggers[requiredName]
@@ -126,7 +125,7 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 				trigger.labelGated = trigger.labelGated || labelGated
 				if len(risks) == 0 {
 					trigger.safe = true
-				} else if labelGated && ciTriggerLabel != "" && jobMatchesTriggerLabel && doctorOnlyLabelGateRisk(risks) {
+				} else if labelGated && ciTriggerLabel != "" && jobMatchesTriggerLabel && onlyLabelGateRisk(risks) {
 					trigger.safe = true
 				} else {
 					relativePath, pathErr := filepath.Rel(root, path)
@@ -148,10 +147,10 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 			continue
 		}
 		if trigger.labelGated && ciTriggerLabel == "" {
-			warnings = append(warnings, name+" (label-gated: "+strings.Join(uniqueDoctorStrings(trigger.risks), "; ")+")")
+			warnings = append(warnings, name+" (label-gated: "+strings.Join(UniqueStrings(trigger.risks), "; ")+")")
 			continue
 		}
-		warnings = append(warnings, name+" ("+strings.Join(uniqueDoctorStrings(trigger.risks), "; ")+")")
+		warnings = append(warnings, name+" ("+strings.Join(UniqueStrings(trigger.risks), "; ")+")")
 	}
 	if len(warnings) == 0 {
 		return nil
@@ -163,30 +162,30 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 	} else if ciTriggerLabel == "" && strings.Contains(detail, "label-gated:") {
 		hint = "Configure gate.ci_trigger_label with the workflow's label so Detent re-applies it after every PR-head push, or include the synchronize activity in the required-check workflow."
 	}
-	return []doctorCheck{{
+	return []Check{{
 		Name:   "Project " + projectID + " workflow lint required check triggers",
-		Status: doctorWarn,
+		Status: Warn,
 		Detail: detail,
 		Hint:   hint,
 	}}
 }
 
-func doctorRequiredCheckLabelGated(on *yaml.Node, job *yaml.Node) bool {
+func requiredCheckLabelGated(on *yaml.Node, job *yaml.Node) bool {
 	if on == nil || on.Kind != yaml.MappingNode {
 		return false
 	}
-	pullRequest := doctorYAMLMapValue(on, "pull_request")
+	pullRequest := YAMLMapValue(on, "pull_request")
 	if pullRequest == nil || pullRequest.Kind != yaml.MappingNode {
 		return false
 	}
-	types := doctorYAMLMapValue(pullRequest, "types")
-	if !doctorYAMLContainsScalar(types, "labeled") {
+	types := YAMLMapValue(pullRequest, "types")
+	if !yAMLContainsScalar(types, "labeled") {
 		return false
 	}
-	return !doctorYAMLContainsScalar(types, "synchronize") || doctorJobUsesTriggerLabel(job)
+	return !yAMLContainsScalar(types, "synchronize") || jobUsesTriggerLabel(job)
 }
 
-func doctorOnlyLabelGateRisk(risks []string) bool {
+func onlyLabelGateRisk(risks []string) bool {
 	if len(risks) == 0 {
 		return false
 	}
@@ -200,25 +199,25 @@ func doctorOnlyLabelGateRisk(risks []string) bool {
 	return true
 }
 
-func doctorJobRequiresLabelEvent(job *yaml.Node) bool {
-	condition := strings.ToLower(doctorYAMLScalarValue(doctorYAMLMapValue(job, "if")))
+func jobRequiresLabelEvent(job *yaml.Node) bool {
+	condition := strings.ToLower(YAMLScalarValue(YAMLMapValue(job, "if")))
 	return strings.Contains(condition, "github.event.label") ||
 		strings.Contains(condition, "github.event.action") && strings.Contains(condition, "labeled")
 }
 
-func doctorJobUsesTriggerLabel(job *yaml.Node) bool {
-	condition := strings.ToLower(doctorYAMLScalarValue(doctorYAMLMapValue(job, "if")))
-	return doctorJobRequiresLabelEvent(job) || strings.Contains(condition, "github.event.pull_request.labels")
+func jobUsesTriggerLabel(job *yaml.Node) bool {
+	condition := strings.ToLower(YAMLScalarValue(YAMLMapValue(job, "if")))
+	return jobRequiresLabelEvent(job) || strings.Contains(condition, "github.event.pull_request.labels")
 }
 
-func doctorJobConditionMatchesLabel(job *yaml.Node, label string) bool {
-	condition := doctorYAMLScalarValue(doctorYAMLMapValue(job, "if"))
+func jobConditionMatchesLabel(job *yaml.Node, label string) bool {
+	condition := YAMLScalarValue(YAMLMapValue(job, "if"))
 	lowerCondition := strings.ToLower(condition)
 	if !strings.Contains(lowerCondition, "github.event.label") && !strings.Contains(lowerCondition, "github.event.pull_request.labels") {
 		return true
 	}
 	label = strings.TrimSpace(label)
-	for _, pattern := range doctorJobLabelConditionPatterns {
+	for _, pattern := range jobLabelConditionPatterns {
 		for _, match := range pattern.FindAllStringSubmatch(condition, -1) {
 			if len(match) > 1 && strings.EqualFold(strings.TrimSpace(match[1]), label) {
 				return true
@@ -228,7 +227,7 @@ func doctorJobConditionMatchesLabel(job *yaml.Node, label string) bool {
 	return false
 }
 
-func doctorWorkflowYAMLFile(name string) bool {
+func workflowYAMLFile(name string) bool {
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".yml", ".yaml":
 		return true
@@ -237,7 +236,7 @@ func doctorWorkflowYAMLFile(name string) bool {
 	}
 }
 
-func doctorRequiredCheckMatchesJob(required string, jobID string, jobName string) bool {
+func RequiredCheckMatchesJob(required string, jobID string, jobName string) bool {
 	required = strings.TrimSpace(required)
 	if index := strings.LastIndex(required, " / "); index >= 0 {
 		required = strings.TrimSpace(required[index+3:])
@@ -245,36 +244,36 @@ func doctorRequiredCheckMatchesJob(required string, jobID string, jobName string
 	return strings.EqualFold(required, strings.TrimSpace(jobID)) || strings.EqualFold(required, strings.TrimSpace(jobName))
 }
 
-func doctorRequiredCheckTriggerRisks(on *yaml.Node) []string {
+func requiredCheckTriggerRisks(on *yaml.Node) []string {
 	if on == nil {
 		return []string{"no pull_request or push trigger"}
 	}
 	switch on.Kind {
 	case yaml.ScalarNode:
-		if doctorRequiredCheckHeadEvent(on.Value) {
+		if requiredCheckHeadEvent(on.Value) {
 			return nil
 		}
 		return []string{"no pull_request or push trigger"}
 	case yaml.SequenceNode:
 		for _, event := range on.Content {
-			if doctorRequiredCheckHeadEvent(event.Value) {
+			if requiredCheckHeadEvent(event.Value) {
 				return nil
 			}
 		}
 		return []string{"no pull_request or push trigger"}
 	case yaml.MappingNode:
 		risks := make([]string, 0, 4)
-		pullRequest := doctorYAMLMapValue(on, "pull_request")
+		pullRequest := YAMLMapValue(on, "pull_request")
 		if pullRequest != nil {
-			pullRequestRisks := doctorPullRequestEventRisks(pullRequest)
+			pullRequestRisks := pullRequestEventRisks(pullRequest)
 			if len(pullRequestRisks) == 0 {
 				return nil
 			}
 			risks = append(risks, pullRequestRisks...)
 		}
-		push := doctorYAMLMapValue(on, "push")
+		push := YAMLMapValue(on, "push")
 		if push != nil {
-			pushRisks := doctorPushEventRisks(push)
+			pushRisks := pushEventRisks(push)
 			if len(pushRisks) == 0 {
 				return nil
 			}
@@ -289,40 +288,40 @@ func doctorRequiredCheckTriggerRisks(on *yaml.Node) []string {
 	}
 }
 
-func doctorRequiredCheckHeadEvent(event string) bool {
+func requiredCheckHeadEvent(event string) bool {
 	event = strings.ToLower(strings.TrimSpace(event))
 	return event == "pull_request" || event == "push"
 }
 
-func doctorPullRequestEventRisks(event *yaml.Node) []string {
+func pullRequestEventRisks(event *yaml.Node) []string {
 	if event.Kind != yaml.MappingNode {
 		return nil
 	}
 	risks := make([]string, 0, 2)
-	if doctorYAMLMapValue(event, "paths") != nil || doctorYAMLMapValue(event, "paths-ignore") != nil {
+	if YAMLMapValue(event, "paths") != nil || YAMLMapValue(event, "paths-ignore") != nil {
 		risks = append(risks, "pull_request paths filter")
 	}
-	if types := doctorYAMLMapValue(event, "types"); types != nil && !doctorYAMLContainsScalar(types, "synchronize") {
+	if types := YAMLMapValue(event, "types"); types != nil && !yAMLContainsScalar(types, "synchronize") {
 		risks = append(risks, "pull_request types exclude synchronize")
 	}
 	return risks
 }
 
-func doctorPushEventRisks(event *yaml.Node) []string {
+func pushEventRisks(event *yaml.Node) []string {
 	if event.Kind != yaml.MappingNode {
 		return nil
 	}
 	risks := make([]string, 0, 2)
-	if doctorYAMLMapValue(event, "paths") != nil || doctorYAMLMapValue(event, "paths-ignore") != nil {
+	if YAMLMapValue(event, "paths") != nil || YAMLMapValue(event, "paths-ignore") != nil {
 		risks = append(risks, "push paths filter")
 	}
-	if doctorYAMLMapValue(event, "branches") != nil || doctorYAMLMapValue(event, "branches-ignore") != nil {
+	if YAMLMapValue(event, "branches") != nil || YAMLMapValue(event, "branches-ignore") != nil {
 		risks = append(risks, "push branch filter")
 	}
 	return risks
 }
 
-func doctorYAMLMapValue(node *yaml.Node, key string) *yaml.Node {
+func YAMLMapValue(node *yaml.Node, key string) *yaml.Node {
 	if node == nil || node.Kind != yaml.MappingNode {
 		return nil
 	}
@@ -334,14 +333,14 @@ func doctorYAMLMapValue(node *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-func doctorYAMLScalarValue(node *yaml.Node) string {
+func YAMLScalarValue(node *yaml.Node) string {
 	if node == nil || node.Kind != yaml.ScalarNode {
 		return ""
 	}
 	return strings.TrimSpace(node.Value)
 }
 
-func doctorYAMLContainsScalar(node *yaml.Node, value string) bool {
+func yAMLContainsScalar(node *yaml.Node, value string) bool {
 	if node == nil {
 		return false
 	}
@@ -349,24 +348,24 @@ func doctorYAMLContainsScalar(node *yaml.Node, value string) bool {
 		return strings.EqualFold(strings.TrimSpace(node.Value), value)
 	}
 	for _, child := range node.Content {
-		if doctorYAMLContainsScalar(child, value) {
+		if yAMLContainsScalar(child, value) {
 			return true
 		}
 	}
 	return false
 }
 
-func doctorWorkflowLintPath(project globalconfig.Project) string {
+func workflowLintPath(project globalconfig.Project) string {
 	if ref := strings.TrimSpace(project.WorkflowRef); ref != "" {
 		return ref + ":" + strings.TrimSpace(project.Workflow)
 	}
-	if path, err := resolveDoctorProjectPath(project, project.Workflow); err == nil {
+	if path, err := ResolveProjectPath(project, project.Workflow); err == nil {
 		return path
 	}
 	return strings.TrimSpace(project.Workflow)
 }
 
-func checkDoctorInertWorkflowBlocks(projectID string, workflowPath string, cfg workflowconfig.Config) []doctorCheck {
+func checkInertWorkflowBlocks(projectID string, workflowPath string, cfg workflowconfig.Config) []Check {
 	blocks := []struct {
 		path    string
 		enabled bool
@@ -378,15 +377,15 @@ func checkDoctorInertWorkflowBlocks(projectID string, workflowPath string, cfg w
 		{path: "agent.skills", enabled: cfg.Agent.Skills.Enabled},
 		{path: "agent.knowledge", enabled: cfg.Agent.Knowledge.Enabled},
 	}
-	checks := make([]doctorCheck, 0)
+	checks := make([]Check, 0)
 	for _, block := range blocks {
 		fields := cfg.ConfiguredSubsettings(block.path)
 		if block.enabled || len(fields) == 0 {
 			continue
 		}
-		checks = append(checks, doctorCheck{
+		checks = append(checks, Check{
 			Name:   "Project " + projectID + " workflow lint inert " + block.path,
-			Status: doctorWarn,
+			Status: Warn,
 			Detail: fmt.Sprintf("%s configures %s while %s.enabled=false, so the block is inert", workflowPath, strings.Join(fields, ", "), block.path),
 			Hint:   fmt.Sprintf("Set %s.enabled: true in %s, or remove the configured %s sub-settings.", block.path, workflowPath, block.path),
 		})
@@ -394,52 +393,52 @@ func checkDoctorInertWorkflowBlocks(projectID string, workflowPath string, cfg w
 	return checks
 }
 
-func checkDoctorGateCommand(ctx context.Context, projectID string, workflowPath string, project globalconfig.Project, cfg workflowconfig.Config, deps doctorDeps) []doctorCheck {
+func checkGateCommand(ctx context.Context, projectID string, workflowPath string, project globalconfig.Project, cfg workflowconfig.Config, deps Deps) []Check {
 	if gate.NormalizeKind(cfg.Gate.Kind) != gate.KindCommand {
 		return nil
 	}
 	command := strings.TrimSpace(cfg.Gate.Run)
 	if (command == "true" || command == ":") && cfg.Gate.RequiredStatusChecks == nil {
-		return []doctorCheck{doctorWorkflowGateWarning(projectID, workflowPath, command, "the local command is a no-op but aggregate CI is still required; a head with no CI producer cannot advance", "Configure CI, or explicitly set gate.required_status_checks: [] to use only native branch requirements.")}
+		return []Check{workflowGateWarning(projectID, workflowPath, command, "the local command is a no-op but aggregate CI is still required; a head with no CI producer cannot advance", "Configure CI, or explicitly set gate.required_status_checks: [] to use only native branch requirements.")}
 	}
-	if deps.resolveCommandInDir == nil {
+	if deps.ResolveCommandInDir == nil {
 		return nil
 	}
-	fields := doctorWorkflowCommandFields(doctorWorkflowCommandPrefix(command))
+	fields := WorkflowCommandFields(workflowCommandPrefix(command))
 	if len(fields) == 0 {
-		return []doctorCheck{doctorWorkflowGateWarning(projectID, workflowPath, command, "no executable was found", "Set gate.run to a command available on PATH.")}
+		return []Check{workflowGateWarning(projectID, workflowPath, command, "no executable was found", "Set gate.run to a command available on PATH.")}
 	}
-	executableIndex := doctorWorkflowExecutableIndex(fields)
+	executableIndex := workflowExecutableIndex(fields)
 	if executableIndex < 0 || executableIndex >= len(fields) {
-		return []doctorCheck{doctorWorkflowGateWarning(projectID, workflowPath, command, "no executable was found", "Set gate.run to a command available on PATH.")}
+		return []Check{workflowGateWarning(projectID, workflowPath, command, "no executable was found", "Set gate.run to a command available on PATH.")}
 	}
 	executable := fields[executableIndex]
 	environment := append([]string(nil), fields[:executableIndex]...)
-	workdir := projectSourceRoot(project, cfg)
-	expandedWorkdir, err := expandDoctorWorkspacePath(workdir)
+	workdir := ProjectSourceRoot(project, cfg)
+	expandedWorkdir, err := ExpandWorkspacePath(workdir)
 	if err != nil {
-		return []doctorCheck{doctorWorkflowGateWarning(projectID, workflowPath, command, fmt.Sprintf("project workdir %q cannot be resolved: %v", workdir, err), "Set workspace.source_root or the project workdir to the repository containing the gate target.")}
+		return []Check{workflowGateWarning(projectID, workflowPath, command, fmt.Sprintf("project workdir %q cannot be resolved: %v", workdir, err), "Set workspace.source_root or the project workdir to the repository containing the gate target.")}
 	}
-	resolved, err := deps.resolveCommandInDir(ctx, expandedWorkdir, environment, executable)
+	resolved, err := deps.ResolveCommandInDir(ctx, expandedWorkdir, environment, executable)
 	if err != nil {
-		return []doctorCheck{doctorWorkflowGateWarning(projectID, workflowPath, command, fmt.Sprintf("command -v %q failed in %s: %v", executable, expandedWorkdir, err), "Install the executable, fix its project-relative path, or replace gate.run with an available command.")}
+		return []Check{workflowGateWarning(projectID, workflowPath, command, fmt.Sprintf("command -v %q failed in %s: %v", executable, expandedWorkdir, err), "Install the executable, fix its project-relative path, or replace gate.run with an available command.")}
 	}
-	if !doctorMakeExecutable(executable) || deps.runCommandInDir == nil {
+	if !makeExecutable(executable) || deps.RunCommandInDir == nil {
 		return nil
 	}
 	commandArgs := []string{}
 	if executableIndex+1 < len(fields) {
 		commandArgs = fields[executableIndex+1:]
 	}
-	args := doctorMakeDryRunArgs(commandArgs)
-	if err := deps.runCommandInDir(ctx, expandedWorkdir, environment, resolved, args...); err != nil {
+	args := makeDryRunArgs(commandArgs)
+	if err := deps.RunCommandInDir(ctx, expandedWorkdir, environment, resolved, args...); err != nil {
 		probe := strings.Join(append([]string{executable}, args...), " ")
-		return []doctorCheck{doctorWorkflowGateWarning(projectID, workflowPath, command, fmt.Sprintf("dry-run %q failed in %s: %v", probe, expandedWorkdir, err), "Add or fix the make target in the project workdir, or update gate.run to a passing command.")}
+		return []Check{workflowGateWarning(projectID, workflowPath, command, fmt.Sprintf("dry-run %q failed in %s: %v", probe, expandedWorkdir, err), "Add or fix the make target in the project workdir, or update gate.run to a passing command.")}
 	}
 	return nil
 }
 
-func doctorWorkflowCommandPrefix(command string) string {
+func workflowCommandPrefix(command string) string {
 	var prefix strings.Builder
 	var quote rune
 	escaped := false
@@ -472,7 +471,7 @@ func doctorWorkflowCommandPrefix(command string) string {
 		if strings.ContainsRune("|&;<>(`\n", r) {
 			commandPrefix := prefix.String()
 			if r == '>' || r == '<' {
-				commandPrefix = doctorWorkflowTrimRedirectionDescriptor(commandPrefix)
+				commandPrefix = workflowTrimRedirectionDescriptor(commandPrefix)
 			}
 			return strings.TrimSpace(commandPrefix)
 		}
@@ -481,7 +480,7 @@ func doctorWorkflowCommandPrefix(command string) string {
 	return strings.TrimSpace(prefix.String())
 }
 
-func doctorWorkflowTrimRedirectionDescriptor(command string) string {
+func workflowTrimRedirectionDescriptor(command string) string {
 	trimmed := strings.TrimRight(command, " \t")
 	index := len(trimmed)
 	for index > 0 && trimmed[index-1] >= '0' && trimmed[index-1] <= '9' {
@@ -493,9 +492,9 @@ func doctorWorkflowTrimRedirectionDescriptor(command string) string {
 	return trimmed[:index]
 }
 
-func doctorWorkflowExecutableIndex(fields []string) int {
+func workflowExecutableIndex(fields []string) int {
 	for index, field := range fields {
-		if doctorWorkflowEnvironmentAssignment(field) {
+		if workflowEnvironmentAssignment(field) {
 			continue
 		}
 		return index
@@ -503,7 +502,7 @@ func doctorWorkflowExecutableIndex(fields []string) int {
 	return -1
 }
 
-func doctorWorkflowEnvironmentAssignment(field string) bool {
+func workflowEnvironmentAssignment(field string) bool {
 	name, _, ok := strings.Cut(field, "=")
 	if !ok || name == "" {
 		return false
@@ -517,12 +516,12 @@ func doctorWorkflowEnvironmentAssignment(field string) bool {
 	return true
 }
 
-func doctorMakeExecutable(executable string) bool {
+func makeExecutable(executable string) bool {
 	base := strings.ToLower(filepath.Base(strings.ReplaceAll(executable, "\\", "/")))
 	return base == "make" || base == "make.exe" || base == "gmake" || base == "gmake.exe"
 }
 
-func doctorMakeDryRunArgs(fields []string) []string {
+func makeDryRunArgs(fields []string) []string {
 	args := []string{"-n"}
 	for _, field := range fields {
 		switch field {
@@ -537,35 +536,35 @@ func doctorMakeDryRunArgs(fields []string) []string {
 	return args
 }
 
-func doctorWorkflowGateWarning(projectID string, workflowPath string, command string, failure string, fix string) doctorCheck {
-	return doctorCheck{
+func workflowGateWarning(projectID string, workflowPath string, command string, failure string, fix string) Check {
+	return Check{
 		Name:   "Project " + projectID + " workflow lint gate command",
-		Status: doctorWarn,
+		Status: Warn,
 		Detail: fmt.Sprintf("%s gate.run %q cannot work: %s", workflowPath, command, failure),
 		Hint:   fix + " Then rerun detent doctor.",
 	}
 }
 
-func checkDoctorShipSkill(projectID string, workflowPath string, cfg workflowconfig.Config, deps doctorDeps) []doctorCheck {
-	if cfg.Deliverable.Kind != workflowconfig.DeliverablePullRequest || !doctorWorkflowHasCodexBackend(cfg) || deps.shipSkillProbe == nil {
+func checkShipSkill(projectID string, workflowPath string, cfg workflowconfig.Config, deps Deps) []Check {
+	if cfg.Deliverable.Kind != workflowconfig.DeliverablePullRequest || !workflowHasCodexBackend(cfg) || deps.ShipSkillProbe == nil {
 		return nil
 	}
-	codexHome, err := doctorCodexHome(deps.lookupEnv)
+	codexHome, err := codexHome(deps.LookupEnv)
 	if err == nil {
-		_, err = deps.shipSkillProbe(codexHome)
+		_, err = deps.ShipSkillProbe(codexHome)
 	}
 	if err == nil {
 		return nil
 	}
-	return []doctorCheck{{
+	return []Check{{
 		Name:   "Project " + projectID + " workflow lint ship skill",
-		Status: doctorWarn,
+		Status: Warn,
 		Detail: fmt.Sprintf("%s uses deliverable.kind=pull_request with a Codex backend, but $go-workflow:ship does not resolve: %v", workflowPath, err),
 		Hint:   "Enable go-workflow@gopher-ai in $CODEX_HOME/config.toml and install a cache version whose .codex-plugin/plugin.json version matches its directory and contains skills/ship/SKILL.md.",
 	}}
 }
 
-func doctorWorkflowHasCodexBackend(cfg workflowconfig.Config) bool {
+func workflowHasCodexBackend(cfg workflowconfig.Config) bool {
 	for _, backend := range cfg.AgentBackendConfigs() {
 		if strings.EqualFold(strings.TrimSpace(backend.Kind), workflowconfig.AgentBackendCodex) {
 			return true
@@ -574,9 +573,9 @@ func doctorWorkflowHasCodexBackend(cfg workflowconfig.Config) bool {
 	return false
 }
 
-func doctorCodexHome(lookupEnv func(string) string) (string, error) {
-	if lookupEnv != nil {
-		if root := strings.TrimSpace(lookupEnv("CODEX_HOME")); root != "" {
+func codexHome(LookupEnv func(string) string) (string, error) {
+	if LookupEnv != nil {
+		if root := strings.TrimSpace(LookupEnv("CODEX_HOME")); root != "" {
 			return root, nil
 		}
 	}
@@ -587,17 +586,17 @@ func doctorCodexHome(lookupEnv func(string) string) (string, error) {
 	return filepath.Join(home, ".codex"), nil
 }
 
-func probeDoctorShipSkill(codexHome string) (doctorShipSkill, error) {
+func ProbeShipSkill(codexHome string) (ShipSkill, error) {
 	configPath := filepath.Join(codexHome, "config.toml")
 	pattern := filepath.Join(codexHome, "plugins", "cache", "*", "go-workflow", "*")
 	candidates, globErr := filepath.Glob(pattern)
 	if globErr != nil {
-		return doctorShipSkill{}, globErr
+		return ShipSkill{}, globErr
 	}
 	invalid := make([]string, 0)
 	for _, candidate := range candidates {
 		provider := filepath.Base(filepath.Dir(filepath.Dir(candidate)))
-		configured, configErr := doctorCodexPluginEnabled(configPath, "go-workflow", provider)
+		configured, configErr := codexPluginEnabled(configPath, "go-workflow", provider)
 		manifestPath := filepath.Join(candidate, ".codex-plugin", "plugin.json")
 		raw, err := os.ReadFile(manifestPath)
 		if err != nil {
@@ -630,15 +629,15 @@ func probeDoctorShipSkill(codexHome string) (doctorShipSkill, error) {
 			invalid = append(invalid, fmt.Sprintf("go-workflow@%s cache version %s exists, but the plugin is not enabled in %s", provider, version, configPath))
 			continue
 		}
-		return doctorShipSkill{Version: version, Path: skillPath}, nil
+		return ShipSkill{Version: version, Path: skillPath}, nil
 	}
 	if len(invalid) > 0 {
-		return doctorShipSkill{}, errors.New(strings.Join(invalid, "; "))
+		return ShipSkill{}, errors.New(strings.Join(invalid, "; "))
 	}
-	return doctorShipSkill{}, fmt.Errorf("go-workflow cache is missing under %s", filepath.Join(codexHome, "plugins", "cache"))
+	return ShipSkill{}, fmt.Errorf("go-workflow cache is missing under %s", filepath.Join(codexHome, "plugins", "cache"))
 }
 
-func doctorCodexPluginEnabled(configPath string, plugin string, provider string) (bool, error) {
+func codexPluginEnabled(configPath string, plugin string, provider string) (bool, error) {
 	var config struct {
 		Plugins map[string]struct {
 			Enabled bool `toml:"enabled"`

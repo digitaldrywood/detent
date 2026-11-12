@@ -1,4 +1,4 @@
-package cli
+package doctor
 
 import (
 	"context"
@@ -29,7 +29,7 @@ func TestDoctorInvariants(t *testing.T) {
 				}
 			}
 			called := false
-			checks := checkDoctorInvariants(t.Context(), "example", root, func(_ context.Context, dir string) error {
+			checks := CheckInvariants(t.Context(), "example", root, func(_ context.Context, dir string) error {
 				called = true
 				if dir != root {
 					t.Fatalf("directory = %q", dir)
@@ -48,9 +48,9 @@ func TestDoctorInvariants(t *testing.T) {
 				}
 				return
 			}
-			want := doctorOK
+			want := OK
 			if tt.failure {
-				want = doctorFail
+				want = Fail
 			}
 			if len(checks) != 1 || checks[0].Status != want {
 				t.Fatal(checks)

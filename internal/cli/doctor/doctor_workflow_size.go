@@ -1,4 +1,4 @@
-package cli
+package doctor
 
 import (
 	"fmt"
@@ -10,26 +10,26 @@ import (
 )
 
 const (
-	doctorWorkflowDefaultTokenThreshold   = 4000
-	doctorWorkflowEstimatedCharsPerToken  = 4
-	doctorWorkflowMinimumSectionTokens    = 80
-	doctorWorkflowMaximumSkillSuggestions = 5
+	WorkflowDefaultTokenThreshold   = 4000
+	workflowEstimatedCharsPerToken  = 4
+	workflowMinimumSectionTokens    = 80
+	workflowMaximumSkillSuggestions = 5
 )
 
-type doctorWorkflowSkillSuggestion struct {
+type WorkflowSkillSuggestion struct {
 	Heading         string `json:"heading"`
 	SkillName       string `json:"skill_name"`
 	Path            string `json:"path"`
 	EstimatedTokens int    `json:"estimated_tokens"`
 }
 
-type doctorWorkflowPromptSection struct {
+type workflowPromptSection struct {
 	heading string
 	content string
 	index   int
 }
 
-var doctorWorkflowConditionalHeadingTerms = []string{
+var workflowConditionalHeadingTerms = []string{
 	"api",
 	"browser",
 	"ci",
@@ -66,7 +66,7 @@ var doctorWorkflowConditionalHeadingTerms = []string{
 	"worktree",
 }
 
-var doctorWorkflowConditionalBodyTerms = []string{
+var workflowConditionalBodyTerms = []string{
 	".github/",
 	"api endpoint",
 	"database",
@@ -88,7 +88,7 @@ var doctorWorkflowConditionalBodyTerms = []string{
 	"worktree",
 }
 
-var doctorWorkflowCoreHeadings = []string{
+var workflowCoreHeadings = []string{
 	"acceptance criteria",
 	"general instructions",
 	"operating rules",
@@ -101,21 +101,21 @@ var doctorWorkflowCoreHeadings = []string{
 	"workpad status contract",
 }
 
-func checkDoctorWorkflowPromptSize(projectID string, workflowPath string, prompt string, skillsPath string, threshold int) (doctorCheck, bool) {
+func checkWorkflowPromptSize(projectID string, workflowPath string, prompt string, skillsPath string, threshold int) (Check, bool) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
-		return doctorCheck{}, false
+		return Check{}, false
 	}
-	threshold = doctorWorkflowTokenThreshold(threshold)
+	threshold = workflowTokenThreshold(threshold)
 	characters := utf8.RuneCountInString(prompt)
-	estimatedTokens := doctorWorkflowEstimatedTokens(prompt)
+	estimatedTokens := workflowEstimatedTokens(prompt)
 	if estimatedTokens <= threshold {
-		return doctorCheck{}, false
+		return Check{}, false
 	}
 
-	skillsPath = doctorWorkflowSkillsPath(skillsPath)
-	suggestions := doctorWorkflowPromptSkillSuggestions(prompt, skillsPath)
-	detail := fmt.Sprintf("%s prompt body is approximately %d tokens (%d characters at %d characters/token), above the %d-token threshold", workflowPath, estimatedTokens, characters, doctorWorkflowEstimatedCharsPerToken, threshold)
+	skillsPath = workflowSkillsPath(skillsPath)
+	suggestions := workflowPromptSkillSuggestions(prompt, skillsPath)
+	detail := fmt.Sprintf("%s prompt body is approximately %d tokens (%d characters at %d characters/token), above the %d-token threshold", workflowPath, estimatedTokens, characters, workflowEstimatedCharsPerToken, threshold)
 	if len(suggestions) > 0 {
 		parts := make([]string, 0, len(suggestions))
 		for _, suggestion := range suggestions {
@@ -124,72 +124,72 @@ func checkDoctorWorkflowPromptSize(projectID string, workflowPath string, prompt
 		detail += "; extraction candidates: " + strings.Join(parts, "; ")
 	}
 
-	return doctorCheck{
+	return Check{
 		Name:                     "Project " + projectID + " workflow lint prompt size",
-		Status:                   doctorWarn,
+		Status:                   Warn,
 		Detail:                   detail,
 		Hint:                     fmt.Sprintf("Keep WORKFLOW.md as a thin core and move domain-specific or conditional guidance into reviewed lazy skills under %s through the existing skill-creation flow. This check is guidance only and never rewrites WORKFLOW.md.", skillsPath),
 		WorkflowSkillSuggestions: suggestions,
 	}, true
 }
 
-func doctorWorkflowTokenThreshold(threshold int) int {
+func workflowTokenThreshold(threshold int) int {
 	if threshold <= 0 {
-		return doctorWorkflowDefaultTokenThreshold
+		return WorkflowDefaultTokenThreshold
 	}
 	return threshold
 }
 
-func doctorWorkflowEstimatedTokens(content string) int {
+func workflowEstimatedTokens(content string) int {
 	characters := utf8.RuneCountInString(strings.TrimSpace(content))
-	return (characters + doctorWorkflowEstimatedCharsPerToken - 1) / doctorWorkflowEstimatedCharsPerToken
+	return (characters + workflowEstimatedCharsPerToken - 1) / workflowEstimatedCharsPerToken
 }
 
-func doctorWorkflowPromptSkillSuggestions(prompt string, skillsPath string) []doctorWorkflowSkillSuggestion {
-	sections := doctorWorkflowPromptSections(prompt)
-	candidates := make([]doctorWorkflowPromptSection, 0, len(sections))
+func workflowPromptSkillSuggestions(prompt string, skillsPath string) []WorkflowSkillSuggestion {
+	sections := workflowPromptSections(prompt)
+	candidates := make([]workflowPromptSection, 0, len(sections))
 	for _, section := range sections {
-		if doctorWorkflowCoreHeading(section.heading) || doctorWorkflowEstimatedTokens(section.heading+"\n"+section.content) < doctorWorkflowMinimumSectionTokens {
+		if workflowCoreHeading(section.heading) || workflowEstimatedTokens(section.heading+"\n"+section.content) < workflowMinimumSectionTokens {
 			continue
 		}
-		if doctorWorkflowConditionalHeading(section.heading) || doctorWorkflowConditionalBody(section.content) {
+		if workflowConditionalHeading(section.heading) || workflowConditionalBody(section.content) {
 			candidates = append(candidates, section)
 		}
 	}
 	if len(candidates) == 0 {
 		for _, section := range sections {
-			if !doctorWorkflowCoreHeading(section.heading) && doctorWorkflowEstimatedTokens(section.heading+"\n"+section.content) >= doctorWorkflowMinimumSectionTokens {
+			if !workflowCoreHeading(section.heading) && workflowEstimatedTokens(section.heading+"\n"+section.content) >= workflowMinimumSectionTokens {
 				candidates = append(candidates, section)
 			}
 		}
 	}
 
 	sort.SliceStable(candidates, func(i int, j int) bool {
-		left := doctorWorkflowEstimatedTokens(candidates[i].heading + "\n" + candidates[i].content)
-		right := doctorWorkflowEstimatedTokens(candidates[j].heading + "\n" + candidates[j].content)
+		left := workflowEstimatedTokens(candidates[i].heading + "\n" + candidates[i].content)
+		right := workflowEstimatedTokens(candidates[j].heading + "\n" + candidates[j].content)
 		if left != right {
 			return left > right
 		}
 		return candidates[i].index < candidates[j].index
 	})
-	if len(candidates) > doctorWorkflowMaximumSkillSuggestions {
-		candidates = candidates[:doctorWorkflowMaximumSkillSuggestions]
+	if len(candidates) > workflowMaximumSkillSuggestions {
+		candidates = candidates[:workflowMaximumSkillSuggestions]
 	}
 
-	suggestions := make([]doctorWorkflowSkillSuggestion, 0, len(candidates))
+	suggestions := make([]WorkflowSkillSuggestion, 0, len(candidates))
 	for _, section := range candidates {
-		skillName := doctorWorkflowSkillName(section.heading)
-		suggestions = append(suggestions, doctorWorkflowSkillSuggestion{
+		skillName := workflowSkillName(section.heading)
+		suggestions = append(suggestions, WorkflowSkillSuggestion{
 			Heading:         section.heading,
 			SkillName:       skillName,
-			Path:            doctorWorkflowSkillCandidatePath(skillsPath, skillName),
-			EstimatedTokens: doctorWorkflowEstimatedTokens(section.heading + "\n" + section.content),
+			Path:            workflowSkillCandidatePath(skillsPath, skillName),
+			EstimatedTokens: workflowEstimatedTokens(section.heading + "\n" + section.content),
 		})
 	}
 	return suggestions
 }
 
-func doctorWorkflowSkillsPath(skillsPath string) string {
+func workflowSkillsPath(skillsPath string) string {
 	skillsPath = strings.TrimRight(filepath.ToSlash(strings.TrimSpace(skillsPath)), "/")
 	if skillsPath == "" {
 		return ".detent/skills"
@@ -197,13 +197,13 @@ func doctorWorkflowSkillsPath(skillsPath string) string {
 	return skillsPath
 }
 
-func doctorWorkflowSkillCandidatePath(skillsPath string, skillName string) string {
-	return doctorWorkflowSkillsPath(skillsPath) + "/" + skillName + ".md"
+func workflowSkillCandidatePath(skillsPath string, skillName string) string {
+	return workflowSkillsPath(skillsPath) + "/" + skillName + ".md"
 }
 
-func doctorWorkflowPromptSections(prompt string) []doctorWorkflowPromptSection {
+func workflowPromptSections(prompt string) []workflowPromptSection {
 	lines := strings.Split(strings.ReplaceAll(prompt, "\r\n", "\n"), "\n")
-	sections := make([]doctorWorkflowPromptSection, 0)
+	sections := make([]workflowPromptSection, 0)
 	var heading string
 	var content strings.Builder
 	inFence := false
@@ -212,7 +212,7 @@ func doctorWorkflowPromptSections(prompt string) []doctorWorkflowPromptSection {
 		if heading == "" {
 			return
 		}
-		sections = append(sections, doctorWorkflowPromptSection{
+		sections = append(sections, workflowPromptSection{
 			heading: heading,
 			content: strings.TrimSpace(content.String()),
 			index:   sectionIndex,
@@ -227,7 +227,7 @@ func doctorWorkflowPromptSections(prompt string) []doctorWorkflowPromptSection {
 			inFence = !inFence
 		}
 		if !inFence {
-			if nextHeading, ok := doctorWorkflowMarkdownHeading(line); ok {
+			if nextHeading, ok := workflowMarkdownHeading(line); ok {
 				flush()
 				heading = nextHeading
 				continue
@@ -242,7 +242,7 @@ func doctorWorkflowPromptSections(prompt string) []doctorWorkflowPromptSection {
 	return sections
 }
 
-func doctorWorkflowMarkdownHeading(line string) (string, bool) {
+func workflowMarkdownHeading(line string) (string, bool) {
 	line = strings.TrimSpace(line)
 	level := 0
 	for level < len(line) && line[level] == '#' {
@@ -255,9 +255,9 @@ func doctorWorkflowMarkdownHeading(line string) (string, bool) {
 	return heading, heading != ""
 }
 
-func doctorWorkflowCoreHeading(heading string) bool {
+func workflowCoreHeading(heading string) bool {
 	heading = strings.ToLower(strings.TrimSpace(heading))
-	for _, core := range doctorWorkflowCoreHeadings {
+	for _, core := range workflowCoreHeadings {
 		if heading == core {
 			return true
 		}
@@ -265,12 +265,12 @@ func doctorWorkflowCoreHeading(heading string) bool {
 	return false
 }
 
-func doctorWorkflowConditionalHeading(heading string) bool {
+func workflowConditionalHeading(heading string) bool {
 	heading = strings.ToLower(strings.TrimSpace(heading))
 	words := strings.FieldsFunc(heading, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
-	for _, term := range doctorWorkflowConditionalHeadingTerms {
+	for _, term := range workflowConditionalHeadingTerms {
 		if strings.ContainsRune(term, ' ') {
 			if strings.Contains(heading, term) {
 				return true
@@ -286,10 +286,10 @@ func doctorWorkflowConditionalHeading(heading string) bool {
 	return false
 }
 
-func doctorWorkflowConditionalBody(content string) bool {
+func workflowConditionalBody(content string) bool {
 	content = strings.ToLower(content)
 	matches := 0
-	for _, term := range doctorWorkflowConditionalBodyTerms {
+	for _, term := range workflowConditionalBodyTerms {
 		if strings.Contains(content, term) {
 			matches++
 			if matches >= 2 {
@@ -300,7 +300,7 @@ func doctorWorkflowConditionalBody(content string) bool {
 	return false
 }
 
-func doctorWorkflowSkillName(heading string) string {
+func workflowSkillName(heading string) string {
 	var builder strings.Builder
 	separator := false
 	for _, r := range strings.ToLower(strings.TrimSpace(heading)) {

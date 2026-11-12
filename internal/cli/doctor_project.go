@@ -1106,30 +1106,6 @@ func validationWarningsWithPrefix(warnings []string, prefix string) []string {
 	return filtered
 }
 
-func checkDoctorDisabledBudgetCaps(id string, cfg workflowconfig.Budget) (doctorCheck, bool) {
-	if cfg.Enabled {
-		return doctorCheck{}, false
-	}
-
-	caps := make([]string, 0, 2)
-	if cfg.PerDayMaxUSDConfigured() && cfg.PerDayMaxUSD > 0 {
-		caps = append(caps, fmt.Sprintf("budget.per_day_max_usd=%g", cfg.PerDayMaxUSD))
-	}
-	if cfg.PerIssueMaxUSDConfigured() && cfg.PerIssueMaxUSD > 0 {
-		caps = append(caps, fmt.Sprintf("budget.per_issue_max_usd=%g", cfg.PerIssueMaxUSD))
-	}
-	if len(caps) == 0 {
-		return doctorCheck{}, false
-	}
-
-	return doctorCheck{
-		Name:   "Project " + id + " budget",
-		Status: doctorWarn,
-		Detail: "budget.enabled=false disables configured caps: " + strings.Join(caps, ", "),
-		Hint:   "Add this exact line under budget: in WORKFLOW.md:\n  enabled: true",
-	}, true
-}
-
 func checkDoctorIssueEffortGuidanceForSource(id string, project globalconfig.Project, cfg workflowconfig.Config) doctorCheck {
 	sourceRoot := projectSourceRoot(project, cfg)
 	if sourceRoot == "" {
@@ -1677,14 +1653,6 @@ func doctorIssueAgentRouter(cfg workflowconfig.Config) (*runnerpkg.Router, error
 	return runnerpkg.NewRouter(doctorRoutes)
 }
 
-func doctorProjectID(project globalconfig.Project) string {
-	id := strings.TrimSpace(project.ID)
-	if id == "" {
-		return "project"
-	}
-	return id
-}
-
 func doctorWorkflowDetail(path string, project globalconfig.Project, cfg workflowconfig.Config) string {
 	details := []string{path + " is valid"}
 	if cfg.Identity.Configured() {
@@ -1798,19 +1766,6 @@ func doctorAuthorizationDetail(project globalconfig.Project, cfg workflowconfig.
 	default:
 		return "authorization allows all issues"
 	}
-}
-
-func projectSourceRoot(project globalconfig.Project, cfg workflowconfig.Config) string {
-	if sourceRoot := strings.TrimSpace(cfg.Workspace.SourceRoot); sourceRoot != "" {
-		return sourceRoot
-	}
-	if workdir := strings.TrimSpace(project.Workdir); workdir != "" {
-		return workdir
-	}
-	if root := strings.TrimSpace(cfg.Workspace.Root); root != "" {
-		return root
-	}
-	return ""
 }
 
 func loadDoctorProjectWorkflow(ctx context.Context, project globalconfig.Project, deps doctorDeps) (workflowconfig.Workflow, error) {

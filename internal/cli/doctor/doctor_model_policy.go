@@ -1,4 +1,4 @@
-package cli
+package doctor
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
 
-func checkDoctorModelPolicy(id string, cfg workflowconfig.Config) doctorCheck {
+func CheckModelPolicy(id string, cfg workflowconfig.Config) Check {
 	policy := cfg.EffectiveModelSelection()
 	var levels []string
 	for level := range policy.Levels {
@@ -18,13 +18,13 @@ func checkDoctorModelPolicy(id string, cfg workflowconfig.Config) doctorCheck {
 	var details []string
 	for _, name := range levels {
 		level := policy.Levels[name]
-		alias := doctorPolicyString(level.Model)
+		alias := policyString(level.Model)
 		model := policy.Model(alias)
-		modelSource := doctorPolicySource(policy, "levels."+name+".model")
+		modelSource := policySource(policy, "levels."+name+".model")
 		if alias == "normal" || alias == "complex" {
-			modelSource += "; " + alias + "_model=" + doctorPolicySource(policy, alias+"_model")
+			modelSource += "; " + alias + "_model=" + policySource(policy, alias+"_model")
 		}
-		details = append(details, fmt.Sprintf("level %s: model=%s (source=%s), effort=%s (source=%s)", name, model, modelSource, doctorPolicyString(level.Effort), doctorPolicySource(policy, "levels."+name+".effort")))
+		details = append(details, fmt.Sprintf("level %s: model=%s (source=%s), effort=%s (source=%s)", name, model, modelSource, policyString(level.Effort), policySource(policy, "levels."+name+".effort")))
 	}
 	if !policy.Active() {
 		details = append(details, "automatic selection disabled; backend/route defaults apply")
@@ -32,22 +32,22 @@ func checkDoctorModelPolicy(id string, cfg workflowconfig.Config) doctorCheck {
 	if len(levels) == 0 {
 		details = append(details, "no model-selection levels configured")
 	}
-	return doctorCheck{
+	return Check{
 		Name:   "Project " + id + " model_policy",
-		Status: doctorOK,
+		Status: OK,
 		Detail: strings.Join(details, "; "),
 		Hint:   "Compare printed policy sources with the operator's intended fleet policy.",
 	}
 }
 
-func doctorPolicyString(value *string) string {
+func policyString(value *string) string {
 	if value == nil {
 		return ""
 	}
 	return *value
 }
 
-func doctorPolicySource(policy workflowconfig.ModelSelection, key string) string {
+func policySource(policy workflowconfig.ModelSelection, key string) string {
 	if source := policy.Sources[key]; source != "" {
 		return source
 	}

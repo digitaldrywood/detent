@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/cli/doctor"
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
@@ -40,7 +41,7 @@ const (
 	doctorCheckTimeout   = 30 * time.Second
 )
 
-type doctorStatus string
+type doctorStatus = doctor.Status
 
 const (
 	doctorOK   doctorStatus = "OK"
@@ -1438,65 +1439,6 @@ func runDoctorCommandInDir(ctx context.Context, dir string, environment []string
 		return fmt.Errorf("%w: %s", err, detail)
 	}
 	return err
-}
-
-func doctorCommandEnvironment(base []string, overrides []string) []string {
-	return doctorCommandEnvironmentForOS(base, overrides, runtime.GOOS)
-}
-
-func doctorCommandEnvironmentForOS(base []string, overrides []string, goos string) []string {
-	environment := append([]string(nil), base...)
-	for _, override := range overrides {
-		name, _, ok := strings.Cut(override, "=")
-		if !ok {
-			continue
-		}
-		values := doctorEnvironmentValues(environment)
-		if goos == "windows" {
-			values = doctorEnvironmentValuesFolded(environment)
-		}
-		override = name + "=" + os.Expand(strings.TrimPrefix(override, name+"="), func(key string) string {
-			if goos == "windows" {
-				key = strings.ToUpper(key)
-			}
-			return values[key]
-		})
-		filtered := environment[:0]
-		for _, entry := range environment {
-			candidate, _, candidateOK := strings.Cut(entry, "=")
-			matches := candidateOK && candidate == name
-			if goos == "windows" {
-				matches = candidateOK && strings.EqualFold(candidate, name)
-			}
-			if !matches {
-				filtered = append(filtered, entry)
-			}
-		}
-		environment = append(filtered, override)
-	}
-	return environment
-}
-
-func doctorEnvironmentValuesFolded(environment []string) map[string]string {
-	values := make(map[string]string, len(environment))
-	for _, entry := range environment {
-		name, value, ok := strings.Cut(entry, "=")
-		if ok {
-			values[strings.ToUpper(name)] = value
-		}
-	}
-	return values
-}
-
-func doctorEnvironmentValues(environment []string) map[string]string {
-	values := make(map[string]string, len(environment))
-	for _, entry := range environment {
-		name, value, ok := strings.Cut(entry, "=")
-		if ok {
-			values[name] = value
-		}
-	}
-	return values
 }
 
 func doctorEnvironmentValue(environment []string, name string, caseInsensitive bool) string {

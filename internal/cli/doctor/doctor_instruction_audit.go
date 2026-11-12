@@ -1,4 +1,4 @@
-package cli
+package doctor
 
 import (
 	"context"
@@ -13,36 +13,39 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
-type doctorInstructionFile struct {
+type InstructionFile struct {
 	path  string
 	text  string
 	bytes int
 }
 
-var doctorReadDirective = regexp.MustCompile(`(?i)\b(read|follow|consult|load|review)\b`)
-var doctorInstructionPath = regexp.MustCompile(`[[:alnum:]_./-]+\.[[:alnum:]_]+\b|\bMakefile\b`)
-var doctorQuotedInstructionPath = regexp.MustCompile("`([^`[:space:]]+)`")
-var doctorDirectReadPath = regexp.MustCompile(`(?i)\b(read|follow|consult|load|review)\s+(?:the\s+)?(?:file\s+)?$`)
+var readDirective = regexp.MustCompile(`(?i)\b(read|follow|consult|load|review)\b`)
+
+var instructionPath = regexp.MustCompile(`[[:alnum:]_./-]+\.[[:alnum:]_]+\b|\bMakefile\b`)
+
+var quotedInstructionPath = regexp.MustCompile("`([^`[:space:]]+)`")
+
+var directReadPath = regexp.MustCompile(`(?i)\b(read|follow|consult|load|review)\s+(?:the\s+)?(?:file\s+)?$`)
 
 // This is a static estimate: repository instructions at the configured workdir,
 // the effective workflow prompt, and literal files named by read directives.
 // Worker-specific template values and dynamically constructed paths are unknown.
-func doctorInstructionFiles(ctx context.Context, root, prompt, workflowPath string) ([]doctorInstructionFile, []string) {
-	var files []doctorInstructionFile
+func InstructionFiles(ctx context.Context, root, prompt, workflowPath string) ([]InstructionFile, []string) {
+	var files []InstructionFile
 	var problems []string
-	root, err := expandDoctorWorkspacePath(root)
+	root, err := ExpandWorkspacePath(root)
 	if err != nil {
-		return []doctorInstructionFile{{"WORKFLOW.md (effective prompt)", prompt, len(prompt)}}, []string{err.Error()}
+		return []InstructionFile{{"WORKFLOW.md (effective prompt)", prompt, len(prompt)}}, []string{err.Error()}
 	}
 	root, err = filepath.EvalSymlinks(root)
 	if err != nil {
-		return []doctorInstructionFile{{"WORKFLOW.md (effective prompt)", prompt, len(prompt)}}, []string{err.Error()}
+		return []InstructionFile{{"WORKFLOW.md (effective prompt)", prompt, len(prompt)}}, []string{err.Error()}
 	}
-	gitRoot, gitErr := doctorWorkflowSourceGit(ctx, root, "rev-parse", "--show-toplevel")
+	gitRoot, gitErr := WorkflowSourceGit(ctx, root, "rev-parse", "--show-toplevel")
 	var dirs []string
 	if gitErr != nil {
 		problems = append(problems, "resolve instruction repository: "+gitErr.Error())
-		// Codex still reads the current directory outside a Git repository.
+
 		dirs = []string{root}
 	} else {
 		gitRoot, gitErr = filepath.EvalSymlinks(strings.TrimSpace(gitRoot))
@@ -64,8 +67,7 @@ func doctorInstructionFiles(ctx context.Context, root, prompt, workflowPath stri
 	}
 	slices.Reverse(dirs)
 	seen := map[string]bool{}
-	// The effective prompt already accounts for its configured source. A bare
-	// WORKFLOW.md reference also denotes that source when no local file exists.
+
 	if workflowPath != "" {
 		if resolved, resolveErr := filepath.EvalSymlinks(workflowPath); resolveErr == nil {
 			workflowPath = resolved
@@ -92,21 +94,21 @@ func doctorInstructionFiles(ctx context.Context, root, prompt, workflowPath stri
 				continue
 			}
 			count := min(len(data), remaining)
-			files = append(files, doctorInstructionFile{path, string(data[:count]), count})
+			files = append(files, InstructionFile{path, string(data[:count]), count})
 			seen[path] = true
 			remaining -= count
 			break
 		}
 	}
-	files = append(files, doctorInstructionFile{"WORKFLOW.md (effective prompt)", prompt, len(prompt)})
-	// Scan newly discovered files too; seen deduplicates references and cycles.
+	files = append(files, InstructionFile{"WORKFLOW.md (effective prompt)", prompt, len(prompt)})
+
 	for i := 0; i < len(files); i++ {
 		for _, line := range strings.Split(files[i].text, "\n") {
-			if !doctorReadDirective.MatchString(line) {
+			if !readDirective.MatchString(line) {
 				continue
 			}
-			names := doctorInstructionPath.FindAllString(line, -1)
-			for _, match := range doctorQuotedInstructionPath.FindAllStringSubmatchIndex(line, -1) {
+			names := instructionPath.FindAllString(line, -1)
+			for _, match := range quotedInstructionPath.FindAllStringSubmatchIndex(line, -1) {
 				name := line[match[2]:match[3]]
 				if strings.ContainsAny(name, "${}:=*|;&") {
 					continue
@@ -116,9 +118,8 @@ func doctorInstructionFiles(ctx context.Context, root, prompt, workflowPath stri
 					path = filepath.Join(root, path)
 				}
 				info, statErr := os.Stat(path)
-				// Quoted lane names and Git refs are not file reads. Extensionless
-				// paths need either an existing file or an immediate read directive.
-				if statErr == nil && !info.IsDir() || doctorDirectReadPath.MatchString(line[:match[0]]) {
+
+				if statErr == nil && !info.IsDir() || directReadPath.MatchString(line[:match[0]]) {
 					names = append(names, name)
 				}
 			}
@@ -140,15 +141,15 @@ func doctorInstructionFiles(ctx context.Context, root, prompt, workflowPath stri
 					problems = append(problems, path+": "+readErr.Error())
 					continue
 				}
-				files = append(files, doctorInstructionFile{path, string(data), len(data)})
+				files = append(files, InstructionFile{path, string(data), len(data)})
 			}
 		}
 	}
 	return files, problems
 }
 
-func checkDoctorInstructionBudget(id string, files []doctorInstructionFile, problems []string) doctorCheck {
-	check := doctorCheck{Name: "Project " + id + " instruction_budget", Status: doctorOK}
+func CheckInstructionBudget(id string, files []InstructionFile, problems []string) Check {
+	check := Check{Name: "Project " + id + " instruction_budget", Status: OK}
 	total := 0
 	var details []string
 	for _, file := range files {
@@ -157,17 +158,17 @@ func checkDoctorInstructionBudget(id string, files []doctorInstructionFile, prob
 	}
 	switch {
 	case total > 48*1024:
-		check.Status = doctorFail
+		check.Status = Fail
 	case total > 24*1024 || len(problems) > 0:
-		check.Status = doctorWarn
+		check.Status = Warn
 	}
 	check.Detail = fmt.Sprintf("%d bytes estimated instruction load (AGENTS chain capped at 32768 bytes); %s", total, strings.Join(append(details, problems...), "; "))
 	check.Hint = "Static estimate excludes dynamic template values and nonliteral read paths; reduce repeated instructions above 24 KiB (failure above 48 KiB)."
 	return check
 }
 
-func checkDoctorGateInstructionConflict(id, command string, files []doctorInstructionFile, problems []string) doctorCheck {
-	check := doctorCheck{Name: "Project " + id + " gate_instruction_conflict", Status: doctorOK}
+func CheckGateInstructionConflict(id, command string, files []InstructionFile, problems []string) Check {
+	check := Check{Name: "Project " + id + " gate_instruction_conflict", Status: OK}
 	if strings.TrimSpace(command) == "" {
 		check.Detail = "gate.run is unset"
 		return check
@@ -196,114 +197,111 @@ func checkDoctorGateInstructionConflict(id, command string, files []doctorInstru
 		}
 	}
 	if len(requires) > 1 || len(requires) > 0 && len(forbids) > 0 || len(problems) > 0 {
-		check.Status = doctorWarn
+		check.Status = Warn
 	}
 	check.Detail = fmt.Sprintf("%q required in [%s]; forbidden/conditional in [%s]", command, strings.Join(requires, ", "), strings.Join(forbids, ", "))
 	if len(problems) > 0 {
 		check.Detail += "; incomplete evidence: " + strings.Join(problems, "; ")
 	}
 	check.Hint = "Keep the gate requirement in one instruction file; this line-based heuristic includes conditional prohibitions."
-	// A fast Go gate often coexists with instructions about its full gate.
-	// Audit that explicit full-gate command too so contradictory make check
-	// requirements do not disappear when gate.run changes to make check-fast.
+
 	if command == "make check-fast" {
-		full := checkDoctorGateInstructionConflict(id, "make check", files, nil)
-		if full.Status == doctorWarn {
-			check.Status = doctorWarn
+		full := CheckGateInstructionConflict(id, "make check", files, nil)
+		if full.Status == Warn {
+			check.Status = Warn
 			check.Detail += "; full gate: " + full.Detail
 		}
 	}
 	return check
 }
 
-func checkDoctorWorkflowSourceDrift(ctx context.Context, id string, project globalconfig.Project, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
-	check := doctorCheck{Name: "Project " + id + " workflow_source_drift", Status: doctorOK}
-	root := projectSourceRoot(project, cfg)
+func CheckWorkflowSourceDrift(ctx context.Context, id string, project globalconfig.Project, cfg workflowconfig.Config, deps Deps) Check {
+	check := Check{Name: "Project " + id + " workflow_source_drift", Status: OK}
+	root := ProjectSourceRoot(project, cfg)
 	if project.Workdir != "" {
 		root = project.Workdir
 	}
-	root, err := expandDoctorWorkspacePath(root)
+	root, err := ExpandWorkspacePath(root)
 	if err != nil {
-		check.Status = doctorWarn
+		check.Status = Warn
 		check.Detail = err.Error()
 		return check
 	}
 	root, err = filepath.EvalSymlinks(root)
 	if err != nil {
-		check.Status = doctorWarn
+		check.Status = Warn
 		check.Detail = err.Error()
 		return check
 	}
 	path := strings.TrimSpace(project.Workflow)
 	if filepath.IsAbs(path) || strings.HasPrefix(path, "~/") {
-		path, err = expandDoctorWorkspacePath(path)
+		path, err = ExpandWorkspacePath(path)
 	} else {
 		path = filepath.Join(root, path)
 	}
 	if err != nil {
-		check.Status = doctorWarn
+		check.Status = Warn
 		check.Detail = err.Error()
 		return check
 	}
 	path, err = filepath.EvalSymlinks(path)
 	if err != nil {
-		check.Status = doctorWarn
+		check.Status = Warn
 		check.Detail = err.Error()
 		return check
 	}
 	working, err := os.ReadFile(path)
 	if err != nil {
-		check.Status = doctorWarn
+		check.Status = Warn
 		check.Detail = err.Error()
 		return check
 	}
-	working = doctorNormalizedWorkflowPolicy(working)
+	working = NormalizedWorkflowPolicy(working)
 	ref := strings.TrimSpace(project.WorkflowRef)
 	if ref == "" {
-		if deps.githubRepositoryInfo == nil || !doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
-			check.Status = doctorWarn
+		if deps.GitHubRepositoryInfo == nil || !TrackerUsesGitHubReads(cfg.Tracker.Kind) {
+			check.Status = Warn
 			check.Detail = fmt.Sprintf("working tree %d bytes; tracker default branch unavailable", len(working))
 			return check
 		}
-		info, infoErr := deps.githubRepositoryInfo(ctx, cfg, cfg.Tracker.Repository)
+		info, infoErr := deps.GitHubRepositoryInfo(ctx, cfg, cfg.Tracker.Repository)
 		if infoErr != nil || info.DefaultBranch == "" {
-			check.Status = doctorWarn
+			check.Status = Warn
 			check.Detail = fmt.Sprintf("working tree %d bytes; tracker default branch unavailable: %v", len(working), infoErr)
 			return check
 		}
-		branch, branchErr := doctorWorkflowSourceGit(ctx, root, "branch", "--show-current")
+		branch, branchErr := WorkflowSourceGit(ctx, root, "branch", "--show-current")
 		if branchErr != nil || strings.TrimSpace(branch) != info.DefaultBranch {
-			check.Status = doctorWarn
+			check.Status = Warn
 		}
 		check.Detail = fmt.Sprintf("workflow_ref unset; checkout branch %q; tracker default branch %q; ", strings.TrimSpace(branch), info.DefaultBranch)
 		ref = "refs/remotes/origin/" + info.DefaultBranch
 	}
-	// External unpinned workflows are valid. Compare their file in its own
-	// checkout while retaining the configured workdir's branch evidence above.
+
 	comparisonRoot := root
 	if project.WorkflowRef == "" {
-		owner, ownerErr := doctorWorkflowSourceGit(ctx, filepath.Dir(path), "rev-parse", "--show-toplevel")
+		owner, ownerErr := WorkflowSourceGit(ctx, filepath.Dir(path), "rev-parse", "--show-toplevel")
 		if ownerErr == nil {
 			comparisonRoot = strings.TrimSpace(owner)
 		}
 	}
 	relative, relativeErr := filepath.Rel(comparisonRoot, path)
 	if relativeErr != nil || !filepath.IsLocal(relative) {
-		check.Status = doctorWarn
+		check.Status = Warn
 		check.Detail += fmt.Sprintf("working tree %d bytes; %s size unavailable: workflow is outside ref checkout", len(working), ref)
 		return check
 	}
-	reference, err := doctorWorkflowSourceGit(ctx, comparisonRoot, "show", ref+":"+filepath.ToSlash(relative))
+	reference, err := WorkflowSourceGit(ctx, comparisonRoot, "show", ref+":"+filepath.ToSlash(relative))
 	check.Detail += fmt.Sprintf("working tree %d bytes; %s", len(working), ref)
 	if err != nil {
-		check.Status = doctorWarn
+		check.Status = Warn
 		check.Detail += " size unavailable: " + err.Error()
 		return check
 	}
-	reference = string(doctorNormalizedWorkflowPolicy([]byte(reference)))
+	reference = string(NormalizedWorkflowPolicy([]byte(reference)))
 	check.Detail += fmt.Sprintf(" %d bytes", len(reference))
 	if project.WorkflowRef != "" && string(working) != reference {
-		check.Status = doctorWarn
+		check.Status = Warn
 		check.Detail += "; WORKFLOW.md differs"
 	}
 	return check

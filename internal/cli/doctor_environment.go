@@ -138,32 +138,6 @@ func checkDoctorInstanceIdentity(cfg globalconfig.Config) doctorCheck {
 	}
 }
 
-func expandDoctorWorkspacePath(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		return filepath.Clean(home), nil
-	}
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
-	}
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path), nil
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("absolute path: %w", err)
-	}
-	return filepath.Clean(abs), nil
-}
-
 func checkDoctorFilesystemWorkspace(id string, cfg workflowconfig.Config) doctorCheck {
 	name := "Project " + id + " filesystem workspace"
 	root := strings.TrimSpace(cfg.Workspace.Root)
@@ -221,25 +195,6 @@ func checkDoctorFilesystemWorkspace(id string, cfg workflowconfig.Config) doctor
 		Status: doctorOK,
 		Detail: resolved + " is usable",
 	}
-}
-
-func resolveDoctorProjectPath(project globalconfig.Project, path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", errors.New("path is required")
-	}
-	if filepath.IsAbs(path) || path == "~" || strings.HasPrefix(path, "~/") {
-		return expandDoctorWorkspacePath(path)
-	}
-	base := strings.TrimSpace(project.Workdir)
-	if base == "" {
-		return expandDoctorWorkspacePath(path)
-	}
-	expandedBase, err := expandDoctorWorkspacePath(base)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(filepath.Join(expandedBase, path)), nil
 }
 
 func doctorPathDirectoryReady(path string) error {

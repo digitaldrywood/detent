@@ -1,4 +1,4 @@
-package cli
+package doctor
 
 import (
 	"regexp"
@@ -18,7 +18,7 @@ var nativeWorkflowGitHubMarkers = []struct {
 	{label: "GitHub API", pattern: regexp.MustCompile(`(?i)github (rest |graphql )?api`)},
 }
 
-func nativeWorkflowGitHubSteps(cfg workflowconfig.Config, prompt string) []string {
+func NativeWorkflowGitHubSteps(cfg workflowconfig.Config, prompt string) []string {
 	if cfg.Tracker.Kind != workflowconfig.TrackerHubNative {
 		return nil
 	}
@@ -31,20 +31,20 @@ func nativeWorkflowGitHubSteps(cfg workflowconfig.Config, prompt string) []strin
 	return found
 }
 
-func nativeWorkflowGitHubStepsWarning(steps []string) string {
+func NativeWorkflowGitHubStepsWarning(steps []string) string {
 	return "WORKFLOW.md references GitHub-only steps (" + strings.Join(steps, ", ") + "); native runs commit on the attempt branch and Detent records the Change Request"
 }
 
-func checkDoctorNativeWorkflowInstructions(id string, cfg workflowconfig.Config, prompt string) doctorCheck {
+func CheckNativeWorkflowInstructions(id string, cfg workflowconfig.Config, prompt string) Check {
 	name := "Project " + id + " native workflow instructions"
-	steps := nativeWorkflowGitHubSteps(cfg, prompt)
+	steps := NativeWorkflowGitHubSteps(cfg, prompt)
 	if len(steps) == 0 {
-		return doctorCheck{Name: name, Status: doctorOK, Detail: "WORKFLOW.md body references no GitHub-only steps"}
+		return Check{Name: name, Status: OK, Detail: "WORKFLOW.md body references no GitHub-only steps"}
 	}
-	return doctorCheck{
+	return Check{
 		Name:   name,
-		Status: doctorWarn,
-		Detail: nativeWorkflowGitHubStepsWarning(steps),
+		Status: Warn,
+		Detail: NativeWorkflowGitHubStepsWarning(steps),
 		Hint:   "Remove Workpad comment, push, and pull request steps from the WORKFLOW.md body; the runner prompt's native completion contract overrides them.",
 	}
 }

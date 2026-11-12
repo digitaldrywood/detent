@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -508,10 +507,6 @@ func checkDoctorMutableWorkflowSource(
 	}
 }
 
-func doctorNormalizedWorkflowPolicy(raw []byte) []byte {
-	return bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
-}
-
 func doctorWorkflowConfigPaths(project globalconfig.Project, sourceRoot string) (string, string, error) {
 	_, _, configPath, relativeConfigPath, err := doctorWorkflowDefinitionPaths(project, sourceRoot)
 	return configPath, relativeConfigPath, err
@@ -579,25 +574,6 @@ func doctorWorkflowObjectExists(ctx context.Context, sourceRoot string, revision
 	}
 	_, err := doctorWorkflowSourceGit(ctx, sourceRoot, "cat-file", "-e", revision+"^{commit}")
 	return err == nil
-}
-
-func doctorWorkflowSourceGit(ctx context.Context, sourceRoot string, args ...string) (string, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
-	defer cancel()
-
-	commandArgs := append([]string{"-C", sourceRoot}, args...)
-	cmd := exec.CommandContext(commandCtx, "git", commandArgs...) // #nosec G204 -- doctor passes configured refs and paths as fixed git arguments without a shell.
-	output, err := cmd.CombinedOutput()
-	if commandCtx.Err() != nil {
-		return "", commandCtx.Err()
-	}
-	if err != nil {
-		if detail := strings.TrimSpace(string(output)); detail != "" {
-			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, detail)
-		}
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-	}
-	return string(output), nil
 }
 
 func doctorShortRevision(revision string) string {

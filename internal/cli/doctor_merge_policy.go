@@ -10,8 +10,6 @@ import (
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 )
 
-const doctorWorkflowRuleRepositoryMergePolicy = "repository_merge_policy"
-
 func defaultDoctorGitHubMergeSettings(ctx context.Context, cfg workflowconfig.Config, repository string) (ghconnector.RepositoryMergeSettings, error) {
 	connector, err := ghconnector.NewConnector(doctorGitHubConnectorConfig(cfg))
 	if err != nil {

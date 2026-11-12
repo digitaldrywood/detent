@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 
@@ -336,25 +335,6 @@ func doctorCleanGitHubRepository(path string) (string, bool) {
 	return strings.TrimSpace(parts[0]) + "/" + strings.TrimSpace(parts[1]), true
 }
 
-func uniqueDoctorStrings(values []string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		key := strings.ToLower(value)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
 func doctorTrackerStateMap(value workflowconfig.StringOrMap) map[string]string {
 	if !value.IsMap {
 		return nil
@@ -377,10 +357,6 @@ func doctorTrackerStateMap(value workflowconfig.StringOrMap) map[string]string {
 
 func doctorWorkflowConfigWithRuntimeGitHubToken(cfg workflowconfig.Config, token string) workflowconfig.Config {
 	return cfg.WithRuntimeGitHubToken(token)
-}
-
-func doctorTrackerUsesGitHubReads(kind string) bool {
-	return kind == workflowconfig.TrackerGitHub
 }
 
 func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token RuntimeSecret, deps doctorDeps) (check doctorCheck) {

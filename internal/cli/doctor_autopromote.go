@@ -15,10 +15,6 @@ import (
 )
 
 const doctorAutoPromoteSampleLimit = 5
-const (
-	doctorReviewFlowAutopilot  = "autopilot"
-	doctorReviewFlowReviewGate = "review-gate"
-)
 
 type doctorAutoPromoteCandidateDiagnostic struct {
 	IssueID                      string     `json:"issue_id,omitempty"`
@@ -306,15 +302,6 @@ func doctorAutomatedReviewProducerSample(
 	return merged, reviewed, nil
 }
 
-func doctorReviewFlowChoice(cfg workflowconfig.Config) string {
-	if cfg.Agent.AutoPromote.Enabled &&
-		cfg.Agent.AutoPromote.QuietSeconds == 0 &&
-		doctorReviewFlowGateWaitState(cfg) == workflowconfig.AutoPromoteGateWaitStateSource {
-		return doctorReviewFlowAutopilot
-	}
-	return doctorReviewFlowReviewGate
-}
-
 func doctorReviewFlowConfigDetail(cfg workflowconfig.Config) string {
 	return fmt.Sprintf(
 		"review-flow=%s (auto_promote.enabled=%t, quiet_seconds=%d, gate_wait_state=%s, automated_review=%s, gate_wait_timeout_action=%s)",
@@ -325,14 +312,6 @@ func doctorReviewFlowConfigDetail(cfg workflowconfig.Config) string {
 		gate.AutomatedReviewMode(cfg.Gate),
 		workflowconfig.EffectiveAutoPromoteGateWaitTimeoutAction(cfg.Agent.AutoPromote.GateWaitTimeoutAction, cfg.Gate),
 	)
-}
-
-func doctorReviewFlowGateWaitState(cfg workflowconfig.Config) string {
-	state := strings.ToLower(strings.TrimSpace(cfg.Agent.AutoPromote.GateWaitState))
-	if state == "" {
-		return workflowconfig.AutoPromoteGateWaitStateSource
-	}
-	return state
 }
 
 func doctorAutoPromoteInvalidWorkpadStatusCandidates(candidates []doctorAutoPromoteCandidateDiagnostic) []doctorAutoPromoteCandidateDiagnostic {

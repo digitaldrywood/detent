@@ -1,4 +1,4 @@
-package cli
+package doctor
 
 import (
 	"crypto/sha256"
@@ -13,44 +13,44 @@ import (
 )
 
 const (
-	doctorWorkflowProposalDefaultThreshold = 2
-	doctorWorkflowProposalBacklogState     = "Backlog"
-	doctorWorkflowProposalDeliveryIssue    = "native_issue"
+	workflowProposalDefaultThreshold = 2
+	workflowProposalBacklogState     = "Backlog"
+	workflowProposalDeliveryIssue    = "native_issue"
 )
 
-type doctorWorkflowImprovementProposal struct {
-	ID              string                        `json:"id"`
-	ProjectID       string                        `json:"project_id"`
-	SignalKind      string                        `json:"signal_kind"`
-	Pattern         string                        `json:"pattern"`
-	Count           int                           `json:"count"`
-	Title           string                        `json:"title"`
-	Detail          string                        `json:"detail"`
-	TargetKind      string                        `json:"target_kind"`
-	TargetPath      string                        `json:"target_path,omitempty"`
-	SuggestedChange string                        `json:"suggested_change"`
-	Delivery        string                        `json:"delivery"`
-	Governance      string                        `json:"governance"`
-	Outcome         doctorWorkflowProposalOutcome `json:"outcome"`
-	Evidence        map[string]any                `json:"evidence,omitempty"`
-	IssueBody       string                        `json:"issue_body"`
-	IssueMarker     string                        `json:"issue_marker"`
+type WorkflowImprovementProposal struct {
+	ID              string                  `json:"id"`
+	ProjectID       string                  `json:"project_id"`
+	SignalKind      string                  `json:"signal_kind"`
+	Pattern         string                  `json:"pattern"`
+	Count           int                     `json:"count"`
+	Title           string                  `json:"title"`
+	Detail          string                  `json:"detail"`
+	TargetKind      string                  `json:"target_kind"`
+	TargetPath      string                  `json:"target_path,omitempty"`
+	SuggestedChange string                  `json:"suggested_change"`
+	Delivery        string                  `json:"delivery"`
+	Governance      string                  `json:"governance"`
+	Outcome         workflowProposalOutcome `json:"outcome"`
+	Evidence        map[string]any          `json:"evidence,omitempty"`
+	IssueBody       string                  `json:"issue_body"`
+	IssueMarker     string                  `json:"issue_marker"`
 }
 
-type doctorWorkflowProposalOutcome struct {
+type workflowProposalOutcome struct {
 	Status string `json:"status"`
 }
 
-type doctorWorkflowProposalConnector interface {
+type WorkflowProposalConnector interface {
 	connector.Connector
 	connector.IssueCreator
 }
 
-func doctorWorkflowProposalsForFindings(projectID string, findings []doctorWorkflowOptimizationFinding, threshold int) []doctorWorkflowImprovementProposal {
-	proposals := doctorWorkflowImprovementProposalsFromFindings(projectID, findings, threshold)
-	out := make([]doctorWorkflowImprovementProposal, 0, len(proposals))
+func WorkflowProposalsForFindings(projectID string, findings []WorkflowOptimizationFinding, threshold int) []WorkflowImprovementProposal {
+	proposals := workflowImprovementProposalsFromFindings(projectID, findings, threshold)
+	out := make([]WorkflowImprovementProposal, 0, len(proposals))
 	for _, proposal := range proposals {
-		proposal = doctorWorkflowFinalizeProposal(proposal)
+		proposal = workflowFinalizeProposal(proposal)
 		if proposal.ID == "" {
 			continue
 		}
@@ -59,15 +59,15 @@ func doctorWorkflowProposalsForFindings(projectID string, findings []doctorWorkf
 	return out
 }
 
-func doctorWorkflowImprovementProposalsFromFindings(projectID string, findings []doctorWorkflowOptimizationFinding, threshold int) []doctorWorkflowImprovementProposal {
-	proposals := []doctorWorkflowImprovementProposal{}
+func workflowImprovementProposalsFromFindings(projectID string, findings []WorkflowOptimizationFinding, threshold int) []WorkflowImprovementProposal {
+	proposals := []WorkflowImprovementProposal{}
 	for _, finding := range findings {
-		count := doctorWorkflowFindingSignalCount(finding)
+		count := workflowFindingSignalCount(finding)
 		if count < threshold {
 			continue
 		}
-		targetKind, targetPath, suggestedChange := doctorWorkflowFindingProposalTarget(finding)
-		proposals = append(proposals, doctorWorkflowImprovementProposal{
+		targetKind, targetPath, suggestedChange := workflowFindingProposalTarget(finding)
+		proposals = append(proposals, WorkflowImprovementProposal{
 			ProjectID:       projectID,
 			SignalKind:      "doctor_finding",
 			Pattern:         finding.RuleID,
@@ -83,7 +83,7 @@ func doctorWorkflowImprovementProposalsFromFindings(projectID string, findings [
 	return proposals
 }
 
-func doctorWorkflowFinalizeProposal(proposal doctorWorkflowImprovementProposal) doctorWorkflowImprovementProposal {
+func workflowFinalizeProposal(proposal WorkflowImprovementProposal) WorkflowImprovementProposal {
 	proposal.ProjectID = strings.TrimSpace(proposal.ProjectID)
 	proposal.SignalKind = strings.TrimSpace(proposal.SignalKind)
 	proposal.Pattern = strings.TrimSpace(proposal.Pattern)
@@ -92,36 +92,36 @@ func doctorWorkflowFinalizeProposal(proposal doctorWorkflowImprovementProposal) 
 	proposal.TargetKind = strings.TrimSpace(proposal.TargetKind)
 	proposal.TargetPath = strings.TrimSpace(proposal.TargetPath)
 	proposal.SuggestedChange = strings.TrimSpace(proposal.SuggestedChange)
-	proposal.ID = doctorWorkflowProposalID(proposal.ProjectID, proposal.SignalKind, proposal.Pattern)
-	proposal.Delivery = doctorWorkflowProposalDeliveryIssue
+	proposal.ID = workflowProposalID(proposal.ProjectID, proposal.SignalKind, proposal.Pattern)
+	proposal.Delivery = workflowProposalDeliveryIssue
 	proposal.Governance = "Create a backlog issue or reviewable PR only; Detent must not self-apply the suggested change."
-	proposal.Outcome = doctorWorkflowProposalOutcome{Status: "pending"}
+	proposal.Outcome = workflowProposalOutcome{Status: "pending"}
 	proposal.IssueMarker = "<!-- detent:self-improvement proposal_id=" + proposal.ID + " -->"
-	proposal.IssueBody = doctorWorkflowProposalIssueBody(proposal)
+	proposal.IssueBody = workflowProposalIssueBody(proposal)
 	return proposal
 }
 
-func doctorWorkflowFindingSignalCount(finding doctorWorkflowOptimizationFinding) int {
+func workflowFindingSignalCount(finding WorkflowOptimizationFinding) int {
 	switch finding.RuleID {
-	case doctorWorkflowRuleReworkLaps:
+	case workflowRuleReworkLaps:
 		return int(anyInt64(finding.Evidence["max_rework_laps_per_issue"]))
-	case doctorWorkflowRuleEmptyModelTelemetry:
+	case workflowRuleEmptyModelTelemetry:
 		return int(anyInt64(finding.Evidence["empty_model_recent_sessions"]))
-	case doctorWorkflowRuleSchedulerSkipRate:
+	case workflowRuleSchedulerSkipRate:
 		return int(anyInt64(finding.Evidence["scheduler_skipped_decisions"]))
-	case doctorWorkflowRuleInvalidWorkpadStatusRecurrence:
+	case workflowRuleInvalidWorkpadStatusRecurrence:
 		return int(anyInt64(finding.Evidence["invalid_workpad_status_decisions"]))
-	case doctorWorkflowRuleReviewFlowBehaviorMismatch:
+	case workflowRuleReviewFlowBehaviorMismatch:
 		return int(anyInt64(finding.Evidence["review_entry_count"]))
-	case doctorWorkflowRuleReviewFlowProseMismatch:
+	case workflowRuleReviewFlowProseMismatch:
 		return int(anyInt64(finding.Evidence["matching_phrase_count"]))
-	case doctorWorkflowRuleRunawaySessionTokens:
+	case WorkflowRuleRunawaySessionTokens:
 		return int(anyInt64(finding.Evidence["session_count"]))
-	case doctorWorkflowRulePinnedWorkerModelStale:
+	case workflowRulePinnedWorkerModelStale:
 		return int(anyInt64(finding.Evidence["observed_default_sessions"]))
-	case doctorWorkflowRuleSessionMultiplierKills:
+	case workflowRuleSessionMultiplierKills:
 		return int(anyInt64(finding.Evidence["session_multiplier_kill_count"]))
-	case doctorWorkflowRuleNoSessionTokenBrake:
+	case workflowRuleNoSessionTokenBrake:
 		count := int(anyInt64(finding.Evidence["unbraked_session_count"]))
 		if count > 0 {
 			return count
@@ -132,7 +132,7 @@ func doctorWorkflowFindingSignalCount(finding doctorWorkflowOptimizationFinding)
 	}
 }
 
-func doctorWorkflowFindingProposalTarget(finding doctorWorkflowOptimizationFinding) (string, string, string) {
+func workflowFindingProposalTarget(finding WorkflowOptimizationFinding) (string, string, string) {
 	if len(finding.Patch) > 0 {
 		patch := finding.Patch[0]
 		path := strings.TrimSpace(patch.Path)
@@ -143,51 +143,51 @@ func doctorWorkflowFindingProposalTarget(finding doctorWorkflowOptimizationFindi
 		return target, path, fmt.Sprintf("Set `%s` to `%v` in WORKFLOW.md after human review.", path, patch.Value)
 	}
 	switch finding.RuleID {
-	case doctorWorkflowRuleRepositoryMergePolicy:
+	case WorkflowRuleRepositoryMergePolicy:
 		return "repository", strings.TrimSpace(fmt.Sprint(finding.Evidence["repository"])), strings.TrimSpace(fmt.Sprint(finding.Evidence["fix"]))
-	case doctorWorkflowRuleEmptyModelTelemetry:
+	case workflowRuleEmptyModelTelemetry:
 		return "telemetry", "codex_sessions.model", "Repair effective-model resolution for completed sessions while leaving the project's pin/default policy unchanged."
-	case doctorWorkflowRulePinnedRouteModelRejected:
-		return "workflow", doctorWorkflowModelFindingTargetPath(finding), "Replace the rejected model with a backend-supported pin or remove the pin to inherit the provider default, according to the project's intended model policy."
-	case doctorWorkflowRulePinnedWorkerModelStale:
-		return "workflow", doctorWorkflowModelFindingTargetPath(finding), "Review the configured pin against the observed provider-default generation, then explicitly keep, update, or remove it according to the project's intended model policy."
-	case doctorWorkflowRuleSessionMultiplierKills:
+	case WorkflowRulePinnedRouteModelRejected:
+		return "workflow", workflowModelFindingTargetPath(finding), "Replace the rejected model with a backend-supported pin or remove the pin to inherit the provider default, according to the project's intended model policy."
+	case workflowRulePinnedWorkerModelStale:
+		return "workflow", workflowModelFindingTargetPath(finding), "Review the configured pin against the observed provider-default generation, then explicitly keep, update, or remove it according to the project's intended model policy."
+	case workflowRuleSessionMultiplierKills:
 		return "workflow", "agent.max_session_context_multiplier", "Remove or recalibrate the context multiplier and configure an intentional `agent.max_session_tokens` ceiling after human review."
-	case doctorWorkflowRuleNoSessionTokenBrake:
+	case workflowRuleNoSessionTokenBrake:
 		return "workflow", "agent.max_session_tokens", "Configure an intentional absolute session-token brake after human review."
-	case doctorWorkflowRuleBudgetEstimateDrift:
+	case workflowRuleBudgetEstimateDrift:
 		return "workflow", "budget", "Review budget estimates against observed p90 billable session tokens and update workflow budget guidance if humans approve."
-	case doctorWorkflowRuleInvalidWorkpadStatusRecurrence:
+	case workflowRuleInvalidWorkpadStatusRecurrence:
 		return "workflow", "detent-status", "Update WORKFLOW.md Workpad status instructions so agents use only `in_progress`, `blocked`, or `complete` in the `detent-status` block."
-	case doctorWorkflowRuleReviewFlowBehaviorMismatch:
-		return doctorWorkflowReviewFlowProposalTarget(finding)
-	case doctorWorkflowRuleReviewFlowProseMismatch:
-		return doctorWorkflowReviewFlowProposalTarget(finding)
+	case workflowRuleReviewFlowBehaviorMismatch:
+		return workflowReviewFlowProposalTarget(finding)
+	case workflowRuleReviewFlowProseMismatch:
+		return workflowReviewFlowProposalTarget(finding)
 	default:
 		return "workflow", "", "Review this repeated doctor finding and propose a WORKFLOW.md, prompt, skill, or gate update for human approval."
 	}
 }
 
-func doctorWorkflowModelFindingTargetPath(finding doctorWorkflowOptimizationFinding) string {
+func workflowModelFindingTargetPath(finding WorkflowOptimizationFinding) string {
 	if strings.TrimSpace(fmt.Sprint(finding.Evidence["configured_model_source"])) == "agents.backends.command" {
 		return "agents.backends.command"
 	}
 	return "agents.routes.model"
 }
 
-func doctorWorkflowReviewFlowProposalTarget(finding doctorWorkflowOptimizationFinding) (string, string, string) {
+func workflowReviewFlowProposalTarget(finding WorkflowOptimizationFinding) (string, string, string) {
 	choice := strings.TrimSpace(fmt.Sprint(finding.Evidence["review_flow"]))
 	switch choice {
-	case doctorReviewFlowAutopilot:
+	case reviewFlowAutopilot:
 		return "workflow", "WORKFLOW.md", "Align WORKFLOW.md with configured autopilot: keep completed work in the active state, set `detent-status` to `complete`, and let Detent promote on the configured gate."
-	case doctorReviewFlowReviewGate:
+	case reviewFlowReviewGate:
 		return "workflow", "WORKFLOW.md", "Align WORKFLOW.md with configured review-gate: route completed work through the configured review state and remove prose that promises direct review-state skipping."
 	default:
 		return "workflow", "WORKFLOW.md", "Align WORKFLOW.md handoff prose with the configured review-flow frontmatter after human review."
 	}
 }
 
-func doctorWorkflowProposalIssueBody(proposal doctorWorkflowImprovementProposal) string {
+func workflowProposalIssueBody(proposal WorkflowImprovementProposal) string {
 	var builder strings.Builder
 	builder.WriteString(proposal.IssueMarker)
 	builder.WriteString("\n\n## Problem\n\n")
@@ -224,7 +224,7 @@ func doctorWorkflowProposalIssueBody(proposal doctorWorkflowImprovementProposal)
 	return builder.String()
 }
 
-func doctorWorkflowProposalID(projectID string, signalKind string, pattern string) string {
+func workflowProposalID(projectID string, signalKind string, pattern string) string {
 	raw := strings.ToLower(strings.TrimSpace(projectID)) + "|" + strings.ToLower(strings.TrimSpace(signalKind)) + "|" + strings.ToLower(strings.TrimSpace(pattern))
 	sum := sha256.Sum256([]byte(raw))
 	return "detent-self-improve-" + hex.EncodeToString(sum[:])[:12]

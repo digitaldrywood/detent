@@ -1,6 +1,6 @@
 //go:build unix
 
-package cli
+package doctor
 
 import (
 	"context"
@@ -44,7 +44,7 @@ func TestDoctorInvariantsCancelsDescendants(t *testing.T) {
 	joined := make(chan struct{})
 	go func() {
 		defer close(joined)
-		done <- runDoctorInvariants(ctx, root)
+		done <- RunInvariants(ctx, root)
 	}()
 	var pid int
 	t.Cleanup(func() {
