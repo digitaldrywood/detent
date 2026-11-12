@@ -107,6 +107,60 @@ func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeS
 		}
 	}
 	detail.Reviews = append(detail.Reviews, review)
+	return s.prepareChangeEvidenceWorkflow(ctx, scope, detail, approval, plan, prior, now)
+}
+
+func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, check tracker.ChangeCheck, approval ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
+	if scope.credential.Scope == apiScopeWorker || version.ID != change.CurrentVersion {
+		return nil, nil
+	}
+	plan := &changeReviewWorkflow{audits: map[int64][]eventstore.AuditDisposition{}, evaluatedAt: now}
+	var evidence []eventstore.Evidence
+	var prior bool
+	checks := make([]string, 0, len(version.Checks))
+	for _, expected := range version.Checks {
+		checks = append(checks, expected.CheckRunID)
+	}
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		plan.current, err = r.Change(ctx, change.ID)
+		if err != nil {
+			return err
+		}
+		if plan.current.Revision != int64(change.Revision) || valueOrEmpty(plan.current.CurrentVersionID) != version.ID {
+			return corestore.ErrRevisionConflict
+		}
+		reader, ok := r.(eventstore.ChangeRecoveryReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		evidence, prior, err = reader.ChangeSummaryEvidence(ctx, change.ID, version.ID, plan.current.EvidenceSequence, checks)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{version}}
+	content := eventstore.NewContent(s.runDetailStore())
+	for _, row := range evidence {
+		if row.OrganizationID != scope.organization || row.ChangeID != change.ID || valueOrEmpty(row.VersionID) != version.ID || row.Sequence > plan.current.EvidenceSequence {
+			return nil, eventstore.ErrInvalidRecord
+		}
+		raw, err := content.Evidence(ctx, row)
+		if err != nil {
+			return nil, err
+		}
+		if err := appendBoundedChangeEvidence(&detail, row, raw); err != nil {
+			return nil, err
+		}
+	}
+	detail.Checks = slices.DeleteFunc(detail.Checks, func(old tracker.ChangeCheck) bool { return old.CheckRunID == check.CheckRunID })
+	detail.Checks = append(detail.Checks, check)
+	return s.prepareChangeEvidenceWorkflow(ctx, scope, detail, approval, plan, prior, now)
+}
+
+func (s *Service) prepareChangeEvidenceWorkflow(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, approval ChangeVersionApproval, plan *changeReviewWorkflow, prior bool, now time.Time) (*changeReviewWorkflow, error) {
+	change, version := detail.Change, detail.Versions[0]
 	dispositions := make(map[int64][]securityaudit.Disposition)
 	for _, current := range detail.Reviews {
 		if current.SecurityAudit == nil {
@@ -137,6 +191,7 @@ func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeS
 			}
 		}
 	}
+	var err error
 	plan.transition, err = s.prepareChangeWorkflowTransition(ctx, scope, change, approval, false, now)
 	if err != nil || plan.transition == nil {
 		return nil, err

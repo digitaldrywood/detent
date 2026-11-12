@@ -312,7 +312,7 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 			if request.RunnerID != "" && current.RunnerID != nil && *current.RunnerID != request.RunnerID {
 				return leasestore.Lease{}, tracker.ErrLeaseConflict
 			}
-			if request.LandingCapacity > current.LandingCapacity {
+			if request.LandingCapacity > 0 && (current.LandingCapacity == 0 || request.LandingCapacity < current.LandingCapacity) {
 				current, err = s.queries.UpdateLeaseLandingCapacity(ctx, pgquery.UpdateLeaseLandingCapacityParams{OrganizationID: s.organization, LeaseID: current.LeaseID, FencingToken: current.FencingToken, LandingCapacity: request.LandingCapacity})
 				if err != nil {
 					return leasestore.Lease{}, mapError(ctx, err)

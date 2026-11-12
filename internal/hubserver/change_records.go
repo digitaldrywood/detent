@@ -533,9 +533,37 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 			return s.nativeAPIError(c, err)
 		}
 	}
+	var policyRows currentChangePolicyRows
+	var workflowPlan *changeReviewWorkflow
+	if scope.credential.Scope != apiScopeWorker && version.ID == change.CurrentVersion {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			policyRows, err = readChangeSummaryPolicyRows(ctx, r, scope)
+			return err
+		})
+		if err != nil {
+			return s.nativeAPIError(c, projectRecordError(err))
+		}
+		approval, err := hydrateChangeSummaryPolicy(ctx, content, scope, policyRows)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		workflowPlan, err = s.prepareChangeCheckWorkflow(ctx, scope, change, version, check, approval, now)
+		if err != nil {
+			return s.nativeAPIError(c, projectRecordError(err))
+		}
+	}
+	var transition *changeWorkflowTransition
+	if workflowPlan != nil {
+		transition = workflowPlan.transition
+	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+				return err
+			}
+			transitionReady, err := s.lockChangeWorkflowTransition(ctx, w, scope, transition)
+			if err != nil {
 				return err
 			}
 			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
@@ -554,6 +582,28 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 			} else if !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
+			workflowCurrent := false
+			if workflowPlan != nil {
+				current, err := w.LockChange(ctx, change.ID)
+				if err != nil {
+					return err
+				}
+				workflowCurrent, err = s.recheckChangeReviewWorkflow(ctx, w, scope, workflowPlan, current)
+				if err != nil {
+					return err
+				}
+				currentVersion, err := w.Version(ctx, change.ID, version.ID)
+				if err != nil {
+					return err
+				}
+				rows, err := readChangeSummaryPolicyRows(ctx, w, scope)
+				if err != nil {
+					return err
+				}
+				if !reflect.DeepEqual(rows, policyRows) || !reflect.DeepEqual(currentVersion, versionRecord) {
+					return corestore.ErrRevisionConflict
+				}
+			}
 			if createdEvidence {
 				if err := bindChangeRecordContent(ctx, w, scope, string(change.WorkItemID), nil, request.Evidence, "evidence"); err != nil {
 					return err
@@ -565,7 +615,12 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 					return err
 				}
 			}
-			_, err := w.PutReceipt(ctx, receipt)
+			if transitionReady && workflowCurrent {
+				if err := s.applyChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
+					return err
+				}
+			}
+			_, err = w.PutReceipt(ctx, receipt)
 			return err
 		})
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {

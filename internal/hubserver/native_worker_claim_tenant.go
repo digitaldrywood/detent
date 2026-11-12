@@ -703,6 +703,9 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			}
 		}
 		var landingCapacity int64
+		if replay != nil && replay.LandingCapacity > 0 {
+			landingCapacity = int64(request.LandingCapacity)
+		}
 		if replay == nil && plan.landingRequired {
 			usage, err := w.LandingCapacityUsage(ctx, scope.project, authoritativeNow)
 			if err != nil {

@@ -32,7 +32,7 @@ WITH lease_created AS (
 SELECT lease_created.organization_id, lease_created.lease_id, lease_created.fencing_token, lease_created.issue_id, lease_created.machine_id, lease_created.session_id, lease_created.work_item_revision, lease_created.landing_capacity, lease_created.acquired_at, lease_created.renewed_at, lease_created.expires_at, lease_created.released_at, lease_created.release_reason, lease_created.project_id AS lease_project_id, lease_created.runner_id, lease_created.isolation_tier FROM lease_created;
 
 -- name: UpdateLeaseLandingCapacity :one
-UPDATE leases SET landing_capacity=GREATEST(landing_capacity,sqlc.arg(landing_capacity)::bigint)
+UPDATE leases SET landing_capacity=CASE WHEN landing_capacity=0 THEN sqlc.arg(landing_capacity)::bigint WHEN sqlc.arg(landing_capacity)::bigint>0 THEN LEAST(landing_capacity,sqlc.arg(landing_capacity)::bigint) ELSE landing_capacity END
 WHERE organization_id=sqlc.arg(organization_id) AND lease_id=sqlc.arg(lease_id)
 AND fencing_token=sqlc.arg(fencing_token)::bigint AND released_at IS NULL
 RETURNING *;
@@ -185,13 +185,13 @@ WITH lease_locked AS MATERIALIZED (
  UPDATE leases l SET
  renewed_at=CASE WHEN sqlc.arg(operation)::text='renew' THEN at.now ELSE l.renewed_at END,
  expires_at=CASE WHEN sqlc.arg(operation)::text='renew' THEN at.now+sqlc.arg(ttl_us)::bigint*interval '1 microsecond' ELSE l.expires_at END,
- landing_capacity=CASE WHEN sqlc.arg(operation)::text='renew' AND sqlc.arg(landing_capacity)::bigint>0 THEN sqlc.arg(landing_capacity)::bigint ELSE l.landing_capacity END,
+ landing_capacity=CASE WHEN sqlc.arg(operation)::text='renew' AND sqlc.arg(landing_capacity)::bigint>0 THEN CASE WHEN l.landing_capacity=0 THEN sqlc.arg(landing_capacity)::bigint ELSE LEAST(l.landing_capacity,sqlc.arg(landing_capacity)::bigint) END ELSE l.landing_capacity END,
  released_at=CASE WHEN sqlc.arg(operation)::text='renew' THEN l.released_at ELSE at.now END,
  release_reason=CASE WHEN sqlc.arg(operation)::text='renew' THEN l.release_reason WHEN sqlc.arg(operation)::text='expire' THEN 'expired' ELSE sqlc.arg(reason)::text END
  FROM lease_locked,at
  WHERE l.organization_id=lease_locked.organization_id AND l.lease_id=lease_locked.lease_id
  AND lease_locked.fencing_token=sqlc.arg(fencing_token)::bigint AND lease_locked.released_at IS NULL
- AND CASE WHEN sqlc.arg(operation)::text='expire' THEN lease_locked.expires_at<=at.now ELSE lease_locked.expires_at>at.now END
+ AND CASE WHEN sqlc.arg(operation)::text='expire' THEN lease_locked.expires_at<=at.now ELSE lease_locked.expires_at>at.now OR sqlc.arg(operation)::text='renew' AND sqlc.arg(landing_capacity)::bigint>0 END
  AND (sqlc.arg(operation)::text<>'expire' OR NOT EXISTS (
   SELECT 1 FROM native_attempts a WHERE a.organization_id=lease_locked.organization_id AND a.lease_id=lease_locked.lease_id
   AND a.fencing_token=lease_locked.fencing_token AND a.status='running'

@@ -265,7 +265,7 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 			return tracker.ErrMachineNotFound
 		}
 	}
-	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) || int64(authority.Request.FencingToken) != lease.FencingToken {
+	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) && (authority.Operation != "renew" || authority.Request.LandingCapacity <= 0 && lease.LandingCapacity <= 0)) || int64(authority.Request.FencingToken) != lease.FencingToken {
 		return tracker.ErrStaleFencingToken
 	}
 	if human {

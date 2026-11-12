@@ -19,6 +19,7 @@ type FleetName struct {
 }
 
 type FleetLease struct {
+	LandingRequired    *bool
 	WorkflowState      string
 	CapacityProject    string
 	RuntimeAttemptID   string

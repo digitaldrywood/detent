@@ -329,6 +329,10 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 }
 
 func (s *session) LandingCapacityUsage(ctx context.Context, project tracker.ProjectID, now time.Time) (claimstore.LandingCapacityUsage, error) {
+	return s.LandingCapacityUsageExcludingLease(ctx, project, now, "")
+}
+
+func (s *session) LandingCapacityUsageExcludingLease(ctx context.Context, project tracker.ProjectID, now time.Time, lease string) (claimstore.LandingCapacityUsage, error) {
 	const statement = `SELECT
  count(*) FILTER (WHERE l.landing_capacity>0 OR lower(trim(COALESCE(i.workflow_state_name,'')))='merging' AND policy.gate_github_pull_request IS TRUE OR policy.gate_github_pull_request IS TRUE AND pending.landing_waiting AND pending.landing_change_id=change.id AND pending.landing_version_id=version.id AND pending.landing_head_sha=version.head_sha)::bigint,
 	COALESCE(min(NULLIF(l.landing_capacity,0)) FILTER (WHERE l.landing_capacity>0 OR lower(trim(COALESCE(i.workflow_state_name,'')))='merging' AND policy.gate_github_pull_request IS TRUE OR policy.gate_github_pull_request IS TRUE AND pending.landing_waiting AND pending.landing_change_id=change.id AND pending.landing_version_id=version.id AND pending.landing_head_sha=version.head_sha),0)::bigint,
@@ -346,13 +350,13 @@ LEFT JOIN policy_revisions policy ON policy.organization_id=l.organization_id AN
 LEFT JOIN LATERAL (
  SELECT event.landing_waiting,event.landing_change_id,event.landing_version_id,event.landing_head_sha
  FROM native_attempts attempt
- JOIN collaboration_events event ON event.organization_id=attempt.organization_id AND event.project_id=i.project_id AND event.attempt_id=attempt.id
+ JOIN collaboration_events event ON event.organization_id=attempt.organization_id AND event.project_id=i.project_id AND event.work_item_id=i.native_id AND event.attempt_id=attempt.id
  WHERE attempt.organization_id=l.organization_id AND attempt.issue_id=i.id AND attempt.lease_id=l.lease_id
  ORDER BY event.sequence DESC LIMIT 1
 ) pending ON true
-WHERE l.organization_id=$1 AND i.project_id=$2 AND l.released_at IS NULL AND l.expires_at>$3`
+WHERE l.organization_id=$1 AND i.project_id=$2 AND l.released_at IS NULL AND l.expires_at>$3 AND l.lease_id<>$4`
 	var usage claimstore.LandingCapacityUsage
-	err := s.db.QueryRow(ctx, statement, s.organization, project, recordTime(now)).Scan(&usage.Active, &usage.Limit, &usage.Unknown)
+	err := s.db.QueryRow(ctx, statement, s.organization, project, recordTime(now), lease).Scan(&usage.Active, &usage.Limit, &usage.Unknown)
 	if err != nil {
 		return claimstore.LandingCapacityUsage{}, mapError(ctx, err)
 	}

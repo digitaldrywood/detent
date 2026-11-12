@@ -196,14 +196,31 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 		return s.nativeAPIError(c, nativePublicInvalid("Lease TTL is invalid"))
 	}
 	scope := nativeRequestScope(c)
+	landing, err := s.prepareNativeLandingRenewal(c.Request().Context(), scope, c.Param("lease"), request.LandingCapacity)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	var lease leasestore.Lease
 	var details NativeLeaseResponseDetails
 	err = s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		reader := s.nativeLeaseReader(w, scope)
+		current, err := reader.Lease(c.Request().Context(), c.Param("lease"))
+		if err != nil {
+			return err
+		}
+		if landing == nil && current.LandingCapacity > 0 {
+			landing = &nativeLandingRenewal{lease: current}
+		}
+		if landing != nil {
+			if err := w.LockWorkItemProject(c.Request().Context(), scope.project); err != nil {
+				return err
+			}
+			reader = s.nativeLeaseReader(w, scope)
+		}
 		if _, err := reader.RunnerForLease(c.Request().Context(), c.Param("lease")); err != nil {
 			return err
 		}
-		current, err := reader.Lease(c.Request().Context(), c.Param("lease"))
+		current, err = reader.Lease(c.Request().Context(), c.Param("lease"))
 		if err != nil {
 			return err
 		}
@@ -214,6 +231,10 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 		landingCapacity := int64(request.LandingCapacity)
 		if current.LandingCapacity > 0 && (landingCapacity == 0 || landingCapacity > current.LandingCapacity) {
 			landingCapacity = current.LandingCapacity
+		}
+		landingCapacity, err = s.reserveNativeLandingRenewal(c.Request().Context(), w, scope, landing, current, landingCapacity)
+		if err != nil {
+			return err
 		}
 		lease, err = w.RenewWithLandingCapacity(c.Request().Context(), leasestore.Fence{LeaseID: c.Param("lease"), FencingToken: int64(request.FencingToken)}, ttl, landingCapacity)
 		if err != nil {

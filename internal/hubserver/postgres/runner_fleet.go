@@ -149,10 +149,10 @@ func (s *session) fleetLeaseRows(ctx context.Context, now time.Time, limit int, 
 	}
 	workflowColumns, runtimeJoins := "", ""
 	if runtime {
-		workflowColumns = ",coalesce(i.workflow_state_name,''),CASE WHEN lower(trim(coalesce(i.workflow_state_name,'')))='merging' AND landing_policy.gate_github_pull_request IS FALSE THEN i.project_id ELSE '' END"
+		workflowColumns = ",coalesce(i.workflow_state_name,''),CASE WHEN lower(trim(coalesce(i.workflow_state_name,'')))='merging' AND landing_policy.gate_github_pull_request IS FALSE THEN i.project_id ELSE '' END,CASE WHEN l.landing_capacity>0 THEN true WHEN lower(trim(coalesce(i.workflow_state_name,''))) = 'merging' OR pending.landing_waiting AND pending.landing_change_id=landing_policy.change_id AND pending.landing_version_id=landing_policy.version_id AND pending.landing_head_sha=landing_policy.head_sha THEN landing_policy.gate_github_pull_request ELSE false END"
 		runtimeJoins = `
 LEFT JOIN LATERAL (
- SELECT approved.gate_github_pull_request FROM change_issue_links link
+ SELECT approved.gate_github_pull_request,change.id AS change_id,version.id AS version_id,version.head_sha FROM change_issue_links link
  JOIN change_requests change ON change.organization_id=link.organization_id AND change.project_id=link.project_id AND change.id=link.change_id
  JOIN change_versions version ON version.organization_id=change.organization_id AND version.change_id=change.id AND version.id=change.current_version_id
  JOIN policy_revisions approved ON approved.organization_id=version.organization_id AND approved.project_id=i.project_id AND approved.policy_id=version.policy_revision_id
@@ -160,6 +160,13 @@ LEFT JOIN LATERAL (
  WHERE link.organization_id=i.organization_id AND link.project_id=i.project_id AND link.work_item_id=i.native_id
  ORDER BY link.created_at DESC,link.change_id DESC LIMIT 1
 ) landing_policy ON true
+LEFT JOIN LATERAL (
+ SELECT event.landing_waiting,event.landing_change_id,event.landing_version_id,event.landing_head_sha
+ FROM native_attempts attempt
+ JOIN collaboration_events event ON event.organization_id=attempt.organization_id AND event.project_id=i.project_id AND event.work_item_id=i.native_id AND event.attempt_id=attempt.id
+ WHERE attempt.organization_id=l.organization_id AND attempt.issue_id=i.id AND attempt.lease_id=l.lease_id
+ ORDER BY event.sequence DESC LIMIT 1
+) pending ON true
 `
 	}
 	rows, err := s.db.Query(ctx, prefix+`SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,''),coalesce(policy.policy_id,''),coalesce(current_policy.policy_id,''),l.renewed_at,coalesce(runtime.id,''),runtime.runtime_heartbeat_at`+workflowColumns+`
@@ -183,7 +190,7 @@ LEFT JOIN project_policies current_policy ON current_policy.organization_id=i.or
 		var observed, reset pgtype.Timestamptz
 		destinations := []any{&row.RunnerID, &row.MachineID, &row.SessionID, &row.LandingCapacity, &row.Lease.ID, &row.Lease.FencingToken, &row.Lease.WorkItemID, &row.Lease.Title, &row.Lease.ProjectID, &row.Lease.ExpiresAt, &row.ActorPrincipalID, &reservation.Role, &reservation.Backend, &reservation.Model, &reservation.Report.Provider, &reservation.Report.Backend, &reservation.Report.AccountAlias, &reservation.Report.SharedAccountAlias, &reservation.Report.Billing, &reservation.Report.MaxConcurrent, &reservation.Report.Availability, &observed, &reset, &reservation.Reason, &row.PolicyID, &row.CurrentPolicyID, &row.RenewedAt, &row.RuntimeAttemptID, &row.RuntimeHeartbeatAt}
 		if runtime {
-			destinations = append(destinations, &row.WorkflowState, &row.CapacityProject)
+			destinations = append(destinations, &row.WorkflowState, &row.CapacityProject, &row.LandingRequired)
 		}
 		if err := rows.Scan(destinations...); err != nil {
 			return nil, mapError(ctx, err)

@@ -77,8 +77,16 @@ func runtimeLandingCapacity(snapshot runnerstore.RuntimeProviderSnapshot, projec
 	}
 	used, capacity := 0, 0
 	for _, lease := range snapshot.Leases {
-		if lease.Lease.ProjectID != project || lease.LandingCapacity <= 0 && lease.WorkflowState != "Merging" {
+		if lease.Lease.ProjectID != project {
 			continue
+		}
+		if lease.LandingCapacity <= 0 {
+			if lease.LandingRequired == nil {
+				return false, nativeLandingCapacityUnknown
+			}
+			if !*lease.LandingRequired {
+				continue
+			}
 		}
 		used++
 		if lease.LandingCapacity > 0 && (capacity == 0 || int(lease.LandingCapacity) < capacity) {

@@ -1209,13 +1209,13 @@ WITH lease_locked AS MATERIALIZED (
  UPDATE leases l SET
  renewed_at=CASE WHEN $4::text='renew' THEN at.now ELSE l.renewed_at END,
  expires_at=CASE WHEN $4::text='renew' THEN at.now+$5::bigint*interval '1 microsecond' ELSE l.expires_at END,
- landing_capacity=CASE WHEN $4::text='renew' AND $6::bigint>0 THEN $6::bigint ELSE l.landing_capacity END,
+ landing_capacity=CASE WHEN $4::text='renew' AND $6::bigint>0 THEN CASE WHEN l.landing_capacity=0 THEN $6::bigint ELSE LEAST(l.landing_capacity,$6::bigint) END ELSE l.landing_capacity END,
  released_at=CASE WHEN $4::text='renew' THEN l.released_at ELSE at.now END,
  release_reason=CASE WHEN $4::text='renew' THEN l.release_reason WHEN $4::text='expire' THEN 'expired' ELSE $7::text END
  FROM lease_locked,at
  WHERE l.organization_id=lease_locked.organization_id AND l.lease_id=lease_locked.lease_id
  AND lease_locked.fencing_token=$8::bigint AND lease_locked.released_at IS NULL
- AND CASE WHEN $4::text='expire' THEN lease_locked.expires_at<=at.now ELSE lease_locked.expires_at>at.now END
+ AND CASE WHEN $4::text='expire' THEN lease_locked.expires_at<=at.now ELSE lease_locked.expires_at>at.now OR $4::text='renew' AND $6::bigint>0 END
  AND ($4::text<>'expire' OR NOT EXISTS (
   SELECT 1 FROM native_attempts a WHERE a.organization_id=lease_locked.organization_id AND a.lease_id=lease_locked.lease_id
   AND a.fencing_token=lease_locked.fencing_token AND a.status='running'
@@ -1605,7 +1605,7 @@ func (q *Queries) SetAttemptRuntimeHeartbeat(ctx context.Context, arg SetAttempt
 }
 
 const updateLeaseLandingCapacity = `-- name: UpdateLeaseLandingCapacity :one
-UPDATE leases SET landing_capacity=GREATEST(landing_capacity,$1::bigint)
+UPDATE leases SET landing_capacity=CASE WHEN landing_capacity=0 THEN $1::bigint WHEN $1::bigint>0 THEN LEAST(landing_capacity,$1::bigint) ELSE landing_capacity END
 WHERE organization_id=$2 AND lease_id=$3
 AND fencing_token=$4::bigint AND released_at IS NULL
 RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason, project_id, runner_id, isolation_tier

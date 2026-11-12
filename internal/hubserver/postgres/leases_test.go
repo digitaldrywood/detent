@@ -986,26 +986,79 @@ func TestLeaseClaimEligibility(t *testing.T) {
 	}
 }
 
-func TestLeaseClaimReplayOnlyRaisesLandingCapacity(t *testing.T) {
+func TestLeaseClaimReplayOnlyTightensLandingCapacity(t *testing.T) {
 	r, _ := repositoryFor(t, template.Database(t), smallPool())
 	seedLeaseFamily(t, r, "org_first")
 	firstRequest := leaseClaim(1)
-	firstRequest.LandingCapacity = 2
 	first := claimLease(t, r, "org_first", firstRequest)
-
-	replayRequest := firstRequest
-	replayRequest.LeaseID = "lease_replay"
-	replayRequest.LandingCapacity = 4
-	replay := claimLease(t, r, "org_first", replayRequest)
-	if replay.LeaseID != first.LeaseID || replay.FencingToken != first.FencingToken || replay.LandingCapacity != 4 {
-		t.Fatalf("raised-capacity replay=%+v original=%+v", replay, first)
+	for _, test := range []struct {
+		name     string
+		capacity int64
+		want     int64
+	}{
+		{name: "establish", capacity: 2, want: 2},
+		{name: "cannot widen", capacity: 4, want: 2},
+		{name: "tighten", capacity: 1, want: 1},
+		{name: "cannot clear", capacity: 0, want: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			replayRequest := firstRequest
+			replayRequest.LeaseID = "lease_replay"
+			replayRequest.LandingCapacity = test.capacity
+			replay := claimLease(t, r, "org_first", replayRequest)
+			if replay.LeaseID != first.LeaseID || replay.FencingToken != first.FencingToken || replay.LandingCapacity != test.want || !replay.ExpiresAt.Equal(first.ExpiresAt) {
+				t.Fatalf("capacity replay=%+v original=%+v want capacity=%d", replay, first, test.want)
+			}
+		})
 	}
+}
 
-	replayRequest.LeaseID = "lease_replay_lower"
-	replayRequest.LandingCapacity = 1
-	lowered := claimLease(t, r, "org_first", replayRequest)
-	if lowered.LeaseID != first.LeaseID || lowered.FencingToken != first.FencingToken || lowered.LandingCapacity != 4 {
-		t.Fatalf("lower-capacity replay=%+v original=%+v", lowered, first)
+func TestLandingLeaseRenewalPreservesFenceAndCeiling(t *testing.T) {
+	for _, state := range []string{"live", "expired", "released", "reassigned"} {
+		t.Run(state, func(t *testing.T) {
+			admin := template.Database(t)
+			r, _ := repositoryFor(t, admin, smallPool())
+			seedLeaseFamily(t, r, "org_first")
+			request := leaseClaim(1)
+			request.LandingCapacity = 3
+			lease := claimLease(t, r, "org_first", request)
+			if state == "expired" || state == "reassigned" {
+				expireLeaseFixture(t, admin, "org_first", lease.LeaseID)
+			}
+			if state == "released" {
+				if err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error {
+					_, err := w.Release(t.Context(), leaseFence(lease), "cancelled")
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if state == "reassigned" {
+				request.LeaseID, request.SessionID = "replacement", "replacement"
+				claimLease(t, r, "org_first", request)
+			}
+			err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error {
+				renewed, err := w.RenewWithLandingCapacity(t.Context(), leaseFence(lease), time.Hour, 1)
+				if err != nil {
+					return err
+				}
+				if renewed.LeaseID != lease.LeaseID || renewed.FencingToken != lease.FencingToken || renewed.LandingCapacity != 1 || !renewed.ExpiresAt.After(lease.ExpiresAt) {
+					t.Fatalf("landing renewal=%+v original=%+v", renewed, lease)
+				}
+				wider, err := w.RenewWithLandingCapacity(t.Context(), leaseFence(lease), time.Hour, 4)
+				if err == nil && wider.LandingCapacity != 1 {
+					t.Fatalf("renewal widened ceiling to %d", wider.LandingCapacity)
+				}
+				return err
+			})
+			if state == "released" || state == "reassigned" {
+				if !errors.Is(err, tracker.ErrStaleFencingToken) {
+					t.Fatalf("stale landing renewal error=%v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

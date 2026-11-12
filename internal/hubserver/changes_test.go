@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1958,12 +1957,12 @@ func (f landingCapacityFixture) claim(t *testing.T, r runnerFixture, issue track
 func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name                                                                                                                            string
-		admission                                                                                                                       string
-		ownerCapacity, contenderCapacity, renewalCapacity, replayCapacity, expiredRenewalCapacity                                       int
-		boundary                                                                                                                        string
-		provider, sprite, overflow                                                                                                      bool
-		nativeOnly, sameBatch, otherProject, laneChanged, expired, concurrent, fallback, room, renewFree, renewRace, direct, directRace bool
+		name                                                                                                                                           string
+		admission                                                                                                                                      string
+		ownerCapacity, contenderCapacity, renewalCapacity, replayCapacity, expiredRenewalCapacity                                                      int
+		boundary                                                                                                                                       string
+		provider, sprite, overflow                                                                                                                     bool
+		nativeOnly, sameBatch, otherProject, laneChanged, expired, concurrent, fallback, room, renewFree, renewRace, direct, directRace, renewHostBusy bool
 	}{
 		{name: "one project across hosts", ownerCapacity: 1, contenderCapacity: 1, admission: "skipped"},
 		{name: "legacy owner occupies a slot", contenderCapacity: 1, admission: "unknown"},
@@ -1978,6 +1977,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 		{name: "lane change retains live occupancy", ownerCapacity: 1, contenderCapacity: 1, laneChanged: true},
 		{name: "expired owner frees occupancy", ownerCapacity: 1, contenderCapacity: 1, expired: true, admission: "ready"},
 		{name: "expired owner may renew a free slot", ownerCapacity: 1, contenderCapacity: 1, expired: true, renewFree: true},
+		{name: "expired renewal rechecks runner occupancy", ownerCapacity: 3, contenderCapacity: 3, expired: true, renewHostBusy: true},
 		{name: "expired changed-lane owner cannot renew an occupied slot", ownerCapacity: 1, contenderCapacity: 1, expired: true, laneChanged: true},
 		{name: "negative capacity is invalid", ownerCapacity: -1},
 		{name: "separate project proceeds", ownerCapacity: 1, contenderCapacity: 1, otherProject: true, admission: "ready"},
@@ -2013,15 +2013,11 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				secondFixture = newLandingCapacityFixture(t, f.service, "independent-landings", true)
 			}
 			second := secondFixture.ready(t, "second change")
-			if test.direct {
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET workflow_state_name='In Progress' WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, second.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+			if test.direct || test.directRace {
+				second = updateNativeWorkPageFixtureIssue(t, f.nativeFixture, second.WorkItemID, func(issue *tracker.NativeIssue) { issue.State = "In Progress" })
 			}
 			if test.directRace {
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET workflow_state_name='In Progress' WHERE organization_id=$1 AND project_id=$2 AND native_id IN ($3,$4)", f.project.OrganizationID, f.project.ID, first.WorkItemID, second.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				first = updateNativeWorkPageFixtureIssue(t, f.nativeFixture, first.WorkItemID, func(issue *tracker.NativeIssue) { issue.State = "In Progress" })
 			}
 			owner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			if test.sprite {
@@ -2218,10 +2214,11 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if direct.ID == prior.ID || direct.FencingToken <= prior.FencingToken {
 					t.Fatal("waiting direct landing did not acquire a new fenced owner")
 				}
-				response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, path+"?view=recovery", f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
-				var projected tracker.NativeIssue
-				decodeHubResponse(t, response, &projected)
+				var recovery tracker.NativeRecovery
+				decodeHubResponse(t, response, &recovery)
+				projected := recovery.Issue
 				if projected.ListChange == nil || !projected.ListChange.LandingPending || projected.ListChange.HeadSHA != published.HeadSHA {
 					t.Fatalf("waiting direct landing lost source intent: %#v", projected.ListChange)
 				}
@@ -2239,13 +2236,12 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 				third := f.ready(t, "third change")
 				requireNativeStatus(t, f.claim(t, owner, third, "next-landing", test.ownerCapacity), http.StatusConflict)
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, second.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-				response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+				updateNativeWorkPageFixtureIssue(t, f.nativeFixture, second.WorkItemID, func(*tracker.NativeIssue) {})
+				response = performHubAPIRequest(t, f.service, http.MethodGet, path+"?view=recovery", f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
-				projected = tracker.NativeIssue{}
-				decodeHubResponse(t, response, &projected)
+				recovery = tracker.NativeRecovery{}
+				decodeHubResponse(t, response, &recovery)
+				projected = recovery.Issue
 				if projected.ListChange != nil && projected.ListChange.LandingPending {
 					t.Fatal("operator revision change retained stale direct-landing intent")
 				}
@@ -2254,9 +2250,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				return
 			}
 			if test.laneChanged {
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE issues SET workflow_state_name='In Progress' WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, first.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
+				first = updateNativeWorkPageFixtureIssue(t, f.nativeFixture, first.WorkItemID, func(issue *tracker.NativeIssue) { issue.State = "In Progress" })
 			}
 			if test.expired {
 				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.now().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
@@ -2274,6 +2268,13 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", expiry, f.project.OrganizationID, lease.ID); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if test.renewHostBusy {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, owner.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "Example runner", "state": "active", "capacity_limit": 1, "project_ids": []tracker.ProjectID{f.project.ID}, "idempotency_key": "renewal-occupancy"}), http.StatusOK)
+				busy := f.ready(t, "replacement slot")
+				requireNativeStatus(t, f.claim(t, owner, busy, "replacement-slot", test.ownerCapacity), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{LandingCapacity: test.ownerCapacity, FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusConflict)
+				return
 			}
 			if test.renewFree {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
@@ -2950,12 +2951,12 @@ func TestReviewedChangePromotesOnAnyEvidence(t *testing.T) {
 					request := newHubAPIRequest(t, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"})
 					if test.expireDuringPreparation {
 						advanced := false
-						ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+						ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
 							if !advanced && strings.Contains(query, "name: RecordCurrentChangeReviewSequences") {
 								advanced = true
 								clock.Add(int64(time.Hour))
 							}
-						}})
+						})
 						request = request.WithContext(ctx)
 					}
 					response := httptest.NewRecorder()
