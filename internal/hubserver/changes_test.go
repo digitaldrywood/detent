@@ -2951,7 +2951,6 @@ func TestReviewedChangePromotesOnAnyEvidence(t *testing.T) {
 					if test.expireDuringPreparation {
 						advanced := false
 						ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-							t.Logf("DEBUGE trace %.70q", query)
 							if !advanced && strings.Contains(query, "name: RecordCurrentChangeReviewSequences") {
 								advanced = true
 								clock.Add(int64(time.Hour))
@@ -3258,8 +3257,6 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				var version tracker.ChangeVersion
 				decodeHubResponse(t, response, &version)
-				debugResponse := performHubAPIRequest(t, f.service, http.MethodGet, changePath, f.token, nil)
-				t.Logf("DEBUGE version=%s prior=%s change=%s", version.ID, changes[0].CurrentVersion, debugResponse.Body.String()[:min(600, debugResponse.Body.Len())])
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve-republished"}, Decision: "approved"}), http.StatusOK)
 			}
 			if got := ready(); got != test.want {

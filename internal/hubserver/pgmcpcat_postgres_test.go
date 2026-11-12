@@ -43,7 +43,7 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 		now := service.config.now().UTC()
 		blocker := tracker.NativeIssue{
 			NativeReference: tracker.NativeReference{OrganizationID: tracker.OrganizationID(org), ProjectID: "compat", WorkItemID: "wi_compat_blocker", Number: 2, Revision: 1, Profile: "github_compatible"},
-			Title: "Example dependency blocker", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: org + "_owner"},
+			Title:           "Example dependency blocker", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: org + "_owner"},
 			CreatedAt: now, UpdatedAt: now,
 		}
 		blockerRaw, err := json.Marshal(blocker)

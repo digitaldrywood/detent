@@ -1496,7 +1496,7 @@ func operatorChangeLandingAttempt(t *testing.T, f changeFixture, version tracker
 	t.Helper()
 	leaseID := newNativeID("lease")
 	lease := coordinatorActionLease(t, f.service, f.project.OrganizationID, f.issue.WorkItemID, leaseID)
-	data := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Phase: "completed", HeartbeatAt: at, Landing: &receipt}}
+	data := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", PolicyID: version.PolicyID, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Phase: "completed", HeartbeatAt: at, Landing: &receipt}}
 	if validation {
 		data.Runtime.Validation = receipt.Gate
 	}
