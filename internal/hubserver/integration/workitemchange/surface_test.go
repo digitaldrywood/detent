@@ -1,29 +1,19 @@
-package hubserver
+package workitemchange_test
 
 import (
 	"net/http"
 	"testing"
 
+	"fmt"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"net/url"
+	"time"
 )
-
-// readWorkItem reads one work item, with or without the change review
-// surface, through the operator API.
-func readWorkItem(t *testing.T, f nativeFixture, id tracker.NativeWorkItemID, query string) tracker.NativeIssue {
-	t.Helper()
-	if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: id}, f.service.config.now()); err != nil {
-		t.Fatal(err)
-	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id)+query, f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	var issue tracker.NativeIssue
-	decodeHubResponse(t, response, &issue)
-	return issue
-}
 
 // TestWorkItemChangeSurfaceIsOptional pins the two halves of the resource
 // contract: the default work item resource is what it always was, and an
@@ -33,7 +23,7 @@ func TestWorkItemChangeSurfaceIsOptional(t *testing.T) {
 
 	f := newAttemptDiffFixture(t)
 
-	if issue := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, ""); issue.Change != nil {
+	if issue := readWorkItem(t, f.fixture, f.issue.WorkItemID, ""); issue.Change != nil {
 		t.Fatalf("change = %#v, want none unless the caller asked for it", *issue.Change)
 	}
 	requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodGet,
@@ -50,7 +40,7 @@ func TestWorkItemChangeSurfaceReportsNoConnector(t *testing.T) {
 
 	f := newAttemptDiffFixture(t)
 
-	change := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change").Change
+	change := readWorkItem(t, f.fixture, f.issue.WorkItemID, "?include=change").Change
 	if change == nil {
 		t.Fatal("change = nil, want the change review surface")
 	}
@@ -79,7 +69,7 @@ func TestWorkItemChangeSurfaceReportsAConnectorWithNoPullRequest(t *testing.T) {
 
 	f := newAttemptDiffFixture(t)
 	other := f.create(t, "Other item with a pull request")
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := f.repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), f.project.ID)
 		if err != nil {
 			return err
@@ -90,23 +80,23 @@ func TestWorkItemChangeSurfaceReportsAConnectorWithNoPullRequest(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	now := f.service.config.now()
-	input := changeTestInput()
+	now := time.Now()
+	input := hubtest.ChangeInput(hubtest.PolicyDescriptor().ID)
 	input.Repository = "https://github.com/example-org/example-project"
 	input.External = &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: "https://github.com/example-org/example-project/pull/1"}
-	version := tracker.ChangeVersion{ID: "other_version", ChangeID: "other_change", Number: 1, ChangeVersionInput: input, Policy: hubTestPolicy(), Actor: other.Actor, CreatedAt: now}
+	version := tracker.ChangeVersion{ID: "other_version", ChangeID: "other_change", Number: 1, ChangeVersionInput: input, Policy: hubtest.PolicyDescriptor(), Actor: other.Actor, CreatedAt: now}
 	changeRequest := tracker.ChangeRequest{ID: version.ChangeID, OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: other.WorkItemID,
 		Revision: 1, Title: "Other item change", CurrentVersion: version.ID, CreatedAt: now, UpdatedAt: now}
-	content := eventstore.NewContent(f.service.runDetailStore())
-	changeRow, err := content.PrepareChange(t.Context(), f.project.OrganizationID, historyTestJSON(t, changeRequest))
+	content := eventstore.NewContent(f.details)
+	changeRow, err := content.PrepareChange(t.Context(), f.project.OrganizationID, testJSON(t, changeRequest))
 	if err != nil {
 		t.Fatal(err)
 	}
-	versionRow, err := content.PrepareVersion(t.Context(), f.project.OrganizationID, historyTestJSON(t, version))
+	versionRow, err := content.PrepareVersion(t.Context(), f.project.OrganizationID, testJSON(t, version))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := f.repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
 			return err
 		}
@@ -115,7 +105,7 @@ func TestWorkItemChangeSurfaceReportsAConnectorWithNoPullRequest(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if retained := readWorkItem(t, f.nativeFixture, other.WorkItemID, "?include=change").Change; retained == nil || retained.Number != 1 || retained.ChangeID != changeRequest.ID {
+	if retained := readWorkItem(t, f.fixture, other.WorkItemID, "?include=change").Change; retained == nil || retained.Number != 1 || retained.ChangeID != changeRequest.ID {
 		t.Fatalf("other item did not retain its own pull request: %+v", retained)
 	}
 
@@ -125,7 +115,7 @@ func TestWorkItemChangeSurfaceReportsAConnectorWithNoPullRequest(t *testing.T) {
 	})), http.StatusAccepted)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
 		f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, tracker.NativeRunEvent{
-			Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
+			Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1,
 			Data: tracker.NativeRunData{
 				Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
 				LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt,
@@ -133,7 +123,7 @@ func TestWorkItemChangeSurfaceReportsAConnectorWithNoPullRequest(t *testing.T) {
 			},
 		}), http.StatusOK)
 
-	issue := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
+	issue := readWorkItem(t, f.fixture, f.issue.WorkItemID, "?include=change")
 	if issue.Change == nil {
 		t.Fatal("change = nil, want the change review surface")
 	}
@@ -164,14 +154,14 @@ func TestWorkItemChangeSurfaceFollowsTheAttemptDiff(t *testing.T) {
 		Path: "main.go", Status: tracker.DiffStatusModified, Additions: 1, Deletions: 1,
 		Patch: "@@ -1 +1 @@\n-return \"Hello, \" + name\n+return \"Hello, \" + name + \"!\"\n",
 	})), http.StatusAccepted)
-	if change := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change").Change; change.Revision != 0 {
+	if change := readWorkItem(t, f.fixture, f.issue.WorkItemID, "?include=change").Change; change.Revision != 0 {
 		t.Fatalf("revision = %d, want 0 while the attempt is still running", change.Revision)
 	}
 
 	// The attempt succeeds. Its recorded work item revision is now the
 	// revision the change covers.
 	event := tracker.NativeRunEvent{
-		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
+		Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1,
 		Data: tracker.NativeRunData{
 			Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
 			LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt,
@@ -181,7 +171,7 @@ func TestWorkItemChangeSurfaceFollowsTheAttemptDiff(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
 		f.base+"/work-items/"+item+"/events", f.worker, event), http.StatusOK)
 
-	issue := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
+	issue := readWorkItem(t, f.fixture, f.issue.WorkItemID, "?include=change")
 	if issue.Change.Revision != issue.Revision {
 		t.Fatalf("change revision = %d, want the item's own %d", issue.Change.Revision, issue.Revision)
 	}
@@ -191,9 +181,9 @@ func TestWorkItemChangeSurfaceFollowsTheAttemptDiff(t *testing.T) {
 	// rule that re-offers the item for another attempt.
 	title := "Make the unit test pass again"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+item, f.token,
-		tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("edit")}, ExpectedRevision: issue.Revision, Title: &title}),
+		tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("edit")}, ExpectedRevision: issue.Revision, Title: &title}),
 		http.StatusOK)
-	edited := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
+	edited := readWorkItem(t, f.fixture, f.issue.WorkItemID, "?include=change")
 	if edited.Change.Revision >= edited.Revision {
 		t.Fatalf("change revision = %d, want below the edited item's %d", edited.Change.Revision, edited.Revision)
 	}
@@ -205,10 +195,10 @@ func TestWorkItemChangeSurfaceFollowsTheAttemptDiff(t *testing.T) {
 func TestWorkItemChangeSurfaceReportsTheChangeRequest(t *testing.T) {
 	t.Parallel()
 
-	f := newChangeFixture(t, nil)
+	f := newChangeFixture(t)
 	version := f.publish(t, "version-1", "")
 
-	change := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change").Change
+	change := readWorkItem(t, f.fixture, f.issue.WorkItemID, "?include=change").Change
 	if change == nil {
 		t.Fatal("change = nil, want the change review surface")
 	}
@@ -231,6 +221,8 @@ func TestWorkItemChangeSurfaceReportsTheChangeRequest(t *testing.T) {
 func TestNativeIssueChangeIncluded(t *testing.T) {
 	t.Parallel()
 
+	f := newChangeFixture(t)
+	f.hub.refreshBoard(t, f.project.OrganizationID)
 	tests := []struct {
 		value   string
 		want    bool
@@ -248,7 +240,16 @@ func TestNativeIssueChangeIncluded(t *testing.T) {
 	for _, test := range tests {
 		t.Run("include="+test.value, func(t *testing.T) {
 			t.Parallel()
-			got, err := nativeIssueChangeIncluded(test.value)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"?include="+url.QueryEscape(test.value), f.token, nil)
+			var err error
+			if response.Code != http.StatusOK {
+				err = fmt.Errorf("include response: %s", response.Body.String())
+			}
+			var issue tracker.NativeIssue
+			if err == nil {
+				decodeHubResponse(t, response, &issue)
+			}
+			got := issue.Change != nil
 			if (err != nil) != test.wantErr {
 				t.Fatalf("nativeIssueChangeIncluded(%q) error = %v, wantErr %t", test.value, err, test.wantErr)
 			}
@@ -280,15 +281,15 @@ func TestAttemptRecordsTheClaimedRevision(t *testing.T) {
 			if test.editBeforeStart {
 				title := "Edited after the claim"
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(f.issue.WorkItemID), f.token,
-					tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("edit")}, ExpectedRevision: claimed, Title: &title}),
+					tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("edit")}, ExpectedRevision: claimed, Title: &title}),
 					http.StatusOK)
-				if edited := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, ""); edited.Revision <= claimed {
+				if edited := readWorkItem(t, f.fixture, f.issue.WorkItemID, ""); edited.Revision <= claimed {
 					t.Fatalf("edited revision = %d, want above the claimed %d", edited.Revision, claimed)
 				}
 			}
 			f.start(t)
 			var recorded tracker.Revision
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 				attempt, err := r.Attempt(t.Context(), f.attempt)
 				recorded = tracker.Revision(attempt.WorkItemRevision)
 				return err
@@ -330,7 +331,7 @@ func TestWorkItemChangeSurfaceCreditsOnlyTheFinalDiff(t *testing.T) {
 				requireNativeStatus(t, f.post(t, f.request(post.Generation.Seq, post.Files...)), http.StatusAccepted)
 			}
 			f.event(t, "run.finished", 2, "succeeded")
-			issue := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
+			issue := readWorkItem(t, f.fixture, f.issue.WorkItemID, "?include=change")
 			want := tracker.Revision(0)
 			if test.covered {
 				want = issue.Revision

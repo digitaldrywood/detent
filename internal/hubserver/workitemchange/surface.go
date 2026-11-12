@@ -1,10 +1,11 @@
-package hubserver
+package workitemchange
 
 import (
 	"context"
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -29,26 +30,26 @@ import (
 // The surface is assembled only for a caller that asks for it, because it
 // costs three reads the rest of the work item resource does not need.
 
-func (s *Service) prepareNativeIssueChangeRecord(ctx context.Context, snapshot boardProjectionSnapshot, issue *tracker.NativeIssue) error {
+func (s *Service) Prepare(ctx context.Context, snapshot Snapshot, issue *tracker.NativeIssue) error {
 	change := &tracker.NativeIssueChange{Connector: tracker.NativeChangeConnectorNone}
-	if snapshot.project.Settings.RepositoryEnabled {
+	if snapshot.Project.Settings.RepositoryEnabled {
 		change.Connector = tracker.NativeChangeConnectorGitHub
 	}
 	issue.Change = change
 	issue.PullRequest = nil
 	issue.ListChange = nil
-	if retained := snapshot.pullRequestVersion; retained != nil {
-		if number := externalPullRequestNumber(retained.External); number > 0 {
+	if retained := snapshot.PullRequestVersion; retained != nil {
+		if number := s.deps.PullRequestNumber(retained.External); number > 0 {
 			issue.PullRequest = &tracker.NativePullRequest{Number: number, URL: retained.External.URL}
 		}
 	}
-	version := snapshot.changeVersion
+	version := snapshot.ChangeVersion
 	var external tracker.ChangeExternalReference
 	if version != nil {
 		external = tracker.ChangeExternalReference{Provider: version.ExternalProvider, ID: version.ExternalID, URL: version.ExternalURL}
 	}
 	published := false
-	err := s.config.TenantRepository.ReadTenant(ctx, snapshot.item.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
+	err := s.deps.Repository.ReadTenant(ctx, snapshot.Item.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
 		if version != nil {
 			publication, err := r.PRPublication(ctx, version.ID)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -59,7 +60,7 @@ func (s *Service) prepareNativeIssueChangeRecord(ctx context.Context, snapshot b
 				published = true
 			}
 		}
-		attempt, err := r.LatestAttempt(ctx, snapshot.item.ID)
+		attempt, err := r.LatestAttempt(ctx, snapshot.Item.ID)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -69,7 +70,7 @@ func (s *Service) prepareNativeIssueChangeRecord(ctx context.Context, snapshot b
 		if attempt.Status != "succeeded" {
 			return nil
 		}
-		diff, err := r.LatestAttemptDiff(ctx, snapshot.item.ProjectID, attempt.ID, "attempt")
+		diff, err := r.LatestAttemptDiff(ctx, snapshot.Item.ProjectID, attempt.ID, "attempt")
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -84,24 +85,24 @@ func (s *Service) prepareNativeIssueChangeRecord(ctx context.Context, snapshot b
 	if err != nil {
 		return err
 	}
-	if snapshot.change == nil {
+	if snapshot.Change == nil {
 		return nil
 	}
-	change.ChangeID, change.State = snapshot.change.ID, "open"
-	if snapshot.change.LandedVersionID != nil && snapshot.change.CurrentVersionID != nil && *snapshot.change.LandedVersionID == *snapshot.change.CurrentVersionID {
+	change.ChangeID, change.State = snapshot.Change.ID, "open"
+	if snapshot.Change.LandedVersionID != nil && snapshot.Change.CurrentVersionID != nil && *snapshot.Change.LandedVersionID == *snapshot.Change.CurrentVersionID {
 		change.State = "closed"
 	}
 	if version == nil {
 		return nil
 	}
 	issue.ListChange = &tracker.NativeListChange{HeadSHA: version.HeadSHA}
-	if snapshot.change.LandedVersionID != nil && snapshot.change.CurrentVersionID != nil && *snapshot.change.LandedVersionID == *snapshot.change.CurrentVersionID && version.ID == *snapshot.change.CurrentVersionID {
-		issue.ListChange.Branch = stringValue(snapshot.change.LandedBaseRef)
-		issue.ListChange.HeadSHA = stringValue(snapshot.change.LandedMergeSHA)
+	if snapshot.Change.LandedVersionID != nil && snapshot.Change.CurrentVersionID != nil && *snapshot.Change.LandedVersionID == *snapshot.Change.CurrentVersionID && version.ID == *snapshot.Change.CurrentVersionID {
+		issue.ListChange.Branch = hubapi.StringValue(snapshot.Change.LandedBaseRef)
+		issue.ListChange.HeadSHA = hubapi.StringValue(snapshot.Change.LandedMergeSHA)
 	}
 	change.HeadSHA = version.HeadSHA
 
-	change.URL, change.Number = external.URL, externalPullRequestNumber(external)
+	change.URL, change.Number = external.URL, s.deps.PullRequestNumber(external)
 	if external.Provider == "github" {
 		change.Connector = tracker.NativeChangeConnectorGitHub
 	}
@@ -111,20 +112,20 @@ func (s *Service) prepareNativeIssueChangeRecord(ctx context.Context, snapshot b
 	return nil
 }
 
-func (s *Service) readNativeIssueChangePage(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue) error {
-	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+func (s *Service) ReadPage(ctx context.Context, scope hubapi.Scope, issue *tracker.NativeIssue) error {
+	return s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(viewstore.BoardReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.WorkItemStorageUnavailable()
 		}
-		page, err := reader.BoardItem(ctx, scope.project, issue.WorkItemID)
+		page, err := reader.BoardItem(ctx, scope.Project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
 		if page.PageIssue == nil || page.SourceRevision != int64(issue.Revision) {
-			return workItemStorageUnavailable()
+			return hubapi.WorkItemStorageUnavailable()
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: page.Display.ChangePrincipalID}) {
+		if scope.HostedRole == "reporter" && (scope.Actor.PrincipalID == "" || page.Display.ChangePrincipalID != scope.Actor.PrincipalID) {
 			return nil
 		}
 		issue.Change, issue.ListChange, issue.PullRequest = page.PageIssue.Change, page.PageIssue.ListChange, page.PageIssue.PullRequest
