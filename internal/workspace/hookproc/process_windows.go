@@ -1,4 +1,4 @@
-package workspace
+package hookproc
 
 import (
 	"context"
@@ -10,18 +10,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
+
 	"github.com/shirou/gopsutil/v4/process"
 	"golang.org/x/sys/windows"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
-func workspaceProcessIDs(ctx context.Context, root string) ([]int, error) {
+func ProcessIDs(ctx context.Context, root string) ([]int, error) {
 	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil {
 		return source(ctx, root)
 	}
 
-	canonical, err := canonicalExistingPath(root)
+	canonical, err := workpath.CanonicalExistingPath(root)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -95,7 +97,7 @@ func windowsScratchProcessMatches(ctx context.Context, pid int, root string, own
 	if err != nil {
 		return false, scratchProcessInspectionError(ctx, pid, "directory", err, alive)
 	}
-	return filepath.IsAbs(cwd) && pathWithin(root, cwd), nil
+	return filepath.IsAbs(cwd) && workpath.PathWithin(root, cwd), nil
 }
 
 func windowsScratchProcessAlive(ctx context.Context, observe func(context.Context) (bool, error)) (bool, error) {
@@ -106,7 +108,7 @@ func windowsScratchProcessAlive(ctx context.Context, observe func(context.Contex
 	return alive, err
 }
 
-func reapWorkspaceProcesses(ctx context.Context, path string, logger *slog.Logger) int {
+func ReapWorkspace(ctx context.Context, path string, logger *slog.Logger) int {
 	reaped, err := ReapProcesses(ctx, path, procgroup.DefaultTerminationGrace)
 	if err != nil && logger != nil {
 		logger.Warn("workspace process reap failed", "path", path, "error", err)
@@ -129,7 +131,7 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	defer cancel()
 	reaped := 0
 	for {
-		pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, workspaceProcessIDs)
+		pids, err := ScanOwned(ctx, path, ProcessIDs)
 		if err != nil || len(pids) == 0 {
 			return reaped, err
 		}

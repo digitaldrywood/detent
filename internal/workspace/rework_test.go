@@ -1203,7 +1203,7 @@ func TestLocalGitReworkPreparation(t *testing.T) {
 					if commandErr.ExitCode != 1 || strings.TrimSpace(runGit(t, info.Path, "log", "-1", "--format=%s")) != "first-pick" {
 						t.Fatal("fixture did not fail signing after the first pick")
 					}
-					owner.commits.report.Signing = "unsigned"
+					owner.commits.Report.Signing = "unsigned"
 					before := strings.TrimSpace(runGit(t, info.Path, "write-tree"))
 					retried, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{TargetBranch: "main"}, func(ctx context.Context) error { return ctx.Err() })
 					if err != nil || retried.Status != MergePrepareStatusConflict || retried.BaseSHA != base {

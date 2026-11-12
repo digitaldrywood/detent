@@ -1,6 +1,6 @@
 //go:build unix
 
-package workspace
+package hookproc
 
 import (
 	"errors"
@@ -75,7 +75,7 @@ func TestWorkspaceProcessIDsRejectsRootAlias(t *testing.T) {
 	}
 	for _, path := range []string{string(filepath.Separator), alias} {
 		t.Run(path, func(t *testing.T) {
-			if _, err := workspaceProcessIDs(t.Context(), path); err == nil {
+			if _, err := ProcessIDs(t.Context(), path); err == nil {
 				t.Fatal("filesystem root scan was permitted")
 			}
 		})

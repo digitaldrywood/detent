@@ -282,18 +282,6 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 	return info, true, nil
 }
 
-func validLandingHead(head string) bool {
-	if len(head) != 40 && len(head) != 64 {
-		return false
-	}
-	for _, character := range head {
-		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
 func (l *LocalGit) verifyLandingWorktree(ctx context.Context, info Info, issue Issue, opts LandOptions) error {
 	if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
 		return refuse(LandRefusalProtected, "the landing workspace is not owned by the authorized source")

@@ -464,7 +464,7 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	runGit(t, remote, "merge-base", "--is-ancestor", checkpoint.CommitSHA, next.CommitSHA)
 	runGit(t, remote, "gc", "--prune=now")
 	for _, corruption := range []string{"schema", "branch"} {
-		transaction := *checkpoint.transaction
+		transaction := *checkpoint.Transaction
 		if corruption == "schema" {
 			transaction.Schema = 99
 		} else {

@@ -1,15 +1,17 @@
-package workspace
+package hookproc
 
 import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 )
 
 // workerScratchOwnerRoots lists the directories whose scratch marks a process
 // as owned by root: root itself and its external worker scratch roots.
 func workerScratchOwnerRoots(root string) []string {
-	return append([]string{root}, workerScratchRoots(root)...)
+	return append([]string{root}, workpath.WorkerScratchRoots(root)...)
 }
 
 func workerScratchEnvironmentMatches(roots []string, environment []string) bool {
@@ -36,11 +38,11 @@ func workerScratchPathMatches(root string, path string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
-	if pathWithin(root, path) {
+	if workpath.PathWithin(root, path) {
 		return true
 	}
 	canonical, err := filepath.EvalSymlinks(path)
-	return err == nil && pathWithin(root, canonical)
+	return err == nil && workpath.PathWithin(root, canonical)
 }
 
 func workerScratchPathMatchesAny(roots []string, path string) bool {

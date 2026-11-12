@@ -1,6 +1,6 @@
 //go:build !unix && !windows
 
-package workspace
+package hookproc
 
 import (
 	"context"
@@ -8,11 +8,11 @@ import (
 	"time"
 )
 
-func workspaceProcessIDs(context.Context, string) ([]int, error) {
+func ProcessIDs(context.Context, string) ([]int, error) {
 	return nil, nil
 }
 
-func reapWorkspaceProcesses(context.Context, string, *slog.Logger) int {
+func ReapWorkspace(context.Context, string, *slog.Logger) int {
 	return 0
 }
 

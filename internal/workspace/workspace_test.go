@@ -18,7 +18,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
-	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
@@ -32,17 +31,6 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 		os.Exit(0)
-	}
-	if err := testenv.ClearGitEnvironment(); err != nil {
-		panic(err)
-	}
-	if err := os.Unsetenv("GOFLAGS"); err != nil {
-		panic(err)
-	}
-	for key, value := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1"} {
-		if err := os.Setenv(key, value); err != nil {
-			panic(err)
-		}
 	}
 	if err := flag.Set("test.parallel", "8"); err != nil {
 		panic(err)
@@ -1006,45 +994,6 @@ func waitForError(t *testing.T, result <-chan error, timeout time.Duration) erro
 	}
 }
 
-func initSourceRepo(t *testing.T) string {
-	t.Helper()
-
-	dir := testenv.TempDir(t)
-	initSourceRepoAt(t, dir)
-	return dir
-}
-
-func initSourceRepoAt(t *testing.T, dir string) {
-	t.Helper()
-
-	sourceRepoSeedOnce.Do(func() {
-		sourceRepoSeedErr = buildSourceRepoSeed(t.Context(), sourceRepoSeedDir)
-	})
-	if sourceRepoSeedErr != nil {
-		t.Fatalf("build source repo seed: %v", sourceRepoSeedErr)
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("mkdir source repo: %v", err)
-	}
-	if err := copySourceRepoSeed(dir, os.DirFS(sourceRepoSeedDir)); err != nil {
-		t.Fatalf("copy source repo seed: %v", err)
-	}
-}
-
-func initBareRemote(t *testing.T) string {
-	t.Helper()
-
-	root := testenv.TempDir(t)
-	dir := filepath.Join(root, "origin.git")
-	runCommand(t, root, "git", "init", "--bare", "-b", "main", dir)
-	return dir
-}
-
-func runGit(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	return runCommand(t, dir, "git", args...)
-}
-
 func linkedWorktreeGitDir(t *testing.T, workspacePath string) string {
 	t.Helper()
 
@@ -1073,18 +1022,6 @@ func branchExists(t *testing.T, dir string, branch string) bool {
 	}
 	t.Fatalf("git show-ref failed: %v", err)
 	return false
-}
-
-func runCommand(t *testing.T, dir string, name string, args ...string) string {
-	t.Helper()
-
-	cmd := exec.CommandContext(t.Context(), name, args...)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
-	}
-	return string(output)
 }
 
 func installGitCreationWrapper(t *testing.T, mode string, source string, target string) {
@@ -1158,16 +1095,6 @@ func singleQuarantinedWorkspace(t *testing.T, root string) string {
 		t.Fatalf("quarantine entries = %d, want 1", len(entries))
 	}
 	return filepath.Join(parent, entries[0].Name())
-}
-
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return string(raw)
 }
 
 func restoreWritableTree(t *testing.T, path string) {

@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,11 +24,6 @@ var (
 	diffStatAddedPattern   = regexp.MustCompile(`(\d+)\s+insertions?\(\+\)`)
 	diffStatRemovedPattern = regexp.MustCompile(`(\d+)\s+deletions?\(-\)`)
 )
-
-var detentHandoffDiffExcludes = []string{
-	".detent/tmp/",
-	".detent/worker-tmp/",
-}
 
 type DiffStat struct {
 	Files          int       `json:"files"`
@@ -649,75 +643,6 @@ func gitDiffBase(ctx context.Context, workspacePath string, baseRef string) stri
 
 func gitDiffOutputWithinLimit(ctx context.Context, workspacePath string, env []string, diffBase string, maxBytes int) (string, bool, error) {
 	return gitDiffArgsWithinLimit(ctx, workspacePath, env, maxBytes, gitDiagnosticArgs("diff", diffBase)...)
-}
-
-// gitDiffArgsWithinLimit streams one git diff invocation through a byte cap.
-// The arguments are explicit so a caller that needs different diff options --
-// the per-file attempt diff pins --find-renames -- gets the
-// same bounded read instead of a second copy of it.
-func gitDiffArgsWithinLimit(ctx context.Context, workspacePath string, env []string, maxBytes int, args ...string) (string, bool, error) {
-	gitArgs := append([]string{"git", "-C", workspacePath}, args...)
-	cmd := exec.CommandContext(ctx, "git")
-	cmd.Args = gitArgs
-	cmd.WaitDelay = workspaceCommandWaitDelay
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", false, fmt.Errorf("git diff stdout pipe: %w", err)
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return "", false, fmt.Errorf("git diff start: %w", err)
-	}
-
-	output, readErr := io.ReadAll(io.LimitReader(stdout, int64(maxBytes)+1))
-	truncated := len(output) > maxBytes
-	var killErr error
-	if truncated && cmd.Process != nil {
-		killErr = cmd.Process.Kill()
-	}
-	waitErr := cmd.Wait()
-
-	if readErr != nil {
-		return "", false, fmt.Errorf("git diff read: %w", readErr)
-	}
-	if truncated {
-		if err := gitDiffStopError(killErr, waitErr); err != nil {
-			return "", false, err
-		}
-		return "", true, nil
-	}
-	if waitErr == nil {
-		return string(output), false, nil
-	}
-
-	exitCode := -1
-	var exitErr *exec.ExitError
-	if errors.As(waitErr, &exitErr) {
-		exitCode = exitErr.ExitCode()
-	}
-	if ctx.Err() != nil {
-		waitErr = ctx.Err()
-	}
-	combined := append(output, stderr.Bytes()...)
-	return "", false, &CommandError{
-		Command:  "git",
-		Args:     gitArgs[1:],
-		ExitCode: exitCode,
-		Output:   string(combined),
-		Err:      waitErr,
-	}
-}
-
-func gitDiffStopError(killErr error, waitErr error) error {
-	if killErr == nil || errors.Is(killErr, os.ErrProcessDone) || waitErr == nil {
-		return nil
-	}
-	return fmt.Errorf("git diff stop after limit: %w", killErr)
 }
 
 // gitDiagnosticArgs applies runtime exclusions to one command without changing

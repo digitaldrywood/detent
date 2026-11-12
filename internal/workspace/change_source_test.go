@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"bytes"
-	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,53 +11,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func TestCaptureChangeSourceCompressesRevisions(t *testing.T) {
-	for _, packed := range []bool{false, true} {
-		name := "loose"
-		if packed {
-			name = "packed"
-		}
-		t.Run(name, func(t *testing.T) {
-			source := initSourceRepo(t)
-			runGit(t, source, "config", "gc.auto", "0")
-			checkpointWrite(t, source, ".gitattributes", "*.bin -diff\n")
-			checkpointWrite(t, source, "nested/.gitattributes", "*.bin -text\n")
-			runGit(t, source, "add", ".gitattributes", "nested/.gitattributes")
-			runGit(t, source, "commit", "-m", "inherited attributes")
-			data := make([]byte, 5<<20)
-			if _, err := rand.Read(data); err != nil {
-				t.Fatal(err)
-			}
-			base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
-			for i := range 5 {
-				data[i] ^= 1
-				if err := os.WriteFile(filepath.Join(source, "nested/blob.bin"), data, 0o600); err != nil {
-					t.Fatal(err)
-				}
-				runGit(t, source, "add", "nested/blob.bin")
-				if i == 4 {
-					runGit(t, source, "rm", ".gitattributes")
-				}
-				runGit(t, source, "commit", "-m", "blob revision")
-			}
-			if packed {
-				runGit(t, source, "repack", "-ad")
-			}
-			head := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
-			capture, err := CaptureChangeSource(t.Context(), source, base, head)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(capture.Bundle) >= 2*len(data) {
-				t.Fatalf("repeated blob revisions were not compressed: bundle bytes=%d", len(capture.Bundle))
-			}
-			if err := VerifyChangeSource(t.Context(), capture.Source, capture.Bundle); err != nil {
-				t.Fatalf("captured pack cannot be verified without repository objects: %v", err)
-			}
-		})
-	}
-}
 
 func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 	source := initSourceRepo(t)

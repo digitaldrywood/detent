@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/workspace/reviewoutput"
+
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
@@ -16,13 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
-
-const ReviewSourcePageBytes = 16 * 1024
-
-type ReviewOutputRange struct {
-	Offset int64
-	Length int
-}
 
 type reviewOutputRangeKey struct{}
 
@@ -171,3 +166,8 @@ func AttributeCommandFailure(result *gate.CommandResult, base string, reproducti
 	}
 	gate.NormalizeCommandAttribution(base, result.HeadSHA, result)
 }
+
+const ReviewSourcePageBytes = reviewoutput.SourcePageBytes
+
+type ReviewOutputRange = reviewoutput.Range
+type reviewOutputCapture = reviewoutput.Capture

@@ -1,6 +1,6 @@
 //go:build unix
 
-package workspace
+package hookproc
 
 import (
 	"context"

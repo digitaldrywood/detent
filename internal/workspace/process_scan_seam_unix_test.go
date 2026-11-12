@@ -6,6 +6,8 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
 )
 
 var realProcessScanRoots sync.Map
@@ -21,7 +23,7 @@ func useRealProcessScan(t *testing.T, root string) {
 }
 
 func stubReapProcessScanner() {
-	reapProcessScanner = func(ctx context.Context, path string) ([]int, error) {
+	hookproc.ReapProcessScanner = func(ctx context.Context, path string) ([]int, error) {
 		canonical, err := canonicalExistingPath(path)
 		if err != nil {
 			return nil, nil
@@ -29,7 +31,7 @@ func stubReapProcessScanner() {
 		real := false
 		realProcessScanRoots.Range(func(key, _ any) bool {
 			root := key.(string)
-			if root == canonical || pathInside(root, canonical) {
+			if pathWithin(root, canonical) {
 				real = true
 				return false
 			}

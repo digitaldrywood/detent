@@ -1,4 +1,4 @@
-package workspace
+package changesource
 
 import (
 	"bytes"
@@ -13,7 +13,7 @@ import (
 
 const changeSourceObjectOverhead = 1024
 
-func changeSourcePackBudget(ctx context.Context, pack []byte) error {
+func PackBudget(ctx context.Context, pack []byte) error {
 	invalid := errors.New("source bundle exceeds the verification budget or has an invalid pack; split large changes or recreate it with git bundle create <path> HEAD ^<base>")
 	if len(pack) < 32 || string(pack[:4]) != "PACK" {
 		return invalid

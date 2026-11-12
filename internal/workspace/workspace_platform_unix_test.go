@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -658,131 +657,6 @@ func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
 	}
 	if got := readFile(t, tracePath); got != "ok\n" {
 		t.Fatalf("hook trace = %q, want ok", got)
-	}
-}
-
-type commandDeadlineContext struct {
-	context.Context
-	deadline time.Time
-	done     chan struct{}
-}
-
-func (c *commandDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
-func (c *commandDeadlineContext) Done() <-chan struct{}       { return c.done }
-func (c *commandDeadlineContext) Err() error {
-	select {
-	case <-c.done:
-		return context.DeadlineExceeded
-	default:
-		return nil
-	}
-}
-
-func TestRunGitAtWithEnvCancellationReturnsPromptly(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		owned   bool
-		delay   time.Duration
-		timeout time.Duration
-		cancel  bool
-	}{
-		{name: "Git caller cancellation", delay: 4 * time.Second, timeout: 20 * time.Millisecond, cancel: true},
-		{name: "rewrite caller cancellation", owned: true, delay: 4 * time.Second, timeout: 20 * time.Millisecond, cancel: true},
-		{name: "rewrite retains caller deadline", owned: true, delay: 31 * time.Second, timeout: time.Minute},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			execute := func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(t.Context(), test.timeout)
-				defer cancel()
-				var controlled *commandDeadlineContext
-				if test.cancel {
-					controlled = &commandDeadlineContext{Context: t.Context(), deadline: time.Now().Add(test.timeout), done: make(chan struct{})}
-					ctx = controlled
-				}
-				deadline, _ := ctx.Deadline()
-				run := func(commandCtx context.Context, command *exec.Cmd) error {
-					if got, ok := commandCtx.Deadline(); !ok || !got.Equal(deadline) {
-						t.Fatalf("command deadline = %v, %t, want caller deadline %v", got, ok, deadline)
-					}
-					if controlled != nil {
-						ready, signal, err := os.Pipe()
-						if err != nil {
-							return err
-						}
-						defer ready.Close()
-						defer signal.Close()
-						input, hold, err := os.Pipe()
-						if err != nil {
-							return err
-						}
-						defer input.Close()
-						defer hold.Close()
-						cmd := command
-						cmd.ExtraFiles = []*os.File{signal}
-						cmd.Stdin = input
-						if err := cmd.Start(); err != nil {
-							return err
-						}
-						if err := signal.Close(); err != nil {
-							close(controlled.done)
-							return errors.Join(err, cmd.Wait())
-						}
-						var marker [1]byte
-						_, readErr := io.ReadFull(ready, marker[:])
-						close(controlled.done)
-						return errors.Join(readErr, cmd.Wait())
-					}
-					timer := time.NewTimer(test.delay)
-					defer timer.Stop()
-					select {
-					case <-commandCtx.Done():
-						return commandCtx.Err()
-					case <-timer.C:
-						return nil
-					}
-				}
-				if controlled != nil {
-					binDir := t.TempDir()
-					if err := os.WriteFile(filepath.Join(binDir, "git"), []byte("#!/bin/sh\nprintf r >&3\nread value\n"), 0o700); err != nil {
-						t.Fatal(err)
-					}
-					t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-				}
-				started := time.Now()
-				var err error
-				if test.owned {
-					p := commitPolicy{report: CommitReport{Identity: CommitIdentity{Name: "Runner", Email: "runner@example.com"}, Signing: "unsigned"}, runCommand: run}
-					_, err = p.run(ctx, t.TempDir(), nil, "cherry-pick", "HEAD")
-				} else {
-					_, err = runGitAtWithInputCommand(ctx, t.TempDir(), nil, true, "", run, "status")
-				}
-				elapsed := time.Since(started)
-				if !test.cancel {
-					if err != nil {
-						t.Fatalf("rewrite with an unexpired caller deadline failed: %v", err)
-					}
-					return
-				}
-				if err == nil {
-					t.Fatal("runGitAtWithEnv() error = nil, want cancellation error")
-				}
-				var commandErr *CommandError
-				if !errors.As(err, &commandErr) {
-					t.Fatalf("runGitAtWithEnv() error = %T, want *CommandError", err)
-				}
-				if !errors.Is(commandErr.Err, context.DeadlineExceeded) {
-					t.Fatalf("CommandError.Err = %v, want context deadline exceeded", commandErr.Err)
-				}
-				if elapsed > 2*time.Second {
-					t.Fatalf("runGitAtWithEnv() elapsed = %s, want cancellation within wait delay", elapsed)
-				}
-			}
-			if test.cancel {
-				execute(t)
-			} else {
-				synctest.Test(t, execute)
-			}
-		})
 	}
 }
 
@@ -2143,8 +2017,8 @@ exit %d
 				var output string
 				var err error
 				if tt.commit {
-					policy := commitPolicy{report: CommitReport{Identity: CommitIdentity{Name: "Runner", Email: "runner@example.test"}, Signing: "unsigned"}}
-					output, err = policy.run(ctx, dir, env, "commit", "--allow-empty", "-m", "example")
+					policy := commitPolicy{Report: CommitReport{Identity: CommitIdentity{Name: "Runner", Email: "runner@example.test"}, Signing: "unsigned"}}
+					output, err = policy.Run(ctx, dir, env, "commit", "--allow-empty", "-m", "example")
 				} else {
 					output, err = runGitAtWithEnv(ctx, dir, env, args...)
 				}

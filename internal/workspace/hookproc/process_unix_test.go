@@ -1,6 +1,6 @@
 //go:build unix
 
-package workspace
+package hookproc
 
 import (
 	"bufio"
@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 )
 
 func TestReapProcesses(t *testing.T) {
@@ -113,7 +115,7 @@ func TestReapProcesses(t *testing.T) {
 				return tt.signalErr
 			}
 			waitCall := 0
-			wait := func(context.Context, string, time.Duration, workspaceProcessScanner) ([]int, error) {
+			wait := func(context.Context, string, time.Duration, Scanner) ([]int, error) {
 				if tt.waitErr != nil {
 					return nil, tt.waitErr
 				}
@@ -371,7 +373,7 @@ func TestLsofWorkspaceProcessIDs(t *testing.T) {
 		})
 		expectations[tt.name] = processExpectation{pid: cmd.Process.Pid, want: tt.want}
 	}
-	canonical, err := canonicalExistingPath(root)
+	canonical, err := workpath.CanonicalExistingPath(root)
 	if err != nil {
 		t.Fatal(err)
 	}

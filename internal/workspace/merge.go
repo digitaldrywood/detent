@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,8 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-const defaultGitRemote = "origin"
 
 var ErrMergeResolutionInvalid = errors.New("merge resolution is invalid")
 
@@ -297,29 +294,6 @@ func rebaseInProgress(ctx context.Context, workspacePath string) (bool, error) {
 	return false, nil
 }
 
-func gitPathFor(ctx context.Context, workspacePath string, gitPath string) (string, error) {
-	output, err := runGitAt(ctx, workspacePath, "rev-parse", "--git-path", gitPath)
-	if err != nil {
-		return "", err
-	}
-	path := strings.TrimSpace(output)
-	if path == "" {
-		return "", errors.New("git path is empty")
-	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(workspacePath, path)
-	}
-	return filepath.Clean(path), nil
-}
-
-func commandErrorOutput(err error) string {
-	var commandErr *CommandError
-	if errors.As(err, &commandErr) {
-		return strings.TrimSpace(commandErr.Output)
-	}
-	return strings.TrimSpace(err.Error())
-}
-
 func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions) (MergePrepareResult, error) {
 	remote := strings.TrimSpace(opts.Remote)
 	if remote == "" {
@@ -533,8 +507,8 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	result.Execution = "executed"
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
-	source := reviewOutputCapture{selection: selection}
-	diagnostics := reviewOutputCapture{selection: ReviewOutputRange{Length: 4 * 1024}}
+	source := reviewOutputCapture{Selection: selection}
+	diagnostics := reviewOutputCapture{Selection: ReviewOutputRange{Length: 4 * 1024}}
 	if paged {
 		cmd.Stdout, cmd.Stderr = &source, &diagnostics
 	}
@@ -557,15 +531,15 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	result.Output = tracker.RedactGateOutput(output.String())
 	if paged {
 		if err == nil {
-			result.Output, result.OutputTruncated = source.result()
-			if diagnostics.total > 0 {
-				result.Output += "\n[git diagnostics]\n" + string(diagnostics.page)
+			result.Output, result.OutputTruncated = source.Result()
+			if diagnostics.Total > 0 {
+				result.Output += "\n[git diagnostics]\n" + string(diagnostics.Page)
 			}
 		} else {
-			result.Output = string(source.page) + string(diagnostics.page)
-			result.OutputTruncated = source.total > int64(len(source.page))
+			result.Output = string(source.Page) + string(diagnostics.Page)
+			result.OutputTruncated = source.Total > int64(len(source.Page))
 		}
-		result.OutputTruncated = result.OutputTruncated || diagnostics.total > int64(len(diagnostics.page))
+		result.OutputTruncated = result.OutputTruncated || diagnostics.Total > int64(len(diagnostics.Page))
 	}
 	result.Evidence.Checks = gate.CheckObservations(result.Output)
 	if ctx.Err() != nil {

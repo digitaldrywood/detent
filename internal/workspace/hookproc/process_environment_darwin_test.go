@@ -1,4 +1,4 @@
-package workspace
+package hookproc
 
 import (
 	"context"
@@ -57,8 +57,8 @@ func TestDarwinScratchEnvironmentProcessIDsScanBudget(t *testing.T) {
 							signaled = append(signaled, pid)
 							signals = append(signals, sig)
 							return nil
-						}, func(ctx context.Context, root string, _ time.Duration, scan workspaceProcessScanner) ([]int, error) {
-							return scanOwnedWorkspaceProcessIDs(ctx, root, scan)
+						}, func(ctx context.Context, root string, _ time.Duration, scan Scanner) ([]int, error) {
+							return ScanOwned(ctx, root, scan)
 						})
 						want := []int{ownedPID}
 						if cwdOwned {

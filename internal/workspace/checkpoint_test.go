@@ -34,16 +34,6 @@ func checkpointFixture(t *testing.T) (*LocalGit, Issue, CheckpointPlan, string) 
 	return backend, issue, plan, remote
 }
 
-func checkpointWrite(t *testing.T, root, path, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, path), []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestCheckpointIntendedWork(t *testing.T) {
 	t.Parallel()
 	for _, work := range []string{"dirty", "unpushed", "already pushed", "deleted", "unchanged", "literal path", "inherited synthetic fixtures"} {
@@ -238,97 +228,6 @@ func TestCheckpointDurableEvidenceBeforeHardTermination(t *testing.T) {
 	}
 	if _, err := reopened.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
 		t.Fatalf("recovery workspace removed: %v", err)
-	}
-}
-
-func TestCheckpointGitReadFailures(t *testing.T) {
-	t.Parallel()
-	synthetic := []string{"ghp_" + "abcdefghijklmnopqrstuvwxyz123456789", "AKIA" + "1234567890123456", "AKIA" + "1234567890ABCDEF"}
-	for _, scenario := range []string{"missing blob", "unreadable entry", "unreadable blob", "symlink history", "invalid entry", "empty remote", "invalid remote", "unreadable remote", "unrelated base", "unreadable history", "unreadable diff", "empty commit", "synthetic fixtures", "altered synthetic", "altered email aws fixture", "altered slack aws fixture", "synthetic and credential", "credential before synthetic", "private key", "github token", "github fine grained token", "aws key", "project key"} {
-		t.Run(scenario, func(t *testing.T) {
-			t.Parallel()
-			failure := errors.New("git unavailable")
-			git := func(_ context.Context, args ...string) (string, error) {
-				switch args[0] {
-				case "ls-tree", "ls-files":
-					switch scenario {
-					case "missing blob":
-						return "", nil
-					case "unreadable entry":
-						return "", failure
-					case "symlink history":
-						return "120000 blob hash\tfile.go\x00", nil
-					case "invalid entry":
-						return "invalid", nil
-					}
-					return "100644 blob hash\tfile.go\x00", nil
-				case "show":
-					switch scenario {
-					case "synthetic fixtures":
-						return strings.Join(synthetic, "\n"), nil
-					case "altered synthetic":
-						return synthetic[0] + "Z", nil
-					case "altered email aws fixture":
-						return synthetic[1][:len(synthetic[1])-1] + "Z", nil
-					case "altered slack aws fixture":
-						return synthetic[2][:len(synthetic[2])-1] + "Z", nil
-					case "synthetic and credential":
-						return strings.Join(synthetic, "\n") + "\nghp_" + strings.Repeat("Z", 36), nil
-					case "credential before synthetic":
-						return "ghp_" + strings.Repeat("Z", 36) + "\n" + strings.Join(synthetic, "\n"), nil
-					case "private key":
-						return "-----BEGIN " + "PRIVATE KEY-----", nil
-					case "github token":
-						return "ghp_" + strings.Repeat("Z", 36), nil
-					case "github fine grained token":
-						return "github_pat_" + strings.Repeat("Z", 36), nil
-					case "aws key":
-						return "AKIA" + strings.Repeat("Z", 16), nil
-					case "project key":
-						return "sk-proj-" + strings.Repeat("Z", 36), nil
-					}
-					return "", failure
-				case "ls-remote":
-					if scenario == "empty remote" {
-						return "", nil
-					}
-					if scenario == "invalid remote" {
-						return "unexpected ref", nil
-					}
-					return "", failure
-				case "merge-base":
-					if scenario == "unrelated base" {
-						return "", failure
-					}
-					return "", nil
-				case "rev-list":
-					if scenario == "unreadable history" {
-						return "", failure
-					}
-					return "commit", nil
-				case "diff-tree":
-					if scenario == "unreadable diff" {
-						return "", failure
-					}
-					return "", nil
-				}
-				t.Fatalf("unexpected git command %v", args)
-				return "", failure
-			}
-			var err error
-			switch scenario {
-			case "empty remote", "invalid remote", "unreadable remote":
-				_, err = checkpointRemoteHead(t.Context(), git, CheckpointPlan{Info: Info{Branch: "owned"}, RemoteURL: "remote"})
-			case "unrelated base", "unreadable history", "unreadable diff", "empty commit":
-				err = checkpointHistory(t.Context(), git, "base", "head", []string{"file.go"})
-			default:
-				err = checkpointBlob(t.Context(), git, "commit:", "file.go")
-			}
-			wantOK := scenario == "missing blob" || scenario == "empty remote" || scenario == "empty commit" || scenario == "synthetic fixtures"
-			if (err == nil) != wantOK {
-				t.Fatalf("Git failure handling = %v", err)
-			}
-		})
 	}
 }
 

@@ -1,6 +1,6 @@
 //go:build unix && !darwin && !linux
 
-package workspace
+package hookproc
 
 import (
 	"context"

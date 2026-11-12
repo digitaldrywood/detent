@@ -1,6 +1,6 @@
 //go:build unix
 
-package workspace
+package hookproc
 
 import (
 	"bytes"
@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
+
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
@@ -25,7 +27,7 @@ const (
 	minimumWorkspaceProcessScanTimeout = 30 * time.Second
 )
 
-func reapWorkspaceProcesses(ctx context.Context, path string, logger *slog.Logger) int {
+func ReapWorkspace(ctx context.Context, path string, logger *slog.Logger) int {
 	reaped, err := ReapProcesses(ctx, path, defaultProcessTerminationGrace)
 	if err != nil {
 		if logger != nil {
@@ -58,14 +60,14 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	// but renew the budget after each completed stage so healthy progress is not
 	// constrained by one aggregate wall-clock deadline.
 	ctx = withWorkspaceProcessScanBudget(ctx, max(2*grace, minimumWorkspaceProcessScanTimeout), context.WithTimeout)
-	scan := reapProcessScanner
+	scan := ReapProcessScanner
 	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil {
-		scan = workspaceProcessScanner(source)
+		scan = Scanner(source)
 	}
 	return reapProcesses(ctx, path, grace, scan, syscall.Kill)
 }
 
-var reapProcessScanner workspaceProcessScanner = workspaceProcessIDs
+var ReapProcessScanner Scanner = ProcessIDs
 
 type workspaceProcessScanContextFactory func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 
@@ -87,7 +89,7 @@ func withWorkspaceProcessScanBudget(
 	})
 }
 
-func runWorkspaceProcessScan(ctx context.Context, path string, scan workspaceProcessScanner) ([]int, error) {
+func runWorkspaceProcessScan(ctx context.Context, path string, scan Scanner) ([]int, error) {
 	budget, ok := ctx.Value(workspaceProcessScanBudgetKey{}).(workspaceProcessScanBudget)
 	if !ok || budget.timeout <= 0 || budget.withTimeout == nil {
 		// Reconciliation also inventories processes without going through
@@ -103,13 +105,13 @@ func runWorkspaceProcessScan(ctx context.Context, path string, scan workspacePro
 }
 
 type workspaceProcessSignaler func(int, syscall.Signal) error
-type workspaceProcessWaiter func(context.Context, string, time.Duration, workspaceProcessScanner) ([]int, error)
+type workspaceProcessWaiter func(context.Context, string, time.Duration, Scanner) ([]int, error)
 
 func reapProcesses(
 	ctx context.Context,
 	path string,
 	grace time.Duration,
-	scan workspaceProcessScanner,
+	scan Scanner,
 	signal workspaceProcessSignaler,
 ) (int, error) {
 	return reapProcessesWithWait(ctx, path, grace, scan, signal, waitForWorkspaceProcesses)
@@ -119,11 +121,11 @@ func reapProcessesWithWait(
 	ctx context.Context,
 	path string,
 	grace time.Duration,
-	scan workspaceProcessScanner,
+	scan Scanner,
 	signal workspaceProcessSignaler,
 	wait workspaceProcessWaiter,
 ) (int, error) {
-	pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, scan)
+	pids, err := ScanOwned(ctx, path, scan)
 	if err != nil {
 		scanErr := fmt.Errorf("scan workspace processes: %w", err)
 		if len(pids) == 0 {
@@ -185,14 +187,14 @@ func waitForWorkspaceProcesses(
 	ctx context.Context,
 	path string,
 	grace time.Duration,
-	scan workspaceProcessScanner,
+	scan Scanner,
 ) ([]int, error) {
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, scan)
+		pids, err := ScanOwned(ctx, path, scan)
 		if err != nil {
 			return nil, fmt.Errorf("verify workspace processes: %w", err)
 		}
@@ -209,12 +211,12 @@ func waitForWorkspaceProcesses(
 	}
 }
 
-func workspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
+func ProcessIDs(ctx context.Context, path string) ([]int, error) {
 	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil {
 		return source(ctx, path)
 	}
 
-	canonical, err := canonicalExistingPath(path)
+	canonical, err := workpath.CanonicalExistingPath(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -237,8 +239,8 @@ func workspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 func workspaceProcessIDsWithScanners(
 	ctx context.Context,
 	path string,
-	scratchScan workspaceProcessScanner,
-	cwdScan workspaceProcessScanner,
+	scratchScan Scanner,
+	cwdScan Scanner,
 ) ([]int, error) {
 	owned, scratchErr := runWorkspaceProcessScan(ctx, path, scratchScan)
 	if err := ctx.Err(); err != nil {

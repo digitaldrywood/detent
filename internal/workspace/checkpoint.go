@@ -2,48 +2,15 @@ package workspace
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
-
-var ErrCheckpointUnsafe = errors.New("checkpoint could not be safely published")
-
-var checkpointSecretPattern = regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[A-Z0-9]{16}|sk-proj-[A-Za-z0-9_-]{30,})`)
-
-type CheckpointSelection struct {
-	HeadSHA  string   `json:"head_sha"`
-	Paths    []string `json:"paths"`
-	Reviewed bool     `json:"reviewed"`
-}
-
-type CheckpointPlan struct {
-	Info      Info   `json:"workspace"`
-	BaseSHA   string `json:"base_sha"`
-	RemoteURL string `json:"-"`
-	Journal   string `json:"-"`
-}
-
-type CheckpointRecord struct {
-	Schema        int      `json:"schema"`
-	Reason        string   `json:"reason"`
-	Status        string   `json:"status"`
-	WorkspacePath string   `json:"workspace_path"`
-	Branch        string   `json:"branch"`
-	HeadSHA       string   `json:"head_sha,omitempty"`
-	Paths         []string `json:"paths,omitempty"`
-	Published     bool     `json:"published"`
-	PullRequest   string   `json:"pull_request,omitempty"`
-	Detail        string   `json:"detail"`
-}
 
 type CheckpointBackend interface {
 	PrepareCheckpoint(context.Context, Info, Issue) (CheckpointPlan, error)
@@ -92,34 +59,6 @@ func (l *LocalGit) PrepareCheckpoint(ctx context.Context, info Info, issue Issue
 	}
 	plan.BaseSHA = strings.TrimSpace(baseSHA)
 	return plan, nil
-}
-
-func WriteCheckpointRecord(plan CheckpointPlan, record CheckpointRecord) (returnErr error) {
-	if plan.Journal == "" {
-		return errors.New("checkpoint journal is unavailable")
-	}
-	record.Schema = 1
-	record.WorkspacePath = plan.Info.Path
-	record.Branch = plan.Info.Branch
-	data, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	file, err := os.CreateTemp(filepath.Dir(plan.Journal), "detent-checkpoint-*.json")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := os.Remove(file.Name()); err != nil && !errors.Is(err, os.ErrNotExist) {
-			returnErr = errors.Join(returnErr, err)
-		}
-	}()
-	_, writeErr := file.Write(data)
-	syncErr := file.Sync()
-	if err := errors.Join(writeErr, syncErr, file.Close()); err != nil {
-		return err
-	}
-	return os.Rename(file.Name(), plan.Journal)
 }
 
 func (l *LocalGit) Checkpoint(ctx context.Context, plan CheckpointPlan, selection CheckpointSelection, validate func(context.Context) error, environment procgroup.Environment) (string, error) {
@@ -219,137 +158,4 @@ func (l *LocalGit) Checkpoint(ctx context.Context, plan CheckpointPlan, selectio
 		return head, errors.Join(fmt.Errorf("%w: remote checkpoint could not be verified", ErrCheckpointUnsafe), err)
 	}
 	return head, nil
-}
-
-type checkpointGitRunner func(context.Context, ...string) (string, error)
-
-func checkpointEnvironment(environment procgroup.Environment) []string {
-	env := []string{"GIT_LITERAL_PATHSPECS=1", "GIT_TERMINAL_PROMPT=0"}
-	for key, value := range environment.Variables {
-		env = append(env, key+"="+value)
-	}
-	return env
-}
-
-func checkpointGit(path string, environment procgroup.Environment) checkpointGitRunner {
-	env := checkpointEnvironment(environment)
-	return func(ctx context.Context, args ...string) (string, error) {
-		return runGitAtWithEnv(ctx, path, env, args...)
-	}
-}
-
-func checkpointGuard(ctx context.Context, git checkpointGitRunner, plan CheckpointPlan, head string, validate func(context.Context) error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := validate(ctx); err != nil {
-		return err
-	}
-	branch, err := git(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
-	if err != nil || strings.TrimSpace(branch) != plan.Info.Branch {
-		return errors.Join(fmt.Errorf("%w: owned branch changed", ErrCheckpointUnsafe), err)
-	}
-	current, err := git(ctx, "rev-parse", "HEAD")
-	if err != nil || strings.TrimSpace(current) != head {
-		return errors.Join(fmt.Errorf("%w: reviewed head changed", ErrCheckpointUnsafe), err)
-	}
-	return nil
-}
-
-func checkpointRemoteHead(ctx context.Context, git checkpointGitRunner, plan CheckpointPlan) (string, error) {
-	output, err := git(ctx, "ls-remote", "--heads", plan.RemoteURL, "refs/heads/"+plan.Info.Branch)
-	if err != nil {
-		return "", err
-	}
-	fields := strings.Fields(output)
-	if len(fields) == 0 {
-		return "", nil
-	}
-	if len(fields) != 2 || fields[1] != "refs/heads/"+plan.Info.Branch {
-		return "", fmt.Errorf("%w: unexpected remote ref", ErrCheckpointUnsafe)
-	}
-	return fields[0], nil
-}
-
-func checkpointHistory(ctx context.Context, git checkpointGitRunner, base, head string, paths []string) error {
-	if _, err := git(ctx, "merge-base", "--is-ancestor", base, head); err != nil {
-		return fmt.Errorf("%w: checkpoint base changed", ErrCheckpointUnsafe)
-	}
-	commits, err := git(ctx, "rev-list", base+".."+head)
-	if err != nil {
-		return err
-	}
-	for _, commit := range strings.Fields(commits) {
-		changed, err := git(ctx, "diff-tree", "--root", "--no-commit-id", "--name-only", "--no-renames", "-r", "-m", "-z", commit)
-		if err != nil {
-			return err
-		}
-		for _, path := range strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00") {
-			if path == "" {
-				continue
-			}
-			if !checkpointPathAllowed(path) || !slices.Contains(paths, path) {
-				return fmt.Errorf("%w: commit contains an unapproved path %q", ErrCheckpointUnsafe, path)
-			}
-			if err := checkpointBlob(ctx, git, commit+":", path); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func checkpointBlob(ctx context.Context, git checkpointGitRunner, prefix, path string) error {
-	args := []string{"ls-tree", "-z", strings.TrimSuffix(prefix, ":"), "--", path}
-	if prefix == ":" {
-		args = []string{"ls-files", "--stage", "-z", "--", path}
-	}
-	entry, err := git(ctx, args...)
-	if err != nil {
-		return err
-	}
-	if entry == "" {
-		return nil
-	}
-	header, name, ok := strings.Cut(strings.TrimSuffix(entry, "\x00"), "\t")
-	fields := strings.Fields(header)
-	if !ok || name != path || len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") {
-		return fmt.Errorf("%w: selected history must contain regular files", ErrCheckpointUnsafe)
-	}
-	blob, err := git(ctx, "show", prefix+path)
-	if err != nil {
-		return err
-	}
-	for _, match := range checkpointSecretPattern.FindAllString(blob, -1) {
-		if !checkpointSyntheticRedactionFixture(match) {
-			return fmt.Errorf("%w: possible credential in selected content", ErrCheckpointUnsafe)
-		}
-	}
-	return nil
-}
-
-func checkpointSyntheticRedactionFixture(match string) bool {
-	switch fmt.Sprintf("%x", sha256.Sum256([]byte(match))) {
-	case "76f476d0bf47418551fdd8ae355d42706b642301bb4172204a1ad4de12c4b840",
-		"c5988f95044fbaa2bd149bfc96340c1bacb8b6095d846468348b0a081594162c",
-		"743554670c6065b3f7f13ac4f07e392f977b3556ceb7457411633c454bcbece8":
-		return true
-	default:
-		return false
-	}
-}
-
-func checkpointPathAllowed(path string) bool {
-	if path == "" || !filepath.IsLocal(path) || filepath.ToSlash(filepath.Clean(path)) != path || strings.ContainsAny(path, "\\\x00\r\n") {
-		return false
-	}
-	for _, part := range strings.Split(strings.ToLower(path), "/") {
-		if strings.HasPrefix(part, ".env") && !strings.HasSuffix(part, ".example") {
-			return false
-		}
-		if part == ".git" || part == ".ssh" || part == "node_modules" || part == "tmp" || part == "secrets" || part == "credentials.json" || strings.HasPrefix(part, "id_rsa") || strings.HasSuffix(part, ".pem") || strings.HasSuffix(part, ".key") || strings.HasSuffix(part, ".p12") {
-			return false
-		}
-	}
-	return true
 }

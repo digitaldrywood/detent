@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/workspace/internal/model"
+
 	"github.com/google/uuid"
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
@@ -35,10 +37,10 @@ const (
 
 const defaultHookTimeout = time.Minute
 const failedWorkspacePreservationTimeout = time.Minute
-const workspaceCommandWaitDelay = time.Second
+
 const hookOutputTailBytes = 16 * 1024
 const workerScratchRelativePath = ".detent/worker-tmp"
-const workerScratchBaseName = "detent-worker-scratch"
+
 const quarantineTimestampFormat = "20060102T150405.000000000Z"
 const quarantineAccumulationWarningThreshold = 5
 
@@ -89,25 +91,6 @@ var sourceOperationLocks = struct {
 
 type sourceOperationLock struct {
 	permit chan struct{}
-}
-
-type workspaceProcessScanner func(context.Context, string) ([]int, error)
-
-func scanOwnedWorkspaceProcessIDs(ctx context.Context, path string, scan workspaceProcessScanner) ([]int, error) {
-	pids, err := scan(ctx, path)
-	owned := make([]int, 0, len(pids))
-	seen := make(map[int]struct{}, len(pids))
-	for _, pid := range pids {
-		if pid <= 0 || pid == os.Getpid() {
-			continue
-		}
-		if _, ok := seen[pid]; ok {
-			continue
-		}
-		seen[pid] = struct{}{}
-		owned = append(owned, pid)
-	}
-	return owned, err
 }
 
 type Backend interface {
@@ -281,14 +264,6 @@ type Issue struct {
 	WorkspaceSession bool
 }
 
-type Info struct {
-	Path         string
-	Key          string
-	Branch       string
-	ReviewBranch string
-	Created      bool
-}
-
 type Hooks struct {
 	Shell             string
 	AfterCreate       string
@@ -392,14 +367,6 @@ func (e *HookError) Is(target error) bool {
 	return target == ErrHookFailed
 }
 
-type CommandError struct {
-	Command  string
-	Args     []string
-	ExitCode int
-	Output   string
-	Err      error
-}
-
 type workspaceRemovalError struct {
 	path        string
 	remediation string
@@ -444,14 +411,6 @@ func (e *workspaceRemovalError) WorkspacePath() string {
 
 func (e *workspaceRemovalError) Remediation() string {
 	return e.remediation
-}
-
-func (e *CommandError) Error() string {
-	return fmt.Sprintf("%s %s failed: %v", e.Command, strings.Join(e.Args, " "), e.Err)
-}
-
-func (e *CommandError) Unwrap() error {
-	return e.Err
 }
 
 func IsMissingWorkspaceError(err error) bool {
@@ -574,7 +533,7 @@ func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commi
 			return nil, err
 		}
 	}
-	logger.Info("runner commit policy", "identity", commits.report.Identity, "signing", commits.report.Signing)
+	logger.Info("runner commit policy", "identity", commits.Report.Identity, "signing", commits.Report.Signing)
 	scan := workspaceProcessIDs
 	if opts.ProcessSource != nil {
 		scan = workspaceProcessScanner(opts.ProcessSource)
@@ -2167,27 +2126,6 @@ func RemoveWorkerScratchRoot(workspacePath string) error {
 	return nil
 }
 
-// WorkerScratchRoot is the per-workspace parent of attempt scratch. It lives
-// under the OS temp root rather than the workspace so that compiler and test
-// churn never lands in a file-watched home tree. Workspaces are grouped by
-// their parent directory so retention can sweep scratch of removed workspaces.
-func WorkerScratchRoot(workspacePath string) string {
-	workspacePath = bestEffortCanonicalPath(workspacePath)
-	return filepath.Join(workerScratchGroup(filepath.Dir(workspacePath)), filepath.Base(workspacePath))
-}
-
-// workerScratchRoots lists the external scratch roots a workspace may own:
-// the current per-user root and the root under the base an earlier runner
-// shared between users.
-func workerScratchRoots(workspacePath string) []string {
-	workspacePath = bestEffortCanonicalPath(workspacePath)
-	roots := []string{WorkerScratchRoot(workspacePath)}
-	if shared := filepath.Join(workerScratchGroupIn(sharedWorkerScratchBase(), filepath.Dir(workspacePath)), filepath.Base(workspacePath)); shared != roots[0] {
-		roots = append(roots, shared)
-	}
-	return roots
-}
-
 // ensurePrivateDirectories creates base and every directory down to path, and
 // refuses any component that is a symlink or writable by others, because the
 // OS temp root may be shared between users.
@@ -2223,37 +2161,6 @@ func ensurePrivateDirectories(base string, path string) error {
 		}
 	}
 	return nil
-}
-
-func workerScratchGroup(workspaceParent string) string {
-	return workerScratchGroupIn(workerScratchBase(), workspaceParent)
-}
-
-func workerScratchGroupIn(base string, workspaceParent string) string {
-	sum := sha256.Sum256([]byte(bestEffortCanonicalPath(workspaceParent)))
-	return filepath.Join(base, hex.EncodeToString(sum[:8]))
-}
-
-func workerScratchBase() string {
-	base := sharedWorkerScratchBase()
-	if uid := os.Getuid(); uid >= 0 {
-		base += "-" + strconv.Itoa(uid)
-	}
-	return base
-}
-
-func sharedWorkerScratchBase() string {
-	return filepath.Join(bestEffortCanonicalPath(os.TempDir()), workerScratchBaseName)
-}
-
-func bestEffortCanonicalPath(path string) string {
-	if canonical, err := canonicalExistingPath(path); err == nil {
-		return canonical
-	}
-	if abs, err := filepath.Abs(path); err == nil {
-		return filepath.Clean(abs)
-	}
-	return filepath.Clean(path)
 }
 
 // workerScratchParent returns the directory that owns scratchPath: the
@@ -2564,89 +2471,6 @@ func (l *LocalGit) runGit(ctx context.Context, args ...string) (string, error) {
 	return runGitAt(ctx, l.sourceRoot, args...)
 }
 
-func runGitAt(ctx context.Context, dir string, args ...string) (string, error) {
-	return runGitAtWithEnv(ctx, dir, nil, args...)
-}
-
-func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
-	return runGitAtWithEnvCapture(ctx, dir, env, true, args...)
-}
-
-func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileOutput bool, args ...string) (string, error) {
-	return runGitAtWithInput(ctx, dir, env, fileOutput, "", args...)
-}
-
-func runGitAtWithInput(ctx context.Context, dir string, env []string, fileOutput bool, input string, args ...string) (string, error) {
-	return runGitAtWithInputCommand(ctx, dir, env, fileOutput, input, runWorkspaceCommand, args...)
-}
-
-func runGitAtWithInputCommand(ctx context.Context, dir string, env []string, fileOutput bool, input string, run func(context.Context, *exec.Cmd) error, args ...string) (string, error) {
-	gitArgs := append([]string{"git", "-C", dir}, args...)
-	cmd := exec.CommandContext(ctx, "git")
-	cmd.Args = gitArgs
-	if input != "" {
-		cmd.Stdin = strings.NewReader(input)
-	}
-	cmd.WaitDelay = workspaceCommandWaitDelay
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
-	var output []byte
-	var err error
-	if fileOutput {
-		file, createErr := os.CreateTemp("", "detent-git-output-*")
-		if createErr != nil {
-			return "", fmt.Errorf("create git output file: %w", createErr)
-		}
-		cmd.Stdout = file
-		cmd.Stderr = file
-		err = run(ctx, cmd)
-		_, seekErr := file.Seek(0, io.SeekStart)
-		var readErr error
-		if seekErr == nil {
-			output, readErr = io.ReadAll(file)
-		}
-		closeErr := file.Close()
-		removeErr := os.Remove(file.Name())
-		if seekErr != nil {
-			return "", fmt.Errorf("rewind git output file: %w", seekErr)
-		}
-		if readErr != nil {
-			return "", fmt.Errorf("read git output file: %w", readErr)
-		}
-		if closeErr != nil {
-			return "", fmt.Errorf("close git output file: %w", closeErr)
-		}
-		if removeErr != nil {
-			// On Windows a descendant can retain this handle without delete sharing.
-			// Report the leftover file without invalidating a successful query.
-			slog.Warn("remove git output file", slog.String("path", file.Name()), slog.Any("error", removeErr))
-		}
-	} else {
-		output, err = cmd.CombinedOutput()
-	}
-	if err == nil {
-		return string(output), nil
-	}
-
-	exitCode := -1
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		exitCode = exitErr.ExitCode()
-	}
-	if ctx.Err() != nil {
-		err = ctx.Err()
-	}
-
-	return "", &CommandError{
-		Command:  "git",
-		Args:     gitArgs[1:],
-		ExitCode: exitCode,
-		Output:   string(output),
-		Err:      err,
-	}
-}
-
 func gitDiscoveryBoundary(dir string) []string {
 	return []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(dir)}
 }
@@ -2790,14 +2614,6 @@ func canonicalGitMetadataPath(path string) (string, error) {
 	}
 }
 
-func pathWithin(root string, path string) bool {
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
-}
-
 func hookEnv(info Info, issue Issue, stripGitHubTokens bool) []string {
 	env := make([]string, 0, len(os.Environ())+len(workspaceEnvironmentKeys))
 	for _, entry := range os.Environ() {
@@ -2867,43 +2683,6 @@ func prepareRoot(path string) (string, error) {
 	return canonicalExistingPath(expanded)
 }
 
-func canonicalExistingPath(path string) (string, error) {
-	expanded, err := expandPath(path)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(expanded) == "" {
-		return "", errors.New("path is required")
-	}
-	abs, err := filepath.Abs(expanded)
-	if err != nil {
-		return "", fmt.Errorf("absolute path: %w", err)
-	}
-	canonical, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", &os.PathError{Op: "canonicalize", Path: abs, Err: err}
-	}
-	return filepath.Clean(canonical), nil
-}
-
-func expandPath(path string) (string, error) {
-	if path == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		return home, nil
-	}
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
-	}
-	return path, nil
-}
-
 func validateWorkspacePath(root string, path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -2957,3 +2736,5 @@ func dirIsEmpty(path string) (bool, error) {
 	}
 	return len(entries) == 0, nil
 }
+
+type Info = model.Info
