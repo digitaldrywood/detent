@@ -5,11 +5,12 @@ import (
 	"errors"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *Authenticator) WebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {

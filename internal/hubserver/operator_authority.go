@@ -6,11 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
-
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"

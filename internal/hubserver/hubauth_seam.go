@@ -3,17 +3,16 @@ package hubserver
 import (
 	"context"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-
-	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/labstack/echo/v4"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func authCredential(c apiCredential) hubauth.Credential {

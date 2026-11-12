@@ -6,9 +6,10 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *Authenticator) LocalCredential(ctx context.Context, c echo.Context) (Credential, int, error) {

@@ -8,13 +8,13 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *Authenticator) Operator(options OperatorOptions) echo.MiddlewareFunc {

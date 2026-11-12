@@ -7,12 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
-
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 

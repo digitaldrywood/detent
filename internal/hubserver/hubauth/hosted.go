@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -15,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *Authenticator) StoredSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {

@@ -3,9 +3,8 @@ package hubauth
 import (
 	"context"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
