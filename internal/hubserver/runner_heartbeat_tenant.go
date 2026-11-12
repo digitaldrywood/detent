@@ -86,7 +86,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		return s.nativeAPIError(c, err)
 	}
 	updateTarget := runnerUpdateTarget(s.config.Version)
-	updateReleasePublished := updateTarget != "" && s.runnerReleasePublished(c.Request().Context(), updateTarget, request.OS, request.Architecture)
+	updateReleasePublished := updateTarget != "" && request.OS != "" && request.Architecture != "" && s.runnerReleasePublished(c.Request().Context(), updateTarget, request.OS, request.Architecture)
 	var changeCursor nativeCursor
 	var changeKey []byte
 	var changeReset bool
