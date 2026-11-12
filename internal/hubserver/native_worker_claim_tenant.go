@@ -172,7 +172,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	if err != nil {
 		return result, err
 	}
-	if !runnerIdentityCanClaim(identity, scope, request.MachineID, now) {
+	if !runnerIdentityCanClaim(identity, scope, request.MachineID, s.config.now().UTC()) {
 		return result, tracker.ErrMachineNotFound
 	}
 	currentPolicy, err := r.ProjectPolicy(ctx, scope.project)

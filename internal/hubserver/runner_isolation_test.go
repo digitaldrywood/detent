@@ -1,10 +1,13 @@
 package hubserver
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -297,5 +300,33 @@ func TestRunnerIsolationLeaseLifecycle(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestRunnerIsolationRefusalAfterHeartbeatDuringClaim(t *testing.T) {
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	f := newDefaultNativeFixture(t, Config{Clock: clock.Now})
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	r.enroll(t)
+	r.reportCapacity(t)
+	issue := f.create(t, "queued")
+	descriptor := hubTestPolicy()
+	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(r.redemption.Credential), "", "")
+	if err != nil {
+		t.Fatalf("runner authentication status=%d: %v", status, err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "heartbeat-during-claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	claimStarted := clock.Now()
+	plan, err := f.service.readNativeClaimPlan(t.Context(), scope, claim, claimStarted)
+	if err != nil {
+		t.Fatalf("read claim plan: %v", err)
+	}
+	clock.Advance(time.Second)
+	r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted}}
+	r.reportCapacity(t)
+	if _, err := f.service.claimNativeIssueTenantWithPlan(t.Context(), scope, claim, time.Minute, claimStarted, plan, nil); !errors.Is(err, ErrNoClaimableWork) {
+		t.Fatalf("claim after a heartbeat withdrew sandbox = %v, want %v", err, ErrNoClaimableWork)
 	}
 }
