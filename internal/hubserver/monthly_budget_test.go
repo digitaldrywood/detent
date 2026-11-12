@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func monthlyBudgetRunner(t *testing.T, f nativeFixture, name, account string, sprite bool, capacity int, models ...string) runnerFixture {
@@ -252,7 +253,7 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 		{name: "project Sprite blocks Sprite", sprite: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
+			f := newDefaultNativeFixture(t, Config{Workspace: &WorkspaceConfig{Enabled: true}})
 			f.service.registerCostUsageRoutes(f.service.echo)
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 				t.Fatal(err)
@@ -290,7 +291,15 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 			}
 			workspace := f.createIndependent(t, "monthly workspace exposure")
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
-				return writer.PutWorkspaceItem(t.Context(), claimstore.WorkspaceItem{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: workspace.WorkItemID, WorkspaceID: newNativeID("workspace"), CreatedAt: f.service.config.now()})
+				now := f.service.config.now()
+				id := workspacesession.NewID()
+				if _, err := writer.(postgres.WorkspaceWriter).CreateWorkspaceSession(t.Context(), postgres.WorkspaceCreate{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: id, SubjectWorkItemID: string(workspace.WorkItemID), Ref: "refs/heads/example", Requires: []string{workspacesession.CapabilityFiles}, IdleTimeoutSeconds: 300, ExpiresAt: now.Add(time.Hour), RequestedExpiresAt: now.Add(time.Hour), CreatedBy: "test_hub_admin", CreatedAt: now}); err != nil {
+					return err
+				}
+				if err := writer.ReplaceRunnerWorkspaceReport(t.Context(), r.binding.RunnerID, workspacesession.Capabilities{Files: true}, ""); err != nil {
+					return err
+				}
+				return writer.PutWorkspaceItem(t.Context(), claimstore.WorkspaceItem{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: workspace.WorkItemID, WorkspaceID: id, CreatedAt: now})
 			}); err != nil {
 				t.Fatal(err)
 			}
