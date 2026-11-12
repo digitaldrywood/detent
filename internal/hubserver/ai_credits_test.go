@@ -507,6 +507,7 @@ func TestAICreditAutoFund(t *testing.T) {
 			if test.included {
 				d := f.service.database
 				plans := capacityHostedPlans()
+				plans.Plans = append(plans.Plans, f.service.config.Hosted.Plans.Plans...)
 				if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 					t.Fatal(err)
 				}
