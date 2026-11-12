@@ -452,7 +452,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	request.PriorEvents = nil
 	events[len(events)-1] = request
 	usageCorrection := false
-	if previousRunEventFound && !termination && (hasPriorEvents || request.Data.Sequence != previousAttempt.Sequence) {
+	if previousRunEventFound && !termination && (hasPriorEvents || request.Data.Sequence != previousAttempt.Sequence || previousRunEvent.Type == "run.finished" && previousRunEvent.HistoryHidden) {
 		if hasPriorEvents || request.Type != "run.finished" || request.Data.Outcome != previousAttempt.Status || request.Data.Sequence < previousAttempt.Sequence || request.Data.Sequence > previousAttempt.Sequence+1 {
 			return nil, leasestore.ErrAttemptConflict
 		}
