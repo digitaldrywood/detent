@@ -265,26 +265,6 @@ func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope 
 	return accessstore.ErrTransactionRequired
 }
 
-func (s *Service) addHostedMember(ctx context.Context, identity auth.Identity, membership auth.Membership) error {
-	return s.storeHostedMember(ctx, identity, membership, "")
-}
-
-func (s *Service) storeHostedMember(ctx context.Context, identity auth.Identity, membership auth.Membership, organizationName string) (resultErr error) {
-	prepared, err := s.prepareAccessMember(ctx, identity)
-	if err != nil {
-		return err
-	}
-	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
-		if err := s.storeAccessMember(ctx, w, identity, membership, prepared); err != nil {
-			return err
-		}
-		if organizationName != "" {
-			return w.UpdateAccessOrganizationName(ctx, organizationName)
-		}
-		return nil
-	})
-}
-
 type hostedExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }

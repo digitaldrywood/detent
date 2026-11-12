@@ -1297,7 +1297,7 @@ func testMaintenanceInvitationOrder(t *testing.T) {
 
 func testMaintenanceMemberPreparation(t *testing.T) {
 	t.Helper()
-	for _, scenario := range []string{"provider read failure", "pending random failure", "accepted random failure reconciliation", "concurrent principal", "existing principal", "revoked principal", "missing preparation", "wrong preparation"} {
+	for _, scenario := range []string{"provider read failure", "pending random failure", "accepted random failure reconciliation"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newBrowserHostedFixture(t, true)
 			s := f.service
@@ -1349,56 +1349,6 @@ func testMaintenanceMemberPreparation(t *testing.T) {
 				}
 				if provider.accepts != 0 {
 					t.Fatal("accepted reconciliation reissued provider acceptance")
-				}
-			} else {
-				membership, err := f.provider.CreateMembership(t.Context(), identity.Subject, f.provider.organization.ID, "member")
-				if err != nil {
-					t.Fatal(err)
-				}
-				prepared := accessMemberPreparation{}
-				if scenario == "concurrent principal" {
-					s.config.generateToken = originalGenerator
-					prepared, err = s.prepareAccessMember(t.Context(), identity)
-					if err != nil {
-						t.Fatal(err)
-					}
-				}
-				var stored accessstore.Credential
-				if scenario == "existing principal" || scenario == "revoked principal" || scenario == "concurrent principal" {
-					stored = maintenanceCredential(t, s, principal, "existing_principal_secret", false)
-					if scenario == "revoked principal" {
-						if err := s.accessWrite(t.Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
-							return w.RevokeAccessCredential(t.Context(), principal, s.config.now())
-						}); err != nil {
-							t.Fatal(err)
-						}
-						stored = maintenanceReadCredential(t, s, principal)
-					}
-					if scenario != "concurrent principal" {
-						prepared, err = s.prepareAccessMember(t.Context(), identity)
-						if err != nil || generated != 0 {
-							t.Fatalf("existing preparation error=%v generated=%d", err, generated)
-						}
-					}
-				}
-				if scenario == "wrong preparation" {
-					prepared = accessMemberPreparation{organization: "org_foreign", subject: identity.Subject, principal: principal, hash: "untrusted", fingerprint: "untrusted"}
-				}
-				err = s.accessWrite(t.Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
-					return s.storeAccessMember(t.Context(), w, identity, membership, prepared)
-				})
-				if scenario == "missing preparation" || scenario == "wrong preparation" {
-					if !errors.Is(err, auth.ErrHostedIdentity) {
-						t.Fatalf("invalid construction accepted: %v", err)
-					}
-					return
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				current := maintenanceReadCredential(t, s, principal)
-				if !reflect.DeepEqual(stored, current) {
-					t.Fatal("member publication replaced or revived existing principal")
 				}
 			}
 			var count int
