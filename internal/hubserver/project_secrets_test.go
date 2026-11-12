@@ -173,9 +173,6 @@ func TestProjectSecretPermissions(t *testing.T) {
 				t.Fatal(err)
 			}
 			status := http.StatusForbidden
-			if role == "viewer" {
-				status = http.StatusNotFound
-			}
 			if role == "owner" || role == "admin" {
 				status = http.StatusOK
 			}

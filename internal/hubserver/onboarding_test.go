@@ -525,7 +525,7 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 				expectedRevision = "2"
 			}
 			request := map[string]any{"idempotency_key": "checkout-association", "expected_revision": expectedRevision, "repository": repository, "source": "runner_checkout"}
-			requireNativeStatus(t, f.setupRequest(t, "viewer", http.MethodPost, base+"/onboarding/repository", request), http.StatusNotFound)
+			requireNativeStatus(t, f.setupRequest(t, "viewer", http.MethodPost, base+"/onboarding/repository", request), http.StatusForbidden)
 			response := f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
 			requireNativeStatus(t, response, test.status)
 			if test.status != http.StatusOK {

@@ -368,8 +368,8 @@ func TestProjectActionWriteGateRefusesAViewerAndAReadOnlyGrant(t *testing.T) {
 		write int
 	}{
 		{name: "a member with write may author", role: "member", grant: "write", read: http.StatusOK, write: http.StatusCreated},
-		{name: "a viewer may read and never write", role: "viewer", grant: "write", read: http.StatusOK, write: http.StatusNotFound},
-		{name: "a read-only grant may read and never write", role: "member", grant: "read", read: http.StatusOK, write: http.StatusNotFound},
+		{name: "a viewer may read and never write", role: "viewer", grant: "write", read: http.StatusOK, write: http.StatusForbidden},
+		{name: "a read-only grant may read and never write", role: "member", grant: "read", read: http.StatusOK, write: http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

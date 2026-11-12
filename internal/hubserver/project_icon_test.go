@@ -369,7 +369,7 @@ func TestHostedProjectIcon(t *testing.T) {
 		name, account, revision string
 		status                  int
 	}{
-		{"owner", "owner", "", 200}, {"member", "owner", "", 403}, {"viewer", "viewer", "", 404}, {"stale", "owner", "999", 409},
+		{"owner", "owner", "", 200}, {"member", "owner", "", 403}, {"viewer", "viewer", "", 403}, {"stale", "owner", "999", 409},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newBrowserHostedFixture(t, true)
