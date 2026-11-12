@@ -948,7 +948,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	if err := projectConfiguration.Validate(); err != nil {
 		t.Fatalf("invalid project owner projection fixture: %v", err)
 	}
-	if err := validateTenantHeartbeatProjection(nativeMachineHeartbeatRequest{ProjectConfiguration: &projectConfiguration}); err != nil {
+	if err := validateTenantHeartbeatProjection(nativeMachineHeartbeatRequest{ProjectConfiguration: &projectConfiguration}, project.ID); err != nil {
 		t.Fatalf("rejected project owner projection fixture: %v", err)
 	}
 	for name, mutate := range map[string]func(*runnerauth.ProjectConfiguration){
@@ -972,7 +972,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		diagnostics := *projectConfiguration.Diagnostics
 		invalid.Diagnostics = &diagnostics
 		mutate(&invalid)
-		if err := validateTenantHeartbeatProjection(nativeMachineHeartbeatRequest{ProjectConfiguration: &invalid}); err == nil {
+		if err := validateTenantHeartbeatProjection(nativeMachineHeartbeatRequest{ProjectConfiguration: &invalid}, project.ID); err == nil {
 			t.Fatalf("accepted owner projection with invalid %s", name)
 		}
 	}

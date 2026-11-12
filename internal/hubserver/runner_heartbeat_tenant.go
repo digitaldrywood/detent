@@ -32,7 +32,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		return s.nativeAPIError(c, nativePublicInvalid("Display name, version and nonnegative capacity are required"))
 	}
 	projectID := tracker.ProjectID(c.Param("project"))
-	if err := validateTenantHeartbeatProjection(request); err != nil {
+	if err := validateTenantHeartbeatProjection(request, projectID); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if err := validateProviderReports(request.ProviderReports); err != nil {
@@ -431,16 +431,14 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	return c.JSON(http.StatusOK, snapshot)
 }
 
-func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest) error {
+func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest, projectID tracker.ProjectID) error {
 	if request.ProjectConfiguration == nil {
 		return nil
 	}
 	view := request.ProjectConfiguration
-	if view.Validate() != nil || (view.Authority != "local_global_configuration" && view.Authority != "hub_configuration") {
-		return nativeRunEventStorageUnavailable()
-	}
-	if diagnostics := view.Diagnostics; diagnostics != nil && diagnostics.Source != "runner_runtime_and_durable_attempt_owners" {
-		return nativeRunEventStorageUnavailable()
+	invalid := view.Validate() != nil || (view.Authority != "local_global_configuration" && view.Authority != "hub_configuration") || projectID != "" && view.ProjectID != string(projectID)
+	if diagnostics := view.Diagnostics; invalid || diagnostics != nil && diagnostics.Source != "runner_runtime_and_durable_attempt_owners" {
+		return nativePublicInvalid("Invalid project configuration observation")
 	}
 	return nil
 }
