@@ -281,6 +281,7 @@ func TestWorkspaceRequestCreatesSessionAndDispatchItem(t *testing.T) {
 		if item == string(f.issue.WorkItemID) {
 			t.Fatal("the workspace dispatched its own subject instead of a workspace item")
 		}
+		drainTestNativeBoard(t, f.service)
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=100", f.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		var page tracker.Page[tracker.NativeIssue]
