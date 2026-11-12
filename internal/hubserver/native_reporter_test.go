@@ -474,7 +474,7 @@ func TestReporterAggregateReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := nativeScope{organization: "org_security", project: v.project, credential: catalog.credential}
-	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Minute), Bucket: time.Hour}
+	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: v.service.config.now().UTC(), Bucket: time.Hour}
 	activity, err := v.service.readActivityReport(ctx, catalog.credential, operatortool.ActivityRequest{ProjectID: string(v.project), Limit: 100}, w)
 	if err != nil {
 		t.Fatal(err)
