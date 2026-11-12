@@ -78,6 +78,9 @@ func (r *Repository) ImportNativeArchiveHistory(ctx context.Context, source Nati
 			if err != nil {
 				return err
 			}
+			if len(rows) == 0 {
+				return nil
+			}
 			for _, row := range rows {
 				section, err := readNativeArchiveImportSection(ctx, source, row)
 				if err != nil {
@@ -104,9 +107,6 @@ func (r *Repository) ImportNativeArchiveHistory(ctx context.Context, source Nati
 					return err
 				}
 				result.Sections++
-			}
-			if len(rows) < 100 {
-				return nil
 			}
 			after = rows[len(rows)-1].Key
 		}
