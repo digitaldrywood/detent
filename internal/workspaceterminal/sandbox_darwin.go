@@ -88,6 +88,8 @@ func sandboxProfile(root, tty string) string {
 (deny syscall-unix (syscall-number SYS_setsid SYS_setpgid SYS_posix_spawn))
 (allow process-fork process-exec)
 (allow signal (target same-sandbox))
+(deny process-info*)
+(allow process-info* (target self))
 (allow sysctl-read
  (sysctl-name-prefix "hw.")
  (sysctl-name "kern.ostype") (sysctl-name "kern.osrelease")
@@ -96,6 +98,7 @@ func sandboxProfile(root, tty string) string {
  (subpath "/bin") (subpath "/usr/bin")
  (subpath "/usr/lib") (subpath "/System/Library")
  (subpath "/Library/Apple/usr/lib"))
+(allow file-read-data (literal "/"))
 (allow file-read-metadata`)
 	for parent := filepath.Dir(root); ; parent = filepath.Dir(parent) {
 		profile.WriteString(" (literal " + strconv.Quote(parent) + ")")
