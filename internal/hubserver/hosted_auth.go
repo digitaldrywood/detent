@@ -6,7 +6,6 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -20,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 const hostedCookie = "detent_hosted_session"
@@ -57,63 +55,8 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 	return nativeCredentialResult(s.requestAuth().SharedCredential(ctx, session, hash, role))
 }
 
-// completePendingHostedInvitation finishes an invitation the provider already
-// accepted for this subject but whose tenant membership was never written, such
-// as a join interrupted between the provider acceptance and the tenant
-// transaction. A pending invitation still needs the explicit join. The
-// acceptance path re-verifies the provider invitation, subject, membership and
-// role, and its conditional update admits one acceptance, so no shared lock is
-// held across the provider calls. It reports true whenever completion was
-// attempted, since a concurrent request may have completed it first.
 func (s *Service) completePendingHostedInvitation(ctx context.Context, session auth.Session) (bool, error) {
-	if session.Identity == nil || session.Identity.SupportActor != "" || session.Email == "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
-		return false, nil
-	}
-	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	var id string
-	var err error
-	var latest time.Time
-	after := ""
-	err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
-		for {
-			page, err := r.AccessInvitations(readCtx, after, 200)
-			if err != nil {
-				return err
-			}
-			for _, row := range page {
-				if row.AcceptedUserID == "" && strings.EqualFold(row.Email, session.Email) && row.ExpiresAt.After(s.config.now()) && row.CreatedAt.After(latest) {
-					id, latest = row.ID, row.CreatedAt
-				}
-			}
-			if len(page) < 200 {
-				return nil
-			}
-			after = page[len(page)-1].ID
-		}
-	})
-	if err == nil && id == "" {
-		err = sql.ErrNoRows
-	}
-	cancel()
-	if err != nil {
-		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-			return false, operatorAuthorizationError(err)
-		}
-		return false, nil
-	}
-	invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, id)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-		return false, operatorAuthorizationError(err)
-	}
-	if err != nil || invitation.State != "accepted" || invitation.AcceptedUserID != session.Identity.Subject {
-		return false, nil
-	}
-	if err := s.acceptHostedInvitationIDFor(ctx, auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, id); err != nil {
-		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-			return false, operatorAuthorizationError(err)
-		}
-	}
-	return true, nil
+	return s.accessInvitesService().RecoverPending(ctx, session)
 }
 
 // lesserHostedRole returns the less privileged of two organization roles, so

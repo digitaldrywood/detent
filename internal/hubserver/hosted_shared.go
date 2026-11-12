@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessinvites"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -490,34 +491,9 @@ func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now st
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessSession(ctx, binding, at) })
 }
 
-type hostedSharedInvitation struct {
-	InvitationID string `json:"invitation_id"`
-	Token        string `json:"token"`
-}
-
 func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 	claims, ok := hostedSharedClaims(c)
-	if !ok || claims.Kind != cloudassert.KindService {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	var request hostedSharedInvitation
-	if err := decodeAPIJSON(c, &request); err != nil || claims.Subject == "" || claims.Email == "" {
-		return s.invalidAPIRequest(c, errors.New("invalid invitation"))
-	}
-	identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject, SessionID: claims.ProviderSession}}
-	var err error
-	if request.InvitationID != "" && request.Token == "" {
-		err = s.acceptHostedInvitationIDFor(c.Request().Context(), identity, request.InvitationID)
-	} else if request.InvitationID == "" {
-		err = s.acceptHostedInvitationFor(c.Request().Context(), identity, request.Token)
-	} else {
-		err = auth.ErrHostedIdentity
-	}
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-		return s.nativeAPIError(c, operatorAuthorizationError(err))
-	}
-	if err != nil {
-		return s.refusedAPIError(c, http.StatusForbidden, "invitation_unavailable", "This invitation is expired, already used, or intended for another account or organization", apiErrorResponse{Code: "invitation_unavailable", Message: "This invitation is expired, already used, or intended for another account or organization"})
-	}
-	return c.NoContent(http.StatusNoContent)
+	return s.accessInvitesService().AcceptHTTP(c, claims, ok, accessinvites.HTTPOptions{Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) }, Invalid: s.invalidAPIRequest, Refuse: func(c echo.Context, status int, code, message string, response any) error {
+		return s.refusedAPIError(c, status, code, message, response)
+	}})
 }
