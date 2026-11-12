@@ -191,6 +191,9 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		}
 		snapshot.project, snapshot.item, snapshot.version = project, row, version
 		snapshot.attempt = tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
+		if err := readTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
+			return err
+		}
 		if err := readTenantAttemptEvidence(ctx, r, &snapshot.attempt); err != nil {
 			return err
 		}

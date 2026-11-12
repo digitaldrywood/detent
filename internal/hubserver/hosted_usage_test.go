@@ -275,9 +275,11 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	checkpoint.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "gpt-6-astra", Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25, Currency: "USD"}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
 	var running tracker.NativeRuntimeEvidence
-	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/runtime", worker, nil), &running)
+	runtimeResponse := performHubAPIRequest(t, f.service, http.MethodGet, path+"/runtime", worker, nil)
+	requireNativeStatus(t, runtimeResponse, http.StatusOK)
+	decodeHubResponse(t, runtimeResponse, &running)
 	if running.Attempt == nil || running.Attempt.Status != "running" || len(running.Attempt.Usage) != 1 || running.Attempt.Usage[0].CostEstimate <= 0 || len(running.Attempt.Steps) != 1 || running.Attempt.Steps[0].CompletionBody != "Completed source" {
-		t.Fatalf("running attempt lost usage or step receipt: %+v", running.Attempt)
+		t.Fatalf("running attempt lost usage or step receipt: %+v response=%s", running.Attempt, runtimeResponse.Body.String())
 	}
 
 	type row struct {
