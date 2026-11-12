@@ -75,7 +75,7 @@ func pilotUploadArtifact(t *testing.T, f *browserHostedFixture, issue tracker.Na
 	publisher := "pilot-publisher-token"
 	gateway := httptest.NewUnstartedServer(nil)
 	t.Cleanup(gateway.Close)
-	cfg := artifact.Config{ServiceID: artifact.NewID("service"), OrganizationID: organization, Mode: "customer", AllowedOrigins: []string{f.server.URL}, Policy: artifact.Policy{ID: "pilot", Limits: artifact.Limits{RetainedBytes: 8 << 20, ReservedBytes: 8 << 20, ArtifactBytes: 4 << 20, UploadBytes: 1 << 20, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}
+	cfg := artifact.Config{ServiceID: artifact.NewID("service"), OrganizationID: organization, ProjectID: f.project, Mode: "customer", AllowedOrigins: []string{f.server.URL}, Policy: artifact.Policy{ID: "pilot", Limits: artifact.Limits{RetainedBytes: 8 << 20, ReservedBytes: 8 << 20, ArtifactBytes: 4 << 20, UploadBytes: 1 << 20, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}
 	binding := artifact.Binding{ServiceID: cfg.ServiceID, Origin: "http://" + gateway.Listener.Addr().String(), Mode: "customer", PublisherTokenID: "pilot-publisher"}
 	now := f.service.config.now()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
