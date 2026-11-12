@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -101,7 +102,7 @@ func diagnosticsPostgresFixtures(t *testing.T) []diagnosticsPostgresFixture {
 func diagnosticsFixtureAttempts(ctx context.Context, t testing.TB, f diagnosticsPostgresFixture, project tracker.ProjectID, item tracker.NativeWorkItemID, prefix string, population, objects int, started, updated time.Time, data tracker.NativeRunData) {
 	t.Helper()
 	if err := f.repository.WriteTenant(ctx, f.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.Project(ctx, project); err == corestore.ErrNotFound {
+		if _, err := w.Project(ctx, project); errors.Is(err, corestore.ErrNotFound) {
 			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: f.organization, ID: project, Name: "Other project", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
 				return err
 			}
