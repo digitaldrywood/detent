@@ -177,7 +177,7 @@ func TestNativeIssueTypes(t *testing.T) {
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "ungranted-worker-project")
 	for _, test := range actors[1:] {
 		t.Run(test.name+"/project isolation", func(t *testing.T) {
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/work-items", test.token, nil), http.StatusForbidden)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/work-items", test.token, nil), http.StatusNotFound)
 		})
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items", actors[1].token+"invalid", nil), http.StatusUnauthorized)
