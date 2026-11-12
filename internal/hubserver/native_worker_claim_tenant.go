@@ -63,6 +63,8 @@ type nativeClaimPlan struct {
 
 const nativeClaimCandidatePageSize = 100
 
+var errNativeClaimPlanRefused = fmt.Errorf("claim plan refused: %w", ErrNoClaimableWork)
+
 type nativeClaimCandidateScan struct {
 	plans    []nativeClaimPlan
 	replay   *nativeClaimPlan
@@ -158,7 +160,7 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 	plan, err := s.readNativeClaimPlan(ctx, scope, request, now)
 	if err != nil {
 		if errors.Is(err, ErrNoClaimableWork) && explicitItem {
-			if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now); recordErr != nil {
+			if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, errors.Is(err, errNativeClaimPlanRefused)); recordErr != nil {
 				return leasestore.Lease{}, recordErr
 			}
 		}
@@ -175,7 +177,7 @@ type requestedClaimRefusal struct {
 	recorded        bool
 }
 
-func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.Reader, scope nativeScope, request tracker.NativeClaim, now time.Time) (requestedClaimRefusal, error) {
+func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.Reader, scope nativeScope, request tracker.NativeClaim, now time.Time, planRefused bool) (requestedClaimRefusal, error) {
 	var result requestedClaimRefusal
 	if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 		return result, err
@@ -205,7 +207,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	if err != nil {
 		return result, err
 	}
-	if len(page.Items) != 0 {
+	if len(page.Items) != 0 && !planRefused {
 		report, err := r.RunnerBackendIsolation(ctx, identity.RunnerID)
 		if err != nil {
 			return result, err
@@ -275,7 +277,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	return result, nil
 }
 
-func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time) error {
+func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time, planRefused bool) error {
 	var refusal requestedClaimRefusal
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
@@ -283,7 +285,7 @@ func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope nativeS
 	}
 	if err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		refusal, err = s.readRequestedClaimRefusal(ctx, r, scope, request, now)
+		refusal, err = s.readRequestedClaimRefusal(ctx, r, scope, request, now, planRefused)
 		return err
 	}); err != nil || refusal.recorded {
 		return err
@@ -307,7 +309,7 @@ func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope nativeS
 		if _, err := w.LockWorkItem(ctx, scope.project, request.WorkItemID); err != nil {
 			return err
 		}
-		current, err := s.readRequestedClaimRefusal(ctx, w, scope, request, s.config.now().UTC())
+		current, err := s.readRequestedClaimRefusal(ctx, w, scope, request, s.config.now().UTC(), planRefused)
 		if err != nil {
 			return err
 		}
@@ -913,7 +915,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		return nil
 	})
 	if errors.Is(err, ErrNoClaimableWork) && isolationRefused {
-		if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now); recordErr != nil {
+		if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, false); recordErr != nil {
 			return leasestore.Lease{}, recordErr
 		}
 	}
@@ -1248,7 +1250,7 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 		return nativeClaimPlan{}, policyMismatch("Claim configuration does not match the current project policy")
 	}
 	if plan.policy.GitHubPullRequest == nil || *plan.policy.GitHubPullRequest != plan.descriptor.Gates.GitHubPullRequest {
-		return nativeClaimPlan{}, ErrNoClaimableWork
+		return nativeClaimPlan{}, errNativeClaimPlanRefused
 	}
 	raw, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).CollaborationVersion(ctx, plan.version)
 	if err != nil {
@@ -1259,7 +1261,7 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 	}
 
 	if nativeClaimDispatchSatisfied(plan) {
-		return nativeClaimPlan{}, ErrNoClaimableWork
+		return nativeClaimPlan{}, errNativeClaimPlanRefused
 	}
 	plan.issue.State = valueOrEmpty(plan.item.WorkflowStateName)
 	plan.issue.LastActivityAt = plan.item.LastActivityAt
@@ -1280,7 +1282,7 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 		plan.issue.LinkedSource = &linked
 	}
 	if plan.project.Core.Profile == "github_compatible" && !nativeCompatibleClaimSource(plan.project, plan.issue, plan.candidate) {
-		return nativeClaimPlan{}, ErrNoClaimableWork
+		return nativeClaimPlan{}, errNativeClaimPlanRefused
 	}
 	if stringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
 		if plan.changeRecord.ID == "" || plan.changeRecord.CurrentVersionID == nil || *plan.changeRecord.CurrentVersionID != plan.changeVersion.ID || plan.changeVersion.ID != plan.change.VersionID || plan.changeVersion.HeadSHA != plan.change.HeadSHA {
