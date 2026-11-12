@@ -180,12 +180,12 @@ func (f workspaceFixture) occupancy(t *testing.T, workspaceID string) (rows int,
 func (f workspaceFixture) attempt(t *testing.T, name string, running bool) string {
 	t.Helper()
 	subject := f.create(t, "attempt-subject-"+name)
-	worker := f.worker(t, "workspace-"+name+"-worker")
-	machine := "machine-" + name
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker,
-		map[string]any{"id": machine, "hostname": "fixture", "display_name": "Fixture", "version": "test", "capacity": 4}), http.StatusOK)
+	runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	runner.enroll(t)
+	runner.reportCapacity(t)
+	worker := runner.redemption.Credential
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker,
-		tracker.NativeClaim{PolicyID: f.policy, WorkItemID: subject.WorkItemID, MachineID: tracker.MachineID(machine),
+		tracker.NativeClaim{PolicyID: f.policy, WorkItemID: subject.WorkItemID, MachineID: runner.binding.MachineID,
 			SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
 			Capabilities: []string{"native_issues", "scoped_collaboration"}})
 	requireNativeStatus(t, response, http.StatusOK)
