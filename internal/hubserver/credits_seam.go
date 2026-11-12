@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -12,79 +11,56 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 
 	"encoding/csv"
 
-	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/credits"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) registerHostedCreditWriteRoutes(e *echo.Echo) {
-	e.POST("/organization/billing/credits/checkout", s.hostedCreditCheckout)
-	e.POST("/organization/billing/credits/auto-fund", s.hostedCreditAutoFund)
-	e.POST(hostedOrganizationBase+"/billing/credits/checkout", s.hostedCreditCheckout)
-	e.PUT(hostedOrganizationBase+"/billing/credits/auto-fund", s.hostedCreditAutoFund)
+	credits.RegisterWriteRoutes(e.Group(""), s.creditHTTPDeps())
 	e.POST("/webhooks/stripe", s.hostedStripeWebhook)
 }
 
-func (s *Service) hostedCreditCheckout(c echo.Context) error {
-	api := hostedBillingAPI(c)
-	if _, err := s.hostedBillingOwner(c.Request().Context(), c); err != nil {
-		return s.creditCommandFailure(c, api, err)
-	}
-	var request struct {
-		hostedIdempotent
-		Price string `json:"price"`
-	}
-	if api {
-		if err := decodeAPIJSON(c, &request); err != nil {
-			return s.invalidAPIRequest(c, err)
-		}
-		if err := request.validate(true); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	} else {
-		request.Price = c.FormValue("price")
-	}
-	authorize := func(ctx context.Context) (apiCredential, error) { return s.hostedBillingOwner(ctx, c) }
-	result, err := s.checkoutCredits(c.Request().Context(), authorize, request.Price, request.IdempotencyKey)
-	if err != nil {
-		return s.creditCommandFailure(c, api, err)
-	}
-	return s.hostedBillingDestination(c, api, result.URL)
+func (s *Service) registerHostedCreditReadRoutes(e *echo.Echo) {
+	credits.RegisterReadRoutes(e.Group(""), s.creditHTTPDeps())
 }
 
-func (s *Service) hostedCreditAutoFund(c echo.Context) error {
-	api := hostedBillingAPI(c)
-	if _, err := s.hostedBillingOwner(c.Request().Context(), c); err != nil {
-		return s.creditCommandFailure(c, api, err)
+func (s *Service) registerPlatformCreditRoutes(e *echo.Echo) {
+	credits.RegisterPlatformRoutes(e.Group(""), s.creditHTTPDeps())
+}
+
+func (s *Service) creditHTTPDeps() credits.HTTPDeps {
+	return credits.HTTPDeps{
+		Service: s.creditsService, PlatformService: func() *credits.Service { return s.database.creditsService() }, Auth: s.requestAuth,
+		Error:          func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		InvalidRequest: s.invalidAPIRequest, CommandFailure: s.creditCommandFailure,
+		Failure: s.hostedBillingFailure, Destination: s.hostedBillingDestination,
+		Return:      func() string { return s.hostedBillingReturn(true) },
+		ValidateKey: func(key string) error { return (hostedIdempotent{IdempotencyKey: key}).validate(true) },
+		Checkout: func(ctx context.Context, authorize func(context.Context) (hubauth.Credential, error), price, key string) (string, error) {
+			value, err := s.checkoutCredits(ctx, func(ctx context.Context) (apiCredential, error) { return creditCredential(authorize(ctx)) }, price, key)
+			return value.URL, err
+		},
+		ConfigureFunding: func(ctx context.Context, authorize func(context.Context) (hubauth.Credential, error), request credits.FundingInput, key string) (credits.FundingInput, error) {
+			return s.configureCreditFunding(ctx, func(ctx context.Context) (apiCredential, error) { return creditCredential(authorize(ctx)) }, request, key)
+		},
+		NewID: s.config.newLeaseID,
+		Audit: func(ctx context.Context, credential hubauth.Credential, c echo.Context) error {
+			return s.hostedAudit(ctx, credential.Hosted, "billing_exported", c.Path(), "", http.StatusOK)
+		},
+		SharedClaims: hostedSharedClaims, JSONError: s.hostedJSONError, InternalError: s.internalAPIError,
+		PlatformOrganization: func() tracker.OrganizationID { return s.database.hostedOrganization },
 	}
-	var request creditFundingInput
-	if api {
-		if err := decodeAPIJSON(c, &request); err != nil {
-			return s.invalidAPIRequest(c, err)
-		}
-	} else {
-		request.Enabled = c.FormValue("enabled") == "on"
-		request.Price = c.FormValue("price")
-		threshold, err := strconv.ParseInt(c.FormValue("threshold_cents"), 10, 64)
-		if err != nil && request.Enabled {
-			return s.hostedBillingFailure(c, api, http.StatusBadRequest, "Enter a threshold in USD cents")
-		}
-		request.Threshold = threshold
-	}
-	authorize := func(ctx context.Context) (apiCredential, error) { return s.hostedBillingOwner(ctx, c) }
-	if _, err := s.configureCreditFunding(c.Request().Context(), authorize, request, ""); err != nil {
-		return s.creditCommandFailure(c, api, err)
-	}
-	if api {
-		return c.NoContent(http.StatusNoContent)
-	}
-	return c.Redirect(http.StatusSeeOther, s.hostedBillingReturn(true))
+}
+
+func creditCredential(value hubauth.Credential, err error) (apiCredential, error) {
+	return nativeCredential(value), err
 }
 
 func (s *Service) creditCommandFailure(c echo.Context, api bool, err error) error {
@@ -100,99 +76,6 @@ func (s *Service) creditCommandFailure(c echo.Context, api bool, err error) erro
 	default:
 		return s.nativeAPIError(c, err)
 	}
-}
-
-func creditPageQuery(c echo.Context) (creditPageRequest, error) {
-	p := creditPageRequest{Cursor: c.QueryParam("cursor"), From: c.QueryParam("from"), To: c.QueryParam("to")}
-	if value := c.QueryParam("limit"); value != "" {
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 || n > 100 {
-			return p, nativeInvalid("credit transaction limit must be between 1 and 100")
-		}
-		p.Limit = n
-	}
-	return p, nil
-}
-
-func (s *Service) hostedCreditTransactions(c echo.Context) error {
-	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	p, err := creditPageQuery(c)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	if c.QueryParam("format") == "csv" {
-		return s.exportCreditTransactions(ctx, c, credential, p)
-	}
-	view, err := s.readAICredits(ctx, p)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, view)
-}
-
-func (s *Service) exportCreditTransactions(ctx context.Context, c echo.Context, credential apiCredential, p creditPageRequest) error {
-	from, to, err := p.bounds()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-
-	return s.exportPostgresCreditTransactions(ctx, c, credential, from, to)
-}
-
-func (s *Service) creditCSVWriter(ctx context.Context, c echo.Context, credential apiCredential) (*csv.Writer, error) {
-	auditCtx := mutation.WithContext(ctx, mutation.Metadata{Action: "billing_export", Source: "http", CorrelationID: s.config.newLeaseID()})
-	if err := s.hostedAudit(auditCtx, credential.Hosted, "billing_exported", c.Path(), "", http.StatusOK); err != nil {
-		return nil, s.nativeAPIError(c, err)
-	}
-	c.Response().Header().Set(echo.HeaderContentType, "text/csv; charset=utf-8")
-	c.Response().Header().Set(echo.HeaderContentDisposition, `attachment; filename="credit-transactions.csv"`)
-	c.Response().Header().Set(echo.HeaderCacheControl, "no-store")
-	writer := csv.NewWriter(c.Response())
-	if err := writer.Write([]string{"recorded_at", "kind", "turn_id", "tokens", "charged_amount_usd", "included_amount_usd"}); err != nil {
-		return nil, err
-	}
-	return writer, nil
-}
-
-func (s *Service) exportPostgresCreditTransactions(ctx context.Context, c echo.Context, credential apiCredential, from, to int64) error {
-	started, err := s.creditsService().Export(ctx, from, to, func() (*csv.Writer, error) { return s.creditCSVWriter(ctx, c, credential) })
-	if !started && err != nil {
-		return s.nativeAPIError(c, fromFeatureError(err))
-	}
-	return err
-}
-func (s *Service) platformTenantAICreditBalance(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	claims, ok := hostedSharedClaims(c)
-	if !ok || claims.Kind != cloudassert.KindService {
-		return s.hostedJSONError(c, http.StatusForbidden, "Shared service access is required to read AI credits")
-	}
-	result, err := s.database.creditsService().PlatformBalance(ctx)
-	if err != nil {
-		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", fromFeatureError(err))
-	}
-	return c.JSON(http.StatusOK, result)
-}
-func (s *Service) adjustPlatformAICredits(c echo.Context) error {
-	claims, ok := hostedSharedClaims(c)
-	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" || claims.Email == "" {
-		return s.hostedJSONError(c, http.StatusForbidden, "Shared service identity and email are required to adjust AI credits")
-	}
-	var adjustment billing.CreditAdjustment
-	if err := decodeAPIJSON(c, &adjustment); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	balance, err := s.database.adjustAICredits(c.Request().Context(), claims.Email, adjustment)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, map[string]any{"organization_id": s.database.hostedOrganization, "balance_micros": balance})
 }
 
 func (s *Service) chatUsageRows(ctx context.Context, window usageWindow, projects []string) ([]usageRow, error) {

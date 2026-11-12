@@ -323,7 +323,3 @@ func (s *Service) hostedAccountSetupFor(ctx context.Context, session auth.Sessio
 	staff := s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == ""
 	return hostedAccountSetup{Email: session.Email, CanCreate: members == 0 && session.Identity.Subject == s.config.Hosted.BootstrapSubject && session.Identity.SupportActor == "" && (s.config.Hosted.SharedEntry != nil || !staff), CanSupport: session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email), Staff: staff}, nil
 }
-
-func (s *Service) registerHostedCreditReadRoutes(e *echo.Echo) {
-	e.GET(hostedOrganizationBase+"/billing/credits/transactions", s.hostedCreditTransactions)
-}

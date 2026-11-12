@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/credits"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -178,8 +179,8 @@ func TestAPIRefusals(t *testing.T) {
 		{"key administration", "/internal/keys/admin", "", "forbidden", "Organization administrator service access is required", http.StatusForbidden, (*Service).entryKeyAdmin},
 		{"key context", "/internal/keys/context", "", "forbidden", "Shared service identity is required to read key context", http.StatusForbidden, (*Service).entryKeyContext},
 		{"key audit", "/internal/keys/audit", `{"key_id":"key_example","owner":"private-token","event":"created"}`, "forbidden", "Shared service access is required to record key audit events", http.StatusForbidden, (*Service).entryKeyAudit},
-		{"credit balance", nativeBase + "/ai-credits", "", "forbidden", "Shared service access is required to read AI credits", http.StatusForbidden, (*Service).platformTenantAICreditBalance},
-		{"credit adjustment", nativeBase + "/ai-credits", "", "forbidden", "Shared service identity and email are required to adjust AI credits", http.StatusForbidden, (*Service).adjustPlatformAICredits},
+		{"credit balance", nativeBase + "/ai-credits", "", "forbidden", "Shared service access is required to read AI credits", http.StatusForbidden, func(s *Service, c echo.Context) error { return credits.NewHTTP(s.creditHTTPDeps()).PlatformBalance(c) }},
+		{"credit adjustment", nativeBase + "/ai-credits", "", "forbidden", "Shared service identity and email are required to adjust AI credits", http.StatusForbidden, func(s *Service, c echo.Context) error { return credits.NewHTTP(s.creditHTTPDeps()).AdjustPlatform(c) }},
 		{"request metrics", nativeBase + "/request-metrics", "", "forbidden", "Staff access is required to read request metrics", http.StatusForbidden, (*Service).hostedRequestMetrics},
 		{"runtime read", nativeBase + "/runtime", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, (*Service).readHostedRuntime},
 		{"runtime reload", nativeBase + "/runtime", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, (*Service).reloadHostedRuntime},

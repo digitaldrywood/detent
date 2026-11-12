@@ -12,14 +12,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/credits"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-type creditFundingInput struct {
-	Enabled   bool   `json:"enabled"`
-	Threshold int64  `json:"threshold_cents"`
-	Price     string `json:"price"`
-}
+type creditFundingInput = credits.FundingInput
 
 func (s *Service) creditAvailable() bool {
 	cfg := s.hostedBillingConfig()

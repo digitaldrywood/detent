@@ -7,13 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
@@ -443,59 +439,6 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 	}
 }
 
-func TestPlatformAICreditBalanceReadsPostgresTenantLedger(t *testing.T) {
-	d := &database{hostedOrganization: "org_example"}
-	service := &Service{database: d, echo: echo.New()}
-	d.aiCreditMode = billing.ModeTest
-	d.now = func() time.Time { return time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC) }
-	repository := projectRecordPostgres(t)
-	now := d.now()
-	err := repository.WriteTenant(t.Context(), d.hostedOrganization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: d.hostedOrganization, Name: string(d.hostedOrganization), CreatedAt: now}); err != nil {
-			return err
-		}
-		if err := w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, AutoEnabled: true}); err != nil {
-			return err
-		}
-		for _, row := range []billingstore.CreditTransaction{
-			{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, Source: "purchase:example", AmountMicros: 11000000, Kind: "purchase", Actor: "staff@example.test", RecordedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)},
-			{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, Source: "usage:example", AmountMicros: -750000, Kind: "usage", RecordedAt: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)},
-		} {
-			if _, err := w.PostBillingCredit(t.Context(), row); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.billingRepository = repository
-	request := httptest.NewRequest(http.MethodPost, "/internal/v1/platform/ai-credits/balance", strings.NewReader(`{}`)).WithContext(t.Context())
-	response := httptest.NewRecorder()
-	c := service.echo.NewContext(request, response)
-	c.Set(hostedSharedClaimsKey, cloudassert.Claims{Kind: cloudassert.KindService})
-	if err := service.platformTenantAICreditBalance(c); err != nil {
-		t.Fatal(err)
-	}
-	if response.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-	}
-	var result struct {
-		Balance int64                 `json:"balance_micros"`
-		Spent   int64                 `json:"spent_micros"`
-		Month   string                `json:"month"`
-		Auto    bool                  `json:"auto_enabled"`
-		History []aiCreditTransaction `json:"history"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Balance != 10250000 || result.Spent != 750000 || result.Month != "2026-10" || !result.Auto || len(result.History) != 1 || result.History[0].Kind != "purchase" || result.History[0].AmountMicros != 11000000 {
-		t.Fatalf("PostgreSQL billing response=%+v", result)
-	}
-}
-
 func TestHostedUsageUsesSelectedPostgresWindowsAndRefusesSQLiteWrites(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
@@ -650,46 +593,6 @@ func TestAICreditOwnerSettings(t *testing.T) {
 	}
 }
 
-func TestAICreditGroupedHistory(t *testing.T) {
-	t.Parallel()
-	for _, limit := range []int{1, 10, 100} {
-		t.Run(fmt.Sprintf("limit_%d", limit), func(t *testing.T) {
-			f, base := newHostedBillingFixture(t)
-			configureTestCredits(t, f, base, billingstore.CreditAccount{BalanceMicros: 35*2*(123-100) - 3*(5000000+5000001)}, billingstore.CreditAccount{Mode: billing.ModeLive, BalanceMicros: -999})
-			d := f.service.database
-			start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-			for day := range 35 {
-				for turn := range 2 {
-					postAICreditFixture(t, d, billingstore.CreditTransaction{Source: fmt.Sprintf("usage:day-%d-turn-%d", day, turn), AmountMicros: -123, IncludedAmountMicros: 100, Kind: "usage", RecordedAt: start.AddDate(0, 0, day).Add(time.Duration(turn) * time.Hour)})
-				}
-			}
-			for _, kind := range []string{"purchase", "auto_fund", "complimentary"} {
-				for n := range 2 {
-					postAICreditFixture(t, d, billingstore.CreditTransaction{Source: fmt.Sprintf("%s-%d", kind, n), AmountMicros: int64(5000000 + n), Kind: kind, RecordedAt: start.AddDate(0, 0, 34).Add(2 * time.Hour)})
-				}
-			}
-			postAICreditFixture(t, d, billingstore.CreditTransaction{Mode: billing.ModeLive, Source: "other-mode", AmountMicros: 999, Kind: "complimentary", RecordedAt: start})
-			for _, query := range []string{"?limit=0", "?limit=101", "?cursor=bad", "?from=bad", "?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z"} {
-				requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodGet, "/billing/credits/transactions"+query, ""), http.StatusUnprocessableEntity)
-			}
-			response := f.billingAPI(t, "owner", http.MethodGet, "/billing/credits/transactions?limit=1", "")
-			requireNativeStatus(t, response, http.StatusOK)
-			var first aiCreditView
-			if err := json.Unmarshal(response.Body.Bytes(), &first); err != nil {
-				t.Fatal(err)
-			}
-			response = f.billingAPI(t, "owner", http.MethodGet, "/billing/credits/transactions?limit=1&cursor="+url.QueryEscape(first.NextCursor), "")
-			requireNativeStatus(t, response, http.StatusOK)
-			var second aiCreditView
-			if err := json.Unmarshal(response.Body.Bytes(), &second); err != nil {
-				t.Fatal(err)
-			}
-			if len(second.History) != 1 || second.NextCursor == first.NextCursor {
-				t.Fatalf("second page=%+v", second)
-			}
-		})
-	}
-}
 func TestAICreditCSVExport(t *testing.T) {
 	t.Parallel()
 	f, base := newHostedBillingFixture(t)

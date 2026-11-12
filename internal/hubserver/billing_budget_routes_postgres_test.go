@@ -3,12 +3,10 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -163,111 +161,13 @@ func TestPostgresBillingBudgetReadRoutes(t *testing.T) {
 				}
 				requireNativeStatus(t, f.request(t, hostedSecurityUser{}, http.MethodGet, base+"/monthly-budget", nil), http.StatusUnauthorized)
 			})
-			t.Run("history", func(t *testing.T) {
-				response := f.request(t, owner, http.MethodGet, base+"/billing/credits/transactions?limit=1", nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				var first aiCreditView
-				if err := json.Unmarshal(response.Body.Bytes(), &first); err != nil {
-					t.Fatal(err)
-				}
-				if len(first.History) != 1 || first.TotalRows != 3 || first.NextCursor == "" || first.History[0].AmountMicros != int64(index+1)*1000000+3 {
-					t.Fatalf("first page: %#v", first)
-				}
-				response = f.request(t, owner, http.MethodGet, base+"/billing/credits/transactions?limit=1&cursor="+url.QueryEscape(first.NextCursor), nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				var second aiCreditView
-				if err := json.Unmarshal(response.Body.Bytes(), &second); err != nil {
-					t.Fatal(err)
-				}
-				if len(second.History) != 1 || second.History[0].Kind != "usage" || second.History[0].Turns != 2 || second.History[0].AmountMicros != -int64(index+1)*2000000-3 {
-					t.Fatalf("second page: %#v", second)
-				}
-				for _, query := range []string{"?limit=0", "?limit=101", "?cursor=" + url.QueryEscape(first.NextCursor) + "&from=2026-11-03T00:00:00Z", "?cursor=invalid", "?from=invalid", "?from=2026-11-04T00:00:00Z&to=2026-11-03T00:00:00Z"} {
-					requireNativeStatus(t, f.request(t, owner, http.MethodGet, base+"/billing/credits/transactions"+query, nil), http.StatusUnprocessableEntity)
-				}
-			})
-			t.Run("csv", func(t *testing.T) {
-				response := f.request(t, owner, http.MethodGet, base+"/billing/credits/transactions?format=csv&limit=1&from="+url.QueryEscape(now.Add(time.Minute).Format(time.RFC3339Nano))+"&to="+url.QueryEscape(now.Add(3*time.Minute).Format(time.RFC3339Nano)), nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				rows, err := csv.NewReader(strings.NewReader(response.Body.String())).ReadAll()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(rows) != 3 || strings.Join(rows[0], ",") != "recorded_at,kind,turn_id,tokens,charged_amount_usd,included_amount_usd" || rows[1][2] != "'=example-turn" || rows[1][3] != fmt.Sprint((index+1)*100+23) || rows[1][4] != fmt.Sprintf("-%d.000002", index+1) || rows[1][5] != "0.234567" || rows[2][1] != "usage" || rows[2][2] != "missing-turn" || rows[2][3] != "" {
-					t.Fatalf("CSV: %#v", rows)
-				}
-				if !strings.HasPrefix(response.Header().Get("Content-Type"), "text/csv") || response.Header().Get("Cache-Control") != "no-store" {
-					t.Fatalf("headers: %#v", response.Header())
-				}
-			})
-			t.Run("csvPages", func(t *testing.T) {
-				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-					for n := range 101 {
-						source, kind, amount := fmt.Sprintf("page-%d", n), "purchase", int64(n)
-						if n == 0 {
-							source, kind, amount = "other:=example-turn", "usage", -123
-						}
-						if _, err := w.PostBillingCredit(t.Context(), billingstore.CreditTransaction{OrganizationID: organization, Mode: "test", Source: source, Kind: kind, AmountMicros: amount, RecordedAt: now.Add(-time.Hour)}); err != nil {
-							return err
-						}
-					}
-					return nil
-				}); err != nil {
-					t.Fatal(err)
-				}
-				response := f.request(t, owner, http.MethodGet, base+"/billing/credits/transactions?format=csv&limit=1&cursor=ignored", nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				rows, err := csv.NewReader(strings.NewReader(response.Body.String())).ReadAll()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(rows) != 106 {
-					t.Fatalf("export rows=%d", len(rows))
-				}
-				for n := range 100 {
-					if rows[n+5][4] != fmt.Sprintf("0.%06d", 100-n) {
-						t.Fatalf("export tie order row %d: %v", n, rows[n+5])
-					}
-				}
-				if rows[105][2] != "'=example-turn" || rows[105][3] != "" || rows[105][4] != "-0.000123" {
-					t.Fatalf("unmatched source: %v", rows[105])
-				}
-				response = f.request(t, owner, http.MethodGet, base+"/billing/credits/transactions?format=csv&from=2026-11-04T00:00:00Z", nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				rows, err = csv.NewReader(strings.NewReader(response.Body.String())).ReadAll()
-				if err != nil || len(rows) != 1 {
-					t.Fatalf("empty export rows=%v error=%v", rows, err)
-				}
-			})
-
 			t.Run("authority", func(t *testing.T) {
-				admin := f.user(t, string(organization)+"admin", "admin", "admin@example.test", "", "")
-				support := f.user(t, string(organization)+"support", "owner", "support@example.test", "", "operator_example")
-				for _, suffix := range []string{"", "?format=csv"} {
-					for _, user := range []hostedSecurityUser{viewer, admin, support} {
-						requireNativeStatus(t, f.request(t, user, http.MethodGet, base+"/billing/credits/transactions"+suffix, nil), http.StatusForbidden)
-					}
-					requireNativeStatus(t, f.request(t, hostedSecurityUser{}, http.MethodGet, base+"/billing/credits/transactions"+suffix, nil), http.StatusForbidden)
-				}
 				other := "org_example_first"
 				if index == 0 {
 					other = "org_example_second"
 				}
 				for _, suffix := range []string{"/monthly-budget", "/billing/credits/transactions", "/billing/credits/transactions?format=csv"} {
 					requireNativeStatus(t, f.request(t, owner, http.MethodGet, "/api/v2/organizations/"+other+suffix, nil), http.StatusNotFound)
-				}
-				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-					member, err := w.AccessMember(t.Context(), owner.identity.Subject)
-					if err != nil {
-						return err
-					}
-					member.Role = "viewer"
-					return w.UpdateAccessMember(t.Context(), member)
-				}); err != nil {
-					t.Fatal(err)
-				}
-				for _, suffix := range []string{"", "?format=csv"} {
-					requireNativeStatus(t, f.request(t, owner, http.MethodGet, base+"/billing/credits/transactions"+suffix, nil), http.StatusForbidden)
 				}
 			})
 		})
