@@ -1,4 +1,4 @@
-package hubserver
+package hubauth_test
 
 import (
 	"context"
@@ -13,6 +13,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -20,10 +22,10 @@ import (
 )
 
 func TestNativeResourceAuthorizationSharesSnapshot(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository := hubtest.Repository(t)
 	now := time.Now().UTC()
-	details := &memoryRunDetails{}
-	service := &Service{database: &database{postgres: repository}, config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }}}
+	details := hubtest.NewDetails()
+	service := hubtest.NewHTTP(t, hubtest.HTTPOptions{Repository: repository, Organization: "org_first", Now: func() time.Time { return now }}, func(*echo.Group, hubtest.HTTPDeps) {})
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		version, err := eventstore.NewContent(details).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_example", RecordID: "wi_example", Revision: 1}, []byte(`{}`))
 		if err != nil {
@@ -39,7 +41,7 @@ func TestNativeResourceAuthorizationSharesSnapshot(t *testing.T) {
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "example_reader", Name: "Example reader", Hash: apikey.HashToken(string(org)), Scope: "operator", Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
-			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "example", Name: string(org), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "example", Name: string(org), Profile: "native"}, States: hubtest.States()}); err != nil {
 				return err
 			}
 			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: "wi_example", Number: 1, Revision: 1, Title: string(org)}); err != nil {
@@ -61,14 +63,14 @@ func TestNativeResourceAuthorizationSharesSnapshot(t *testing.T) {
 			}, func(time.Time, string) { statements++ })
 			e := echo.New()
 			var handlerContext context.Context
-			e.GET(nativeOrganizationIssuePath, func(c echo.Context) error {
+			e.GET("/api/v2/organizations/:organization/work-items/:item", func(c echo.Context) error {
 				handlerContext = c.Request().Context()
-				scope := nativeRequestScope(c)
-				if scope.organization != org || scope.project != "example" {
-					t.Fatalf("scope = %s/%s", scope.organization, scope.project)
+				scope := hubauth.RequestScope(c)
+				if scope.Organization != org || scope.Project != "example" {
+					t.Fatalf("scope = %s/%s", scope.Organization, scope.Project)
 				}
 				return c.NoContent(http.StatusNoContent)
-			}, service.requireNativeScope(apiScopeOperator))
+			}, service.Deps.Native(hubauth.Operator))
 			request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v2/organizations/"+string(org)+"/work-items/wi_example", nil)
 			request.Header.Set(echo.HeaderAuthorization, "Bearer "+string(org))
 			response := httptest.NewRecorder()
@@ -112,10 +114,10 @@ func TestNativeResourceAuthorizationSharesSnapshot(t *testing.T) {
 				cancel()
 			}
 			e := echo.New()
-			e.GET(nativeOrganizationIssuePath, func(c echo.Context) error {
+			e.GET("/api/v2/organizations/:organization/work-items/:item", func(c echo.Context) error {
 				t.Error("unauthorized handler was called")
 				return c.NoContent(http.StatusNoContent)
-			}, service.requireNativeScope(apiScopeOperator))
+			}, service.Deps.Native(hubauth.Operator))
 			request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v2/organizations/"+test.organization+"/work-items/wi_example", nil)
 			request.Header.Set(echo.HeaderAuthorization, "Bearer "+test.token)
 			response := httptest.NewRecorder()

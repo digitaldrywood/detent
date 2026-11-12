@@ -207,10 +207,6 @@ func (s *Service) sharedHostedSession(ctx context.Context, c echo.Context) (auth
 	return s.sharedAccessSession(ctx, c, claims)
 }
 
-func sharedSessionMatches(session auth.Session, identity auth.HostedIdentity, email string) bool {
-	return session.Identity != nil && session.Identity.Subject == identity.Subject && session.Identity.SessionID == identity.SessionID && session.Identity.OrganizationID == identity.OrganizationID && session.Identity.SupportActor == identity.SupportActor && session.Identity.SupportReason == identity.SupportReason && strings.EqualFold(session.Email, email)
-}
-
 func (s *Service) hostedSharedCSRF(c echo.Context) string {
 	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindBrowser {
 		return claims.CSRF

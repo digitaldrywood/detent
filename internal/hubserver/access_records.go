@@ -58,19 +58,5 @@ func (s *Service) authenticateAccessHash(ctx context.Context, hash, renewalRunne
 }
 
 func (s *Service) activeAccessMember(ctx context.Context, user string) (accessstore.Member, error) {
-	var member accessstore.Member
-	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-		var err error
-		member, err = r.AccessMember(ctx, user)
-		if err != nil {
-			return err
-		}
-		principal, err := r.AccessCredential(ctx, member.PrincipalID)
-		if err != nil {
-			return err
-		}
-		_, err = r.AuthorizeAccess(ctx, accessstore.Authority{CredentialID: principal.ID, Hash: principal.Hash, UserID: user, MembershipID: member.MembershipID}, s.config.now())
-		return err
-	})
-	return member, err
+	return s.requestAuth().ActiveMember(ctx, user)
 }

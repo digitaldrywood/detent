@@ -21,26 +21,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
 
 const hostedCookie = "detent_hosted_session"
 
 func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecord) error {
-	if s.config.Hosted == nil || record.Identity == nil {
-		return auth.ErrInvalidSession
-	}
-	identity := record.Identity
-	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
-		tenant, err := w.AccessTenant(ctx)
-		if err != nil {
-			return err
-		}
-		if identity.OrganizationID != tenant.ProviderID && (s.hostedShared() || identity.OrganizationID != "") {
-			return auth.ErrInvalidSession
-		}
-		return w.CreateAccessSession(ctx, accessstore.Session{OrganizationID: s.accessOrganization(), Hash: record.TokenHash, Email: record.Email, Subject: identity.Subject, ProviderOrganizationID: identity.OrganizationID, SessionID: identity.SessionID, IdentityCreatedAt: identity.CreatedAt, IdentityExpiresAt: identity.ExpiresAt, SupportActor: identity.SupportActor, SupportReason: identity.SupportReason, CreatedAt: record.CreatedAt, ExpiresAt: record.ExpiresAt})
-	})
+	return fromFeatureError(s.requestAuth().CreateWebSession(ctx, record))
 }
 
 func (s *Service) storedWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
@@ -217,44 +203,8 @@ func (s *Service) requireHostedProject(ctx context.Context, query nativeQueryer,
 }
 
 func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCredential) (auth.HostedIdentity, auth.Membership, error) {
-	if credential.EntryKey != nil {
-		membership := auth.Membership{ID: credential.HostedMembership}
-		membership.Role.Slug = credential.HostedRole
-		if !credential.Hosted.ExpiresAt.After(s.config.now()) {
-			return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
-		}
-		return *credential.Hosted, membership, nil
-	}
-	if credential.HostedKeyScope != "" {
-		membership, err := s.hostedMembership(ctx, credential.Hosted)
-		if err != nil {
-			return auth.HostedIdentity{}, auth.Membership{}, err
-		}
-		if membership.ID != credential.HostedMembership {
-			return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
-		}
-		return *credential.Hosted, membership, nil
-	}
-	if s.hostedShared() {
-		var membership auth.Membership
-		membership.ID, membership.Role.Slug = credential.HostedMembership, credential.HostedRole
-		if membership.ID == "" || !auth.ValidOrganizationRole(membership.Role.Slug) || !credential.Hosted.ExpiresAt.After(s.config.now()) {
-			return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
-		}
-		return *credential.Hosted, membership, nil
-	}
-	identity, err := s.config.Hosted.Provider.CurrentSession(ctx, *credential.Hosted)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-		return auth.HostedIdentity{}, auth.Membership{}, errors.Join(tenantauth.ErrUnavailable, err)
-	}
-	if err != nil || !identity.ExpiresAt.After(s.config.now()) || identity.Subject != credential.Hosted.Subject || identity.SessionID != credential.Hosted.SessionID || identity.SupportActor != credential.Hosted.SupportActor || identity.SupportReason != credential.Hosted.SupportReason || identity.OrganizationID != credential.Hosted.OrganizationID {
-		return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
-	}
-	membership, err := s.hostedMembership(ctx, credential.Hosted)
-	if err != nil {
-		return auth.HostedIdentity{}, auth.Membership{}, err
-	}
-	return identity, membership, nil
+	identity, membership, err := s.requestAuth().MutationIdentity(ctx, authCredential(credential))
+	return identity, membership, fromFeatureError(err)
 }
 
 func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope *nativeScope) error {
