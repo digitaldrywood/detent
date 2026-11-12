@@ -532,6 +532,9 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_startup", RunnerID: "runner_0123456789abcdef0123456789abcdef", MachineID: "machine_0123456789abcdef0123456789abcdef", TokenID: "credential_runner", EnrollmentID: "enrollment_runner", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 			return err
 		}
+		if err := w.ReplaceRunnerBackendIsolation(t.Context(), "runner_0123456789abcdef0123456789abcdef", isolation.Report{"example-backend": {isolation.NativeTrusted}}); err != nil {
+			return err
+		}
 		if err := w.UpdateRunnerCapacityConfig(t.Context(), "runner_0123456789abcdef0123456789abcdef", runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now}); err != nil {
 			return err
 		}
