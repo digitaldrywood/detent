@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -295,6 +296,12 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 	var request *operatortool.RequestError
 	if errors.As(err, &request) {
 		return s.refusedAPIError(c, http.StatusUnprocessableEntity, request.Code, request.Message, request)
+	}
+	if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, leasestore.ErrAttemptConflict) {
+		return s.nativeAPIError(c, nativeConflict(0), attributes...)
+	}
+	if errors.Is(err, mutation.ErrConflict) {
+		return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "Request was already used with different content", status: http.StatusConflict, publicMessage: true}, attributes...)
 	}
 	var mismatch *nativeAttemptIdentityMismatch
 	if errors.As(err, &mismatch) {

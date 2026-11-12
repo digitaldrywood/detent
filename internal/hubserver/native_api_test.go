@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -396,6 +397,9 @@ func TestNativeAPIError(t *testing.T) {
 		{"lease conflict", "lease_conflict", "Work item is already leased", "WARN", tracker.ErrLeaseConflict, http.StatusConflict},
 		{"invalid claim", "invalid_request", "Request is invalid", "WARN", tracker.ErrInvalidClaimRequest, http.StatusUnprocessableEntity},
 		{"revision conflict", "revision_conflict", "Resource has changed", "WARN", nativeConflict(7), http.StatusConflict},
+		{"typed revision conflict", "revision_conflict", "Resource has changed", "WARN", corestore.ErrRevisionConflict, http.StatusConflict},
+		{"typed attempt conflict", "revision_conflict", "Resource has changed", "WARN", leasestore.ErrAttemptConflict, http.StatusConflict},
+		{"retry key conflict", "idempotency_conflict", "Request was already used with different content", "WARN", corestore.ErrUniqueViolation, http.StatusConflict},
 		{"not found", "not_found", "Resource was not found", "", sql.ErrNoRows, http.StatusNotFound},
 		{"domain not found", "not_found", "Resource was not found", "", corestore.ErrNotFound, http.StatusNotFound},
 		{"authorization missing resource", "access_denied", "operator access is unavailable", "WARN", &operatortool.AuthorizationError{Stage: "check", Cause: corestore.ErrNotFound}, http.StatusForbidden},
