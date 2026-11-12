@@ -14,12 +14,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 const hostedTransactionCookie = "detent_hosted_login"
+
+var errHostedStateMismatch = errors.New("hosted sign-in state mismatch")
 
 type hostedTransaction struct {
 	State, Verifier, Organization, SupportActor, SupportSession string
@@ -106,6 +109,13 @@ func (s *Service) consumeHostedTransaction(c echo.Context) (hostedTransaction, e
 	err = s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
 		var err error
 		transaction, err = w.ConsumeAccessTransaction(c.Request().Context(), apikey.HashToken(cookie.Value), c.QueryParam("state"), s.config.now())
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		pending, readErr := w.AccessLoginTransaction(c.Request().Context(), apikey.HashToken(cookie.Value))
+		if readErr == nil && pending.ConsumedAt == nil && pending.SupportActor == "" && pending.ExpiresAt.After(s.config.now()) && pending.State != c.QueryParam("state") {
+			return errHostedStateMismatch
+		}
 		return err
 	})
 	return hostedTransaction{State: transaction.State, Verifier: transaction.Verifier, Organization: transaction.ProviderOrganizationID, SupportActor: transaction.SupportActor, SupportSession: transaction.SupportSession, InvitationToken: transaction.InvitationToken, TokenHash: transaction.Hash, ExpiresAt: transaction.ExpiresAt}, err
@@ -117,6 +127,10 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 	const invalidLink = "This sign-in link is invalid or has already been used"
 	denial := auth.HostedDenial{Flow: "login_callback", ProviderError: c.QueryParam("error")}
 	transaction, err := s.consumeHostedTransaction(c)
+	if errors.Is(err, errHostedStateMismatch) {
+		denial.Reason = "state_mismatch"
+		return s.hostedDenied(c, http.StatusUnauthorized, invalidLink, denial)
+	}
 	if err != nil {
 		denial.Reason = "transaction_missing"
 		return s.hostedDenied(c, http.StatusUnauthorized, invalidLink, denial)
