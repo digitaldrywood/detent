@@ -1,4 +1,4 @@
-package runner
+package prompt
 
 import (
 	"strings"

@@ -4353,13 +4353,6 @@ func workerEnvironment(variables map[string]string, info workspace.Info, issue w
 	return procgroup.Environment{Variables: merged}
 }
 
-func validatorMaxInlineDiffBytes(cfg gate.ValidatorConfig) int {
-	if cfg.MaxInlineDiffBytes == nil {
-		return gate.DefaultValidatorMaxInlineDiffBytes
-	}
-	return *cfg.MaxInlineDiffBytes
-}
-
 type validatorJSONResult struct {
 	CriteriaEvidence []gate.CriterionEvidence `json:"criteria_evidence"`
 	Verdict          string                   `json:"verdict"`

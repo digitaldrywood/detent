@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner/prompt"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -63,26 +64,9 @@ type NativeValidation struct {
 
 // NativeSecurityAuditEvidence identifies an accepted Hub review of this source.
 // It is evidence for the independent validator, not an acceptance verdict.
-type NativeSecurityAuditEvidence struct {
-	ReviewID        string
-	ProjectID       string
-	WorkItemID      string
-	ChangeID        string
-	VersionID       string
-	Repository      string
-	BaseSHA         string
-	HeadSHA         string
-	DiffDigest      string
-	ReviewerVersion string
-	ReviewerDigest  string
-	Verdict         string
-	SessionID       int64
-}
+type NativeSecurityAuditEvidence = prompt.NativeSecurityAuditEvidence
 
-type NativeReviewDiscussion struct {
-	Issue  []tracker.NativeComment    `json:"issue"`
-	Change []tracker.ChangeDiscussion `json:"change"`
-}
+type NativeReviewDiscussion prompt.NativeReviewDiscussion
 
 func NativeReviewDiscussionForVersion(issue []tracker.NativeComment, change []tracker.ChangeDiscussion, version string) NativeReviewDiscussion {
 	discussion := NativeReviewDiscussion{Issue: issue}

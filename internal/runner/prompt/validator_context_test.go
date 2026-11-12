@@ -1,4 +1,4 @@
-package runner
+package prompt
 
 import (
 	"strings"
@@ -62,7 +62,7 @@ func TestValidationContext(t *testing.T) {
 	const rules = "## Review rules\n\nEvery behavior change needs a regression test."
 	workflow := config.Workflow{SharedPrompt: rules, Prompt: "local overlay only"}
 	for _, review := range []bool{false, true} {
-		prompt := BuildValidatorPrompt(workflow, original, ValidatorPromptOptions{implementationReview: review})
+		prompt := BuildValidatorPrompt(workflow, original, ValidatorPromptOptions{ImplementationReview: review})
 		if !strings.Contains(prompt, "Project WORKFLOW.md (governs this review") || !strings.Contains(prompt, rules) || strings.Contains(prompt, "local overlay only") {
 			t.Fatalf("implementationReview=%t prompt does not carry the shared workflow:\n%s", review, prompt)
 		}
