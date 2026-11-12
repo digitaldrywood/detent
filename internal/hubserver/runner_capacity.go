@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -31,86 +30,11 @@ func freshCapacityConfig(r runnerauth.Runner, now time.Time) bool {
 }
 
 func (s *Service) authorizeRunnerCapacity(ctx context.Context, reader tenantstore.Reader, scope nativeScope) error {
-	if scope.credential.Runner.RunnerID != "" {
-		return accessstore.ErrDenied
-	}
-	if scope.credential.Hosted == nil {
-		current, err := reader.AccessCredential(ctx, scope.credential.ID)
-		if err != nil {
-			return err
-		}
-		if current.Scope != string(apiScopeAdmin) || current.NativeOnly {
-			return accessstore.ErrDenied
-		}
-	} else {
-		scope.credential.ManageRunners = true
-	}
-	return s.authorizeAccessScope(ctx, reader, scope, true)
+	return fromFeatureError(s.runnerAdviceService().Authorize(ctx, reader, s.authInput(scope)))
 }
-
 func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, resource, backend string) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	if backend != "" && (runnerauth.CapacityRequest{ExpectedConfigRevision: strings.Repeat("0", 64), Capacity: 1, Backend: backend}).Validate() != nil {
-		return nil, nativePublicInvalid("Backend must be a bounded provider identifier")
-	}
-	if scope.credential.Runner.RunnerID != "" {
-		return nil, accessstore.ErrDenied
-	}
-	r, err := s.readRunnerRouting(ctx, scope, resource)
-	if err != nil {
-		return nil, err
-	}
-	now := s.config.now().UTC()
-	var hours []recommendationHour
-	var facts reportstore.RunnerCapacityFacts
-	to := now.Truncate(time.Hour)
-	from := to.Add(-719 * time.Hour)
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		if err := s.authorizeRunnerCapacity(ctx, reader, scope); err != nil {
-			return err
-		}
-		segments, err := reader.RunnerHostMetrics(ctx, resource, from, to)
-		if err != nil {
-			return err
-		}
-		hours, err = recommendationHoursFromSegments(segments)
-		if err != nil {
-			return err
-		}
-		capacityReader, ok := reader.(reportstore.RunnerCapacityReader)
-		if !ok {
-			return errors.New("PostgreSQL runner capacity reader is unavailable")
-		}
-		facts, err = capacityReader.ReadRunnerCapacityFacts(ctx, reportstore.RunnerCapacityQuery{RunnerID: resource, MachineID: r.MachineID, From: from, To: to, Limit: reportstore.RunnerCapacityFactLimit})
-		if err != nil {
-			return err
-		}
-		return err
-	})
-	if err != nil {
-		return nil, projectRecordError(err)
-	}
-	current, err := s.readRunnerRouting(ctx, scope, resource)
-	if err != nil {
-		return nil, err
-	}
-	if current.Revision != r.Revision || current.MachineID != r.MachineID {
-		return nil, nativeConflict(tracker.Revision(current.Revision))
-	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error { return s.authorizeRunnerCapacity(ctx, reader, scope) }); err != nil {
-		return nil, projectRecordError(err)
-	}
-	recommendation, err := runnerRecommendationFromFacts(r.Routing, hours, facts)
-	if err != nil {
-		return nil, err
-	}
-	recommendation.From, recommendation.To = from, to
-	view, err := s.runnerCapacityView(ctx, nil, r, backend, now)
-	if err != nil {
-		return nil, err
-	}
-	return runnerCapacityRead{CapacityView: view, Recommendation: recommendation, ProviderCapacity: r.ProviderCapacity}, nil
+	value, err := s.runnerAdviceService().Read(ctx, s.authInput(scope), resource, backend)
+	return value, fromFeatureError(err)
 }
 
 func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeScope, resource string, request runnerCapacityChange) (any, error) {
@@ -208,19 +132,6 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope native
 		return nil, projectRecordError(err)
 	}
 	return content.Receipt(ctx, receipt)
-}
-
-func (s *Service) getRunnerCapacity(c echo.Context) error {
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
-	if !ok {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	value, err := s.readRunnerCapacity(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"), c.QueryParam("backend"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusOK, value)
 }
 
 func (s *Service) updateRunnerCapacity(c echo.Context) error {

@@ -20,6 +20,7 @@ const enrollmentBase = "/api/v2/organizations/:organization/runner-enrollments"
 func (s *Service) registerRunnerRoutes(e *echo.Echo) {
 	s.registerRunnerUpdateRoutes(e)
 	s.registerRunnerEnrollmentRoutes(e)
+	s.registerRunnerAdviceRoutes(e)
 	admin := s.requireInstanceAdmin()
 	worker := s.requireAPIScope(apiScopeWorker)
 	e.GET(runnerBase+"/:runner", s.getRunnerIdentity, worker)
@@ -29,7 +30,6 @@ func (s *Service) registerRunnerRoutes(e *echo.Echo) {
 	e.GET(runnerBase, s.listRunnerRouting, admin)
 	e.GET(runnerBase+"/:runner/routing", s.getRunnerRouting, s.requireAPIScope(apiScopeWorker, apiScopeAdmin))
 	e.PUT(runnerBase+"/:runner/routing", s.updateRunnerRouting, admin)
-	e.GET(runnerBase+"/:runner/capacity", s.getRunnerCapacity, admin)
 	e.PUT(runnerBase+"/:runner/capacity", s.updateRunnerCapacity, admin)
 	e.PUT("/api/v2/organizations/:organization/machines/:machine/routing", s.updateRunnerHost, admin)
 	e.POST(nativeBase+"/leases/:lease/validate", s.validateRunnerLease, s.requireNativeScope(apiScopeWorker))

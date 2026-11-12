@@ -1,7 +1,13 @@
 package hubserver
 
 import (
+	"context"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runneradvice"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -31,4 +37,27 @@ func recommendationHoursFromSegments(segments []hostmetrics.Summary) ([]recommen
 
 func mergeHostSummary(a, b hostmetrics.Summary) (hostmetrics.Summary, bool) {
 	return runneradvice.MergeHostSummary(a, b)
+}
+
+func (s *Service) runnerAdviceService() *runneradvice.Service {
+	return runneradvice.New(runneradvice.Deps{
+		Repository: s.config.TenantRepository, Now: s.config.now, Auth: s.requestAuth, RecordError: projectRecordError,
+		ReadRouting: func(ctx context.Context, input hubauth.Input, resource string) (runnerauth.Runner, error) {
+			return s.readRunnerRouting(ctx, nativeAuthInput(input), resource)
+		},
+		CapacityView: func(ctx context.Context, runner runnerauth.Runner, backend string, now time.Time) (runnerauth.CapacityView, error) {
+			return s.runnerCapacityView(ctx, nil, runner, backend, now)
+		},
+	})
+}
+func (s *Service) registerRunnerAdviceRoutes(e *echo.Echo) {
+	runneradvice.RegisterRoutes(e.Group(""), runneradvice.HTTPDeps{
+		Service: s.runnerAdviceService,
+		Credential: func(c echo.Context) (hubauth.Credential, bool) {
+			credential, ok := c.Get("hub_api_credential").(apiCredential)
+			return authCredential(credential), ok
+		},
+		Admin: s.requireInstanceAdmin(),
+		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+	})
 }

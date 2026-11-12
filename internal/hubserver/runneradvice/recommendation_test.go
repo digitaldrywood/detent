@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runneradvice/advicetest"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
@@ -499,5 +500,42 @@ func TestRunnerSuggestedLimit(t *testing.T) {
 				t.Fatalf("suggestion=%+v limit=%d, want direction=%s limit=%d reasons=%q", got, limit, test.direction, test.limit, test.reasons)
 			}
 		})
+	}
+}
+
+func TestRunnerRecommendationLeaseHistoryCost(t *testing.T) {
+	hours, _ := recommendationFixture()
+	from := hours[0].Hour
+	cases := []struct {
+		name       string
+		start, end time.Time
+	}{
+		{"before window", from.Add(-30 * time.Minute), from.Add(30 * time.Minute)},
+		{"late release", from.Add(15 * time.Minute), from.Add(90 * time.Minute)},
+		{"early release", from.Add(4 * time.Hour), from.Add(5 * time.Hour)},
+		{"expired before window", from.Add(-2 * time.Hour), from.Add(-time.Hour)},
+		{"ends at window start", from.Add(-time.Hour), from},
+		{"begins at window end", from.Add(24 * time.Hour), from.Add(25 * time.Hour)},
+	}
+	facts := reportstore.RunnerCapacityFacts{}
+	for _, c := range cases {
+		facts.Occupancy = append(facts.Occupancy, reportstore.RunnerOccupancy{LeaseID: c.name, From: c.start, To: c.end})
+	}
+	if _, err := FromFacts(runnerauth.Routing{CapacityLimit: 4, MachineUse: "dedicated"}, hours, facts); err != nil {
+		t.Fatal(err)
+	}
+	for i, hour := range hours {
+		want := float64(0)
+		switch i {
+		case 0:
+			want = 1.25
+		case 1:
+			want = .5
+		case 4:
+			want = 1
+		}
+		if hour.Slots != want {
+			t.Fatalf("hour %d slot-hours=%v,want %v", i, hour.Slots, want)
+		}
 	}
 }
