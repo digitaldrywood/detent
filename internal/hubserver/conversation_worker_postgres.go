@@ -856,7 +856,10 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 			return nativePublicInvalid("control_result status must be delivered, rejected or unknown")
 		}
 	case "turn_completed":
-		if strings.TrimSpace(event.TurnID) == "" || (execution.Owner.TurnID != "" && execution.Owner.TurnID != event.TurnID) {
+		if strings.TrimSpace(event.TurnID) == "" {
+			return nativePublicInvalid("turn_completed requires a turn_id")
+		}
+		if execution.Owner.TurnID != "" && execution.Owner.TurnID != event.TurnID {
 			return conversationStale("The completed turn is not the current turn")
 		}
 		switch event.Status {
