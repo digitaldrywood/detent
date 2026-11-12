@@ -2,7 +2,6 @@ package hubauth
 
 import (
 	"context"
-	"net/http"
 	"strings"
 	"time"
 
@@ -63,6 +62,8 @@ type Hosted struct {
 }
 
 type Deps struct {
+	TrustedProxy       bool
+	GenerateToken      func() (string, error)
 	Classify           func(error) error
 	Memberships        func(context.Context, string, string) ([]auth.Membership, error)
 	CurrentSession     func(context.Context, auth.HostedIdentity) (auth.HostedIdentity, error)
@@ -74,10 +75,8 @@ type Deps struct {
 	Now                func() time.Time
 	Hosted             *Hosted
 	CompleteInvitation func(context.Context, auth.Session) (bool, error)
-	LocalCredential    func(context.Context, echo.Context) (Credential, int, error)
 	BoardCredential    func(context.Context) (Credential, bool)
 	SharedClaims       func(echo.Context) (cloudassert.Claims, bool)
-	EntryKey           func(context.Context, cloudassert.Claims) (Credential, int, error)
 	RunnerEventRoute   func(echo.Context) bool
 	RunnerEventContext func(context.Context) context.Context
 	StoreCredential    func(echo.Context, Credential)
@@ -101,9 +100,7 @@ func New(deps Deps) *Authenticator {
 	if deps.CompleteInvitation == nil {
 		deps.CompleteInvitation = func(context.Context, auth.Session) (bool, error) { return false, nil }
 	}
-	if deps.LocalCredential == nil {
-		deps.LocalCredential = unauthorizedLocal
-	}
+
 	if deps.Classify == nil {
 		deps.Classify = Classify
 	}
@@ -175,6 +172,16 @@ func RequestCredential(c echo.Context) (Credential, bool) {
 	return credential, ok
 }
 
-func unauthorizedLocal(context.Context, echo.Context) (Credential, int, error) {
-	return Credential{}, http.StatusUnauthorized, auth.ErrInvalidSession
+func (s *Authenticator) write(ctx context.Context, organization tracker.OrganizationID, write func(tenantstore.Writer) error) error {
+	if s.deps.AccessRepository == nil {
+		return hubapi.WorkItemStorageUnavailable()
+	}
+	return s.deps.AccessRepository.WriteTenant(ctx, organization, corestore.Serving, write)
+}
+func fingerprint(hash string) string {
+	hash = strings.TrimSpace(hash)
+	if len(hash) <= 12 {
+		return hash
+	}
+	return hash[:12]
 }

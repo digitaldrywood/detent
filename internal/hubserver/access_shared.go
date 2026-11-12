@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"net/http"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -178,92 +177,9 @@ func (s *Service) storeAccessMember(ctx context.Context, w tenantstore.Writer, i
 }
 
 func (s *Service) entryAccessKeyCredential(ctx context.Context, claims cloudassert.Claims) (apiCredential, int, error) {
-	if !s.hostedShared() || claims.Kind != cloudassert.KindKey || claims.Key == nil || !claims.Key.Valid() || !claims.ExpiresAt.After(s.config.now()) || claims.Audience != string(s.accessOrganization()) || !auth.ValidOrganizationRole(claims.Role) {
-		return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
-	}
-	identity := &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: claims.ProviderOrganization, CreatedAt: claims.IssuedAt, ExpiresAt: claims.ExpiresAt, SessionID: claims.Key.ID}
-	credential := apiCredential{EntryKey: claims.Key, Hosted: identity, HostedRole: claims.Role, HostedKeyScope: claims.Key.Permission, HostedProjectAccess: hostedProjectsAll, NativeOnly: true, Scope: apiScopeOperator}
-	if claims.Key.Permission == apikey.ScopeAdmin {
-		credential.Scope = apiScopeAdmin
-	}
-	if _, scoped := entryBoardCredential(ctx); !scoped && claims.Key.Kind == "service" {
-		if err := s.ensureEntryServicePrincipal(ctx, claims); err != nil {
-			err = operatorAuthorizationError(err)
-			if !errors.Is(err, operatortool.ErrAccessDenied) {
-				return apiCredential{}, http.StatusServiceUnavailable, err
-			}
-			return apiCredential{}, http.StatusForbidden, err
-		}
-	}
-	err := s.accessRead(ctx, s.accessOrganization(), func(w tenantstore.Reader) error {
-		tenant, err := w.AccessTenant(ctx)
-		if err != nil {
-			return err
-		}
-		if tenant.ProviderID != claims.ProviderOrganization {
-			return auth.ErrHostedIdentity
-		}
-		var principal accessstore.Credential
-		if claims.Key.Kind == "service" {
-			id := "service_" + claims.Key.ID
-			principal, err = w.AccessCredential(ctx, id)
-			if err != nil {
-				return err
-			}
-		} else {
-			member, err := w.AccessMember(ctx, claims.Subject)
-			if err != nil {
-				return err
-			}
-			if !member.Active {
-				return auth.ErrHostedIdentity
-			}
-			principal, err = w.AccessCredential(ctx, member.PrincipalID)
-			if err != nil {
-				return err
-			}
-			credential.HostedMembership = member.MembershipID
-			credential.HostedRole = lesserHostedRole(member.Role, claims.Role)
-		}
-		if principal.RevokedAt != nil {
-			return auth.ErrHostedIdentity
-		}
-		credential.ID, credential.Hash, credential.HostedPrincipal = principal.ID, principal.Hash, principal.ID
-		return nil
-	})
-	if err != nil {
-		err = operatorAuthorizationError(err)
-		if !errors.Is(err, operatortool.ErrAccessDenied) {
-			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-		return apiCredential{}, http.StatusForbidden, err
-	}
-	return credential, http.StatusOK, nil
+	return nativeCredentialResult(s.requestAuth().EntryKeyCredential(ctx, claims))
 }
 
 func (s *Service) ensureEntryServicePrincipal(ctx context.Context, claims cloudassert.Claims) error {
-	id := "service_" + claims.Key.ID
-	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-		_, err := r.AccessCredential(ctx, id)
-		return err
-	})
-	if !errors.Is(err, corestore.ErrNotFound) || !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-		return err
-	}
-	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
-		tenant, err := w.AccessTenant(ctx)
-		if err != nil {
-			return err
-		}
-		if tenant.ProviderID != claims.ProviderOrganization {
-			return auth.ErrHostedIdentity
-		}
-		token, err := s.config.generateToken()
-		if err != nil {
-			return err
-		}
-		now := s.config.now()
-		hash := apikey.HashToken(token)
-		return w.EnsureAccessCredential(ctx, accessstore.Credential{OrganizationID: s.accessOrganization(), ID: id, Name: "Organization service principal " + claims.Key.ID, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "operator", NativeOnly: true, ProjectAccess: "all", Kind: "service", CreatedAt: now, UpdatedAt: now})
-	})
+	return s.requestAuth().EnsureEntryServicePrincipal(ctx, claims)
 }

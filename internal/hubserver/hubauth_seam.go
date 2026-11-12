@@ -7,7 +7,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 
-	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
@@ -28,21 +27,15 @@ func nativeCredentialResult(c hubauth.Credential, status int, err error) (apiCre
 }
 func (s *Service) requestAuth() *hubauth.Authenticator {
 	deps := hubauth.Deps{
-		Repository: s.config.TenantRepository, AccessRepository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.now,
+		TrustedProxy: s.config.TrustedProxy, GenerateToken: s.config.generateToken, Repository: s.config.TenantRepository, AccessRepository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.now,
 		Classify: operatorAuthorizationError, SharedSession: s.sharedHostedSession, CompleteInvitation: s.completePendingHostedInvitation,
-		LocalCredential: func(ctx context.Context, c echo.Context) (hubauth.Credential, int, error) {
-			credential, status, err := s.localAppCredentialContext(ctx, c)
-			return authCredential(credential), status, err
-		},
+
 		BoardCredential: func(ctx context.Context) (hubauth.Credential, bool) {
 			credential, ok := entryBoardCredential(ctx)
 			return authCredential(credential), ok
 		},
 		SharedClaims: hostedSharedClaims,
-		EntryKey: func(ctx context.Context, claims cloudassert.Claims) (hubauth.Credential, int, error) {
-			credential, status, err := s.entryKeyCredential(ctx, claims)
-			return authCredential(credential), status, err
-		},
+
 		RunnerEventRoute: runnerEventCommandRoute,
 		RunnerEventContext: func(ctx context.Context) context.Context {
 			return context.WithValue(ctx, runnerEventAuthorityKey{}, true)

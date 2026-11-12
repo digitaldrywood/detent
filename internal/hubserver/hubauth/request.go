@@ -18,14 +18,14 @@ func (s *Authenticator) AuthenticateRequest(ctx context.Context, c echo.Context)
 		return credential, http.StatusOK, nil
 	}
 	if s.deps.Hosted == nil && (c.Request().Header.Get(echo.HeaderAuthorization) == "" || strings.HasPrefix(c.Request().Header.Get(echo.HeaderAuthorization), "Basic ")) {
-		credential, status, err := s.deps.LocalCredential(ctx, c)
+		credential, status, err := s.LocalCredential(ctx, c)
 		if status == http.StatusUnauthorized {
 			c.Response().Header().Set("WWW-Authenticate", `Basic realm="Detent Hub", charset="UTF-8"`)
 		}
 		return credential, status, err
 	}
 	if claims, ok := s.deps.SharedClaims(c); ok && claims.Kind == cloudassert.KindKey {
-		return s.deps.EntryKey(c.Request().Context(), claims)
+		return s.EntryKeyCredential(c.Request().Context(), claims)
 	}
 	if s.deps.Hosted != nil && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
 		return s.HostedCredential(c.Request().Context(), c)

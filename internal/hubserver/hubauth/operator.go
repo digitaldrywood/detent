@@ -68,7 +68,7 @@ func (s *Authenticator) Operator(options OperatorOptions) echo.MiddlewareFunc {
 					if entryOrigin != "" {
 						current, err = options.EntryOrigin(ctx, entryOrigin)
 					} else {
-						current, _, err = s.deps.EntryKey(ctx, claims)
+						current, _, err = s.EntryKeyCredential(ctx, claims)
 					}
 					if err != nil {
 						return Credential{}, options.Classify(err)

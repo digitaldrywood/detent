@@ -3,9 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
-	"net/url"
 
 	"github.com/labstack/echo/v4"
 
@@ -13,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -73,44 +70,7 @@ func (s *Service) localAppCredential(c echo.Context) (apiCredential, int, error)
 }
 
 func (s *Service) localAppCredentialContext(ctx context.Context, c echo.Context) (apiCredential, int, error) {
-	if s.config.Hosted != nil {
-		return apiCredential{}, http.StatusUnauthorized, fmt.Errorf("%w: local authentication is unavailable", operatortool.ErrAccessDenied)
-	}
-	token, err := apiBearerToken(c)
-	if username, password, ok := c.Request().BasicAuth(); ok && username == "operator" {
-		token, err = password, nil
-	}
-	if err != nil || len(token) > maxBearerTokenBytes || token == "" {
-		return apiCredential{}, http.StatusUnauthorized, fmt.Errorf("%w: local credentials are required", operatortool.ErrAccessDenied)
-	}
-	credential, status, err := s.authenticateAPIToken(ctx, token, "", "")
-	if err != nil {
-		return apiCredential{}, status, err
-	}
-	if credential.Scope != apiScopeAdmin || credential.NativeOnly || credential.Runner.RunnerID != "" {
-		return apiCredential{}, http.StatusForbidden, fmt.Errorf("%w: local browser access requires an administrator", operatortool.ErrAccessDenied)
-	}
-	if _, _, basic := c.Request().BasicAuth(); basic {
-		if c.Request().Header.Get("Sec-Fetch-Site") == "cross-site" {
-			return apiCredential{}, http.StatusForbidden, fmt.Errorf("%w: cross-site browser access is unavailable", operatortool.ErrAccessDenied)
-		}
-		if !hostedReadRequest(c) {
-			origin, err := url.Parse(c.Request().Header.Get("Origin"))
-			scheme := "http"
-			if c.IsTLS() || s.config.TrustedProxy && c.Scheme() == "https" {
-				scheme = "https"
-			}
-			if err != nil || origin.Scheme != scheme || origin.Host != c.Request().Host || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" {
-				return apiCredential{}, http.StatusForbidden, fmt.Errorf("%w: same-origin browser access is required", operatortool.ErrAccessDenied)
-			}
-		}
-	}
-	c.Response().Header().Set("Cache-Control", "no-store")
-	c.Response().Header().Set("Referrer-Policy", "no-referrer")
-	c.Response().Header().Set("X-Content-Type-Options", "nosniff")
-	credential.HostedRole = "admin"
-	c.Set("hub_api_credential", credential)
-	return credential, http.StatusOK, nil
+	return nativeCredentialResult(s.requestAuth().LocalCredential(ctx, c))
 }
 
 func (s *Service) localAppBootstrap(c echo.Context) error {
