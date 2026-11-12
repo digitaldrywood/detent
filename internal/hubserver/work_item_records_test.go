@@ -36,6 +36,26 @@ import (
 
 const workItemRecordBody = "## Acceptance criteria\nThe issue is served.\n## Must not break\nOther tenants.\n## How we know it worked\nRead the issue."
 
+func TestRunnerUnsupportedMutationsAreInvalid(t *testing.T) {
+	service := &Service{config: Config{AccessRepository: struct{ tenantstore.Repository }{}}}
+	scope := nativeScope{credential: apiCredential{Scope: apiScopeWorker}}
+	for _, test := range []struct {
+		name  string
+		input any
+	}{
+		{name: "create issue", input: tracker.CreateIssue{Title: "Example"}},
+		{name: "archive issue", input: archiveIssueRequest{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := service.runWorkItemRecordMutation(t.Context(), scope, nativeCommandOptions{}, tracker.Mutation{IdempotencyKey: "unsupported"}, test.input, "", nil, nil)
+			var failure *nativeError
+			if !errors.As(err, &failure) || failure.status != http.StatusUnprocessableEntity || failure.Code != "invalid_request" {
+				t.Fatalf("unsupported runner mutation error=%v", err)
+			}
+		})
+	}
+}
+
 type missingDetailReferenceStore struct {
 	attachment.DetailStore
 	key   string

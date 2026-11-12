@@ -804,7 +804,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope nativeSco
 					return nil, err
 				}
 			}
-			return nil, workItemStorageUnavailable()
+			return nil, nativePublicInvalid("Runner credentials cannot perform this work item mutation")
 		}
 		if _, err := s.validateRunnerLeaseTenant(ctx, scope, command.LeaseID, command.FencingToken); err != nil {
 			return nil, err
