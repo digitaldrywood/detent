@@ -1082,7 +1082,9 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 	var stored conversationRecord
 	var receipt conversation.Receipt
 	var replay bool
+	queued := 0
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		queued = 0
 		if err := s.authorizeAccessScope(ctx, writer, scope, true); err != nil {
 			return err
 		}
@@ -1196,6 +1198,7 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 				return err
 			}
 			if pending >= service.config.ControlQueueSize {
+				queued = pending
 				return conversationQueueFull()
 			}
 		}
@@ -1334,6 +1337,9 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		return nil
 	})
 	if err != nil {
+		if queued > 0 {
+			service.logger.Warn("conversation.queue_full", "conversation_id", id, "kind", command.Kind, "queued", queued, "limit", service.config.ControlQueueSize)
+		}
 		return nil, translateConversationError(err)
 	}
 	if replay {
