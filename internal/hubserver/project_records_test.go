@@ -58,6 +58,12 @@ func projectRecordPostgresWithClock(t *testing.T, maxConnections int, clock func
 	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{databaseName}.Sanitize()+" CONNECTION LIMIT "+strconv.Itoa(maxConnections+1)); err != nil {
 		t.Fatal(err)
 	}
+	return projectRecordRepositoryFor(t, admin, maxConnections, clock, configure...), admin
+}
+
+func projectRecordRepositoryFor(t *testing.T, admin *sql.DB, maxConnections int, clock func() time.Time, configure ...func(*pgxpool.Config)) *postgres.Repository {
+	t.Helper()
+	template := postgresStartupTemplate
 	name, password := newNativeID("example"), newNativeID("password")
 	quoted := pgx.Identifier{name}.Sanitize()
 	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)); err != nil {
@@ -98,7 +104,7 @@ func projectRecordPostgresWithClock(t *testing.T, maxConnections int, clock func
 	})
 	projectRecordDatabases.Store(repository, admin)
 	t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
-	return repository, admin
+	return repository
 }
 
 func openPostgresHubTestService(t *testing.T, repository *postgres.Repository, config Config) *Service {

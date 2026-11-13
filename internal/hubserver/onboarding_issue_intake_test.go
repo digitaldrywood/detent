@@ -759,7 +759,7 @@ func TestGitHubBatchRunnerOperations(t *testing.T) {
 				secondCfg := first.service.config
 				secondCfg.Hosted = &HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://second.example.test", Provider: first.provider}
 				bindBatchTenant(t, first, secondCfg.Hosted)
-				secondService := openPostgresHubTestService(t, first.service.database.postgres, secondCfg)
+				secondService := openPostgresHubTestService(t, projectRecordRepositoryFor(t, hostedPostgresAdmin(t, first.service), 4, first.clock.Now), secondCfg)
 				second := newBatchFixtureForProject(t, newNativeFixture(t, secondService, "org_first_second", "Example unaffected intake"))
 				second.clock = first.clock
 				first.commandToken = seedBatchServiceKey(t, first)
@@ -1739,11 +1739,10 @@ func TestGitHubBatchMaintenanceTraversal(t *testing.T) {
 
 func TestGitHubBatchMaintenanceReconcilesRunnerProjects(t *testing.T) {
 	first := newHostedBatchFixture(t)
-	repository := first.service.database.postgres
 	cfg := first.service.config
 	cfg.Hosted = &HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://hub.example.test", Provider: first.provider}
 	bindBatchTenant(t, first, cfg.Hosted)
-	secondService := openPostgresHubTestService(t, repository, cfg)
+	secondService := openPostgresHubTestService(t, projectRecordRepositoryFor(t, hostedPostgresAdmin(t, first.service), 4, first.clock.Now), cfg)
 	if secondService.database.hostedOrganization != "org_first_second" {
 		t.Fatalf("second service selected organization=%s", secondService.database.hostedOrganization)
 	}
