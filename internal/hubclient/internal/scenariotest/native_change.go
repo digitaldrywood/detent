@@ -1262,6 +1262,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
 						t.Fatal(err)
 					}
+					clockOffset.Add(int64(time.Minute))
 					bare := h.claim(t, issue.ID)
 					beforeCalls, beforeWritable := provider.calls, provider.writableCalls
 					wantSeedCalls := beforeCalls
@@ -1344,6 +1345,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						t.Fatal(err)
 					}
 				}
+				clockOffset.Add(int64(time.Minute))
 				resume := h.claim(t, issue.ID)
 				resumedExecution := h.scheduler.RunExecution(issue.ID)
 				if resumedExecution == nil || resumedExecution.Recovery().Lease.ID == oldLease.ID || resumedExecution.Recovery().Lease.FencingToken <= oldLease.FencingToken {
