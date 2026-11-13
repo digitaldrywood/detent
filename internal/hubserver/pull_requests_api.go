@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -17,118 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-const (
-	// pullRequestViewTTL is how long an assembled view is served from memory
-	// before the join is run again (the pull request contract, "caches the connector view
-	// for 60 seconds").
-	pullRequestViewTTL = 60 * time.Second
-	// pullRequestRefreshInterval is the minimum spacing between forced
-	// refreshes, per organization.
-	pullRequestRefreshInterval = 10 * time.Second
-)
-
-// pullRequestMergeable is the pull request contract's three-valued mergeability: true, false, or
-// the string "unknown" when the connector has not said.
-type pullRequestMergeable = tracker.PullRequestMergeable
-
-// mergeableFromState maps GitHub's mergeable_state onto the pull request contract's three values.
-// An empty or "unknown" state is unknown; "dirty" is the only state that means
-// the branch cannot merge; everything else is mergeable as far as the
-// projection can tell.
-func mergeableFromState(state string) pullRequestMergeable {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "", "unknown":
-		return pullRequestMergeable{}
-	case "dirty":
-		return pullRequestMergeable{Known: true}
-	default:
-		return pullRequestMergeable{Known: true, Value: true}
-	}
-}
-
-type pullRequestRef = tracker.PullRequestRef
-type pullRequestCheck = tracker.PullRequestCheck
-type pullRequestReview = tracker.PullRequestReview
-type pullRequestConnector = tracker.PullRequestConnector
-type pullRequestView = tracker.PullRequestView
-
-// pullRequestCache serves an assembled view for pullRequestViewTTL and paces
-// forced refreshes per organization. Both are in-process: a restart loses a
-// cached view, which costs one extra join, and loses a refresh budget, which
-// costs at most one extra hydration request.
-type pullRequestCache struct {
-	mu        sync.Mutex
-	views     map[string]pullRequestCacheEntry
-	refreshed map[tracker.OrganizationID]time.Time
-}
-
-type pullRequestCacheEntry struct {
-	views    []pullRequestView
-	cachedAt time.Time
-}
-
-func newPullRequestCache() *pullRequestCache {
-	return &pullRequestCache{views: map[string]pullRequestCacheEntry{}, refreshed: map[tracker.OrganizationID]time.Time{}}
-}
-
-func pullRequestCacheKey(scope nativeScope, item string) string {
-	return string(scope.organization) + "/" + string(scope.project) + "/" + item
-}
-
-// get returns a cached view that is still fresh. The slice is cloned so a
-// caller cannot rewrite what the next reader sees.
-func (c *pullRequestCache) get(key string, now time.Time) ([]pullRequestView, bool) {
-	if c == nil {
-		return nil, false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	entry, ok := c.views[key]
-	if !ok || now.Sub(entry.cachedAt) >= pullRequestViewTTL {
-		return nil, false
-	}
-	return append([]pullRequestView(nil), entry.views...), true
-}
-
-func (c *pullRequestCache) invalidate(key string) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.views, key)
-}
-
-func (c *pullRequestCache) set(key string, views []pullRequestView, now time.Time) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// The cache is bounded by dropping everything once it grows past a page
-	// of work items: the entries are cheap to rebuild and a hub that is
-	// browsing thousands of issues should not hold them all.
-	if len(c.views) >= 512 {
-		clear(c.views)
-	}
-	c.views[key] = pullRequestCacheEntry{views: append([]pullRequestView(nil), views...), cachedAt: now}
-}
-
-// allowRefresh reports whether the organization may force a refresh now, and
-// records the grant when it may.
-func (c *pullRequestCache) allowRefresh(organization tracker.OrganizationID, now time.Time) bool {
-	if c == nil {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if last, ok := c.refreshed[organization]; ok && now.Sub(last) < pullRequestRefreshInterval {
-		return false
-	}
-	c.refreshed[organization] = now
-	return true
-}
 
 func pullRequestRefreshLimited() error {
 	return &nativeError{
@@ -297,31 +183,6 @@ func (s *Service) changePullRequestViewSource(ctx context.Context, scope nativeS
 		}
 	}
 	return view, target, nil
-}
-
-// externalPullRequestNumber reads the pull request number a change's GitHub
-// external reference names, or zero when it names none.
-func externalPullRequestNumber(reference tracker.ChangeExternalReference) int {
-	if !strings.EqualFold(strings.TrimSpace(reference.Provider), "github") {
-		return 0
-	}
-	number, err := strconv.Atoi(strings.TrimSpace(reference.ID))
-	if err != nil || number <= 0 {
-		return 0
-	}
-	return number
-}
-
-// connectorPullRequestState normalizes GitHub's state onto the pull request contract's vocabulary.
-func connectorPullRequestState(state string) string {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "merged":
-		return "merged"
-	case "closed":
-		return "closed"
-	default:
-		return "open"
-	}
 }
 
 // listWorkItemPullRequests answers the panel. It follows the issue's read
