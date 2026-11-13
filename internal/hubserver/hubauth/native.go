@@ -76,6 +76,9 @@ func (s *Authenticator) ResolveNative(readCtx context.Context, c echo.Context, o
 				scope.Action = operatortool.ReferenceAttachment
 			}
 			if !RoleAllows(credential.HostedRole, apikey.ScopeWrite, scope.Action) {
+				if err := options.ReadProject(readCtx, scope, false, false); err != nil {
+					return err
+				}
 				return operatortool.ErrAccessDenied
 			}
 		}
