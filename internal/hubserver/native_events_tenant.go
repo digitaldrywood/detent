@@ -94,6 +94,40 @@ func validateNativeLandingAuthority(ctx context.Context, reader tenantstore.Read
 	return nil
 }
 
+func validateNativeFinalizationAuthority(ctx context.Context, reader tenantstore.Reader, project tracker.ProjectID, item corestore.WorkItem, f *tracker.NativeFinalization) error {
+	change, err := reader.Change(ctx, f.ChangeID)
+	if err != nil {
+		return err
+	}
+	if change.ProjectID != project || change.WorkItemID != item.NativeID {
+		return corestore.ErrNotFound
+	}
+	if f.VersionID != "" {
+		version, err := reader.Version(ctx, change.ID, f.VersionID)
+		if err != nil {
+			return err
+		}
+		if version.HeadSHA != f.HeadSHA {
+			return nativeRejection(nativeInvalid("Finalizer version must name its recorded head"), "owner_validation", "data.finalization")
+		}
+	}
+	source := f.SourceVersion
+	if source == nil {
+		return nil
+	}
+	if source.ChangeID != f.ChangeID {
+		return nativeRejection(nativeInvalid("Finalizer source must belong to the reported Change"), "owner_validation", "data.finalization")
+	}
+	version, err := reader.Version(ctx, source.ChangeID, source.VersionID)
+	if err != nil {
+		return err
+	}
+	if version.HeadSHA != source.HeadSHA || version.AttemptID != f.SourceAttemptID {
+		return nativeRejection(nativeInvalid("Finalizer source must match its recorded version and attempt"), "owner_validation", "data.finalization")
+	}
+	return nil
+}
+
 func (s *Service) prepareNativeLandingAuthority(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, content *eventstore.Content, changeID string) (nativeLandingAuthority, bool, error) {
 	var change eventstore.Change
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -860,6 +894,11 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				}
 				if currentEvent.ID != event.previousEvent.ID || currentEvent.Sequence != event.previousEvent.Sequence || currentEvent.PayloadSHA256 != event.previousEvent.PayloadSHA256 {
 					return leasestore.ErrAttemptConflict
+				}
+			}
+			if f := authority.Event.Data.Finalization; !authority.Termination && f != nil && f.ChangeID != "" {
+				if err := validateNativeFinalizationAuthority(ctx, w, authority.ProjectID, workItem, f); err != nil {
+					return err
 				}
 			}
 			if err := s.config.NativeRunEvents.ValidateNativeRunEvent(ctx, w, &authority); err != nil {
