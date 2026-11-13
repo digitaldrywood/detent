@@ -513,8 +513,18 @@ func TestConversationRejectedCreateDoesNotPublish(t *testing.T) {
 			objects := &conversationContentFixture{}
 			f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
 			if test.noFeature {
+				featureless := billingstore.PlanReference{ID: "example-featureless", Version: 1}
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					assignment, err := w.BillingAssignment(t.Context())
+					if errors.Is(err, corestore.ErrNotFound) {
+						if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: f.project.OrganizationID, PlanReference: featureless, Name: "Example featureless", Features: []string{}, Allowances: map[string]int64{}}); err != nil {
+							return err
+						}
+						if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: f.project.OrganizationID, Base: featureless}, 0); err != nil {
+							return err
+						}
+						assignment, err = w.BillingAssignment(t.Context())
+					}
 					if err != nil {
 						return err
 					}
@@ -535,6 +545,9 @@ func TestConversationRejectedCreateDoesNotPublish(t *testing.T) {
 					return nil
 				}); err != nil {
 					t.Fatal(err)
+				}
+				if f.service.database.plans() == nil {
+					f.service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{Base: PlanReference{ID: featureless.ID, Version: featureless.Version}, WindowSeconds: 60, RetentionWindows: 10}})
 				}
 			}
 			before := objects.publications
