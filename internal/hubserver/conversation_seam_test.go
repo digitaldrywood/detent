@@ -50,10 +50,6 @@ const (
 	conversationSnapshotQuestions     = conversations.ConversationSnapshotQuestions
 )
 
-func conversationAlreadyLinked(p0 string) error {
-	return hubapi.FromFeatureError(conversations.ConversationAlreadyLinked(p0))
-}
-
 func conversationArchiveCache(p0 context.Context) *conversations.ConversationArchiveReads {
 	return conversations.ConversationArchiveCache(p0)
 }
@@ -62,20 +58,12 @@ func conversationAttachmentURL(p0 tracker.OrganizationID, p1 tracker.ProjectID, 
 	return conversations.ConversationAttachmentURL(p0, p1, p2, p3)
 }
 
-func conversationIssueResult(p0 conversations.ConversationRecord) map[string]any {
-	return conversations.ConversationIssueResult(p0)
-}
-
 func conversationModelFromReport(p0 providercapacity.Report, p1 string) conversations.ConversationModel {
 	return conversations.ConversationModelFromReport(p0, p1)
 }
 
 func conversationQueueFull() error {
 	return hubapi.FromFeatureError(conversations.ConversationQueueFull())
-}
-
-func conversationStaleOwner(p0 string, p1 string, p2 string) error {
-	return hubapi.FromFeatureError(conversations.ConversationStaleOwner(p0, p1, p2))
 }
 
 func preparePGWorkerEvent(p0 context.Context, p1 *conversations.ConversationPublicationPlan, p2 any) error {

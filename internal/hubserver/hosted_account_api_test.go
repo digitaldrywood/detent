@@ -17,7 +17,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 )
+
+const conversationFixtureDirectory = "../../web/conversation/src/contracts/fixtures"
 
 func TestHostedAccountAPI(t *testing.T) {
 	t.Parallel()
@@ -165,7 +168,7 @@ func TestHostedAccountContractFixtures(t *testing.T) {
 			if err := json.Unmarshal(encoded, &got); err != nil {
 				t.Fatal(err)
 			}
-			compareConversationShape(t, "", want, got, conversationPathSet(nil), conversationPathSet(test.optional))
+			hubtest.CompareContractShape(t, "", want, got, hubtest.ContractPathSet(nil), hubtest.ContractPathSet(test.optional))
 		})
 	}
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -491,7 +492,7 @@ func TestHostedTenantContractFixtures(t *testing.T) {
 			if err := json.Unmarshal(encoded, &got); err != nil {
 				t.Fatal(err)
 			}
-			compareConversationShape(t, "", want, got, conversationPathSet(test.extra), conversationPathSet(test.optional))
+			hubtest.CompareContractShape(t, "", want, got, hubtest.ContractPathSet(test.extra), hubtest.ContractPathSet(test.optional))
 		})
 	}
 }

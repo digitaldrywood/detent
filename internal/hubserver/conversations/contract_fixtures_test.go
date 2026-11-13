@@ -1,8 +1,7 @@
-package hubserver
+package conversations
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,7 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -23,7 +22,7 @@ import (
 // into the Go type that carries it and re-encodes the value the real
 // projection functions produce, so a field the hub adds, drops or renames
 // fails here before it reaches the client.
-const conversationFixtureDirectory = "../../web/conversation/src/contracts/fixtures"
+const conversationFixtureDirectory = "../../../web/conversation/src/contracts/fixtures"
 
 // Timestamps reused across the fixture values. Only the shape is compared,
 // but realistic values keep the failures readable.
@@ -53,22 +52,22 @@ type conversationFixtureCase struct {
 	optional []string
 }
 
-func conversationFixtureLinkedRecord() conversationRecord {
+func conversationFixtureLinkedRecord() ConversationRecord {
 	linkedAt := conversationFixtureLinkedAt
 	lastMessageAt := conversationFixtureMessageAt
-	return conversationRecord{
+	return ConversationRecord{
 		ID:               "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
 		OrganizationID:   tracker.OrganizationID("org_4d1f"),
 		ProjectID:        tracker.ProjectID("proj_example_project"),
 		OwnerPrincipalID: "tok_7b21",
 		OwnerSubject:     "usr_owner",
-		Origin:           conversationOriginUser,
+		Origin:           ConversationOriginUser,
 		Title:            "Flaky checkout lock renewal",
 		Visibility:       conversation.VisibilityShared,
 		Status:           conversation.StatusActive,
 		WorkItemID:       "wi_3363",
 		LinkedAt:         &linkedAt,
-		WorkItem: &conversationWorkItem{
+		WorkItem: &ConversationWorkItem{
 			ID:         "wi_3363",
 			Identifier: "example-project#3363",
 			Title:      "Checkout lock renewal waits on a healthy handoff",
@@ -88,15 +87,15 @@ func conversationFixtureLinkedRecord() conversationRecord {
 	}
 }
 
-func conversationFixturePrivateRecord() conversationRecord {
-	return conversationRecord{
+func conversationFixturePrivateRecord() ConversationRecord {
+	return ConversationRecord{
 		ID:               "conv_1b884c37a90d42f0932e5d6c7ae10f45",
 		OrganizationID:   tracker.OrganizationID("org_4d1f"),
 		ProjectID:        tracker.ProjectID("proj_port_app"),
 		OwnerPrincipalID: "tok_7b21",
 		OwnerSubject:     "usr_owner",
-		Origin:           conversationOriginUser,
-		Title:            conversationDefaultTitle,
+		Origin:           ConversationOriginUser,
+		Title:            ConversationDefaultTitle,
 		Visibility:       conversation.VisibilityPrivate,
 		Status:           conversation.StatusActive,
 		Execution: conversation.Execution{
@@ -109,8 +108,8 @@ func conversationFixturePrivateRecord() conversationRecord {
 	}
 }
 
-func conversationFixtureUserMessage() conversationMessageRecord {
-	return conversationMessageRecord{
+func conversationFixtureUserMessage() ConversationMessageRecord {
+	return ConversationMessageRecord{
 		ID: "msg_6a20f1c4", ConversationID: "conv_9f2c41a0b7d84e6fa1c35d92e4780b16", Seq: 7,
 		Role: conversation.RoleUser, Kind: conversation.MessageText,
 		Text: "Check whether the lock renewal waits on a healthy handoff.", Delivery: conversation.DeliveryDelivered,
@@ -120,7 +119,7 @@ func conversationFixtureUserMessage() conversationMessageRecord {
 	}
 }
 
-func conversationFixtureAssistantMessage() conversationMessageRecord {
+func conversationFixtureAssistantMessage() ConversationMessageRecord {
 	message := conversationFixtureUserMessage()
 	message.ID = "msg_6a20f1c5"
 	message.Seq = 8
@@ -135,13 +134,13 @@ func conversationFixtureAssistantMessage() conversationMessageRecord {
 
 // conversationFixtureDataMessage is a status message carrying a structured
 // payload in data, the shape the client renders as a card.
-func conversationFixtureDataMessage(t *testing.T, id string, seq int64, data any) conversationMessageRecord {
+func conversationFixtureDataMessage(t *testing.T, id string, seq int64, data any) ConversationMessageRecord {
 	t.Helper()
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		t.Fatalf("encode message data: %v", err)
 	}
-	return conversationMessageRecord{
+	return ConversationMessageRecord{
 		ID: id, ConversationID: "conv_9f2c41a0b7d84e6fa1c35d92e4780b16", Seq: seq,
 		Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: "Status", Data: encoded,
 		Delivery:  conversation.DeliveryCompleted,
@@ -152,7 +151,7 @@ func conversationFixtureDataMessage(t *testing.T, id string, seq int64, data any
 
 // conversationFixtureFirstMessage is the opening message of a conversation:
 // it predates any attempt, so its owner identifiers are null.
-func conversationFixtureFirstMessage() conversationMessageRecord {
+func conversationFixtureFirstMessage() ConversationMessageRecord {
 	message := conversationFixtureUserMessage()
 	message.ID = "msg_6a20f1b9"
 	message.Seq = 1
@@ -166,7 +165,7 @@ func conversationFixtureFirstMessage() conversationMessageRecord {
 
 // conversationFixtureTurnMessage is a data message bound to an owner
 // generation; either identifier may be empty and then projects as null.
-func conversationFixtureTurnMessage(t *testing.T, id string, seq int64, attempt, turn string, data any) conversationMessageRecord {
+func conversationFixtureTurnMessage(t *testing.T, id string, seq int64, attempt, turn string, data any) ConversationMessageRecord {
 	t.Helper()
 	message := conversationFixtureDataMessage(t, id, seq, data)
 	message.AttemptID = attempt
@@ -235,16 +234,16 @@ func conversationFixtureReceipt() conversation.Receipt {
 // conversationFixtureBootstrap is the payload /chat/bootstrap answers with.
 // It is the same extended payload /app/bootstrap
 // carries, so the conversation fixture reads a subset of the account one.
-func conversationFixtureLinkResult() conversationLinkResult {
+func conversationFixtureLinkResult() ConversationLinkResult {
 	record := conversationFixtureLinkedRecord()
 	record.Execution = conversation.Execution{
 		Status:       conversation.ExecutionWaitingForRunner,
 		Capabilities: conversation.Capabilities{Continue: true},
 		UpdatedAt:    conversationFixtureLinkedAt,
 	}
-	return conversationLinkResult{
-		Conversation: projectConversation(record),
-		Issue: conversationLinkedIssue{
+	return ConversationLinkResult{
+		Conversation: ProjectConversation(record),
+		Issue: ConversationLinkedIssue{
 			ID: "wi_3363", Identifier: "example-project#3363",
 			NativeIssue: tracker.NativeIssue{
 				Title: "Checkout lock renewal waits on a healthy handoff", State: "Todo",
@@ -253,7 +252,7 @@ func conversationFixtureLinkResult() conversationLinkResult {
 				ExternalReferences: []tracker.ExternalReference{},
 			},
 		},
-		Scheduling: conversationScheduling{Lane: "Todo"},
+		Scheduling: ConversationScheduling{Lane: "Todo"},
 	}
 }
 
@@ -263,9 +262,9 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 	t.Helper()
 	linked := conversationFixtureLinkedRecord()
 	private := conversationFixturePrivateRecord()
-	messages := []conversationMessageResource{
-		projectMessage(conversationFixtureUserMessage()),
-		projectMessage(conversationFixtureAssistantMessage()),
+	messages := []ConversationMessageResource{
+		ProjectMessage(conversationFixtureUserMessage()),
+		ProjectMessage(conversationFixtureAssistantMessage()),
 	}
 	nextCursor := "eyJzZXEiOjQwfQ"
 	command := func(t *testing.T, raw []byte) {
@@ -282,40 +281,25 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 		}
 	}
 	return map[string]conversationFixtureCase{
-		"native-actors.json": {decode: func(t *testing.T, raw []byte) {
-			var want []tracker.Actor
-			if err := json.Unmarshal(raw, &want); err != nil {
-				t.Fatal(err)
-			}
-			got := []tracker.Actor{
-				(hubscope.NativeScope{Credential: hubapi.APICredential{ID: "actor-contract", Scope: hubapi.APIScopeOperator}}).Actor(),
-				(hubscope.NativeScope{Credential: hubapi.APICredential{ID: "actor-contract", Scope: hubapi.APIScopeWorker}}).Actor(),
-				*nativeIntegrationActor("github"),
-				healthIssueScope("", "").Actor(),
-			}
-			if !slices.Equal(got, want) {
-				t.Fatalf("server actors = %+v, client fixture = %+v", got, want)
-			}
-		}},
 		"command-answer.json":       {decode: command},
 		"command-cancel.json":       {decode: command},
 		"command-continue.json":     {decode: command},
 		"command-interrupt.json":    {decode: command},
 		"command-message.json":      {decode: command},
-		"conversation.json":         {value: projectConversation(linked), extra: conversationSection14Fields("")},
-		"conversation-private.json": {value: projectConversation(private), extra: conversationSection14Fields("")},
-		"conversation-list.json": {value: conversationListPage{
-			Conversations: []conversationResource{projectConversation(linked)}, NextCursor: &nextCursor,
+		"conversation.json":         {value: ProjectConversation(linked), extra: conversationSection14Fields("")},
+		"conversation-private.json": {value: ProjectConversation(private), extra: conversationSection14Fields("")},
+		"conversation-list.json": {value: ConversationListPage{
+			Conversations: []ConversationResource{ProjectConversation(linked)}, NextCursor: &nextCursor,
 		}, extra: conversationSection14Fields("conversations[]")},
-		"conversation-snapshot.json": {value: conversationSnapshot{
+		"conversation-snapshot.json": {value: ConversationSnapshot{
 			Skills:       []skills.ProviderSkill{{Name: "review", Description: "Review this project", Path: "/workspace/.agents/skills/review/SKILL.md", Scope: "project", Enabled: true, UserInvocable: true, Invocation: "$review"}},
-			Conversation: projectConversation(linked), Messages: messages,
+			Conversation: ProjectConversation(linked), Messages: messages,
 			Questions: []conversation.Question{conversationFixtureQuestion()}, Cursor: 40, HasMore: true,
 		}, extra: append(conversationSection14Fields("conversation"), conversationSection14Fields("messages[]")...)},
 		"command-retry.json": {decode: command},
 		"create-conversation-request.json": {decode: func(t *testing.T, raw []byte) {
 			t.Helper()
-			var request conversationCreateRequest
+			var request ConversationCreateRequest
 			if err := json.Unmarshal(raw, &request); err != nil {
 				t.Fatalf("decode create request: %v", err)
 			}
@@ -325,23 +309,23 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 				t.Fatalf("create request = %#v", request)
 			}
 		}},
-		"create-conversation.json": {value: func() conversationCreatedResponse {
+		"create-conversation.json": {value: func() ConversationCreatedResponse {
 			receipt := conversationFixtureReceipt()
-			return conversationCreatedResponse{Conversation: projectConversation(private), Receipt: &receipt}
+			return ConversationCreatedResponse{Conversation: ProjectConversation(private), Receipt: &receipt}
 		}(), extra: conversationSection14Fields("conversation")},
-		"error.json":                      {value: conversationAlreadyLinked("conv_9f2c41a0b7d84e6fa1c35d92e4780b16")},
-		"error-stale-execution.json":      {value: conversationStaleOwner("The attempt this control targeted is no longer current.", "att_18f4", "att_2b70")},
-		"event-closed.json":               {value: conversationFixtureEvent(conversation.EventClosed, map[string]string{"reason": conversationClosedCursorExpired})},
-		"event-conversation-updated.json": {value: conversationFixtureEvent(conversation.EventConversationUpdated, projectConversation(linked)), extra: conversationSection14Fields("data")},
+		"error.json":                      {value: hubapi.FromFeatureError(ConversationAlreadyLinked("conv_9f2c41a0b7d84e6fa1c35d92e4780b16"))},
+		"error-stale-execution.json":      {value: hubapi.FromFeatureError(ConversationStaleOwner("The attempt this control targeted is no longer current.", "att_18f4", "att_2b70"))},
+		"event-closed.json":               {value: conversationFixtureEvent(conversation.EventClosed, map[string]string{"reason": ConversationClosedCursorExpired})},
+		"event-conversation-updated.json": {value: conversationFixtureEvent(conversation.EventConversationUpdated, ProjectConversation(linked)), extra: conversationSection14Fields("data")},
 		"event-heartbeat.json":            {value: conversationFixtureEvent(conversation.EventHeartbeat, map[string]any{"seq": int64(41)})},
-		"event-message-delta.json":        {value: conversationFixtureEvent(conversation.EventMessageDelta, conversationDeltaBody("msg_6a20f1c5", 3, " so the lease can lapse."))},
-		"execution.json": {value: projectExecution(conversation.Execution{
+		"event-message-delta.json":        {value: conversationFixtureEvent(conversation.EventMessageDelta, map[string]any{"message_id": "msg_6a20f1c5", "seq": int64(3), "text": " so the lease can lapse."})},
+		"execution.json": {value: ProjectExecution(conversation.Execution{
 			Status: conversation.ExecutionWaitingForRunner, Owner: conversation.Owner{ThreadID: "thr_0d7e"},
 			Capabilities: conversation.Capabilities{Continue: true}, UpdatedAt: conversationFixtureUpdatedAt,
 		})},
 		"link-request.json": {decode: func(t *testing.T, raw []byte) {
 			t.Helper()
-			var request conversationLinkRequest
+			var request ConversationLinkRequest
 			if err := json.Unmarshal(raw, &request); err != nil {
 				t.Fatalf("decode link request: %v", err)
 			}
@@ -350,9 +334,9 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 			}
 		}},
 		"link-response.json":     {value: conversationFixtureLinkResult(), extra: append(conversationSection14Fields(""), append([]string{"issue"}, conversationSection14Fields("conversation")...)...)},
-		"message-user.json":      {value: projectMessage(conversationFixtureUserMessage()), extra: conversationSection14Fields("")},
-		"message-assistant.json": {value: projectMessage(conversationFixtureAssistantMessage()), extra: conversationSection14Fields("")},
-		"message-attention.json": {value: projectMessage(conversationFixtureDataMessage(t, "msg_6a20f1ca", 13, map[string]any{
+		"message-user.json":      {value: ProjectMessage(conversationFixtureUserMessage()), extra: conversationSection14Fields("")},
+		"message-assistant.json": {value: ProjectMessage(conversationFixtureAssistantMessage()), extra: conversationSection14Fields("")},
+		"message-attention.json": {value: ProjectMessage(conversationFixtureDataMessage(t, "msg_6a20f1ca", 13, map[string]any{
 			"attention": []map[string]any{
 				{
 					"work_item_id": "wi_3363", "title": "Checkout lock renewal waits on a healthy handoff",
@@ -364,17 +348,17 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 				},
 			},
 		})), extra: conversationSection14Fields("")},
-		"message-issue.json": {value: projectMessage(conversationFixtureDataMessage(t, "msg_6a20f1c9", 12, map[string]any{
-			"issue": conversationIssueResult(conversationFixtureLinkedRecord()),
+		"message-issue.json": {value: ProjectMessage(conversationFixtureDataMessage(t, "msg_6a20f1c9", 12, map[string]any{
+			"issue": ConversationIssueResult(conversationFixtureLinkedRecord()),
 		})), extra: conversationSection14Fields("")},
-		"message-page.json": {value: conversationMessagesPage{Messages: []conversationMessageResource{projectMessage(conversationFixtureFirstMessage())}, NextCursor: nil}, extra: conversationSection14Fields("messages[]")},
-		"message-proposal.json": {value: projectMessage(conversationFixtureTurnMessage(t, "msg_6a20f1c8", 11, "", "turn_5", map[string]any{
+		"message-page.json": {value: ConversationMessagesPage{Messages: []ConversationMessageResource{ProjectMessage(conversationFixtureFirstMessage())}, NextCursor: nil}, extra: conversationSection14Fields("messages[]")},
+		"message-proposal.json": {value: ProjectMessage(conversationFixtureTurnMessage(t, "msg_6a20f1c8", 11, "", "turn_5", map[string]any{
 			"proposal": map[string]any{
 				"project_id": "proj_example_project", "title": "Checkout lock renewal waits on a healthy handoff",
 				"objective": "Move the renewal behind the handoff acknowledgement.",
 			},
 		})), extra: conversationSection14Fields("")},
-		"message-status.json": {value: projectMessage(conversationFixtureTurnMessage(t, "msg_6a20f1c6", 9, "att_18f4", "", map[string]any{
+		"message-status.json": {value: ProjectMessage(conversationFixtureTurnMessage(t, "msg_6a20f1c6", 9, "att_18f4", "", map[string]any{
 			"available_slots": 0, "total_slots": 2,
 		})), extra: conversationSection14Fields("")},
 		"question.json":          {value: conversationFixtureQuestion()},
@@ -407,7 +391,7 @@ func conversationSection14Fields(prefix string) []string {
 	fields := []string{"preferences", "references", "next", "attachments"}
 	paths := make([]string, 0, len(fields))
 	for _, field := range fields {
-		paths = append(paths, conversationJoinPath(prefix, field))
+		paths = append(paths, hubtest.ContractJoinPath(prefix, field))
 	}
 	return paths
 }
@@ -464,86 +448,7 @@ func TestConversationContractFixtures(t *testing.T) {
 			if err := json.Unmarshal(encoded, &got); err != nil {
 				t.Fatalf("decode Go value: %v", err)
 			}
-			compareConversationShape(t, "", want, got, conversationPathSet(fixture.extra), conversationPathSet(fixture.optional))
+			hubtest.CompareContractShape(t, "", want, got, hubtest.ContractPathSet(fixture.extra), hubtest.ContractPathSet(fixture.optional))
 		})
-	}
-}
-
-func conversationPathSet(paths []string) map[string]bool {
-	set := make(map[string]bool, len(paths))
-	for _, path := range paths {
-		set[path] = true
-	}
-	return set
-}
-
-func conversationJoinPath(path, key string) string {
-	if path == "" {
-		return key
-	}
-	return path + "." + key
-}
-
-// compareConversationShape asserts that the Go payload carries exactly the
-// fixture's key set at every level and agrees on whether a value is null.
-// Values themselves are not compared: the fixtures are examples, the shape
-// is the contract.
-func compareConversationShape(t *testing.T, path string, want, got any, extra, optional map[string]bool) {
-	t.Helper()
-	label := path
-	if label == "" {
-		label = "(root)"
-	}
-	if (want == nil) != (got == nil) {
-		t.Errorf("%s: fixture null = %t, Go null = %t", label, want == nil, got == nil)
-		return
-	}
-	if want == nil {
-		return
-	}
-	switch wanted := want.(type) {
-	case map[string]any:
-		gotten, ok := got.(map[string]any)
-		if !ok {
-			t.Errorf("%s: fixture is an object, Go value is %T", label, got)
-			return
-		}
-		for key, value := range wanted {
-			child := conversationJoinPath(path, key)
-			other, present := gotten[key]
-			if !present {
-				if !optional[child] {
-					t.Errorf("%s: Go value is missing key %q", label, key)
-				}
-				continue
-			}
-			compareConversationShape(t, child, value, other, extra, optional)
-		}
-		if extra[path] {
-			return
-		}
-		for key := range gotten {
-			if _, present := wanted[key]; present || extra[conversationJoinPath(path, key)] {
-				continue
-			}
-			t.Errorf("%s: Go value has extra key %q", label, key)
-		}
-	case []any:
-		gotten, ok := got.([]any)
-		if !ok {
-			t.Errorf("%s: fixture is an array, Go value is %T", label, got)
-			return
-		}
-		if len(wanted) != len(gotten) {
-			t.Errorf("%s: fixture has %d elements, Go value has %d", label, len(wanted), len(gotten))
-			return
-		}
-		for i := range wanted {
-			compareConversationShape(t, path+"[]", wanted[i], gotten[i], extra, optional)
-		}
-	default:
-		if fmt.Sprintf("%T", want) != fmt.Sprintf("%T", got) {
-			t.Errorf("%s: fixture is %T, Go value is %T", label, want, got)
-		}
 	}
 }
