@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/origin"
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
@@ -40,7 +41,7 @@ import (
 const (
 	assertionLifetime = tenantcall.AssertionLifetime
 	sessionLifetime   = 30 * 24 * time.Hour
-	contentSecurity   = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: https://workoscdn.com; font-src 'self'; connect-src 'self' https://huggingface.co https://us.aws.cdn.hf.co https://api.workos.com; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://checkout.stripe.com https://billing.stripe.com https://detent.build"
+	contentSecurity   = origin.ContentSecurity
 )
 
 type Config struct {
@@ -408,33 +409,6 @@ func (s *Service) routes() {
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)
 }
 
-func (s *Service) boundary(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		header := c.Response().Header()
-		header.Set("Cache-Control", "no-store")
-		header.Set("Referrer-Policy", "no-referrer")
-		header.Set("X-Content-Type-Options", "nosniff")
-		header.Set("Content-Security-Policy", contentSecurity)
-		if s.secure {
-			header.Set("Strict-Transport-Security", "max-age=31536000")
-		}
-		if !cloudassert.CanonicalPath(c.Request().URL) {
-			return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
-		}
-		if s.redirectLegacyNavigation(c) {
-			return c.Redirect(http.StatusTemporaryRedirect, s.config.PublicURL+c.Request().URL.RequestURI())
-		}
-		return next(c)
-	}
-}
-
-func (s *Service) cookieName(name string) string {
-	if s.secure {
-		return "__Host-detent_" + name
-	}
-	return "detent_entry_" + name
-}
-
 func (s *Service) setCookie(c echo.Context, name, value string, expires time.Time) {
 	maxAge := int(time.Until(expires).Seconds())
 	if value == "" {
@@ -569,16 +543,6 @@ func (s *Service) home(c echo.Context) error {
 		return err
 	}
 	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "login", Title: "Sign in"})
-}
-
-func (s *Service) sameOrigin(c echo.Context) bool {
-	header := c.Request().Header
-	origin := header.Get("Origin")
-	if origin == "null" {
-		return header.Get("Sec-Fetch-Site") == "same-origin"
-	}
-	return origin != "" && (origin == strings.TrimRight(s.config.PublicURL, "/") ||
-		s.legacyHostedRequest(c.Request()) && origin == "https://"+c.Request().Host)
 }
 
 func (s *Service) csrfValid(c echo.Context, session accountSession, organization string) bool {

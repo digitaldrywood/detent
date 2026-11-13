@@ -1,4 +1,4 @@
-package cloudentry
+package origin
 
 import (
 	"slices"
@@ -9,7 +9,7 @@ import (
 func TestContentSecurityPolicy(t *testing.T) {
 	t.Parallel()
 	directives := map[string][]string{}
-	for directive := range strings.SplitSeq(contentSecurity, ";") {
+	for directive := range strings.SplitSeq(ContentSecurity, ";") {
 		fields := strings.Fields(directive)
 		if len(fields) == 0 {
 			continue
@@ -51,7 +51,7 @@ func TestContentSecurityPolicy(t *testing.T) {
 			t.Parallel()
 			sources, ok := directives[test.directive]
 			if !ok {
-				t.Fatalf("policy has no %s directive: %s", test.directive, contentSecurity)
+				t.Fatalf("policy has no %s directive: %s", test.directive, ContentSecurity)
 			}
 			if got := slices.Contains(sources, test.source); got != test.allowed {
 				t.Fatalf("%s contains %s = %v, want %v", test.directive, test.source, got, test.allowed)

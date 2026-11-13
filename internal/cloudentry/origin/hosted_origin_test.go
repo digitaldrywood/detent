@@ -1,4 +1,4 @@
-package cloudentry
+package origin
 
 import (
 	"io"
@@ -37,13 +37,13 @@ func TestHostedOriginCompatibility(t *testing.T) {
 		} {
 			t.Run(environment.name+"/"+test.name, func(t *testing.T) {
 				t.Parallel()
-				s := &Service{config: Config{PublicURL: "https://" + environment.canonical}, secure: true}
+				s := New(Deps{PublicURL: "https://" + environment.canonical, Secure: true})
 				r := httptest.NewRequest(test.method, "https://"+environment.legacy+test.path, strings.NewReader("signed payload"))
 				if test.header != "" {
 					r.Header.Set(test.header, test.value)
 				}
 				recorder := httptest.NewRecorder()
-				handler := s.boundary(func(c echo.Context) error {
+				handler := s.Boundary(func(c echo.Context) error {
 					body, err := io.ReadAll(c.Request().Body)
 					if err != nil || string(body) != "signed payload" || c.Request().URL.RequestURI() != test.path || c.Request().Host != environment.legacy {
 						t.Fatalf("proxy changed request: %q, %v, %s", body, err, c.Request().URL)
@@ -59,7 +59,7 @@ func TestHostedOriginCompatibility(t *testing.T) {
 				want := http.StatusNoContent
 				if test.redirect {
 					want = http.StatusTemporaryRedirect
-					if location := recorder.Header().Get("Location"); location != s.config.PublicURL+test.path {
+					if location := recorder.Header().Get("Location"); location != s.PublicURL+test.path {
 						t.Fatalf("Location = %q", location)
 					}
 				} else if recorder.Header().Get("Location") != "" {
@@ -91,14 +91,14 @@ func TestHostedOriginEnvironmentBoundaries(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			s := &Service{config: Config{PublicURL: test.canonical}, secure: true}
+			s := New(Deps{PublicURL: test.canonical, Secure: true})
 			r := httptest.NewRequest("POST", "https://"+test.host+"/organizations", nil)
 			r.Header.Set("Origin", test.origin)
 			r.Header.Set("X-Forwarded-Host", "hub.detent.build")
-			if got := s.legacyHostedRequest(r); got != test.legacy {
+			if got := s.LegacyHostedRequest(r); got != test.legacy {
 				t.Fatalf("legacy = %t, want %t", got, test.legacy)
 			}
-			if got := s.sameOrigin(echo.New().NewContext(r, httptest.NewRecorder())); got != test.sameOrigin {
+			if got := s.SameOrigin(echo.New().NewContext(r, httptest.NewRecorder())); got != test.sameOrigin {
 				t.Fatalf("sameOrigin = %t, want %t", got, test.sameOrigin)
 			}
 		})

@@ -1,4 +1,4 @@
-package cloudentry
+package origin
 
 import (
 	"net/http"
@@ -10,7 +10,7 @@ import (
 
 func TestSameOriginBrowserMutations(t *testing.T) {
 	t.Parallel()
-	service := &Service{config: Config{PublicURL: "https://hub.example.test"}}
+	service := New(Deps{PublicURL: "https://hub.example.test"})
 	for _, test := range []struct {
 		name, origin, site string
 		want               bool
@@ -32,7 +32,7 @@ func TestSameOriginBrowserMutations(t *testing.T) {
 			if test.site != "" {
 				request.Header.Set("Sec-Fetch-Site", test.site)
 			}
-			if got := service.sameOrigin(echo.New().NewContext(request, httptest.NewRecorder())); got != test.want {
+			if got := service.SameOrigin(echo.New().NewContext(request, httptest.NewRecorder())); got != test.want {
 				t.Fatalf("sameOrigin = %v, want %v", got, test.want)
 			}
 		})
