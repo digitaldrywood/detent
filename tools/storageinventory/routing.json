@@ -5346,6 +5346,22 @@
         ]
       }
     },
+    "internal/hubserver/postgres/detail_objects.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "artifact-service",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "session.detailObject:QueryRow": 1,
+          "session.detailObject:SQL": 1,
+          "session.putDetailObject:Exec": 1,
+          "session.putDetailObject:SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/diagnostics.go": {
       "disposition": "target-adapter",
       "families": [
@@ -5798,12 +5814,14 @@
       "inventory": {
         "operations": {
           "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "session.DueGitHubReconciliations:generated:DueGitHubReconciliations": 1,
+          "session.DueGitHubReconciliations:query-receiver": 1,
           "session.GitHubReconciliation:generated:ReadGitHubReconciliation": 1,
           "session.GitHubReconciliation:query-receiver": 1,
           "session.NextGitHubLinkedSource:QueryRow": 1,
           "session.NextGitHubLinkedSource:SQL": 1,
-          "session.NextGitHubReconciliation:generated:NextGitHubReconciliation": 1,
-          "session.NextGitHubReconciliation:query-receiver": 1,
+          "session.RequestDriftedGitHubPullRequests:Exec": 1,
+          "session.RequestDriftedGitHubPullRequests:SQL": 1,
           "session.SaveGitHubReconciliation:generated:AdvanceGitHubReconciliation": 1,
           "session.SaveGitHubReconciliation:generated:InitializeGitHubReconciliation": 1,
           "session.SaveGitHubReconciliation:generated:LockActiveProject": 1,
@@ -5812,7 +5830,8 @@
         },
         "tables": [
           "hub/issues",
-          "hub/linked_issue_sources"
+          "hub/linked_issue_sources",
+          "hub/projects"
         ]
       }
     },
@@ -6259,7 +6278,7 @@
           "session.RegisterOwnedMachine:generated:RegisterOwnedMachine": 1,
           "session.RegisterOwnedMachine:query-receiver": 1,
           "session.SourceCheckpointAttempt:Query": 1,
-          "session.SourceCheckpointAttempt:SQL": 1,
+          "session.SourceCheckpointAttempts:Query": 1,
           "session.UpdateMachineSpriteWake:Exec": 1,
           "session.UpdateMachineSpriteWake:SQL": 1,
           "session.UpdateRunnerHost:generated:LockRunnerHostRevision": 1,
@@ -6274,7 +6293,8 @@
           "session.leaseTime:generated:LeaseTime": 1,
           "session.leaseTime:query-receiver": 1,
           "session.mutateLease:generated:MutateLeaseCommand": 1,
-          "session.mutateLease:query-receiver": 1
+          "session.mutateLease:query-receiver": 1,
+          "sourceCheckpointAttempts:SQL": 1
         },
         "tables": [
           "hub/leases",
@@ -12111,6 +12131,34 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261113174302_github_pr_drift_seek.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "policy"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/migrations/20261113175607_hub_detail_objects.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "artifact-service",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/organizations"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -13661,14 +13709,14 @@
       "inventory": {
         "operations": {
           "Queries.AdvanceGitHubReconciliation:Exec": 1,
+          "Queries.DueGitHubReconciliations:Query": 1,
           "Queries.InitializeGitHubReconciliation:Exec": 1,
           "Queries.MarkGitHubReconciliationInitialized:Exec": 1,
-          "Queries.NextGitHubReconciliation:QueryRow": 1,
           "Queries.ReadGitHubReconciliation:QueryRow": 1,
           "advanceGitHubReconciliation:SQL": 1,
+          "dueGitHubReconciliations:SQL": 1,
           "initializeGitHubReconciliation:SQL": 1,
           "markGitHubReconciliationInitialized:SQL": 1,
-          "nextGitHubReconciliation:SQL": 1,
           "readGitHubReconciliation:SQL": 1
         },
         "tables": [
@@ -16469,9 +16517,9 @@
         "operations": {
           "SQL": 1,
           "query:AdvanceGitHubReconciliation:execrows": 1,
+          "query:DueGitHubReconciliations:many": 1,
           "query:InitializeGitHubReconciliation:execrows": 1,
           "query:MarkGitHubReconciliationInitialized:exec": 1,
-          "query:NextGitHubReconciliation:one": 1,
           "query:ReadGitHubReconciliation:one": 1
         },
         "tables": [
@@ -18403,6 +18451,24 @@
           "hub/organizations",
           "hub/projects",
           "hub/runner_identities"
+        ]
+      }
+    },
+    "internal/hubserver/postgres/runner_admission_decisions.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "claim",
+        "core",
+        "event"
+      ],
+      "inventory": {
+        "operations": {
+          "session.PendingRunnerAdmissionDecisions:Query": 1,
+          "session.PendingRunnerAdmissionDecisions:SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events",
+          "hub/issues"
         ]
       }
     },
