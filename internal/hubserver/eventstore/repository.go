@@ -422,6 +422,11 @@ type RunnerAdmissionDecisionReader interface {
 	PendingRunnerAdmissionDecisions(context.Context, tracker.ProjectID, []RunnerAdmissionDecision) ([]RunnerAdmissionDecision, error)
 }
 
+type RunnerAdmissionDecisionWriter interface {
+	RunnerAdmissionDecisionReader
+	LockRunnerAdmissionItems(context.Context, tracker.ProjectID, []tracker.NativeWorkItemID) error
+}
+
 type SchedulerDecisionReader interface {
 	SchedulerDecisions(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (SchedulerDecisionRows, error)
 	SchedulerDecision(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Event, error)

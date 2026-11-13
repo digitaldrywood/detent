@@ -129,20 +129,25 @@ func appendRunnerAdmissionDecisions(ctx context.Context, w tenantstore.Writer, i
 	if !allowed {
 		return hubapi.NativeNotFound()
 	}
-	reader, ok := w.(eventstore.RunnerAdmissionDecisionReader)
+	owner, ok := w.(eventstore.RunnerAdmissionDecisionWriter)
 	if !ok {
 		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	keys := make([]eventstore.RunnerAdmissionDecision, 0, len(prepared.decisions))
+	items := make([]tracker.NativeWorkItemID, 0, len(prepared.decisions))
 	for _, decision := range prepared.decisions {
 		if !decision.key.ObservedAt.After(receivedAt) {
 			keys = append(keys, decision.key)
+			items = append(items, decision.key.WorkItemID)
 		}
 	}
 	if len(keys) == 0 {
 		return nil
 	}
-	pending, err := reader.PendingRunnerAdmissionDecisions(ctx, prepared.project, keys)
+	if err := owner.LockRunnerAdmissionItems(ctx, prepared.project, items); err != nil {
+		return err
+	}
+	pending, err := owner.PendingRunnerAdmissionDecisions(ctx, prepared.project, keys)
 	if err != nil {
 		return err
 	}

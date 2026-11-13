@@ -190,11 +190,11 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 		statements int
 	}{
 		{name: "heartbeat", statements: 12},
-		{name: "heartbeat admission", admission: true, statements: 40},
-		{name: "heartbeat admission with decision history", admission: true, history: 200, statements: 40},
-		{name: "heartbeat hosted admission", admission: true, hosted: true, statements: 51},
-		{name: "heartbeat hosted admission with decision history", admission: true, hosted: true, history: 200, statements: 51},
-		{name: "heartbeat concurrent admission", admission: true, concurrent: true, statements: 40},
+		{name: "heartbeat admission", admission: true, statements: 41},
+		{name: "heartbeat admission with decision history", admission: true, history: 200, statements: 41},
+		{name: "heartbeat hosted admission", admission: true, hosted: true, statements: 52},
+		{name: "heartbeat hosted admission with decision history", admission: true, hosted: true, history: 200, statements: 52},
+		{name: "heartbeat concurrent admission", admission: true, concurrent: true, statements: 41},
 		{name: "renew", renew: true, statements: 12},
 		{name: "hosted renew", renew: true, hosted: true, statements: 20},
 	} {

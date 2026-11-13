@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/explain"
@@ -671,8 +673,97 @@ func (w admissionObservationFailureWriter) PendingRunnerAdmissionDecisions(ctx c
 	return pending, err
 }
 
+func (w admissionObservationFailureWriter) LockRunnerAdmissionItems(ctx context.Context, project tracker.ProjectID, items []tracker.NativeWorkItemID) error {
+	return w.Writer.(eventstore.RunnerAdmissionDecisionWriter).LockRunnerAdmissionItems(ctx, project, items)
+}
+
 func (w admissionObservationFailureWriter) ReplaceRunnerProjectObservation(context.Context, runnerstore.ProjectObservation, []runnerstore.ProjectDiagnosticAttempt) error {
 	return errors.New("observation storage unavailable")
+}
+
+func TestRunnerAdmissionDecisionsYieldToNewerItemDecisions(t *testing.T) {
+	t.Parallel()
+	var clock atomic.Int64
+	start := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	clock.Store(start.UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: now}), "", "admission-ordering")
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	reporter := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+	reporter.enroll(t)
+	claimer := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+	claimer.enroll(t)
+	claimer.reportCapacity(t)
+	claimed, vetoed := f.create(t, "Claimed by another runner"), f.create(t, "Skip history never vetoes a claim")
+	repository := f.service.config.TenantRepository
+	admin := usagePostgresAdmin(t, f.service)
+	var locked, unlocked atomic.Int64
+	claim := func(issue tracker.NativeIssue, session string) {
+		t.Helper()
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", claimer.redemption.Credential, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: claimer.binding.MachineID, SessionID: session, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
+	}
+	report := func(issue tracker.NativeIssue, observed time.Time, predicate string) {
+		t.Helper()
+		clock.Store(max(clock.Load()+int64(time.Second), observed.Add(time.Second).UnixNano()))
+		view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now(), Diagnostics: &runnerauth.ProjectDiagnostics{
+			ObservedAt: now(), Source: "runner_runtime_and_durable_attempt_owners", Counts: map[string]int{}, Unavailable: map[string]string{},
+			Admissions: []runnerauth.DiagnosticAdmission{{IssueID: string(issue.WorkItemID), WorkItemRevision: int64(issue.Revision), ObservedAt: observed, Result: "skipped", Predicate: predicate}},
+		}}
+		request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(reporter.binding.MachineID)+"/heartbeat", reporter.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": reporter.redemption.BackendIsolation, "project_configuration": view})
+		ctx := postgres.WithTransactionTiming(request.Context(), nil, func(_ time.Time, query string) {
+			if !strings.HasPrefix(query, "SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=ANY") {
+				return
+			}
+			var conflict *pgconn.PgError
+			if _, err := admin.ExecContext(context.WithoutCancel(request.Context()), "SELECT 1 FROM issues WHERE organization_id=$1 AND native_id=$2 FOR NO KEY UPDATE NOWAIT", f.project.OrganizationID, issue.WorkItemID); errors.As(err, &conflict) && conflict.Code == "55P03" {
+				locked.Add(1)
+			} else {
+				unlocked.Add(1)
+			}
+		})
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request.WithContext(ctx))
+		requireNativeStatus(t, response, http.StatusOK)
+		if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			observation, _, err := r.RunnerProjectObservation(t.Context(), reporter.binding.RunnerID, f.project.ID, string(issue.WorkItemID))
+			if err != nil {
+				return err
+			}
+			if observation.Diagnostics == nil || len(observation.Diagnostics.Admissions) != 1 || observation.Diagnostics.Admissions[0].Predicate != predicate {
+				return fmt.Errorf("observation owner lost the reported admission %q: %+v", predicate, observation.Diagnostics)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	latest := func(issue tracker.NativeIssue, runner, outcome, reason string) {
+		t.Helper()
+		_, event := readDiagnosticFixtureDecision(t, f, issue)
+		if decision := event.Data.Decision; decision == nil || decision.RunnerID != runner || decision.Outcome != outcome || reason != "" && decision.Reason != reason {
+			t.Fatalf("latest decision = %+v, want runner=%s outcome=%s reason=%q", event.Data.Decision, runner, outcome, reason)
+		}
+	}
+	claimedAt := now()
+	claim(claimed, "other-runner-claim")
+	latest(claimed, claimer.binding.RunnerID, "claimed", "")
+	report(claimed, claimedAt.Add(-time.Second), "older_than_claim")
+	latest(claimed, claimer.binding.RunnerID, "claimed", "")
+	report(claimed, claimedAt, "same_time_as_claim")
+	latest(claimed, claimer.binding.RunnerID, "claimed", "")
+	report(claimed, claimedAt.Add(5*time.Second), "newer_than_claim")
+	latest(claimed, reporter.binding.RunnerID, "skipped", "newer_than_claim")
+	report(claimed, claimedAt.Add(3*time.Second), "out_of_order")
+	latest(claimed, reporter.binding.RunnerID, "skipped", "newer_than_claim")
+	report(claimed, claimedAt.Add(7*time.Second), "latest_in_order")
+	latest(claimed, reporter.binding.RunnerID, "skipped", "latest_in_order")
+	report(vetoed, now(), "project_capacity_full")
+	latest(vetoed, reporter.binding.RunnerID, "skipped", "project_capacity_full")
+	claim(vetoed, "after-skip-history")
+	latest(vetoed, claimer.binding.RunnerID, "claimed", "")
+	if locked.Load() != 3 || unlocked.Load() != 0 {
+		t.Fatalf("heartbeat decision recheck did not hold the item row lock: locked=%d unlocked=%d, want 3 and 0", locked.Load(), unlocked.Load())
+	}
 }
 
 func readDiagnosticFixtureDecision(t *testing.T, f nativeFixture, issue tracker.NativeIssue) (eventstore.Event, tracker.CollaborationEvent) {
