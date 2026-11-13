@@ -323,18 +323,19 @@ func TestNativeIssueOrganizationLookup(t *testing.T) {
 		organization tracker.OrganizationID
 		item         tracker.NativeWorkItemID
 		want         int
+		code         string
 	}{
-		{"granted project", f.project.OrganizationID, granted.WorkItemID, http.StatusOK},
-		{"ungranted project", f.project.OrganizationID, ungranted.WorkItemID, http.StatusNotFound},
-		{"unknown ID", f.project.OrganizationID, "wi_unknown", http.StatusNotFound},
-		{"other organization", "org_other", granted.WorkItemID, http.StatusNotFound},
+		{"granted project", f.project.OrganizationID, granted.WorkItemID, http.StatusOK, ""},
+		{"ungranted project", f.project.OrganizationID, ungranted.WorkItemID, http.StatusNotFound, "not_found"},
+		{"unknown ID", f.project.OrganizationID, "wi_unknown", http.StatusNotFound, "not_found"},
+		{"other organization", "org_other", granted.WorkItemID, http.StatusUnauthorized, "unauthorized"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := "/api/v2/organizations/" + string(test.organization) + "/work-items/" + string(test.item)
 			response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 			requireNativeStatus(t, response, test.want)
 			if test.want != http.StatusOK {
-				requireNativeCode(t, response, http.StatusNotFound, "not_found")
+				requireNativeCode(t, response, test.want, test.code)
 				return
 			}
 			var issue tracker.NativeIssue
@@ -1014,7 +1015,7 @@ func TestNativeTenantIsolationAndCursorBinding(t *testing.T) {
 		{"project cursor", otherProject.base + "/work-items?cursor=" + url.QueryEscape(page.NextCursor), otherProject.token, http.StatusUnprocessableEntity},
 		{"tenant cursor", otherTenant.base + "/work-items?cursor=" + url.QueryEscape(page.NextCursor), otherTenant.token, http.StatusUnprocessableEntity},
 		{"guessed project", otherProject.base + "/work-items/" + string(other.WorkItemID), f.token, http.StatusNotFound},
-		{"guessed tenant", otherTenant.base + "/work-items/" + string(foreign.WorkItemID), f.token, http.StatusNotFound},
+		{"guessed tenant", otherTenant.base + "/work-items/" + string(foreign.WorkItemID), f.token, http.StatusUnauthorized},
 		{"guessed item", f.base + "/work-items/" + string(foreign.WorkItemID), f.token, http.StatusNotFound},
 		{"guessed comments", f.base + "/work-items/" + string(other.WorkItemID) + "/comments", f.token, http.StatusNotFound},
 		{"v1 downgrade", "/api/v1/work-items", f.token, http.StatusNotFound},
