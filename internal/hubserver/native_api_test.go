@@ -662,8 +662,7 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 		linked := f.create(t, "activity-linked")
 		unrelated := f.create(t, "activity-unrelated")
 		worker := f.worker(t, "activity-worker")
-		lease := claimNativeAttempt(t, f.nativeFixture, worker, "activity-machine", "activity-session", f.issue.WorkItemID)
-		start := nativeStartedEvent(lease)
+		var start tracker.NativeRunEvent
 		var comment, workpad tracker.NativeComment
 		var version tracker.ChangeVersion
 		changePath := f.path
@@ -700,6 +699,7 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path+"/comments/"+workpad.ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, ExpectedRevision: workpad.Revision, Body: "## Codex Workpad\nValidation: activity verified"}), http.StatusOK)
 			}},
 			{"run start", false, false, func(t *testing.T, _ tracker.NativeIssue) {
+				start = nativeStartedEvent(claimNativeAttempt(t, f.nativeFixture, worker, "activity-machine", "activity-session", f.issue.WorkItemID))
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
 			}},
 			{"run finish", false, false, func(t *testing.T, _ tracker.NativeIssue) {
@@ -805,7 +805,7 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 			})
 		}
 		latest := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "").LastActivityAt
-		for _, stamp := range []time.Time{latest.Add(-time.Nanosecond), latest.Truncate(time.Second), latest.Add(-time.Hour), latest} {
+		for _, stamp := range []time.Time{latest.Add(-time.Nanosecond), latest.Truncate(time.Second), f.issue.CreatedAt, latest} {
 			before := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
 			clock.Advance(stamp.Sub(clock.Now()))
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "older-" + hubapi.FormatHubTime(stamp)}, Body: "Older activity"}), http.StatusOK)
