@@ -73,6 +73,13 @@ func (s *Service) projectOnboardingRecord(ctx context.Context, scope hubscope.Na
 		if err != nil {
 			return err
 		}
+		result.Artifacts, err = r.ArtifactServices(ctx, scope.Project)
+		if err != nil {
+			return err
+		}
+		for i := range result.Artifacts {
+			result.Artifacts[i].PublisherTokenID = ""
+		}
 		if scope.Credential.Runner.RunnerID == "" {
 			repositories, err = reader.RunnerRepositoryLists(ctx, 10000)
 		}
