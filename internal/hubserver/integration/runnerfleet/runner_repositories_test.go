@@ -128,14 +128,20 @@ func TestRunnerRepositoryReports(t *testing.T) {
 		t.Fatalf("second list=%+v %v", secondList, err)
 	}
 	for _, test := range []struct {
-		name, token string
-		visible     bool
-	}{{"administrator", hubfixture.AdminToken, true}, {"no routing rights", f.Token, false}, {"runner credential", first.Redemption.Credential, false}} {
+		name, token      string
+		runners, visible bool
+	}{{"administrator", hubfixture.AdminToken, true, true}, {"no routing rights", f.Token, true, false}, {"runner credential", first.Redemption.Credential, false, false}} {
 		t.Run(test.name, func(t *testing.T) {
 			response := f.Hub.Request(t, http.MethodGet, f.Base+"/onboarding", test.token, nil)
 			hubfixture.RequireStatus(t, response, http.StatusOK)
 			var setup onboarding.Project
 			hubfixture.Decode(t, response, &setup)
+			if !test.runners {
+				if len(setup.Runners) != 0 {
+					t.Fatalf("worker onboarding read exposed runners=%+v", setup.Runners)
+				}
+				return
+			}
 			if len(setup.Runners) == 0 {
 				t.Fatal("missing runner fixture")
 			}
@@ -147,6 +153,7 @@ func TestRunnerRepositoryReports(t *testing.T) {
 		})
 	}
 	seedStartupOrganization(t, f.Hub.Config.TenantRepository, "org_foreign")
+	hubfixture.SeedAdmin(t, f.Hub.Config.TenantRepository, "org_foreign", hubfixture.AdminToken, f.Hub.Now())
 	foreign := hubfixture.NewNative(t, f.Hub, "org_foreign", "foreign")
 	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, foreign.Base+"/onboarding/repositories", hubfixture.AdminToken, map[string]any{"runner_id": first.Binding.RunnerID, "idempotency_key": "foreign"}), http.StatusNotFound)
 	emptyID := request(f.Base, first.Binding.RunnerID, "signed-out")
