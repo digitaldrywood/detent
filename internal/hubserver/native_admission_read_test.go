@@ -284,7 +284,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 					}
 				}
 				if test.observation == "project" {
-					if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "DELETE FROM runner_admission_observations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3", f.project.OrganizationID, r.binding.RunnerID, f.project.ID); err != nil {
+					if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "DELETE FROM runner_native_admission_observations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3", f.project.OrganizationID, r.binding.RunnerID, f.project.ID); err != nil {
 						t.Fatal(err)
 					}
 					observationProject := newNativeFixture(t, f.service, f.project.OrganizationID, "other-admission-observation")
@@ -460,6 +460,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 					t.Fatal("MCP leaked private dependency")
 				}
 				if test.name == "hosted heartbeat admissible" || test.label == "human-owned" || test.dependency {
+					drainTestNativeBoard(t, f.service)
 					for _, name := range []string{operatortool.Dashboard, operatortool.BoardState} {
 						data := hostedContextData(t, call("tools/call", name, map[string]any{"project_id": string(f.project.ID)}), false)
 						var board nativeBoardResult
