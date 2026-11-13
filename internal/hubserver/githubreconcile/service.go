@@ -316,8 +316,8 @@ func (s *Service) MaintainPullRequests(ctx context.Context) error {
 		return s.finishFailure(ctx, organization, row, errors.New("pull request refresh source is incomplete"))
 	}
 	source, details := snapshot.PullRequests[0], snapshot.PullRequestDetails[0]
-	if source.Number > 0 && source.Number != row.Number || details.Number > 0 && details.Number != row.Number || source.HeadSHA != "" && details.HeadSHA != "" && source.HeadSHA != details.HeadSHA {
-		return s.finishFailure(ctx, organization, row, githubcontract.Permanent(errors.New("pull request refresh identity changed")))
+	if source.Number > 0 && source.Number != row.Number || details.Number > 0 && details.Number != row.Number || source.HeadSHA != "" && details.HeadSHA != "" && source.HeadSHA != details.HeadSHA || source.HeadSHA != "" && source.HeadSHA != row.RequestedHeadSHA {
+		return s.finishFailure(ctx, organization, row, githubcontract.Permanent(errors.New("pull request refresh identity or head changed")))
 	}
 	if source.Number != row.Number || details.Number != row.Number || source.HeadSHA == "" || details.HeadSHA == "" || source.UpdatedAt.IsZero() || details.Checks == nil || details.Reviews == nil {
 		return s.finishFailure(ctx, organization, row, errors.New("pull request refresh details are incomplete"))
