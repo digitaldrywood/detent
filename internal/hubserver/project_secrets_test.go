@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -262,7 +263,7 @@ func TestProjectSecretPermissions(t *testing.T) {
 				return err
 			}
 			created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "pending-policy-enrollment", RunnerID: "pending-policy-runner", MachineID: "pending-policy-machine", TokenHash: strings.Repeat("c", 64), Scope: "organization", Operations: []string{}, CreatedAt: created, ExpiresAt: time.Date(2999, 1, 1, 0, 0, 0, 0, time.UTC), CreatedBy: pool.ConfiguredBy}); err != nil {
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "pending-policy-enrollment", RunnerID: "pending-policy-runner", MachineID: "pending-policy-machine", TokenHash: strings.Repeat("c", 64), Scope: "organization", Operations: []string{runnerauth.Read}, CreatedAt: created, ExpiresAt: time.Date(2999, 1, 1, 0, 0, 0, 0, time.UTC), CreatedBy: pool.ConfiguredBy}); err != nil {
 				return err
 			}
 			return owner.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: organization, Name: "pending-policy-sprite", ProviderOrganization: "org", EnrollmentID: "pending-policy-enrollment", State: "deleted", IdleSince: created, CreatedAt: created})
