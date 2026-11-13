@@ -168,7 +168,13 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		}
 		t.Fatal("search fixture refresh did not finish")
 	}
-	requireNativeStatus(t, f.request(t, other, http.MethodGet, boardURL+"&q=example", nil), http.StatusServiceUnavailable)
+	pendingSearch := f.request(t, other, http.MethodGet, boardURL+"&q=example", nil)
+	requireNativeStatus(t, pendingSearch, http.StatusOK)
+	var pendingPage tracker.NativeIssuePage
+	decodeHubResponse(t, pendingSearch, &pendingPage)
+	if !pendingPage.ProjectionPending {
+		t.Fatalf("search before refresh did not report a pending projection: %s", pendingSearch.Body.String())
+	}
 	refreshSearch(t)
 	for _, test := range []struct {
 		query string
