@@ -25,7 +25,8 @@ import (
 )
 
 func testDashboardChangeLog(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{Workspace: &WorkspaceConfig{Enabled: true}})
+	f := newNativeFixture(t, newPostgresNativeService(t, Config{Workspace: &WorkspaceConfig{Enabled: true}}), "", "Example project")
+	f.service.localOrganization = string(f.project.OrganizationID)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +41,7 @@ func testDashboardChangeLog(t *testing.T) {
 	head := func(scope nativeScope) viewstore.BoardSequence {
 		t.Helper()
 		var result viewstore.BoardSequence
-		if err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(ctx, scope.organization, corestore.Background, func(r tenantstore.Reader) error {
 			var err error
 			result, err = r.BoardSequence(ctx, scope.project)
 			return err
@@ -85,17 +86,17 @@ func testDashboardChangeLog(t *testing.T) {
 	for i, scope := range scopes {
 		id := strconv.Itoa(i)
 		if err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if _, err := w.(postgres.WorkspaceWriter).CreateWorkspaceSession(ctx, postgres.WorkspaceCreate{OrganizationID: scope.organization, ProjectID: scope.project, ID: "ws_dashboard_" + id, SubjectWorkItemID: string(issues[i].WorkItemID), Ref: "develop", Requires: []string{"files"}, IdleTimeoutSeconds: 60, ExpiresAt: now.Add(time.Hour), RequestedExpiresAt: now.Add(time.Minute), CreatedBy: "example-owner", CreatedAt: now}); err != nil {
+			if _, err := w.(postgres.WorkspaceWriter).CreateWorkspaceSession(ctx, postgres.WorkspaceCreate{OrganizationID: scope.organization, ProjectID: scope.project, ID: dashboardWorkspaceID(id), SubjectWorkItemID: string(issues[i].WorkItemID), Ref: "develop", Requires: []string{"files"}, IdleTimeoutSeconds: 60, ExpiresAt: now.Add(time.Hour), RequestedExpiresAt: now.Add(time.Minute), CreatedBy: "example-owner", CreatedAt: now}); err != nil {
 				return err
 			}
-			if _, err := updateWorkspace(w, scope, "ws_dashboard_"+id, "starting"); err != nil {
+			if _, err := updateWorkspace(w, scope, dashboardWorkspaceID(id), "starting"); err != nil {
 				return err
 			}
 			owner := w.(postgres.RelayActionWriter)
 			if err := owner.CreateProjectAction(ctx, actionstore.Record{Action: workspacesession.Action{ID: "action_dashboard_" + id, OrganizationID: string(scope.organization), ProjectID: string(scope.project), Name: "Example action", Icon: "play", CreatedBy: "example-owner", Revision: 1, CreatedAt: now, UpdatedAt: now}, Command: command}); err != nil {
 				return err
 			}
-			_, err := owner.CreateActionRun(ctx, postgres.CreateActionRunInput{ID: "run_dashboard_" + id, OrganizationID: scope.organization, ProjectID: scope.project, ActionID: "action_dashboard_" + id, WorkspaceID: "ws_dashboard_" + id, CreatedBy: "example-owner", CreatedAt: now})
+			_, err := owner.CreateActionRun(ctx, postgres.CreateActionRunInput{ID: "run_dashboard_" + id, OrganizationID: scope.organization, ProjectID: scope.project, ActionID: "action_dashboard_" + id, WorkspaceID: dashboardWorkspaceID(id), CreatedBy: "example-owner", CreatedAt: now})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -116,7 +117,7 @@ func testDashboardChangeLog(t *testing.T) {
 	drainTestNativeBoard(t, f.service)
 	t.Run("source creation produces one revision per project", func(t *testing.T) {
 		for i, scope := range scopes {
-			for _, test := range []struct{ topic, entity string }{{"work_item", string(issues[i].WorkItemID)}, {"human_action", string(issues[i].WorkItemID)}, {"workspace", "ws_dashboard_" + strconv.Itoa(i)}, {"action_run", "run_dashboard_" + strconv.Itoa(i)}, {"health", healthRecord.ID}} {
+			for _, test := range []struct{ topic, entity string }{{"work_item", string(issues[i].WorkItemID)}, {"human_action", string(issues[i].WorkItemID)}, {"workspace", dashboardWorkspaceID(strconv.Itoa(i))}, {"action_run", "run_dashboard_" + strconv.Itoa(i)}, {"health", healthRecord.ID}} {
 				count := 0
 				for _, delta := range matching(scope, 0, test.topic, test.entity) {
 					if delta.EntityRevision != nil && *delta.EntityRevision == 1 {
@@ -157,7 +158,7 @@ func testDashboardChangeLog(t *testing.T) {
 	rollback := errors.New("rollback dashboard source")
 	t.Run("workspace activity preserves lifecycle revisions and delivery", func(t *testing.T) {
 		for i, scope := range scopes {
-			id := "ws_dashboard_" + strconv.Itoa(i)
+			id := dashboardWorkspaceID(strconv.Itoa(i))
 			read := func() postgres.WorkspaceSession {
 				t.Helper()
 				var row postgres.WorkspaceSession
@@ -259,12 +260,12 @@ func testDashboardChangeLog(t *testing.T) {
 				_, err := w.AppendEvent(ctx, activity)
 				return err
 			}},
-			{"workspace", "ws_dashboard_" + id, 3, func(w tenantstore.Writer) error {
-				_, err := updateWorkspace(w, scope, "ws_dashboard_"+id, "ready")
+			{"workspace", dashboardWorkspaceID(id), 3, func(w tenantstore.Writer) error {
+				_, err := updateWorkspace(w, scope, dashboardWorkspaceID(id), "ready")
 				return err
 			}},
 			{"action_run", "run_dashboard_" + id, 2, func(w tenantstore.Writer) error {
-				if _, err := updateWorkspace(w, scope, "ws_dashboard_"+id, "failed"); err != nil {
+				if _, err := updateWorkspace(w, scope, dashboardWorkspaceID(id), "failed"); err != nil {
 					return err
 				}
 				_, err := w.(postgres.RelayActionWriter).FailOrphanedActionRun(ctx, postgres.OrphanedActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: "run_dashboard_" + id, ExpectedRevision: 1, Now: now.Add(time.Second)})
@@ -1031,4 +1032,8 @@ func testDashboardProjectionAfterSourceSnapshot(t *testing.T) {
 	if snapshot.ChangeSequence != readHead().Sequence || snapshot.Revision != 11 {
 		t.Fatalf("snapshot=%#v", snapshot)
 	}
+}
+
+func dashboardWorkspaceID(id string) string {
+	return "ws_" + strings.Repeat("0", 32-len(id)) + id
 }
