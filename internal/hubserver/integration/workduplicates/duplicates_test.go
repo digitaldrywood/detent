@@ -19,8 +19,10 @@ import (
 )
 
 func TestNativeDuplicateCandidateCrowding(t *testing.T) {
+	t.Parallel()
 	for _, crowd := range []string{"project", "organization", "archived", "invisible", "partial coverage", "eligible"} {
 		t.Run(crowd, func(t *testing.T) {
+			t.Parallel()
 			f := newDefaultNativeFixture(t)
 			target := f.createIndependent(t, "Separate issue context")
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(target.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "crowding-comment"}, Body: "Repository association deadlocks"})
