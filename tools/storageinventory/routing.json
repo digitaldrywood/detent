@@ -993,9 +993,9 @@
           "ConfigurePostgresTenant:QueryRowContext": 1,
           "ConfigurePostgresTenant:SQL": 3,
           "Postgres:ExecContext": 2,
-          "PostgresDatabase:ExecContext": 1,
-          "PostgresDatabase:QueryRowContext": 1,
-          "PostgresDatabase:SQL": 2
+          "postgresDatabase:ExecContext": 1,
+          "postgresDatabase:QueryRowContext": 1,
+          "postgresDatabase:SQL": 2
         },
         "tables": []
       }
