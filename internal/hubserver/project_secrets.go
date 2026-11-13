@@ -209,9 +209,6 @@ func (s *Service) organizationSpritesScope(next echo.HandlerFunc) echo.HandlerFu
 		if c.Request().Method != http.MethodGet && !canManageProjectSecrets(scope.credential) {
 			return s.nativeAPIError(c, &nativeError{Code: "forbidden", Message: "Changing Sprites settings requires owner or admin access", status: http.StatusForbidden, publicMessage: true})
 		}
-		if c.Request().Method == http.MethodGet {
-			scope.requireHostedAdmin = false
-		}
 		c.Set("native_scope", scope)
 		return next(c)
 	}
