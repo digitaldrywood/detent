@@ -434,7 +434,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		}
 	}
 	if request.Data.MachineID != "" && string(request.Data.MachineID) != lease.MachineID || request.Data.SessionID != "" && request.Data.SessionID != lease.SessionID || request.Data.RunnerID != "" && request.Data.RunnerID != scope.credential.Runner.RunnerID {
-		return nil, nativePublicInvalid("Execution identity must match the authenticated lease owner")
+		return nil, nativeRejection(nativePublicInvalid("Execution identity must match the authenticated lease owner"), "owner_validation", "data")
 	}
 	request.Data.MachineID = tracker.MachineID(lease.MachineID)
 	request.Data.SessionID = lease.SessionID
@@ -507,7 +507,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			return nil, nativePublicInvalid("Run detail batch must contain ordered observations for one execution")
 		}
 		if event.Data.MachineID != "" && string(event.Data.MachineID) != lease.MachineID || event.Data.SessionID != "" && event.Data.SessionID != lease.SessionID || event.Data.RunnerID != "" && event.Data.RunnerID != scope.credential.Runner.RunnerID {
-			return nil, nativePublicInvalid("Execution identity must match the authenticated lease owner")
+			return nil, nativeRejection(nativePublicInvalid("Execution identity must match the authenticated lease owner"), "owner_validation", "data")
 		}
 		event.Data.MachineID, event.Data.SessionID, event.Data.RunnerID = tracker.MachineID(lease.MachineID), lease.SessionID, scope.credential.Runner.RunnerID
 		var landingProof *nativeLandingAuthority
