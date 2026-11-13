@@ -785,7 +785,8 @@ func TestRunnerRoutingRevocationAndDrain(t *testing.T) {
 				for _, action := range []string{"renew", "validate"} {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/"+action, r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), test.want)
 				}
-				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "event"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: descriptor.ID, RunID: hubapi.NewID("run"), AttemptID: hubapi.NewID("attempt")}}
+				event := nativeStartedEvent(lease)
+				event.IdempotencyKey, event.Data.PolicyID = "event", descriptor.ID
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), test.want)
 			})
 		}
