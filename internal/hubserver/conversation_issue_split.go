@@ -474,6 +474,21 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
+		created := map[tracker.NativeWorkItemID]bool{}
+		for _, record := range records {
+			if record.plan.create {
+				created[record.plan.issue.WorkItemID] = true
+			}
+		}
+		refs := []corestore.WorkItemReference{{ProjectID: scope.project, WorkItemID: parent.current.NativeID}}
+		for _, record := range records {
+			if (!record.plan.create || record.plan.comment.ID != "") && !created[record.plan.current.NativeID] {
+				refs = append(refs, corestore.WorkItemReference{ProjectID: scope.project, WorkItemID: record.plan.current.NativeID})
+			}
+		}
+		if _, err := w.LockWorkItems(ctx, refs); err != nil {
+			return err
+		}
 		current, err := w.LockWorkItem(ctx, scope.project, parent.current.NativeID)
 		if err != nil {
 			return err

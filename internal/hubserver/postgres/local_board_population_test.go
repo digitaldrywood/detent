@@ -763,6 +763,16 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 			return fmt.Errorf("storage archive candidate %s is missing", item)
 		}
 	}
+	splitFirstItem := func(lockFirst bool) step {
+		return func(ctx context.Context, w tenantstore.Writer) error {
+			if lockFirst {
+				if _, err := w.LockWorkItems(ctx, []corestore.WorkItemReference{{ProjectID: "prj_first", WorkItemID: "wi_first_1"}, {ProjectID: "prj_first", WorkItemID: "wi_first_2"}}); err != nil {
+					return err
+				}
+			}
+			return archiveItem("prj_first", "wi_first_1")(ctx, w)
+		}
+	}
 	for _, test := range []struct {
 		name                                         string
 		prepare                                      step
@@ -783,6 +793,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"project key change waits for foreign key insert before receipt", noop, bind, receipt, noop, rename, true, 4},
 		{"storage archive publication while archive holder checks keys", complete("wi_first_2"), archive, converseOn("wi_first_2"), noop, publish("wi_first_2"), false, 3},
 		{"unlocked issue key change while issue writer awaits counter", noop, holdIssue("wi_first_1"), counterAfterIssue, noop, renumberUnlocked, true, 4},
+		{"split writer locks every item before the counter", noop, holdIssue("wi_first_2"), counterAfterIssue, splitFirstItem(true), lock("prj_first", "wi_first_2"), false, 3},
 		{"issue delete while archive holder checks keys", extra, archive, converseOn("wi_first_3"), noop, remove("wi_first_3"), false, 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
