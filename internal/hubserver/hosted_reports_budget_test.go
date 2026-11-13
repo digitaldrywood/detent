@@ -176,13 +176,15 @@ func installReportsBudgetTrace(t *testing.T, s *Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.MaxConns = int32(s.config.Postgres.Pool.MaxConnections)
+	serving, background := s.database.postgres.WorkloadCapacities()
+	budgets := postgres.PoolConfig{MaxConnections: int(s.database.postgres.Stats().MaxConns()), ServingConnections: serving, BackgroundConnections: background}
+	config.MaxConns = int32(budgets.MaxConnections)
 	config.ConnConfig.Tracer = reportsBudgetTrace{}
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := postgres.NewRepository(t.Context(), pool, s.config.Postgres.Pool, s.config.Postgres.LeaseClock)
+	repository, err := postgres.NewRepository(t.Context(), pool, budgets, s.config.Postgres.LeaseClock)
 	if err != nil {
 		pool.Close()
 		t.Fatal(err)
