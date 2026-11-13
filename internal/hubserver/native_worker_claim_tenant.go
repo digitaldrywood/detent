@@ -845,6 +845,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			}
 		}
 		var selectedReservation *providercapacity.Reservation
+		var selectionRequired error
 		if !workspaceItem && replay == nil {
 			if len(request.ProviderCandidates) == 0 {
 				reports, err := w.RunnerProviderReports(ctx, identity.RunnerID)
@@ -852,7 +853,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 					return err
 				}
 				if len(reports) > 0 {
-					return providerWait("provider_incompatible", "Work item needs local model selection before a provider reservation can be claimed")
+					selectionRequired = providerWait("provider_incompatible", "Work item needs local model selection before a provider reservation can be claimed")
 				}
 			} else {
 				reservation, err := selectTenantProviderReservation(ctx, w, identity, request, item.NativeID, authoritativeNow)
@@ -928,6 +929,9 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		}
 		if !decision.Allowed {
 			return &nativeError{Code: "provider_capacity", Message: monthlyBudgetRefusal(decision), status: http.StatusConflict, Details: map[string]any{"monthly_budget": decision}}
+		}
+		if selectionRequired != nil {
+			return selectionRequired
 		}
 		if lease.LeaseID == leaseID {
 			if err := w.RecordBillingMonthlyAdmission(ctx, billingstore.MonthlyAdmission{OrganizationID: scope.organization, IssueID: tracker.WorkItemID(item.ID), AdmittedAt: authoritativeNow}); err != nil {
