@@ -3034,11 +3034,7 @@ func isolateNativeChangeGit(t *testing.T) {
 // orchestrator's dispatch leaves a native item it runs.
 func (h *nativeChangeHub) createInProgress(t *testing.T, title string) connector.Issue {
 	t.Helper()
-	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: title, Body: "Change the README." + issueContractTestSections, State: "In Progress"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return api.IssueFromNative(issue)
+	return api.IssueFromNative(createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: title, Body: "Change the README." + issueContractTestSections, State: "In Progress"}))
 }
 
 func (h *nativeChangeHub) publishCapturedExternal(t *testing.T, item tracker.NativeWorkItemID, changeID, head string, captured *tracker.ChangeSourceCapture, external *tracker.ChangeExternalReference, previous ...string) tracker.ChangeVersion {

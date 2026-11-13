@@ -209,14 +209,11 @@ func RunNativeLandingBatchClaimsOneCapacityUnit(t *testing.T, factories Construc
 			t.Fatalf("target = %#v, %v", target, err)
 		}
 	}
-	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Ordinary Code remains bounded", Body: issueContractTestSections})
-	if err != nil {
-		t.Fatal(err)
-	}
+	issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Ordinary Code remains bounded", Body: issueContractTestSections, State: "Todo"})
 	request.NativeLandingBatch = false
 	request.WorkflowStates = []string{"Todo"}
 	candidates, err = h.scheduler.FetchCandidateIssues(t.Context(), request)
 	if err != nil || len(candidates) != 0 {
-		t.Fatalf("Code %s claimed beside full landing slot: %v, %v", issue.ID, candidates, err)
+		t.Fatalf("Code %s claimed beside full landing slot: %v, %v", issue.WorkItemID, candidates, err)
 	}
 }
