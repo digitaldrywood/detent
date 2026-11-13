@@ -558,6 +558,7 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 					if content.Data.ReporterStatus != "submitted" || content.Data.Body != reporterBugSections+issueContractTestSections || len(content.Data.IssueContract.ConfirmedSections) != 0 {
 						t.Fatalf("MCP edit=%s", result.Content)
 					}
+					refreshNativeDuplicateSearchFixture(t, f.service, "org_security")
 				}
 			}
 		})
@@ -803,6 +804,7 @@ func TestReporterCustomHostedProjectCreation(t *testing.T) {
 						if issue.State != test.promotion {
 							t.Fatalf("promotion=%q, want %q", issue.State, test.promotion)
 						}
+						refreshNativeDuplicateSearchFixture(t, f.service, "org_security")
 					}
 				})
 			}
