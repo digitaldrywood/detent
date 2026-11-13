@@ -216,6 +216,11 @@ func TestExecLauncherStopsSupervisingAfterRestartLimit(t *testing.T) {
 			t.Parallel()
 			directory := t.TempDir()
 			launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: tc.limit, Logger: slog.New(slog.DiscardHandler), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
+			launcher.after = func(time.Duration) <-chan time.Time {
+				tick := make(chan time.Time, 1)
+				tick <- time.Now()
+				return tick
+			}
 			spec := TenantSpec{Organization: Organization{ID: "org_exec"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
 			if err := launcher.Start(t.Context(), spec); err != nil {
 				t.Fatal(err)
