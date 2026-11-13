@@ -713,7 +713,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 	size := 8192
 	for _, row := range rows[:min(corestore.MaxPageSize, len(rows))] {
 		selected, found := selectedRows[row.Entry.WorkItemID]
-		if !found {
+		if !found || !row.Matches {
 			last = row.Position
 			continue
 		}
