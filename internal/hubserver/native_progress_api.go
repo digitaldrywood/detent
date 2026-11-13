@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -36,7 +37,19 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope nativeS
 		return progresscheck.Request{}, 0, err
 	}
 	request := progresscheck.NativeRequest(recovery, policy, instance)
-	request.EvidenceRevision = strconv.FormatInt(int64(recovery.Issue.Revision), 10)
+	var evidenceSequence int64
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		owner, ok := reader.(eventstore.ProgressEvidenceReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		evidenceSequence, err = owner.ProgressEvidenceSequence(ctx, scope.project, recovery.Issue.WorkItemID)
+		return err
+	}); err != nil {
+		return progresscheck.Request{}, 0, err
+	}
+	request.EvidenceRevision = strconv.FormatInt(evidenceSequence, 10)
 	defectReceipt, hasDefectReceipt, err := s.nativeProgressDefectReceiptTenant(ctx, scope, item)
 	if err != nil {
 		return progresscheck.Request{}, 0, err

@@ -153,6 +153,16 @@ func (s *session) RunEvent(ctx context.Context, project tracker.ProjectID, item 
 	return eventRecord(row), mapError(ctx, err)
 }
 
+func (s *session) ProgressEvidenceSequence(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (int64, error) {
+	var sequence int64
+	err := s.db.QueryRow(ctx, `SELECT COALESCE((SELECT sequence FROM collaboration_events
+WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3
+AND (type IN ('issue.edited','comment.created','comment.edited','run.checkpointed','run.finished') OR left(type,7)='change.')
+AND NOT (type='comment.created' AND actor_kind='machine' AND actor_envelope_known AND actor_agent='progress-check')
+ORDER BY sequence DESC LIMIT 1),0)`, s.organization, project, item).Scan(&sequence)
+	return sequence, mapError(ctx, err)
+}
+
 func (s *session) LatestRunEvent(ctx context.Context, project tracker.ProjectID, attempt string) (eventstore.Event, error) {
 	row, err := s.queries.RecordLatestRunEvent(ctx, pgquery.RecordLatestRunEventParams{
 		OrganizationID: s.organization,

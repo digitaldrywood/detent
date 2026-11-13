@@ -58,6 +58,10 @@ type ProjectEventPageReader interface {
 	ProjectEvents(context.Context, tracker.ProjectID, int64, int) ([]Event, error)
 }
 
+type ProgressEvidenceReader interface {
+	ProgressEvidenceSequence(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (int64, error)
+}
+
 type HistoryReader interface {
 	HistoryEvents(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 	HistoryEventsBefore(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)

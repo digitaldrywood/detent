@@ -507,6 +507,27 @@ func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 					t.Fatal(err)
 				}
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					want := int64(0)
+					if event.Type == "run.finished" {
+						want = otherID
+					}
+					owner := r.(eventstore.ProgressEvidenceReader)
+					sequence, err := owner.ProgressEvidenceSequence(t.Context(), "prj_first", "wi_first_1")
+					if err == nil && sequence != want {
+						t.Fatalf("%s evidence sequence=%d want=%d", event.Type, sequence, want)
+					}
+					if err != nil {
+						return err
+					}
+					sequence, err = owner.ProgressEvidenceSequence(t.Context(), "prj_first", "wi_first_2")
+					if err == nil && sequence != 0 {
+						t.Fatalf("progress evidence crossed item scope: sequence=%d", sequence)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				edited, err := r.WorkItem(t.Context(), "prj_first", "wi_first_1")
