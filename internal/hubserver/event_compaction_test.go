@@ -689,7 +689,7 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 			t.Fatalf("%s changed after compaction:\nbefore=%s\nafter=%s", tool, answer, after[tool])
 		}
 	}
-	if _, err := a.service.readHistory(t.Context(), a.scope, string(a.issue.WorkItemID), url.Values{"limit": {"200"}}); err != nil {
+	if _, err := a.service.readHistory(t.Context(), nativeAttemptListingScope(t, a.nativeFixture), string(a.issue.WorkItemID), url.Values{"limit": {"200"}}); err != nil {
 		t.Fatal(err)
 	}
 	response := performHubAPIRequest(t, a.service, http.MethodGet, a.base+"/work-items/"+string(a.issue.WorkItemID)+"/history?limit=200", a.token, nil)
