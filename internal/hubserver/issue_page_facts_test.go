@@ -802,6 +802,14 @@ func TestIssuePagePullRequestBackfill(t *testing.T) {
 						return w.(projectstore.GitHubPullRequestRefreshWriter).RequestGitHubPullRequests(t.Context(), []projectstore.GitHubPullRequestRefresh{request})
 					})
 				}
+				readActivity := func(id tracker.NativeWorkItemID) tracker.NativeIssue {
+					t.Helper()
+					response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var issue tracker.NativeIssue
+					decodeHubResponse(t, response, &issue)
+					return issue
+				}
 				baseline := map[tracker.NativeWorkItemID]tracker.NativeIssue{}
 				for _, item := range []tracker.NativeIssue{first, linked, unrelated} {
 					baseline[item.WorkItemID] = readWorkItem(t, f, item.WorkItemID, "")
@@ -874,7 +882,7 @@ func TestIssuePagePullRequestBackfill(t *testing.T) {
 						t.Fatalf("concurrent request accepted stale completion: %v", err)
 					}
 					for _, item := range []tracker.NativeIssue{first, linked} {
-						if got := readWorkItem(t, f, item.WorkItemID, ""); !got.LastActivityAt.Equal(baseline[item.WorkItemID].LastActivityAt) {
+						if got := readActivity(item.WorkItemID); !got.LastActivityAt.Equal(baseline[item.WorkItemID].LastActivityAt) {
 							t.Fatalf("stale request changed activity: %+v", got)
 						}
 					}
@@ -891,7 +899,7 @@ func TestIssuePagePullRequestBackfill(t *testing.T) {
 					}
 					committed := 0
 					for _, item := range []tracker.NativeIssue{first, linked} {
-						if got := readWorkItem(t, f, item.WorkItemID, ""); got.LastActivityAt.Equal(want) {
+						if got := readActivity(item.WorkItemID); got.LastActivityAt.Equal(want) {
 							committed++
 						}
 					}
