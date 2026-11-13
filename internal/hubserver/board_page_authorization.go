@@ -108,8 +108,8 @@ func (s *Service) authorizeBoardModel(ctx context.Context, reader tenantstore.Re
 			}
 			if hidden {
 				issue.BlockedReason, issue.UnblocksReason = tracker.DependencyReason{}, tracker.DependencyReason{}
-				issue.DependencyReady = false
-				issue.OmittedFields = append(slices.Clone(issue.OmittedFields), "dependency_ready", "blocked_reason", "unblocks_reason")
+				issue.DependencyReady = !slices.ContainsFunc(issue.Blockers, func(link tracker.NativeDependency) bool { return !link.Terminal })
+				issue.OmittedFields = append(slices.Clone(issue.OmittedFields), "blocked_reason", "unblocks_reason")
 			}
 			row.PageIssue = &issue
 			if reporter != "" {
