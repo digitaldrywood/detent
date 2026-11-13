@@ -543,6 +543,7 @@ func (s *Service) prepareAttemptCancellationContent(ctx context.Context, organiz
 }
 
 func (s *Service) prepareCancelledRunContent(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, lease leasestore.Lease, attempt leasestore.Attempt, workItem corestore.WorkItem, aggregate tracker.NativeWorkItemID, data tracker.NativeRunData, reason string, validate bool) (*preparedNativeLeaseCancellation, error) {
+	store := runEventDetailStore{DetailStore: s.runDetailStore()}
 	data.Sequence = attempt.Sequence + 1
 	data.Outcome = "cancelled"
 	data.Handoff, data.ArtifactIDs = nil, nil
