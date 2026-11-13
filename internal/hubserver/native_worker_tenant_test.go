@@ -198,6 +198,11 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			before, err = r.Lease(t.Context(), before.LeaseID)
+			if err != nil {
+				return err
+			}
 			for _, project := range []tracker.ProjectID{"", "prj_runner"} {
 				row, err := r.BillingMonthlyPolicy(t.Context(), project)
 				if err != nil || !row.Policy.Enabled || row.Policy.TotalMicros == nil || *row.Policy.TotalMicros != 0 {
