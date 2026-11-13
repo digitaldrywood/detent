@@ -515,6 +515,37 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: "org_startup", ProjectID: "project_first", NativeID: "wi_owned", Number: 2, Title: "Owned example", WorkflowStateName: new("Todo"), ActorPrincipalID: &member.PrincipalID})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		for _, query := range []string{
+			"DELETE FROM native_board_deltas WHERE organization_id=$1",
+			"UPDATE native_board_sequences SET sequence=0,replay_floor=0 WHERE organization_id=$1",
+		} {
+			if _, err := admin.ExecContext(t.Context(), query, "org_startup"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		seedBoard := func(project tracker.ProjectID, item tracker.NativeWorkItemID, number int, actor string) {
+			card := tracker.NativeBoardCard{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_startup", ProjectID: project, WorkItemID: item, Number: number, Revision: 1}, Title: "Example issue", State: "Todo", Actor: tracker.Actor{PrincipalID: actor}}}
+			ref, err := viewstore.NewContent(service.runDetailStore()).PrepareBoard(t.Context(), card)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := viewstore.BoardRecord{OrganizationID: "org_startup", ProjectID: project, WorkItemID: item, SourceRevision: 1, ActorPrincipalID: actor, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%d", project, number)}, Payload: ref, PageIssue: &card.Issue, ListIssue: &card.Issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: card.Issue.Title, Number: number, Actor: card.Issue.Actor}}
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: project, WorkItemID: item, ExpectedRevision: 1, Current: &record})
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		seedBoard("project_first", "wi_project_first", 1, "")
+		seedBoard("project_second", "wi_project_second", 1, "")
+		seedBoard("project_first", "wi_owned", 2, member.PrincipalID)
 		browserRequest := func(path string) (*http.Request, cloudassert.Claims) {
 			t.Helper()
 			id, err := cloudassert.NewID()
@@ -564,30 +595,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 		requireNativeStatus(t, browserRead(base+"/readable/missing-project"), http.StatusNotFound)
 		requireNativeStatus(t, browserRead("/api/v2/organizations/org_other/readable/project-first"), http.StatusNotFound)
 		t.Run("project event stream", func(t *testing.T) {
-			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-				_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: "org_startup", ProjectID: "project_first", NativeID: "wi_owned", Number: 2, Title: "Owned example", WorkflowStateName: new("Todo"), ActorPrincipalID: &member.PrincipalID})
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			for _, row := range []struct {
-				project tracker.ProjectID
-				item    tracker.NativeWorkItemID
-				number  int
-				actor   string
-			}{{"project_first", "wi_project_first", 1, ""}, {"project_second", "wi_project_second", 1, ""}, {"project_first", "wi_owned", 2, member.PrincipalID}} {
-				card := tracker.NativeBoardCard{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_startup", ProjectID: row.project, WorkItemID: row.item, Number: row.number, Revision: 1}, Title: "Example issue", State: "Todo", Actor: tracker.Actor{PrincipalID: row.actor}}}
-				ref, err := viewstore.NewContent(service.runDetailStore()).PrepareBoard(t.Context(), card)
-				if err != nil {
-					t.Fatal(err)
-				}
-				record := viewstore.BoardRecord{OrganizationID: "org_startup", ProjectID: row.project, WorkItemID: row.item, SourceRevision: 1, ActorPrincipalID: row.actor, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%d", row.project, row.number)}, Payload: ref}
-				if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: row.project, WorkItemID: row.item, ExpectedRevision: 1, Current: &record})
-				}); err != nil {
-					t.Fatal(err)
-				}
-			}
+
 			var retained, reporter *dashboardSubscription
 			for _, role := range []string{"owner", "reporter"} {
 				request, claims := browserRequest("/organizations/org_startup/projects/project_first/events")
