@@ -18,11 +18,22 @@ type ChangeRecoveryProjectionBatch struct {
 }
 
 func (r *Repository) BackfillChangeRecoveryProjections(ctx context.Context, organization tracker.OrganizationID, content *eventstore.Content, limit int) (int, error) {
-	batch, err := r.PrepareChangeRecoveryProjections(ctx, organization, content, limit)
-	if err != nil {
-		return 0, err
+	if content == nil || organization == "" || limit < 1 || limit > corestore.MaxPageSize {
+		return 0, corestore.ErrInvalidPage
 	}
-	return r.ApplyChangeRecoveryProjections(ctx, batch)
+	count := 0
+	for count < limit {
+		batch, err := r.PrepareChangeRecoveryProjections(ctx, organization, content, 1)
+		if err != nil {
+			return count, err
+		}
+		changed, err := r.ApplyChangeRecoveryProjections(ctx, batch)
+		count += changed
+		if err != nil || changed == 0 {
+			return count, err
+		}
+	}
+	return count, nil
 }
 
 func (r *Repository) PrepareChangeRecoveryProjections(ctx context.Context, organization tracker.OrganizationID, content *eventstore.Content, limit int) (*ChangeRecoveryProjectionBatch, error) {
