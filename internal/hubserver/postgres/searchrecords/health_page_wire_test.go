@@ -14,6 +14,7 @@ import (
 )
 
 func TestHealthPageFixedWireBudget(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	counts := &pageWireCounts{}

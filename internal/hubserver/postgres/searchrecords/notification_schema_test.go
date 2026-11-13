@@ -16,6 +16,7 @@ import (
 )
 
 func TestNotificationSchemaKeepsTwoRecipientsPerTenant(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

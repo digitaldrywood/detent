@@ -15,6 +15,7 @@ import (
 )
 
 func TestSavedWorkViewsRetainTenantAndOwnerScope(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	selection := viewstore.Selection{UserID: "first"}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

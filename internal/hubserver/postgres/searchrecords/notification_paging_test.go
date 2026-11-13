@@ -19,6 +19,7 @@ import (
 )
 
 func TestNotificationRelatedRecipientPagingResumesWithoutDuplicates(t *testing.T) {
+	t.Parallel()
 	var candidate *postgres.Repository
 	if _, ok := any(candidate).(accountstore.NotificationCollector); !ok {
 		t.Fatal("PostgreSQL notification collector is missing")

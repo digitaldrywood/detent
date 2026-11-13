@@ -116,6 +116,7 @@ func searchIDs(page searchstore.Page) []string {
 }
 
 func TestSearchExistingSnippets(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, test := range searchtest.Snippets() {
 		t.Run(test.Name, func(t *testing.T) {
@@ -142,6 +143,7 @@ func TestSearchExistingSnippets(t *testing.T) {
 }
 
 func TestSearchRankingAndCursor(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	org := tracker.OrganizationID("org_first")
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -217,6 +219,7 @@ func TestSearchRankingAndCursor(t *testing.T) {
 }
 
 func TestSearchAcceptanceMatrix(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		f.put(t, searchIssue(org, "wi_first_1"), searchstore.Text{Title: "repo/path-name:word@example.org #123", Body: "Café naïve Ελληνικά 中文 Unicorns decorate mock fixture data. rate%_\\marker %% __", Labels: []string{"unique-xyz", "leftedge", "rightedge"}}, 0)
@@ -294,6 +297,7 @@ func TestSearchAcceptanceMatrix(t *testing.T) {
 }
 
 func TestSearchProjectRenameRefreshesMetadataSubstrings(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	if _, err := f.admin.ExecContext(t.Context(), `UPDATE projects SET name='Original label' WHERE organization_id='org_first' AND id='prj_first'`); err != nil {
 		t.Fatal(err)
@@ -327,8 +331,10 @@ func TestSearchProjectRenameRefreshesMetadataSubstrings(t *testing.T) {
 }
 
 func TestSearchRefreshFencesUpdatesAndDeletion(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"update", "delete", "delete and reuse", "comment update", "comment delete", "comment hide"} {
 		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			d := searchIssue("org_first", "wi_first_1")
 			if strings.HasPrefix(operation, "comment ") {
@@ -422,6 +428,7 @@ func (s *searchReadBarrier) ReadDetail(ctx context.Context, org string, ref atta
 }
 
 func TestSearchRefreshBoundsAndIntegrity(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	first := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "first sentinel"}, 0)
 	f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "second sentinel"}, 0)
@@ -450,6 +457,7 @@ func TestSearchRefreshBoundsAndIntegrity(t *testing.T) {
 }
 
 func TestSearchDocumentByteBudget(t *testing.T) {
+	t.Parallel()
 	const budget = 64 * 1024
 	for _, test := range []struct{ name, title, body string }{
 		{"body", "Titlemarker", strings.Repeat("narwhal ", 25000) + " tailmarker"},
@@ -457,6 +465,7 @@ func TestSearchDocumentByteBudget(t *testing.T) {
 		{"title priority", "Titlemarker " + strings.Repeat("narwhal ", 10000), "tailmarker"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			d := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: test.title, Body: test.body}, 0)
 			text, err := f.content.Read(t.Context(), d)
@@ -484,6 +493,7 @@ func TestSearchDocumentByteBudget(t *testing.T) {
 }
 
 func TestSearchOversizedLexemeDoesNotStarveRefresh(t *testing.T) {
+	t.Parallel()
 	var dense strings.Builder
 	for index := range 13000 {
 		fmt.Fprintf(&dense, "%04x ", index)
@@ -495,6 +505,7 @@ func TestSearchOversizedLexemeDoesNotStarveRefresh(t *testing.T) {
 		{Title: "Titlemarker", Body: dense.String() + "bodysentinel"},
 	} {
 		t.Run(fmt.Sprintf("token bytes %d", len(text.Title)+len(text.Body)), func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			f.put(t, searchIssue("org_first", "wi_first_1"), text, 0)
 			f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "secondmarker"}, 0)
@@ -518,6 +529,7 @@ func TestSearchOversizedLexemeDoesNotStarveRefresh(t *testing.T) {
 }
 
 func TestSearchFailedObjectDoesNotStarveRefresh(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	first := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "firstmarker"}, 0)
 	f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "secondmarker"}, 0)
@@ -580,6 +592,7 @@ func TestSearchFailedObjectDoesNotStarveRefresh(t *testing.T) {
 }
 
 func TestSearchCoverageSurvivesCandidateLimit(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	base := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "commonterm"}, 0)
 	f.drain(t, "org_first")
@@ -612,6 +625,7 @@ func TestSearchCoverageSurvivesCandidateLimit(t *testing.T) {
 }
 
 func TestSearchPutRepairsMissingDocumentsWithoutOverwritingConflicts(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, scenario := range []string{"missing", "matching revision", "stale revision", "different identity"} {

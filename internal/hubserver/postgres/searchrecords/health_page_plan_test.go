@@ -17,6 +17,7 @@ import (
 )
 
 func TestHealthPageSparseFiltersBoundHistoryReads(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	at := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)

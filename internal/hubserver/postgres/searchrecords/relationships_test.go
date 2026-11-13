@@ -21,6 +21,7 @@ import (
 )
 
 func TestRelationshipsAndLabelsAreTenantScopedAndAtomic(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -325,6 +326,7 @@ func TestRelationshipsAndLabelsAreTenantScopedAndAtomic(t *testing.T) {
 }
 
 func TestHistoricalIssueVersionLabelsRoundTripIntoTypedMemberships(t *testing.T) {
+	t.Parallel()
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_history")
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -375,6 +377,7 @@ func TestHistoricalIssueVersionLabelsRoundTripIntoTypedMemberships(t *testing.T)
 }
 
 func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
+	t.Parallel()
 	repository, runtimePool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {

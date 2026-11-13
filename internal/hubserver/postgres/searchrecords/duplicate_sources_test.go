@@ -61,6 +61,7 @@ func duplicateState(t *testing.T, f searchFixture, org tracker.OrganizationID) s
 }
 
 func TestDuplicateSourceFenceRejectsChangedVisibilityAndSerializesCandidateMutation(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedDuplicateSources(t, f)
 	var noMatch searchstore.DuplicateSourcePage
@@ -142,6 +143,7 @@ func TestDuplicateSourceFenceRejectsChangedVisibilityAndSerializesCandidateMutat
 }
 
 func TestDuplicateSourceCandidatesRetainSourceRankingAndLiteralIdentity(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedDuplicateSources(t, f)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -199,6 +201,7 @@ func TestDuplicateSourceCandidatesRetainSourceRankingAndLiteralIdentity(t *testi
 }
 
 func TestDuplicateSourcesSkipDeletedUnpublishedComments(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedDuplicateSources(t, f)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -230,6 +233,7 @@ func TestDuplicateSourcesSkipDeletedUnpublishedComments(t *testing.T) {
 }
 
 func TestDuplicateSourceCommentFingerprintUsesParentIssueContext(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedDuplicateSources(t, f)
 	diagnostic := "duplicate migration version 20261006023000"
@@ -301,6 +305,7 @@ func TestDuplicateSourceCommentFingerprintUsesParentIssueContext(t *testing.T) {
 }
 
 func TestDuplicateSourceVisibilityAndTerminalBoundary(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedDuplicateSources(t, f)
 	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,operator_only,board_rank) SELECT organization_id,id,'Done',true,false,false,1 FROM projects`); err != nil {
@@ -357,6 +362,7 @@ func TestDuplicateSourceVisibilityAndTerminalBoundary(t *testing.T) {
 }
 
 func TestDuplicateSourceNoMatchFenceRejectsConcurrentMatchingCreate(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedDuplicateSources(t, f)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -416,6 +422,7 @@ func TestDuplicateSourceNoMatchFenceRejectsConcurrentMatchingCreate(t *testing.T
 }
 
 func TestDuplicateSourceTopFiveFiltersBeforeLimitAndReadsCurrentPayload(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedDuplicateSources(t, f)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -500,8 +507,10 @@ func TestDuplicateSourceTopFiveFiltersBeforeLimitAndReadsCurrentPayload(t *testi
 }
 
 func TestDuplicateSourcePendingRetainsFilingFallback(t *testing.T) {
+	t.Parallel()
 	for _, pending := range []string{"dirty", "rebuild"} {
 		t.Run(pending, func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			seedDuplicateSources(t, f)
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -566,6 +575,7 @@ func TestDuplicateSourcePendingRetainsFilingFallback(t *testing.T) {
 }
 
 func TestDuplicateSourceUsesExistingAggregateHintsAndImmutableMachineSource(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedDuplicateSources(t, f)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

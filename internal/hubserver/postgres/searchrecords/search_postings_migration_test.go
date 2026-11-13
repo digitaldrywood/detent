@@ -25,6 +25,7 @@ CROSS JOIN unnest(CASE WHEN $3='thread' THEN ARRAY[''] ELSE ARRAY['',COALESCE($7
 $keys$`
 
 func TestSearchPostingsMigrationGuardAndOrphans(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "migrationterm"}, 0)
 	f.drain(t, "org_first")

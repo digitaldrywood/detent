@@ -87,11 +87,13 @@ func (c *publicationCounter) requireEachOnce(t *testing.T, prefix string, count 
 }
 
 func TestSearchRefreshTickRebuildsBacklogInBudgetedTicks(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		rebuild bool
 	}{{"pending publications", false}, {"project rebuild", true}} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			const documents = 2*searchstore.RefreshTickDocuments + 50
 			seedPendingIssues(t, f, "org_first", documents)
@@ -133,6 +135,7 @@ func TestSearchRefreshTickRebuildsBacklogInBudgetedTicks(t *testing.T) {
 }
 
 func TestSearchRefreshTickDeadlineCancelsBlockedOperation(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedPendingIssues(t, f, "org_first", 3)
 	barrier := &searchReadBarrier{DetailStore: f.objects, read: make(chan struct{}), release: make(chan struct{})}
@@ -188,6 +191,7 @@ func TestSearchRefreshTickDeadlineCancelsBlockedOperation(t *testing.T) {
 }
 
 func TestSearchRefreshTickProgressesEachOrganization(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	const documents = searchstore.RefreshTickDocuments + 50
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -212,6 +216,7 @@ func TestSearchRefreshTickProgressesEachOrganization(t *testing.T) {
 }
 
 func TestSearchRefreshTickCancellationKeepsRemainingDocuments(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	const documents = 50
 	seedPendingIssues(t, f, "org_first", documents)

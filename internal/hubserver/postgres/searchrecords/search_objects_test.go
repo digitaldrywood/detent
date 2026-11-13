@@ -26,6 +26,7 @@ func (s *searchObjectReads) ReadDetail(ctx context.Context, organization string,
 }
 
 func TestSearchIndexedRankingHydratesOnlySelectedSnippets(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "Sentinel marker", Body: "Sentinel"}, 0)
 	second := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "Sentinel other", Body: "Separate"}, 0)
@@ -79,6 +80,7 @@ func TestSearchIndexedRankingHydratesOnlySelectedSnippets(t *testing.T) {
 }
 
 func TestSearchRefreshContinuesBoundedSourcesAfterEdit(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "Bounded history"}, 0)
 	var first searchstore.Document

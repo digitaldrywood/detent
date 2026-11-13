@@ -24,6 +24,7 @@ import (
 )
 
 func TestSearchExistingTeamThreadFilters(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for index, d := range []searchstore.Document{
@@ -100,6 +101,7 @@ func TestSearchExistingTeamThreadFilters(t *testing.T) {
 }
 
 func TestSearchCommentEventAndChange(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	org := tracker.OrganizationID("org_first")
 	history := pgstoretest.SeedHistory(t, f.repository, org, "search")
@@ -155,6 +157,7 @@ func TestSearchCommentEventAndChange(t *testing.T) {
 }
 
 func TestSearchThreadCursorContinuesBeyondCandidateBudget(t *testing.T) {
+	t.Parallel()
 	started := time.Now()
 	f := newSearchFixture(t)
 	t.Logf("thread fixture setup=%s", time.Since(started))
@@ -221,6 +224,7 @@ func TestSearchThreadCursorContinuesBeyondCandidateBudget(t *testing.T) {
 }
 
 func TestSearchTargetKeysetSurvivesEarlierDeletion(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, id := range []string{"a", "b", "c", "d"} {

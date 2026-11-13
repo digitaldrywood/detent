@@ -18,6 +18,7 @@ import (
 )
 
 func TestBoardSearchColdFallbackTenantWork(t *testing.T) {
+	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
 	probe := &boardQueryTracer{}

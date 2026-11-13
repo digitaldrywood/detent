@@ -16,6 +16,7 @@ import (
 )
 
 func TestNotificationRecipientsRespectParticipationAndOptOut(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	delivery := any(repository).(accountstore.NotificationRepository)

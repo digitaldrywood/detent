@@ -31,6 +31,7 @@ import (
 )
 
 func TestSearchRLSAndSourceRelationships(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, table := range []string{"search_documents", "search_postings", "search_scope_documents", "search_scope_refresh"} {
 		var readable, writable bool
@@ -132,6 +133,7 @@ func TestSearchRLSAndSourceRelationships(t *testing.T) {
 }
 
 func TestSearchSourceWritesShareRequestTransaction(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := searchIssue("org_first", "wi_first_1")
 	d.UpdatedAt = pgstoretest.HistoryAt()
@@ -176,8 +178,10 @@ func TestSearchSourceWritesShareRequestTransaction(t *testing.T) {
 }
 
 func TestSearchRuntimeRejectsUnsafeIndexHelper(t *testing.T) {
+	t.Parallel()
 	for _, setting := range []string{"SECURITY INVOKER", "VOLATILE", "SET search_path=public"} {
 		t.Run(setting, func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			if _, err := f.admin.ExecContext(t.Context(), `ALTER FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) `+setting); err != nil {
 				t.Fatal(err)
@@ -190,6 +194,7 @@ func TestSearchRuntimeRejectsUnsafeIndexHelper(t *testing.T) {
 }
 
 func TestSearchIndexHelperDeniesUnscopedAndForeignTokens(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		f.put(t, searchIssue(org, "wi_first_1"), searchstore.Text{Title: "sentinel"}, 0)
@@ -222,6 +227,7 @@ func TestSearchIndexHelperDeniesUnscopedAndForeignTokens(t *testing.T) {
 }
 
 func TestSearchIndexedQueryPlan(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	var first searchstore.Document
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -351,6 +357,7 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 }
 
 func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "commonterm"}, 0)
 	f.drain(t, "org_first")
@@ -438,6 +445,7 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 }
 
 func TestSearchPrefixExhaustionContinuesThroughUnrelatedHistory(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "commonterm"}, 0)
 	f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "commonterm"}, 0)
@@ -470,6 +478,7 @@ func TestSearchPrefixExhaustionContinuesThroughUnrelatedHistory(t *testing.T) {
 }
 
 func TestSearchHiddenScanBoundaryContinues(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "commonterm"}, 0)
 	f.drain(t, "org_first")
@@ -501,6 +510,7 @@ func TestSearchHiddenScanBoundaryContinues(t *testing.T) {
 }
 
 func TestSearchExactTermContinuesBeyondCandidateLimit(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "commonterm"}, 0)
 	f.drain(t, "org_first")
@@ -743,6 +753,7 @@ func seedSearchPlanHistory(t *testing.T, f searchFixture, d searchstore.Document
 }
 
 func TestSearchWorkItemsAppearOnceAcrossWindows(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Body: "commonterm"}, 0)
 	f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "commonterm"}, 0)
@@ -802,6 +813,7 @@ func TestSearchWorkItemsAppearOnceAcrossWindows(t *testing.T) {
 }
 
 func TestSearchRareTermRanksBeforeRecentPartialMatch(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "commonterm"}, 0)
 	f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "common raremarker"}, 0)
@@ -827,6 +839,7 @@ func TestSearchRareTermRanksBeforeRecentPartialMatch(t *testing.T) {
 }
 
 func TestSearchWorkCursorRejectsLegacyState(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, id := range []string{"wi_first_1", "wi_first_2"} {
 		f.put(t, searchIssue("org_first", id), searchstore.Text{Title: "sentinel"}, 0)
@@ -898,6 +911,7 @@ func TestSearchWorkCursorRejectsLegacyState(t *testing.T) {
 }
 
 func TestSearchNumericMatchAppearsOnceAcrossWindows(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		withoutIssue bool
@@ -907,6 +921,7 @@ func TestSearchNumericMatchAppearsOnceAcrossWindows(t *testing.T) {
 		{name: "comment only", withoutIssue: true, want: []string{"wi_first_2", "wi_first_1"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			d := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "2"}, 0)
 			f.drain(t, "org_first")
@@ -954,6 +969,7 @@ func TestSearchNumericMatchAppearsOnceAcrossWindows(t *testing.T) {
 }
 
 func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, item := range []string{"wi_first_1", "wi_first_2"} {
@@ -1039,6 +1055,7 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 }
 
 func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	documents := func(org tracker.OrganizationID) []searchstore.Document {
 		issue := searchIssue(org, "wi_first_1")

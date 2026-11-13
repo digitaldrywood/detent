@@ -13,6 +13,7 @@ import (
 )
 
 func TestHealthPageRejectsStaleEvidence(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	var first healthstore.Finding

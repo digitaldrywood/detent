@@ -115,6 +115,7 @@ func publishSearchBody(ctx context.Context, f searchFixture, w tenantstore.Write
 }
 
 func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
+	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
 	trace := &boardSearchSessionTrace{}
@@ -390,6 +391,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 }
 
 func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
+	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
 	if _, err := f.admin.ExecContext(ctx, "DELETE FROM search_documents"); err != nil {
@@ -470,6 +472,7 @@ func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
 }
 
 func TestBoardSearchEmptyIndexUsesTenantIndexes(t *testing.T) {
+	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
 	if _, err := f.admin.ExecContext(ctx, "DELETE FROM search_documents"); err != nil {
@@ -623,6 +626,7 @@ FROM native_board_items CROSS JOIN generate_series($2::integer,$3::integer) n WH
 }
 
 func TestBoardTextCandidateAuthorityStaysTenantScoped(t *testing.T) {
+	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
 	if _, err := f.admin.ExecContext(ctx, "UPDATE native_work_item_pages SET body='foreignsentinel' WHERE organization_id='org_second'"); err != nil {
@@ -736,6 +740,7 @@ func bulkUnrelatedWorkItemPages(ctx context.Context, admin *sql.DB, organization
 	})
 }
 func TestBoardSearchFallsBackForDocumentsAwaitingRebuild(t *testing.T) {
+	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

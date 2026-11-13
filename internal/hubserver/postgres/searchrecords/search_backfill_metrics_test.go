@@ -68,8 +68,10 @@ func (c *searchCountedConn) Write(value []byte) (int, error) {
 }
 
 func TestSearchBackfillWorkDoesNotGrowWithHistory(t *testing.T) {
+	t.Parallel()
 	for _, size := range []int{4, 100} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 				_, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_documents

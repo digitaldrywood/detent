@@ -22,6 +22,7 @@ import (
 )
 
 func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
+	t.Parallel()
 	var candidate *postgres.Repository
 	if _, ok := any(candidate).(accountstore.NotificationRepository); !ok {
 		t.Fatal("PostgreSQL notification owner is missing")
@@ -332,6 +333,7 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 }
 
 func TestReviewNotificationCrossProjectStarvation(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	delivery := any(repository).(accountstore.NotificationRepository)

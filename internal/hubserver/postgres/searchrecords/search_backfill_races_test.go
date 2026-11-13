@@ -14,6 +14,7 @@ import (
 )
 
 func TestSearchBackfillRejectsChangedSources(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	runtime, err := postgres.NewRuntime(t.Context(), f.pool, f.pool)
 	if err != nil {
@@ -75,6 +76,7 @@ func TestSearchBackfillRejectsChangedSources(t *testing.T) {
 }
 
 func TestSearchNativeIndexMigrationResumesAfterInterruption(t *testing.T) {
+	t.Parallel()
 	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261107001658)
 	if _, err := db.ExecContext(t.Context(), `RESET ROLE;
  CREATE INDEX search_document_index_words_gin ON search_document_index USING gin(word_vector);
@@ -98,6 +100,7 @@ func TestSearchNativeIndexMigrationResumesAfterInterruption(t *testing.T) {
 }
 
 func TestSearchNativeSchemaRollbackRemovesBackfillCursors(t *testing.T) {
+	t.Parallel()
 	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261107001703)
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO storage_conversion_cursors(organization_id,family) VALUES('org_first','search'),('org_second','search'); SET ROLE detent_migration_v2`); err != nil {
 		t.Fatal(err)

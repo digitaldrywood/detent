@@ -15,6 +15,7 @@ import (
 )
 
 func TestSearchPrefixReachesEveryThread(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	const count = 65
 	for index := range count {
@@ -51,6 +52,7 @@ func TestSearchPrefixReachesEveryThread(t *testing.T) {
 }
 
 func TestSearchExistingPrefixes(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		f.put(t, searchIssue(org, "wi_first_1"), searchstore.Text{Title: strings.Repeat("a", 64) + "one café cafeteria tokenalpha tokenbeta"}, 0)
@@ -79,6 +81,7 @@ func TestSearchExistingPrefixes(t *testing.T) {
 }
 
 func TestSearchExactSnippetDoesNotHighlightLongerTokens(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "tokenalpha tokenalphabet"}, 0)
 	for _, mode := range []string{"pending", "indexed"} {
@@ -93,11 +96,13 @@ func TestSearchExactSnippetDoesNotHighlightLongerTokens(t *testing.T) {
 }
 
 func TestSearchOversizedTokenRetainsPrefix(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, suffix string }{
 		{"ASCII", strings.Repeat("a", 3000)},
 		{"multibyte", strings.Repeat("界", 1000)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			d := searchstore.Document{OrganizationID: "org_first", ID: "oversized", SourceID: "oversized", Kind: "thread", Scope: "general", Status: "open", Revision: 1}
 			f.put(t, d, searchstore.Text{Title: "prefixmarker" + test.suffix}, 0)
@@ -121,6 +126,7 @@ func TestSearchOversizedTokenRetainsPrefix(t *testing.T) {
 }
 
 func TestSearchOlderHighImpactPrefixRanksFirst(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "commonterm"}, 0)
 	f.drain(t, "org_first")
@@ -141,6 +147,7 @@ func TestSearchOlderHighImpactPrefixRanksFirst(t *testing.T) {
 }
 
 func TestSearchPrefixLexemeWindowsEmitWorkItemsOnce(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	d := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "prefixlexeme999"}, 0)
 	seedSearchPlanHistory(t, f, d, 1, 129)
@@ -175,6 +182,7 @@ func TestSearchPrefixLexemeWindowsEmitWorkItemsOnce(t *testing.T) {
 }
 
 func TestSearchCanonicalIgnoresDeletedBestDocument(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Body: "sentinel"}, 0)
 	comment := searchIssue("org_first", "wi_first_1")
@@ -191,7 +199,9 @@ func TestSearchCanonicalIgnoresDeletedBestDocument(t *testing.T) {
 }
 
 func TestSearchMixedPendingAndIndexedDocumentsEmitOnce(t *testing.T) {
+	t.Parallel()
 	t.Run("mixed sources", func(t *testing.T) {
+		t.Parallel()
 		f := newSearchFixture(t)
 		f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "alpha"}, 0)
 		f.drain(t, "org_first")
@@ -215,6 +225,7 @@ func TestSearchMixedPendingAndIndexedDocumentsEmitOnce(t *testing.T) {
 
 	})
 	t.Run("exhausted pending stream", func(t *testing.T) {
+		t.Parallel()
 		f := newSearchFixture(t)
 		d := f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "commonterm"}, 0)
 		f.drain(t, "org_first")
@@ -243,6 +254,7 @@ func TestSearchMixedPendingAndIndexedDocumentsEmitOnce(t *testing.T) {
 }
 
 func TestSearchAggregateCoverageOwnsAReachableStream(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "alpha bravo", Body: strings.Repeat("filler ", 100)}, 0)
 	f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "alpha"}, 0)
@@ -272,6 +284,7 @@ func TestSearchAggregateCoverageOwnsAReachableStream(t *testing.T) {
 }
 
 func TestSearchPrefixBeyondExpansionBudgetRemainsReachable(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	var low strings.Builder
 	for index := range searchstore.LexemeLimit {
@@ -301,6 +314,7 @@ func TestSearchPrefixBeyondExpansionBudgetRemainsReachable(t *testing.T) {
 }
 
 func TestSearchAggregateCapsCommentsAndKeepsTitleAndIdentity(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "Titlemarker"}, 0)
 	comment := searchIssue("org_first", "wi_first_1")
@@ -327,6 +341,7 @@ func TestSearchAggregateCapsCommentsAndKeepsTitleAndIdentity(t *testing.T) {
 }
 
 func TestSearchCommentOnlyAggregateAcceptsIssueSource(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	comment := searchIssue("org_first", "wi_first_1")
 	comment.ID, comment.Kind, comment.SourceID = "comment/example", "comment", "comment_first_1_1"
@@ -357,6 +372,7 @@ func TestSearchCommentOnlyAggregateAcceptsIssueSource(t *testing.T) {
 }
 
 func TestSearchAggregateMigrationRebuildsEveryTenant(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	issues := []searchstore.Document{searchIssue("org_first", "wi_first_1"), searchIssue("org_second", "wi_first_1")}
 	for _, issue := range issues {

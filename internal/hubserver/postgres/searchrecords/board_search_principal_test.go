@@ -44,6 +44,7 @@ func (principalSearchTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, q
 func (principalSearchTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestBoardSearchPrincipalAdmission(t *testing.T) {
+	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

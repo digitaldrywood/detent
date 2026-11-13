@@ -21,6 +21,7 @@ import (
 const postingScopeBody = "Repository association deadlocks appear when two workers refresh the same project index while a reporter archives an issue. The refresh owner retries with capped backoff, records the attempt, and publishes the document once the source revision is current. Operators compare the candidate window against the visible scope before trusting a duplicate answer."
 
 func TestSearchPostingsOnePerIndexedLexeme(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	foreign := 0
 	var exemplar searchstore.Document
@@ -53,6 +54,7 @@ func TestSearchPostingsOnePerIndexedLexeme(t *testing.T) {
 }
 
 func TestSearchScopedCallerNeverReceivesForeignDocument(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		setup string
@@ -71,6 +73,7 @@ func TestSearchScopedCallerNeverReceivesForeignDocument(t *testing.T) {
 		{name: "deleted project", after: `UPDATE projects SET deleted_at=CURRENT_TIMESTAMP WHERE organization_id='org_first' AND id='prj_second'`, org: "org_first", docs: []searchstore.Document{projectIssue("org_first", "prj_second", "wi_second_1")}, query: searchstore.Query{Kind: "work", ProjectID: "prj_second"}, want: "[]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			if test.setup != "" {
 				if _, err := f.admin.ExecContext(t.Context(), test.setup); err != nil {
@@ -102,6 +105,7 @@ func TestSearchScopedCallerNeverReceivesForeignDocument(t *testing.T) {
 }
 
 func TestSearchReporterWindowIgnoresOtherReporters(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='example-principal' WHERE organization_id='org_first' AND native_id='wi_first_1'`); err != nil {
 		t.Fatal(err)
@@ -154,6 +158,7 @@ func TestSearchReporterWindowIgnoresOtherReporters(t *testing.T) {
 }
 
 func TestSearchRebuildMarkersKeepDocumentsFindable(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
@@ -190,6 +195,7 @@ func TestSearchRebuildMarkersKeepDocumentsFindable(t *testing.T) {
 }
 
 func TestSearchWorkItemFilterIgnoresSameReporterCrowd(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='example-principal' WHERE organization_id='org_first' AND native_id='wi_first_1'`); err != nil {
 		t.Fatal(err)
@@ -245,6 +251,7 @@ func searchHelperWork(t *testing.T, f searchFixture, text, item string, reporter
 }
 
 func TestSearchWorkItemPagesIgnoreOutOfFilterPopulation(t *testing.T) {
+	t.Parallel()
 	pages := map[bool][]string{}
 	for _, crowded := range []bool{false, true} {
 		f := newSearchFixture(t)
@@ -264,6 +271,7 @@ func TestSearchWorkItemPagesIgnoreOutOfFilterPopulation(t *testing.T) {
 }
 
 func TestSearchVisibilityChangeBetweenPages(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, change string
 		changed      []string
@@ -274,6 +282,7 @@ func TestSearchVisibilityChangeBetweenPages(t *testing.T) {
 	} {
 		for _, rebuilding := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/rebuilding=%t", test.name, rebuilding), func(t *testing.T) {
+				t.Parallel()
 				results := map[bool][]string{}
 				for _, refreshed := range []bool{false, true} {
 					f := newSearchFixture(t)
@@ -315,6 +324,7 @@ func TestSearchVisibilityChangeBetweenPages(t *testing.T) {
 }
 
 func TestSearchCursorRevealsNoDocumentTermOrScore(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedStaleVisibilityIssues(t, f, false)
 	secrets := [][]byte{[]byte("staleterm")}
@@ -388,6 +398,7 @@ func TestSearchCursorRevealsNoDocumentTermOrScore(t *testing.T) {
 }
 
 func TestSearchCursorRejectedAfterAccessRevocation(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	seedStaleVisibilityIssues(t, f, false)
 	query := searchstore.Query{Text: "staleterm", ProjectIDs: []tracker.ProjectID{"prj_first"}, Limit: 2}
@@ -456,6 +467,7 @@ func searchPages(t *testing.T, f searchFixture, org tracker.OrganizationID, quer
 }
 
 func TestDuplicateSourceReadinessIsProjectWideDegradedSignal(t *testing.T) {
+	t.Parallel()
 	if fields := reflect.TypeFor[searchstore.DuplicateSourceState]().NumField(); fields != 2 {
 		t.Fatalf("duplicate source state has %d fields, want only project-wide Sequence and Ready", fields)
 	}
@@ -465,6 +477,7 @@ func TestDuplicateSourceReadinessIsProjectWideDegradedSignal(t *testing.T) {
 		{"archived item", `UPDATE issues SET archived=true WHERE organization_id='org_first' AND native_id='wi_first_2'`},
 	} {
 		t.Run(pending.name, func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='example-principal' WHERE organization_id='org_first' AND project_id='prj_first'`); err != nil {
 				t.Fatal(err)
@@ -490,6 +503,7 @@ func TestDuplicateSourceReadinessIsProjectWideDegradedSignal(t *testing.T) {
 }
 
 func TestSearchThreadScopeKeysByProjectAccess(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, d := range []searchstore.Document{
 		{OrganizationID: "org_first", ID: "thread/general", SourceID: "thread/general", Kind: "thread", Scope: "general", Status: "open", Revision: 1},

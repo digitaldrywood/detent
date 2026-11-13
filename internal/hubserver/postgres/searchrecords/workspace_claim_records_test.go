@@ -27,6 +27,7 @@ import (
 )
 
 func TestWorkspaceClaimAssociationIsTenantScopedAndPermanent(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	tenantRepository := tenantstore.Repository(repository)
@@ -106,6 +107,7 @@ func TestWorkspaceClaimAssociationIsTenantScopedAndPermanent(t *testing.T) {
 }
 
 func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	tenantRepository := tenantstore.Repository(repository)
@@ -473,6 +475,7 @@ SELECT organization_id,project_id,native_id,'queue-list','Todo',$1||lpad(number:
 }
 
 func TestProviderReservationSnapshotIsTypedAndTenantScoped(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	tenantRepository := tenantstore.Repository(repository)
@@ -562,6 +565,7 @@ type queueListPlan struct {
 }
 
 func TestClaimCandidatePageSkipsUnclassifiedSourceCheckpoint(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	tenantRepository := tenantstore.Repository(repository)

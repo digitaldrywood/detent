@@ -21,6 +21,7 @@ import (
 )
 
 func TestSearchNativeRepresentationIsolation(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, item := range []string{"wi_first_1", "wi_first_2"} {
@@ -104,6 +105,7 @@ func TestSearchNativeRepresentationIsolation(t *testing.T) {
 }
 
 func TestSearchBackfillResumesBoundedTenantPages(t *testing.T) {
+	t.Parallel()
 	t.Run("populated conversion family upgrade", func(t *testing.T) {
 		db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109184650)
 		pgstoretest.SeedCore(t, db)

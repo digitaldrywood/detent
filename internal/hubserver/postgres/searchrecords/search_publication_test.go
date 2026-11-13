@@ -23,6 +23,7 @@ import (
 )
 
 func TestSearchPublicationReusesUnchangedPostings(t *testing.T) {
+	t.Parallel()
 	f := newSearchFixture(t)
 	if _, err := f.admin.ExecContext(t.Context(), `CREATE TABLE search_publication_writes(organization_id text,document_id text,operation text,writes bigint,PRIMARY KEY(organization_id,document_id,operation));
 GRANT SELECT,INSERT,UPDATE ON search_publication_writes TO detent_runtime_v2;
@@ -211,9 +212,11 @@ FROM search_documents d WHERE organization_id=$1 AND id=$2`, d.OrganizationID, d
 }
 
 func TestSearchPublicationAllowsCurrentWritesDuringPostingIO(t *testing.T) {
+	t.Parallel()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, mode := range []string{"source revision", "visibility ABA", "duplicate publisher", "metadata change"} {
 			t.Run(string(org)+"/"+mode, func(t *testing.T) {
+				t.Parallel()
 				f := newSearchFixture(t)
 				f.admin.SetMaxOpenConns(3)
 				var database string

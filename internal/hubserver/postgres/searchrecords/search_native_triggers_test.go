@@ -9,8 +9,10 @@ import (
 )
 
 func TestSearchNativeFormatKeepsLegacyMaintenanceUntilCutover(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"missing index", "wrong format", "wrong digest", "wrong generation", "matching index"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			f := newSearchFixture(t)
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 				t.Run(string(org), func(t *testing.T) {

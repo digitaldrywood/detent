@@ -25,6 +25,7 @@ import (
 )
 
 func TestGitHubOutboundFencesExpiredClaimsAcrossTenants(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)

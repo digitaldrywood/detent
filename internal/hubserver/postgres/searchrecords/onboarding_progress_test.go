@@ -14,6 +14,7 @@ import (
 )
 
 func TestOnboardingProgressUsesOneTenantScopedRead(t *testing.T) {
+	t.Parallel()
 	repository, pool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	counts := new(pageWireCounts)
 	measured := pageMeasuredRepository(t, pool, counts)

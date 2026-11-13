@@ -27,6 +27,7 @@ import (
 )
 
 func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	if err := original.Close(); err != nil {
@@ -701,6 +702,7 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 }
 
 func TestConcurrentProjectGrantsDoNotDeadlockRevisionUpdates(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	organization := tracker.OrganizationID("org_first")

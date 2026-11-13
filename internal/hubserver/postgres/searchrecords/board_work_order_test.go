@@ -48,6 +48,7 @@ func (c *boardQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, dat
 func (c *boardQueryTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
+	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
