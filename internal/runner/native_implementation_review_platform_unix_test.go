@@ -97,16 +97,22 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				t.Setenv("MAKEFLAGS", "")
 				t.Setenv("MFLAGS", "")
 				source := initRunnerSourceRepo(t)
-				policyPath := filepath.Join(source, "internal", "invariants", "sqlite_policy.json")
-				if err := os.MkdirAll(filepath.Dir(policyPath), 0o700); err != nil {
+				invariants := filepath.Join(source, "internal", "invariants")
+				if err := os.MkdirAll(invariants, 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(policyPath, []byte("{\"files\":{},\"modules\":{}}\n"), 0o600); err != nil {
-					t.Fatal(err)
+				for name, content := range map[string]string{
+					"sqlite_policy.json":  "{\"files\":{},\"modules\":{}}\n",
+					"tenancy_policy.json": "{\"test_support\":[],\"exceptions\":{},\"debt\":{}}\n",
+					"tenancy_test.go":     "package invariants\n",
+				} {
+					if err := os.WriteFile(filepath.Join(invariants, name), []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				}
-				runRunnerGit(t, source, "add", "internal/invariants/sqlite_policy.json")
+				runRunnerGit(t, source, "add", "internal/invariants")
 				runRunnerGit(t, source, "commit", "-m", "initialize storage policy")
-				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py", "scripts/check-landing.py"} {
+				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py", "scripts/check-tenancy-policy.py", "scripts/check-landing.py"} {
 					content, err := os.ReadFile(filepath.Join("..", "..", name))
 					if err != nil {
 						t.Fatal(err)
