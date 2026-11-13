@@ -4,10 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -701,103 +699,4 @@ func (c *ConversationService) loadConversationRow(ctx context.Context, query Que
 		return ConversationRecord{}, err
 	}
 	return record, nil
-}
-
-// Transactional helpers shared by the API, coordinator and worker paths.
-// Each helper appends the durable event that describes the change inside
-// the caller's transaction; the caller commits and then calls committed.
-
-// recordReferences extracts the references a message's text carries,
-// resolves them in the conversation's scope and stores the ones that name
-// something the hub can see. Extraction is bounded by
-// conversation.MaxReferences, so one message can never write more rows than
-// that.
-func (c *ConversationService) recordReferences(ctx context.Context, tx *sql.Tx, record ConversationRecord, message *ConversationMessageRecord, now time.Time) error {
-	resolved, err := c.resolveReferences(ctx, tx, record, conversation.ExtractReferences(message.Text))
-	if err != nil {
-		return err
-	}
-	message.References = resolved
-	return c.Store.replaceMessageReferences(ctx, tx, *message, now)
-}
-
-// resolveReferences turns extracted tokens into stored references. A bare
-// "#123" resolves inside the conversation's project; a qualified token
-// resolves in the named project of the same organization. A token that names
-// nothing the hub holds is dropped rather than stored as a dead link.
-func (c *ConversationService) resolveReferences(ctx context.Context, tx *sql.Tx, record ConversationRecord, references []conversation.Reference) ([]ConversationMessageReference, error) {
-	if len(references) == 0 {
-		return nil, nil
-	}
-	resolved := make([]ConversationMessageReference, 0, len(references))
-	for _, reference := range references {
-		switch reference.Kind {
-		case conversation.ReferenceConversation:
-			found, ok, err := c.resolveConversationReference(ctx, tx, record, reference)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				resolved = append(resolved, found)
-			}
-		case conversation.ReferenceIssue:
-			found, ok, err := c.resolveIssueReference(ctx, tx, record, reference)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				resolved = append(resolved, found)
-			}
-		}
-	}
-	return resolved, nil
-}
-
-// resolveConversationReference reports the referenced conversation; ok is
-// false when the token names nothing in the organization, or names the
-// conversation the message belongs to.
-func (c *ConversationService) resolveConversationReference(ctx context.Context, tx *sql.Tx, record ConversationRecord, reference conversation.Reference) (found ConversationMessageReference, ok bool, err error) {
-	if reference.ConversationID == record.ID {
-		// A conversation never references itself.
-		return found, false, nil
-	}
-	var title string
-	err = tx.QueryRowContext(ctx, "SELECT title FROM conversations WHERE id = ? AND organization_id = ?", reference.ConversationID, record.OrganizationID).Scan(&title)
-	if errors.Is(err, sql.ErrNoRows) {
-		return found, false, nil
-	}
-	if err != nil {
-		return found, false, fmt.Errorf("resolve conversation reference: %w", err)
-	}
-	return ConversationMessageReference{Kind: conversation.ReferenceConversation, ID: reference.ConversationID, Label: reference.Text, URL: "/chat/c/" + reference.ConversationID}, true, nil
-}
-
-// resolveIssueReference reports the referenced issue; ok is false when the
-// number names no issue the hub holds in the named project.
-func (c *ConversationService) resolveIssueReference(ctx context.Context, tx *sql.Tx, record ConversationRecord, reference conversation.Reference) (found ConversationMessageReference, ok bool, err error) {
-	query := "SELECT i.native_id FROM issues i WHERE i.organization_id = ? AND i.project_id = ? AND i.number = ?"
-	args := []any{record.OrganizationID, record.ProjectID, reference.Number}
-	if reference.Project != "" {
-		// A qualified token names a project by name inside the same
-		// organization; the organization segment must agree when present.
-		query = `SELECT i.native_id FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
-WHERE i.organization_id = ? AND lower(p.name) = ? AND i.number = ?`
-		args = []any{record.OrganizationID, strings.ToLower(reference.Project), reference.Number}
-		if reference.Organization != "" && !strings.EqualFold(reference.Organization, string(record.OrganizationID)) {
-			return found, false, nil
-		}
-	}
-	var workItemID string
-	err = tx.QueryRowContext(ctx, query, args...).Scan(&workItemID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return found, false, nil
-	}
-	if err != nil {
-		return found, false, fmt.Errorf("resolve issue reference: %w", err)
-	}
-	path, err := c.Server.deps.IssueBrowserPath(ctx, tx, workItemID)
-	if err != nil {
-		return found, false, err
-	}
-	return ConversationMessageReference{Kind: conversation.ReferenceIssue, ID: workItemID, Label: reference.Text, URL: path}, true, nil
 }

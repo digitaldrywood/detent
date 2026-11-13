@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -148,7 +149,12 @@ func (c *conversationTurnCoordinator) appendMessage(ctx context.Context, w tenan
 		return err
 	}
 	message.Seq, message.Revision = created.Sequence, created.Revision
-	if err := replaceCoordinatorReferences(ctx, w, record.OrganizationID, *message, now); err != nil {
+	references, err := conversations.ResolveMessageReferences(ctx, w, *record, message.Text)
+	if err != nil {
+		return err
+	}
+	message.References = references
+	if err := conversations.ReplaceMessageReferences(ctx, w, record.OrganizationID, *message, now); err != nil {
 		return err
 	}
 	record.MessageCount++
@@ -190,7 +196,17 @@ func (c *conversationTurnCoordinator) updateMessage(ctx context.Context, w tenan
 		return err
 	}
 	message.Revision, message.UpdatedAt = updated.Revision, now
-	if err := replaceCoordinatorReferences(ctx, w, current.OrganizationID, message, now); err != nil {
+	if message.Delivery.Terminal() {
+		stored, err := w.ConversationByID(ctx, message.ConversationID)
+		if err != nil {
+			return err
+		}
+		message.References, err = conversations.ResolveMessageReferences(ctx, w, conversations.ConversationRecordFromStore(stored), message.Text)
+		if err != nil {
+			return err
+		}
+	}
+	if err := conversations.ReplaceMessageReferences(ctx, w, current.OrganizationID, message, now); err != nil {
 		return err
 	}
 	return appendCoordinatorEvent(ctx, w, current.OrganizationID, message.ConversationID, conversation.EventMessageUpdated, projectMessage(message), now)
@@ -348,14 +364,6 @@ func coordinatorStoredMessage(organization tracker.OrganizationID, message conve
 		}
 	}
 	return row
-}
-
-func replaceCoordinatorReferences(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, message conversationMessageRecord, now time.Time) error {
-	refs := make([]conversationstore.MessageReference, 0, len(message.References))
-	for index, ref := range message.References {
-		refs = append(refs, conversationstore.MessageReference{OrganizationID: organization, ConversationID: message.ConversationID, MessageID: message.ID, Position: int64(index), Kind: ref.Kind, TargetID: ref.ID, Label: ref.Label, CreatedAt: now})
-	}
-	return w.ReplaceMessageReferences(ctx, message.ConversationID, message.ID, refs, now)
 }
 
 func coordinatorMonthlyBudget(ctx context.Context, reader billingstore.Reader, project tracker.ProjectID, now time.Time) (budget.MonthlyDecision, error) {

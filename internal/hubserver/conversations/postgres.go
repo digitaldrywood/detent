@@ -615,21 +615,9 @@ func (s *Server) ReadPGConversationPage(ctx context.Context, scope hubauth.Input
 				return err
 			}
 			for _, reference := range references {
-				urlPath := "/chat/c/" + url.PathEscape(reference.TargetID)
-				if reference.Kind == conversation.ReferenceIssue {
-					organization, err := reader.AccessOrganization(ctx)
-					if err != nil {
-						return err
-					}
-					project, err := reader.Project(ctx, page.Record.ProjectID)
-					if err != nil {
-						return err
-					}
-					item, err := reader.WorkItem(ctx, page.Record.ProjectID, tracker.NativeWorkItemID(reference.TargetID))
-					if err != nil {
-						return err
-					}
-					urlPath = fmt.Sprintf("/%s/%s/issues/%d", url.PathEscape(organization.Slug), url.PathEscape(project.Slug), item.Number)
+				urlPath, err := MessageReferenceURL(ctx, reader, reference.Kind, reference.TargetID)
+				if err != nil {
+					return err
 				}
 				message.References = append(message.References, ConversationMessageReference{Kind: reference.Kind, ID: reference.TargetID, Label: reference.Label, URL: urlPath})
 			}
@@ -1218,6 +1206,9 @@ func (s *Server) commandPostConversationPG(ctx context.Context, scope hubauth.In
 				return err
 			}
 			prepared.Seq, prepared.Revision = createdMessage.Sequence, createdMessage.Revision
+			if err := recordCommandReferences(ctx, writer, ConversationRecordFromStore(storedConversation), &prepared, plan.Now); err != nil {
+				return err
+			}
 			if err := AppendPGConversationEvent(ctx, writer, scope.Organization, id, conversation.EventMessageUpdated, ProjectMessage(prepared), plan.Now); err != nil {
 				return err
 			}
@@ -1226,6 +1217,9 @@ func (s *Server) commandPostConversationPG(ctx context.Context, scope hubauth.In
 				return err
 			}
 			prepared.Seq, prepared.Revision = createdMessage.Sequence, createdMessage.Revision
+			if err := recordCommandReferences(ctx, writer, ConversationRecordFromStore(storedConversation), &prepared, plan.Now); err != nil {
+				return err
+			}
 			message = prepared
 		}
 
@@ -1743,4 +1737,13 @@ func (s *Server) HydratePGConversationQuestion(ctx context.Context, organization
 	}
 	question.Prompts, question.Answers = payload.Prompts, payload.Answers
 	return question, nil
+}
+
+func recordCommandReferences(ctx context.Context, writer tenantstore.Writer, record ConversationRecord, message *ConversationMessageRecord, now time.Time) error {
+	references, err := ResolveMessageReferences(ctx, writer, record, message.Text)
+	if err != nil {
+		return err
+	}
+	message.References = references
+	return ReplaceMessageReferences(ctx, writer, record.OrganizationID, *message, now)
 }

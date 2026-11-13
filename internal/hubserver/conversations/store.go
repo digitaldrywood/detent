@@ -265,28 +265,6 @@ type conversationNormalizeSummary struct {
 	Receipts      int64
 }
 
-// Message references.
-
 func ConversationTime(value time.Time) string {
 	return hubapi.ConversationTime(value)
-}
-
-// replaceMessageReferences rewrites the stored references of one message.
-// Re-extraction is idempotent: an assistant message that completes after its
-// text streamed in replaces the rows its earlier text produced.
-func (s *ConversationStore) replaceMessageReferences(ctx context.Context, tx *sql.Tx, message ConversationMessageRecord, now time.Time) error {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM message_references WHERE message_id = ?", message.ID); err != nil {
-		return fmt.Errorf("clear message references: %w", err)
-	}
-	for _, reference := range message.References {
-		if !reference.Kind.Valid() || strings.TrimSpace(reference.ID) == "" {
-			return hubapi.PublicInvalid("A message reference requires a known kind and a target")
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO message_references (message_id, conversation_id, target_kind, target_id, label, created_at)
-VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (message_id, target_kind, target_id) DO NOTHING`,
-			message.ID, message.ConversationID, reference.Kind, reference.ID, reference.Label, ConversationTime(now)); err != nil {
-			return fmt.Errorf("insert message reference: %w", err)
-		}
-	}
-	return nil
 }
