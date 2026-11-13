@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -870,17 +871,15 @@ func recordSelectionFixtureAttempt(t *testing.T, f nativeFixture, r runnerFixtur
 
 func updateSelectionFixtureBody(t *testing.T, f nativeFixture, item tracker.NativeIssue, body string) tracker.NativeIssue {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(item.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("selection-body")}, ExpectedRevision: item.Revision, Body: &body})
-	requireNativeStatus(t, response, http.StatusOK)
-	decodeHubResponse(t, response, &item)
-	return item
+	return writeSelectionFixtureRecord(t, f, item.WorkItemID, func(_ tenantstore.Writer, _ *corestore.WorkItem, snapshot *tracker.NativeIssue) error {
+		snapshot.Body = body
+		return nil
+	})
 }
 
 func setSelectionFixtureState(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID, state string) tracker.NativeIssue {
 	t.Helper()
-	snapshot := readWorkItem(t, f, item, "")
-	var updated corestore.WorkItem
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+	return writeSelectionFixtureRecord(t, f, item, func(w tenantstore.Writer, row *corestore.WorkItem, snapshot *tracker.NativeIssue) error {
 		project, err := w.ProjectRecord(t.Context(), f.project.ID)
 		if err != nil {
 			return err
@@ -891,25 +890,35 @@ func setSelectionFixtureState(t *testing.T, f nativeFixture, item tracker.Native
 				return err
 			}
 		}
-		row, err := w.WorkItem(t.Context(), f.project.ID, item)
-		if err != nil {
-			return err
-		}
-		row.WorkflowStateName = &state
-		updated, err = w.UpdateWorkItem(t.Context(), row)
-		if err != nil {
-			return err
-		}
+		row.WorkflowStateName, snapshot.State = &state, state
 		queue, err := w.QueueEntry(t.Context(), f.project.ID, item, string(f.project.ID))
 		if err != nil {
 			return err
 		}
 		queue.State = state
 		return w.PutQueueEntry(t.Context(), queue)
+	})
+}
+
+func writeSelectionFixtureRecord(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID, change func(tenantstore.Writer, *corestore.WorkItem, *tracker.NativeIssue) error) tracker.NativeIssue {
+	t.Helper()
+	snapshot := readWorkItem(t, f, item, "")
+	previous := int64(snapshot.Revision)
+	var updated corestore.WorkItem
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		row, err := w.WorkItem(t.Context(), f.project.ID, item)
+		if err != nil {
+			return err
+		}
+		if err := change(w, &row, &snapshot); err != nil {
+			return err
+		}
+		updated, err = w.UpdateWorkItem(t.Context(), row)
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	snapshot.State, snapshot.Revision, snapshot.UpdatedAt, snapshot.LastActivityAt = state, tracker.Revision(updated.Revision), updated.NativeUpdatedAt, updated.LastActivityAt
+	snapshot.Revision, snapshot.UpdatedAt, snapshot.LastActivityAt = tracker.Revision(updated.Revision), updated.NativeUpdatedAt, updated.LastActivityAt
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -918,9 +927,15 @@ func setSelectionFixtureState(t *testing.T, f nativeFixture, item tracker.Native
 	if err != nil {
 		t.Fatal(err)
 	}
+	document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: item, ID: "issue:" + string(item), SourceID: string(item), Kind: "issue", Scope: "issue", Revision: updated.Revision, UpdatedAt: updated.NativeUpdatedAt}, searchstore.Text{Title: snapshot.Title, Body: snapshot.Body, Labels: snapshot.Labels})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.CreateCollaborationVersion(t.Context(), version)
-		return err
+		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+			return err
+		}
+		return w.PutSearch(t.Context(), document, previous)
 	}); err != nil {
 		t.Fatal(err)
 	}

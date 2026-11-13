@@ -465,20 +465,14 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 				if test.ranks != nil {
 					rank = test.ranks[i]
 				}
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-					item, err := w.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
-					if err != nil {
-						return err
-					}
-					item.WorkflowStateName = &test.states[i]
+				issue = writeSelectionFixtureRecord(t, f, issue.WorkItemID, func(w tenantstore.Writer, item *corestore.WorkItem, snapshot *tracker.NativeIssue) error {
+					item.WorkflowStateName, snapshot.State = &test.states[i], test.states[i]
 					if test.created != nil {
-						item.NativeCreatedAt, err = hubapi.ParseTimeValue(test.created[i])
+						created, err := hubapi.ParseTimeValue(test.created[i])
 						if err != nil {
 							return err
 						}
-					}
-					if _, err := w.UpdateWorkItem(t.Context(), item); err != nil {
-						return err
+						item.NativeCreatedAt, snapshot.CreatedAt = created, created
 					}
 					queue, err := w.QueueEntry(t.Context(), f.project.ID, issue.WorkItemID, string(f.project.ID))
 					if err != nil {
@@ -489,12 +483,12 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 						return err
 					}
 					if test.labels != nil && i < len(test.labels) {
-						return w.SetWorkItemLabels(t.Context(), f.project.ID, issue.WorkItemID, []string{test.labels[i]})
+						snapshot.Labels = []string{test.labels[i]}
+						return w.SetWorkItemLabels(t.Context(), f.project.ID, issue.WorkItemID, snapshot.Labels)
 					}
 					return nil
-				}); err != nil {
-					t.Fatal(err)
-				}
+				})
+				issues[i] = issue
 				if test.states[i] == "Merging" && test.unavailable != "review" {
 					path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
 					response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Reviewed work"})
@@ -532,6 +526,9 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if test.unavailable == "lease" {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issues[0], "running")), http.StatusOK)
 			}
 			if test.unavailable == "retired barrier" {
 				var absent bool
