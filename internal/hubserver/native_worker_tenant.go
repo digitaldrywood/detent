@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 
@@ -22,6 +23,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+var errLatestRunEventMismatch = fmt.Errorf("latest run event does not continue the running attempt: %w", artifact.ErrIntegrity)
 
 type preparedNativeLeaseCancellation struct {
 	expired          bool
@@ -423,7 +426,11 @@ func (s *Service) prepareLeaseCancellationTenant(ctx context.Context, scope nati
 	if !human {
 		runnerID = scope.credential.Runner.RunnerID
 	}
-	return s.prepareLeaseCancellationContent(ctx, scope.organization, scope.project, lease, attempt, workItem, event, request.Reason, runnerID)
+	prepared, err := s.prepareLeaseCancellationContent(ctx, scope.organization, scope.project, lease, attempt, workItem, event, request.Reason, runnerID)
+	if errors.Is(err, errLatestRunEventMismatch) {
+		return nil, nativeExecutionConflict("Latest run event does not belong to the lease's running attempt")
+	}
+	return prepared, err
 }
 
 func (s *Service) prepareExpiredNativeLeaseCancellation(ctx context.Context, scope nativeScope, issueID int64, includeReleased bool) (*preparedNativeLeaseCancellation, error) {
@@ -512,14 +519,14 @@ func (s *Service) prepareLeaseCancellationContent(ctx context.Context, organizat
 	}
 	store := runEventDetailStore{DetailStore: s.runDetailStore()}
 	if event.AttemptID != attempt.ID || event.RunID != attempt.RunID {
-		return nil, artifact.ErrIntegrity
+		return nil, errLatestRunEventMismatch
 	}
 	stored, err := eventstore.NewContent(store).Event(ctx, event)
 	if err != nil {
 		return nil, err
 	}
 	if stored.Data.Run == nil || stored.Data.Run.Sequence != attempt.Sequence {
-		return nil, artifact.ErrIntegrity
+		return nil, errLatestRunEventMismatch
 	}
 	data := *stored.Data.Run
 	if runnerID != "" {

@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -1421,7 +1422,41 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 					t.Fatalf("restored attempt payload lost original attribution: proofs=%+v error=%v", proofs, err)
 				}
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, local.base+"/leases/"+string(localLease.ID)+"/release", localWorker, tracker.NativeLeaseMutation{FencingToken: localLease.FencingToken, Reason: "released"}), http.StatusNoContent)
+			executionState := func(t *testing.T) (leasestore.Lease, leasestore.Attempt) {
+				t.Helper()
+				var lease leasestore.Lease
+				var attempt leasestore.Attempt
+				if err := service.config.TenantRepository.ReadTenant(t.Context(), localScope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					if lease, err = r.Lease(t.Context(), string(localLease.ID)); err != nil {
+						return err
+					}
+					attempt, err = r.LatestAttempt(t.Context(), lease.IssueID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return lease, attempt
+			}
+			heldLease, runningAttempt := executionState(t)
+			release := performHubAPIRequest(t, service, http.MethodPost, local.base+"/leases/"+string(localLease.ID)+"/release", localWorker, tracker.NativeLeaseMutation{FencingToken: localLease.FencingToken, Reason: "released"})
+			refusal, refused := map[string]string{
+				"wrong run": "run_sequence_conflict", "unrecorded sequence": "run_sequence_conflict",
+				"wrong lease": "stale_fencing_token", "wrong fence": "stale_fencing_token",
+				"wrong policy": "policy_mismatch", "wrong pinned policy": "policy_mismatch",
+			}[test.name]
+			if !refused {
+				requireNativeStatus(t, release, http.StatusNoContent)
+				return
+			}
+			requireNativeCode(t, release, http.StatusConflict, refusal)
+			lease, attempt := executionState(t)
+			if lease.ReleasedAt != nil || lease.ReleaseReason != "" || !reflect.DeepEqual(lease, heldLease) {
+				t.Fatalf("refused release changed the lease: before=%+v after=%+v", heldLease, lease)
+			}
+			if attempt.Status != "running" || !reflect.DeepEqual(attempt, runningAttempt) {
+				t.Fatalf("refused release settled the attempt: before=%+v after=%+v", runningAttempt, attempt)
+			}
 		})
 	}
 	t.Run("confirmed PR receipt", func(t *testing.T) {
