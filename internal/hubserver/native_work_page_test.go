@@ -318,24 +318,27 @@ func indexNativeWorkPageFixtureIssues(t *testing.T, f nativeFixture, issues []tr
 	for _, seeded := range issues {
 		row, version, err := f.service.readWorkItemRecord(t.Context(), scope, string(seeded.WorkItemID))
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("index fixture issue %s: %v", seeded.WorkItemID, err)
 		}
 		issue, err := f.service.hydrateCanonicalWorkItemRecord(t.Context(), row, version)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("hydrate fixture issue %s: %v", seeded.WorkItemID, err)
+		}
+		if row.Revision == int64(seeded.Revision) {
+			continue
 		}
 		document, err := content.Prepare(t.Context(), searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: row.Revision, UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("prepare fixture search %s: %v", seeded.WorkItemID, err)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.PutSearch(t.Context(), document, 0) }); err != nil {
-			t.Fatal(err)
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.PutSearch(t.Context(), document, int64(seeded.Revision)) }); err != nil {
+			t.Fatalf("write fixture search %s: %v", seeded.WorkItemID, err)
 		}
 	}
 	for {
 		more, err := content.RefreshOne(t.Context(), tenantSearchRepository{f.service.config.TenantRepository}, scope.organization)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("refresh fixture search: %v", err)
 		}
 		if !more {
 			break
