@@ -1087,6 +1087,7 @@ func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 	decodeHubResponse(t, response, &page)
 	stream := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(page.Sequence, 10))
 	readHostedBoardFrame(t, stream)
+	since := page.Sequence
 	for _, test := range []struct {
 		name, path string
 		body       any
@@ -1101,6 +1102,17 @@ func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items/"+string(dependent)+test.path, test.body), http.StatusOK)
 			drainTestNativeBoard(t, f.service)
+			var published []viewstore.BoardDelta
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(f.service.appOrganizationID()), corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				published, err = r.BoardDeltas(t.Context(), f.project, since, 200)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.ContainsFunc(published, func(delta viewstore.BoardDelta) bool { return delta.WorkItemID == blocker }) {
+				t.Fatal("dependency mutation did not publish a blocker board delta")
+			}
 			for {
 				frame := readHostedBoardFrame(t, stream)
 				if frame.Gap {
@@ -1117,6 +1129,7 @@ func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 					if len(links) > 0 && (links[0].ID != dependent || links[0].State != test.state || links[0].Terminal != (test.state == "Done")) {
 						t.Fatalf("blocker retained stale dependent state: %+v", links)
 					}
+					since = frame.Sequence
 					return
 				}
 			}
