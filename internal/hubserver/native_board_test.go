@@ -1140,6 +1140,88 @@ func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 	}
 }
 
+func TestHostedBoardStreamHidesHiddenNeighborRefresh(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	viewer := f.user(t, "partial-viewer", "member", "partial@example.test", "write", "")
+	full := f.user(t, "full-viewer", "member", "full@example.test", "write", "")
+	linked, unlinked := f.seedIssue(t, 1), f.seedIssue(t, 2)
+	private := f
+	private.project = "prj_hidden_blocker"
+	private.base = strings.Replace(f.base, string(f.project), string(private.project), 1)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		source, err := w.ProjectRecord(t.Context(), f.project)
+		if err != nil {
+			return err
+		}
+		source.Core.ID, source.Core.Name, source.Core.Slug = private.project, "Hidden blocker", ""
+		source.Settings.ProjectID = private.project
+		source.Settings.RepositoryEnabled = false
+		_, err = w.CreateProjectRecord(t.Context(), source)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	private.grant(t, full, true, false)
+	hidden := private.seedIssue(t, 1)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.service.accessOrganization(), ProjectID: f.project, WorkItemID: linked, RelatedProjectID: private.project, RelatedWorkItemID: hidden, Type: "dependency", Provenance: "native"}, "add", f.service.config.Clock())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	drainTestNativeBoard(t, f.service)
+	since := map[string]int64{}
+	for name, user := range map[string]hostedSecurityUser{"partial": viewer, "full": full} {
+		var page tracker.NativeIssuePage
+		response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board", nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &page)
+		since[name] = page.Sequence
+	}
+	title := "Renamed hidden blocker"
+	for _, test := range []struct {
+		name, method, path string
+		body               func(tracker.Revision) any
+		want               func(tracker.NativeDependency) bool
+	}{
+		{"done", http.MethodPost, "/workflow", func(revision tracker.Revision) any {
+			return tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "hidden-done"}, ExpectedRevision: revision, State: "Done", Reason: "user_requested"}
+		}, func(link tracker.NativeDependency) bool { return link.State == "Done" && link.Terminal }},
+		{"title", http.MethodPatch, "", func(revision tracker.Revision) any {
+			return tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "hidden-title"}, ExpectedRevision: revision, Title: &title}
+		}, func(link tracker.NativeDependency) bool { return link.Title == title }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			read := f.request(t, full, http.MethodGet, private.base+"/work-items/"+string(hidden), nil)
+			requireNativeStatus(t, read, http.StatusOK)
+			var current tracker.NativeIssue
+			decodeHubResponse(t, read, &current)
+			requireNativeStatus(t, f.request(t, full, test.method, private.base+"/work-items/"+string(hidden)+test.path, test.body(current.Revision)), http.StatusOK)
+			drainTestNativeBoard(t, f.service)
+			partial := readHostedBoardFrame(t, openHostedTestStream(t, f, viewer, "?board=true&since="+strconv.FormatInt(since["partial"], 10)))
+			if partial.Gap || partial.Sequence <= since["partial"] {
+				t.Fatalf("partial viewer frame did not advance: %#v", partial)
+			}
+			for _, delta := range partial.Deltas {
+				for _, card := range []*tracker.NativeBoardCard{delta.Previous, delta.Current} {
+					if card != nil && (card.Issue.WorkItemID == linked || card.Issue.WorkItemID == unlinked) {
+						t.Fatalf("partial viewer received a card delta for %s when only the hidden blocker changed", card.Issue.WorkItemID)
+					}
+				}
+			}
+			since["partial"] = partial.Sequence
+			visible := readHostedBoardFrame(t, openHostedTestStream(t, f, full, "?board=true&since="+strconv.FormatInt(since["full"], 10)))
+			refreshed := slices.ContainsFunc(visible.Deltas, func(delta tracker.NativeBoardDelta) bool {
+				return delta.Current != nil && delta.Current.Issue.WorkItemID == linked && len(delta.Current.Issue.Blockers) == 1 && delta.Current.Issue.Blockers[0].ID == hidden && test.want(delta.Current.Issue.Blockers[0])
+			})
+			if visible.Gap || !refreshed {
+				t.Fatalf("full viewer did not receive the refreshed blocker chip: %#v", visible)
+			}
+			since["full"] = visible.Sequence
+		})
+	}
+}
+
 func normalizeTestDashboardWatermark(t *testing.T, before, after map[string]any) {
 	t.Helper()
 	if before == nil || after == nil {

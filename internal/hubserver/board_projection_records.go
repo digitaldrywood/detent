@@ -437,11 +437,6 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 			}
 		}
 		card.StatusLine = nativeBoardStatusLine(card)
-		step = "board_payload"
-		payload, err := viewstore.NewContent(s.runDetailStore()).PrepareBoard(ctx, card)
-		if err != nil {
-			return err
-		}
 		record := boardProjectionRecord(snapshot, card)
 		record.ProjectedAt = now
 		issue.WebURL = hubrecords.IssueBrowserPath(snapshot.organizationSlug, snapshot.project.Core.Slug, issue.Number)
@@ -469,6 +464,13 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		}
 		projected = s.nativeIssueResponse(projected)
 		board, list, boundedReporter, listBytes, err := boundBoardProjection(projected, reporter)
+		if err != nil {
+			return err
+		}
+		step = "board_payload"
+		stored := card
+		stored.Issue.Blockers, stored.Issue.Dependents, stored.Issue.Related = board.Blockers, board.Dependents, board.Related
+		payload, err := viewstore.NewContent(s.runDetailStore()).PrepareBoard(ctx, stored)
 		if err != nil {
 			return err
 		}

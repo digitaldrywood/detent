@@ -1,10 +1,12 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/url"
+	"reflect"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -90,7 +92,8 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 				continue
 			}
 			delta := tracker.NativeBoardDelta{Sequence: row.Sequence}
-			for _, item := range []struct {
+			var stored [2]tracker.NativeIssue
+			for position, item := range []struct {
 				ref  *attachment.ArchiveReference
 				card **tracker.NativeBoardCard
 			}{{row.Previous, &delta.Previous}, {row.Current, &delta.Current}} {
@@ -122,6 +125,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 						return false, err
 					}
 				}
+				stored[position] = card.Issue
 				if err := s.hydrateWorkItemRelationshipFacts(ctx, scope, &card.Issue); err != nil {
 					return false, err
 				}
@@ -139,6 +143,15 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 				card.Issue = s.nativeIssueResponse(scope.ReporterIssue(card.Issue))
 				card.StatusLine = nativeBoardStatusLine(card)
 				*item.card = &card
+			}
+			if delta.Previous != nil && delta.Current != nil {
+				unchanged, err := s.boardDeltaUnchangedForViewer(ctx, scope, delta, stored)
+				if err != nil {
+					return false, err
+				}
+				if unchanged {
+					delta.Previous, delta.Current = nil, nil
+				}
 			}
 			if delta.Previous != nil || delta.Current != nil {
 				frame.Deltas = append(frame.Deltas, delta)
@@ -173,4 +186,49 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 	}
 	sub.sequence, sub.initial, sub.grantVersion = frame.Sequence, false, frame.GrantVersion
 	return !frame.Gap && frame.Sequence < head, nil
+}
+
+func (s *Service) boardDeltaUnchangedForViewer(ctx context.Context, scope hubscope.NativeScope, delta tracker.NativeBoardDelta, stored [2]tracker.NativeIssue) (bool, error) {
+	previous, err := json.Marshal(delta.Previous)
+	if err != nil {
+		return false, err
+	}
+	current, err := json.Marshal(delta.Current)
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(previous, current) {
+		return false, nil
+	}
+	hydrated := map[tracker.NativeWorkItemID]bool{}
+	for _, issue := range []tracker.NativeIssue{delta.Previous.Issue, delta.Current.Issue} {
+		for _, links := range [][]tracker.NativeDependency{issue.Blockers, issue.Dependents, issue.Related} {
+			for _, link := range links {
+				hydrated[link.ID] = true
+			}
+		}
+	}
+	projects := map[tracker.ProjectID]bool{}
+	for _, issue := range stored {
+		for _, links := range [][]tracker.NativeDependency{issue.Blockers, issue.Dependents, issue.Related} {
+			for _, link := range links {
+				projects[link.ProjectID] = true
+			}
+		}
+	}
+	visible, err := s.relationshipProjectAccess(ctx, scope, projects)
+	if err != nil {
+		return false, err
+	}
+	var views [2][3][]tracker.NativeDependency
+	for position, issue := range stored {
+		for kind, links := range [][]tracker.NativeDependency{issue.Blockers, issue.Dependents, issue.Related} {
+			for _, link := range links {
+				if visible[link.ProjectID] && (scope.Credential.HostedRole != "reporter" || hydrated[link.ID]) {
+					views[position][kind] = append(views[position][kind], link)
+				}
+			}
+		}
+	}
+	return reflect.DeepEqual(views[0], views[1]), nil
 }
