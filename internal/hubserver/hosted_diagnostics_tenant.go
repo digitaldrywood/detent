@@ -251,10 +251,11 @@ func (s *Service) readDiagnosticsTenant(ctx context.Context, credential apiCrede
 	}
 	report.Claimed = &claimed
 
-	if !missingDecision || ready > 0 {
+	recordedDecisions := len(decisions) > 0 && !missingDecision
+	if recordedDecisions || ready > 0 {
 		report.Ready = &ready
 	}
-	if !missingDecision || skipped > 0 {
+	if recordedDecisions || skipped > 0 {
 		report.Skipped = &skipped
 	}
 	for index := range report.Coverage {
