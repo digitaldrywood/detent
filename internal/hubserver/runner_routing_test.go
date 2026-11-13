@@ -537,7 +537,7 @@ func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, 
 			wantBackend[name] = append(wantBackend[name], string(tier))
 		}
 	}
-	wantAvailability := runnerauth.Availability{Timezone: identity.Availability.Timezone, Windows: identity.Availability.Windows, WindowSlots: identity.Availability.WindowSlots, HardDeadline: identity.Availability.HardDeadline}
+	wantAvailability := runnerauth.Availability{Timezone: identity.Availability.Timezone, Windows: append([]string{}, identity.Availability.Windows...), WindowSlots: identity.Availability.WindowSlots, HardDeadline: identity.Availability.HardDeadline}
 	if !reflect.DeepEqual(full.BackendIsolation, wantBackend) || !reflect.DeepEqual(full.CapacityConfig, identity.CapacityConfig) || !reflect.DeepEqual(full.Availability, wantAvailability) || full.IsolationTier != identity.IsolationTier || full.MachineUse != identity.MachineUse || !slices.Equal(full.HostServices, identity.HostServices) || !maps.Equal(full.ProjectCapacityLimits, identity.ProjectCapacityLimits) || !maps.Equal(full.ProjectRankOverrides, identity.ProjectRanks) {
 		t.Fatalf("routing dispatch configuration differs from typed authority: routing=%+v identity=%+v backend=%+v", full, identity, backend)
 	}
