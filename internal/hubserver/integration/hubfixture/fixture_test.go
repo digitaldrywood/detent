@@ -2,10 +2,13 @@ package hubfixture_test
 
 import (
 	"net/http"
+	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -103,5 +106,44 @@ func TestMCPInTwoOrganizationsIsUsableAndIsolated(t *testing.T) {
 	foreign := hubfixture.MCP(t, h.Handler(), hubfixture.MCPPath(second.Organization()), first.Token)("tools/list", "", nil)
 	if len(foreign.Result) != 0 && len(foreign.Error) == 0 {
 		t.Fatalf("foreign MCP tools/list = %s", foreign.Result)
+	}
+}
+
+func TestInjectedDependenciesServeTwoOrganizations(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	generated := map[string]bool{}
+	h := hubfixture.OpenDeps(t, hubfixture.Config{}, hubdeps.Deps{GenerateToken: func() (string, error) {
+		token, err := apikey.GenerateToken()
+		mu.Lock()
+		defer mu.Unlock()
+		generated[token] = true
+		return token, err
+	}})
+	var runners []hubfixture.Runner
+	for _, organization := range []tracker.OrganizationID{hubfixture.Primary, hubfixture.Secondary} {
+		r := hubfixture.PrepareRunner(t, hubfixture.NewNative(t, h, organization, "injected"), runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+		mu.Lock()
+		injected := generated[r.Enrollment.Token]
+		mu.Unlock()
+		if !injected {
+			t.Fatalf("%s enrollment token was not issued by the injected generator", organization)
+		}
+		runners = append(runners, r)
+	}
+	foreign := h.Request(t, http.MethodPost, runners[1].OrgBase+"/runner-enrollments/redeem", runners[0].Enrollment.Token, runners[0].Redemption)
+	if foreign.Code == http.StatusCreated {
+		t.Fatalf("foreign enrollment redeem status = %d: %s", foreign.Code, foreign.Body.String())
+	}
+	for _, r := range runners {
+		r.Enroll(t)
+		r.ReportCapacity(t)
+	}
+	reopened := h.Reopen(t)
+	second := hubfixture.PrepareRunner(t, hubfixture.NewNative(t, reopened, hubfixture.Secondary, "reopened"), runnerauth.Read)
+	mu.Lock()
+	defer mu.Unlock()
+	if !generated[second.Enrollment.Token] {
+		t.Fatal("reopened Hub dropped the injected generator")
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -114,6 +115,11 @@ func Open(t *testing.T, cfg hubserver.Config) *Hub {
 		t.Fatal(err)
 	}
 	return open(t, &Hub{Admin: admin, Primary: Primary, owner: t}, cfg, repository)
+}
+
+func OpenDeps(t *testing.T, cfg Config, deps hubdeps.Deps) *Hub {
+	t.Helper()
+	return Open(t, hubserver.WithDeps(cfg, deps))
 }
 
 func OpenWith(t *testing.T, configure func(*Config)) *Hub {
