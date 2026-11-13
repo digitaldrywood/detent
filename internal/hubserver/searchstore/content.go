@@ -87,24 +87,27 @@ const (
 	RefreshTickDuration  = 2 * time.Second
 )
 
-func (c *Content) RefreshTick(ctx context.Context, repository Repository, organization tracker.OrganizationID, now func() time.Time) (int, error) {
-	started := now()
-	for processed := 0; processed < RefreshTickDocuments; processed++ {
-		if err := ctx.Err(); err != nil {
-			return processed, err
+func (c *Content) RefreshTick(ctx context.Context, repository Repository, organization tracker.OrganizationID, timeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)) (int, error) {
+	tick, cancel := timeout(ctx, RefreshTickDuration)
+	defer cancel()
+	processed := 0
+	for processed < RefreshTickDocuments {
+		if tick.Err() != nil {
+			break
 		}
-		if processed > 0 && now().Sub(started) >= RefreshTickDuration {
-			return processed, nil
-		}
-		more, err := c.RefreshOne(ctx, repository, organization)
+		more, err := c.RefreshOne(tick, repository, organization)
 		if err != nil {
+			if tick.Err() != nil && ctx.Err() == nil {
+				break
+			}
 			return processed, err
 		}
 		if !more {
-			return processed, nil
+			break
 		}
+		processed++
 	}
-	return RefreshTickDocuments, nil
+	return processed, ctx.Err()
 }
 
 func (c *Content) RefreshOne(ctx context.Context, repository Repository, organization tracker.OrganizationID) (bool, error) {

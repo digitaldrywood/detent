@@ -716,8 +716,9 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 		}
 	}
 	refreshUnread()
-	s.maintainNativeSearch(ctx)
 	s.maintainPostgresChangeReviews(ctx)
+	searchRefresh := s.searchRefreshTimer()
+	defer searchRefresh.Stop()
 	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
 	defer ticker.Stop()
 	lastCleanup := s.config.Clock()
@@ -728,9 +729,11 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 		case <-s.boardRefresh:
 			refreshUnread()
 			s.maintainPostgresChangeReviews(ctx)
+		case <-searchRefresh.C:
+			s.maintainNativeSearch(ctx)
+			searchRefresh.Reset(s.config.WebhookMaintenanceInterval)
 		case <-ticker.C:
 			refreshUnread()
-			s.maintainNativeSearch(ctx)
 			s.maintainPostgresChangeReviews(ctx)
 			now := s.config.Clock()
 			if err := s.expireGoTestReceipts(ctx, now, s.config.Clock); err != nil && !errors.Is(err, context.Canceled) {

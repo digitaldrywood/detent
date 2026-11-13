@@ -37,6 +37,7 @@ type Deps struct {
 	NewTokenID                  func() string
 	GenerateToken               func() (string, error)
 	NewOutboxTimer              func(time.Duration) Timer
+	NewMaintenanceTimer         func(time.Duration) Timer
 	VerifyReleaseSignature      update.ChecksumSignatureVerifier
 	DashboardDelivery           *DashboardDelivery
 	ConversationStreamHeartbeat time.Duration
@@ -74,6 +75,9 @@ func (d Deps) WithDefaults() Deps {
 	}
 	if d.NewOutboxTimer == nil {
 		d.NewOutboxTimer = NewTimer
+	}
+	if d.NewMaintenanceTimer == nil {
+		d.NewMaintenanceTimer = NewTimer
 	}
 	if d.VerifyReleaseSignature == nil {
 		d.VerifyReleaseSignature = update.VerifyChecksumSignature

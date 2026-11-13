@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,9 +34,56 @@ func pendingSearchDocuments(t *testing.T, f searchFixture, org tracker.Organizat
 	return pending
 }
 
-func frozenClock() func() time.Time {
-	at := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
-	return func() time.Time { return at }
+type publicationCounter struct {
+	searchstore.Repository
+	mu        sync.Mutex
+	published map[string]int
+}
+
+type countingSearchWriter struct {
+	searchstore.Writer
+	counter *publicationCounter
+}
+
+func withoutDeadline(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithCancel(parent)
+}
+
+func countPublications(repository searchstore.Repository) *publicationCounter {
+	return &publicationCounter{Repository: repository, published: map[string]int{}}
+}
+
+func (c *publicationCounter) WriteSearch(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(searchstore.Writer) error) error {
+	return c.Repository.WriteSearch(ctx, org, workload, func(w searchstore.Writer) error { return write(countingSearchWriter{w, c}) })
+}
+
+func (w countingSearchWriter) PublishSearch(ctx context.Context, value searchstore.Prepared) (bool, error) {
+	published, err := w.Writer.PublishSearch(ctx, value)
+	if published && err == nil {
+		w.counter.mu.Lock()
+		w.counter.published[value.Document.ID]++
+		w.counter.mu.Unlock()
+	}
+	return published, err
+}
+
+func (c *publicationCounter) requireEachOnce(t *testing.T, prefix string, count int) {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	total := 0
+	for id, published := range c.published {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		if published != 1 {
+			t.Fatalf("document %s published %d times", id, published)
+		}
+		total++
+	}
+	if total != count {
+		t.Fatalf("published documents=%d want %d", total, count)
+	}
 }
 
 func TestSearchRefreshTickRebuildsBacklogInBudgetedTicks(t *testing.T) {
@@ -50,9 +101,10 @@ func TestSearchRefreshTickRebuildsBacklogInBudgetedTicks(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			counter := countPublications(f.repository)
 			ticks := 0
 			for {
-				processed, err := f.content.RefreshTick(t.Context(), f.repository, "org_first", frozenClock())
+				processed, err := f.content.RefreshTick(t.Context(), counter, "org_first", withoutDeadline)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -71,6 +123,7 @@ func TestSearchRefreshTickRebuildsBacklogInBudgetedTicks(t *testing.T) {
 			if ticks != want || pendingSearchDocuments(t, f, "org_first") != 0 {
 				t.Fatalf("ticks=%d want %d pending=%d", ticks, want, pendingSearchDocuments(t, f, "org_first"))
 			}
+			counter.requireEachOnce(t, "issue/wi_tick_", documents)
 			var refreshing int
 			if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM search_scope_refresh WHERE organization_id='org_first'`).Scan(&refreshing); err != nil || refreshing != 0 {
 				t.Fatalf("scope refresh rows=%d err=%v", refreshing, err)
@@ -79,19 +132,36 @@ func TestSearchRefreshTickRebuildsBacklogInBudgetedTicks(t *testing.T) {
 	}
 }
 
-func TestSearchRefreshTickStopsAtDurationBudget(t *testing.T) {
+func TestSearchRefreshTickDeadlineCancelsBlockedOperation(t *testing.T) {
 	f := newSearchFixture(t)
-	seedPendingIssues(t, f, "org_first", 50)
-	at := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
-	step := searchstore.RefreshTickDuration / 2
-	clock := func() time.Time {
-		at = at.Add(step)
-		return at
+	seedPendingIssues(t, f, "org_first", 3)
+	barrier := &searchReadBarrier{DetailStore: f.objects, read: make(chan struct{}), release: make(chan struct{})}
+	content := searchstore.NewContent(barrier)
+	counter := countPublications(f.repository)
+	var expire context.CancelFunc
+	deadline := func(parent context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+		if budget != searchstore.RefreshTickDuration {
+			t.Errorf("tick budget=%s want %s", budget, searchstore.RefreshTickDuration)
+		}
+		ctx, cancel := context.WithCancel(parent)
+		expire = cancel
+		return ctx, cancel
 	}
-	processed, err := f.content.RefreshTick(t.Context(), f.repository, "org_first", clock)
-	if err != nil || processed != 2 || pendingSearchDocuments(t, f, "org_first") != 48 {
-		t.Fatalf("processed=%d pending=%d err=%v", processed, pendingSearchDocuments(t, f, "org_first"), err)
+	go func() {
+		<-barrier.read
+		expire()
+	}()
+	processed, err := content.RefreshTick(t.Context(), counter, "org_first", deadline)
+	if err != nil || processed != 0 || pendingSearchDocuments(t, f, "org_first") != 3 {
+		t.Fatalf("expired tick processed=%d pending=%d err=%v", processed, pendingSearchDocuments(t, f, "org_first"), err)
 	}
+	counter.requireEachOnce(t, "issue/wi_tick_", 0)
+	close(barrier.release)
+	processed, err = content.RefreshTick(t.Context(), counter, "org_first", withoutDeadline)
+	if err != nil || processed != 3 || pendingSearchDocuments(t, f, "org_first") != 0 {
+		t.Fatalf("next tick processed=%d pending=%d err=%v", processed, pendingSearchDocuments(t, f, "org_first"), err)
+	}
+	counter.requireEachOnce(t, "issue/wi_tick_", 3)
 }
 
 func TestSearchRefreshTickProgressesEachOrganization(t *testing.T) {
@@ -104,7 +174,7 @@ func TestSearchRefreshTickProgressesEachOrganization(t *testing.T) {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			other := map[tracker.OrganizationID]tracker.OrganizationID{"org_first": "org_second", "org_second": "org_first"}[org]
 			before := pendingSearchDocuments(t, f, other)
-			if _, err := f.content.RefreshTick(t.Context(), f.repository, org, frozenClock()); err != nil {
+			if _, err := f.content.RefreshTick(t.Context(), f.repository, org, withoutDeadline); err != nil {
 				t.Fatal(err)
 			}
 			if after := pendingSearchDocuments(t, f, other); after != before {
@@ -124,26 +194,35 @@ func TestSearchRefreshTickCancellationKeepsRemainingDocuments(t *testing.T) {
 	seedPendingIssues(t, f, "org_first", documents)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	calls := 0
-	clock := func() time.Time {
-		calls++
-		if calls == 6 {
-			cancel()
-		}
-		return time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
-	}
-	processed, err := f.content.RefreshTick(ctx, f.repository, "org_first", clock)
+	counter := countPublications(f.repository)
+	stopping := &cancelAfterPublications{publicationCounter: counter, after: 5, cancel: cancel}
+	processed, err := f.content.RefreshTick(ctx, stopping, "org_first", withoutDeadline)
 	if !errors.Is(err, context.Canceled) || processed != 5 || pendingSearchDocuments(t, f, "org_first") != documents-processed {
 		t.Fatalf("processed=%d pending=%d err=%v", processed, pendingSearchDocuments(t, f, "org_first"), err)
 	}
-	processed, err = f.content.RefreshTick(t.Context(), f.repository, "org_first", frozenClock())
+	processed, err = f.content.RefreshTick(t.Context(), counter, "org_first", withoutDeadline)
 	if err != nil || processed != documents-5 || pendingSearchDocuments(t, f, "org_first") != 0 {
 		t.Fatalf("resumed processed=%d pending=%d err=%v", processed, pendingSearchDocuments(t, f, "org_first"), err)
 	}
-	var published, terms int
-	if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FILTER(WHERE indexed_revision=revision),
- (SELECT count(DISTINCT document_id) FROM search_postings p WHERE p.organization_id='org_first' AND left(p.term,1)<>'~' AND p.document_id LIKE 'issue/wi_tick_%')
- FROM search_documents WHERE organization_id='org_first' AND id LIKE 'issue/wi_tick_%'`).Scan(&published, &terms); err != nil || published != documents || terms != documents {
-		t.Fatalf("published=%d documents with terms=%d err=%v", published, terms, err)
+	counter.requireEachOnce(t, "issue/wi_tick_", documents)
+}
+
+type cancelAfterPublications struct {
+	*publicationCounter
+	after  int
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterPublications) WriteSearch(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(searchstore.Writer) error) error {
+	err := c.publicationCounter.WriteSearch(ctx, org, workload, write)
+	c.mu.Lock()
+	total := 0
+	for _, published := range c.published {
+		total += published
 	}
+	c.mu.Unlock()
+	if total == c.after {
+		c.cancel()
+	}
+	return err
 }

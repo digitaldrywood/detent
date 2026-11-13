@@ -4,19 +4,29 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
+func (s *Service) searchRefreshTimer() hubdeps.Timer {
+	return s.config.deps.NewMaintenanceTimer(searchRefreshOffset(s.config.WebhookMaintenanceInterval, s.config.deps.Jitter()))
+}
+
+func searchRefreshOffset(interval time.Duration, jitter float64) time.Duration {
+	return time.Duration(min(max(jitter, 0), 1) * float64(interval-1))
+}
+
 func (s *Service) maintainNativeSearch(ctx context.Context) {
 	if _, err := s.refreshNativeIdentity(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped origin identities", "error", err)
 	}
-	_, err := searchstore.NewContent(s.runDetailStore()).RefreshTick(s.runDetailContext(ctx), tenantstore.SearchRepository{Repository: s.config.TenantRepository}, s.accessOrganization(), s.config.Clock)
+	_, err := searchstore.NewContent(s.runDetailStore()).RefreshTick(s.runDetailContext(ctx), tenantstore.SearchRepository{Repository: s.config.TenantRepository}, s.accessOrganization(), context.WithTimeout)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped search index", "error", err)
 	}
