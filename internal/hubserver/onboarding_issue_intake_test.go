@@ -330,6 +330,7 @@ func (f *batchFixture) restart(t *testing.T) {
 }
 
 func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                                                         string
 		closed, rateLimit, mcp, importDisabled, integration, partial bool
@@ -618,6 +619,7 @@ func exerciseBatchMCP(t *testing.T, f *batchFixture) {
 }
 
 func TestGitHubBatchDiscoveryFailureAndSourceValidation(t *testing.T) {
+	t.Parallel()
 	f := newBatchFixture(t)
 	f.backend.discoveryError = githubconnector.ErrNotFound
 	f.command(t, tracker.GitHubBatchCommand{Action: "discover", Labels: []string{"enhancement"}}, http.StatusOK)
@@ -682,6 +684,7 @@ func TestGitHubBatchDiscoveryFailureAndSourceValidation(t *testing.T) {
 }
 
 func TestGitHubBatchRunnerOperations(t *testing.T) {
+	t.Parallel()
 	for _, runner := range []string{"", "missing-runner"} {
 		t.Run(runner, func(t *testing.T) {
 			f := newBatchFixture(t)
@@ -989,6 +992,7 @@ func TestGitHubBatchRunnerOperations(t *testing.T) {
 }
 
 func TestGitHubBatchSkipsLinkedAndLegacyImportedIdentity(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"linked URL", "legacy source key", "stable provenance identity"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newBatchFixture(t)
@@ -1053,6 +1057,7 @@ func TestGitHubBatchSkipsLinkedAndLegacyImportedIdentity(t *testing.T) {
 }
 
 func TestGitHubBatchHonorsFirstRunIntakeWithoutAnotherSourceRead(t *testing.T) {
+	t.Parallel()
 	f := newBatchFixture(t)
 	f.preview(t, false)
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
@@ -1076,6 +1081,7 @@ func TestGitHubBatchHonorsFirstRunIntakeWithoutAnotherSourceRead(t *testing.T) {
 }
 
 func TestHeartbeatDoesNotReconcileGitHubBatchItems(t *testing.T) {
+	t.Parallel()
 	f := newBatchFixture(t)
 	f.preview(t, false)
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
@@ -1173,6 +1179,7 @@ func TestHeartbeatDoesNotReconcileGitHubBatchItems(t *testing.T) {
 }
 
 func TestGitHubBatchExplicitRunnerReassignmentKeepsPendingSelection(t *testing.T) {
+	t.Parallel()
 	f := newBatchFixture(t)
 	f.preview(t, false)
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}}, http.StatusOK)
@@ -1220,6 +1227,7 @@ func TestGitHubBatchExplicitRunnerReassignmentKeepsPendingSelection(t *testing.T
 }
 
 func TestGitHubBatchImportsDiscussionBeyondDefaultAPILimit(t *testing.T) {
+	t.Parallel()
 	f := newBatchFixture(t)
 	f.preview(t, false)
 	snapshot := batchSnapshot(12)
@@ -1247,11 +1255,13 @@ func TestGitHubBatchImportsDiscussionBeyondDefaultAPILimit(t *testing.T) {
 }
 
 func TestGitHubBatchAppPagesAndPartialRetry(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		fail, restart bool
 	}{{name: "100 issue page"}, {name: "invalid issue rolls back and retries", fail: true}, {name: "restart leaves import for background maintenance", restart: true}} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newBatchFixture(t)
 			reads := 0
 			f.service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
@@ -1367,6 +1377,7 @@ func TestGitHubBatchAppPagesAndPartialRetry(t *testing.T) {
 	}
 }
 func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		project       *tracker.GitHubProjectV2Source
@@ -1489,6 +1500,7 @@ func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 }
 
 func TestGitHubBatchAppFallbackAndThrottle(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		err       error
@@ -1641,6 +1653,7 @@ func TestGitHubBatchAppFallbackAndThrottle(t *testing.T) {
 }
 
 func TestGitHubBatchMaintenanceTraversal(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                      string
 		owned                     bool
@@ -1648,6 +1661,7 @@ func TestGitHubBatchMaintenanceTraversal(t *testing.T) {
 		malformed, invalidProject bool
 	}{{"disabled intake", true, "discovering", "disabled", false, false}, {"typed ownership refusal", false, "discovering", "manual", false, false}, {"typed status refusal", true, "finished", "manual", false, false}, {"malformed batch payload", true, "discovering", "manual", true, false}, {"invalid project integration", true, "discovering", "manual", false, true}} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newBatchFixture(t)
 			f.backend.pages[""] = tracker.GitHubDiscoveryPage{}
 			for index := range githubBatchMaintenanceLimit {
@@ -1743,6 +1757,7 @@ func TestGitHubBatchMaintenanceTraversal(t *testing.T) {
 }
 
 func TestGitHubBatchMaintenanceReconcilesRunnerProjects(t *testing.T) {
+	t.Parallel()
 	first := newHostedBatchFixture(t)
 	cfg := first.service.config
 	cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_first_second", WorkOSOrganizationID: "provider_org_first_second", PublicURL: "https://hub.example.test", Provider: first.provider}
@@ -1783,6 +1798,7 @@ func TestGitHubBatchMaintenanceReconcilesRunnerProjects(t *testing.T) {
 }
 
 func TestGitHubBatchMaintenanceItemBudgetAndConcurrentResult(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                  string
 		items                 int
@@ -1943,11 +1959,13 @@ func TestGitHubBatchMaintenanceItemBudgetAndConcurrentResult(t *testing.T) {
 }
 
 func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		plan string
 		cap  int
 	}{{"free", 10000}, {"starter", 10000}} {
 		t.Run(test.plan, func(t *testing.T) {
+			t.Parallel()
 			f := newBatchFixture(t)
 			plans := hostedplans.CapacityPlans()
 			if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
@@ -2004,6 +2022,7 @@ func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
 }
 
 func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
+	t.Parallel()
 	for _, closed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("source_closed=%t", closed), func(t *testing.T) {
 			f := newBatchFixture(t)

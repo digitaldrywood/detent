@@ -32,6 +32,7 @@ import (
 )
 
 func TestPostgresConversationDispatchReachesFencedRunner(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{

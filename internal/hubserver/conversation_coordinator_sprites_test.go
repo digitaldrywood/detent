@@ -16,6 +16,7 @@ import (
 )
 
 func TestCoordinatorSpritePoolReplay(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		idle *int

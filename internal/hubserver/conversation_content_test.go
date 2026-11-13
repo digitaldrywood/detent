@@ -97,6 +97,7 @@ func (s *conversationContentFixture) setFail(fail bool) {
 }
 
 func TestConversationPayloadBytesStayBounded(t *testing.T) {
+	t.Parallel()
 	for _, size := range []int{32, 64 << 10} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			f := newConversationFixture(t)
@@ -140,6 +141,7 @@ func TestConversationPayloadBytesStayBounded(t *testing.T) {
 }
 
 func TestConversationPayloadRequiresPublication(t *testing.T) {
+	t.Parallel()
 	for _, configured := range []bool{false, true} {
 		t.Run(strconv.FormatBool(configured), func(t *testing.T) {
 			objects := &conversationContentFixture{}
@@ -246,6 +248,7 @@ func postgresContentTestDelta(t *testing.T, f *postgresStorageArchiveFixture, me
 }
 
 func TestConversationSnapshotIgnoresStoredDeltas(t *testing.T) {
+	t.Parallel()
 	for _, endpoint := range []string{"snapshot", "messages"} {
 		for _, tt := range []struct {
 			name              string
@@ -313,6 +316,7 @@ func TestConversationSnapshotIgnoresStoredDeltas(t *testing.T) {
 }
 
 func TestConversationCanonicalReadRejectsInvalidBodyLength(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name             string
 		stored, declared int64
@@ -333,6 +337,7 @@ func TestConversationCanonicalReadRejectsInvalidBodyLength(t *testing.T) {
 }
 
 func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
+	t.Parallel()
 	for _, endpoint := range []string{"snapshot", "messages"} {
 		t.Run(endpoint, func(t *testing.T) {
 			f := newPostgresStorageArchiveFixture(t)
@@ -410,6 +415,7 @@ func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
 }
 
 func TestConversationEventStorageFootprint(t *testing.T) {
+	t.Parallel()
 	f := newConversationFixture(t)
 	compressed := map[string][]byte{}
 	f.store.Contents = conversationArchiveStore{Call: func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
@@ -462,6 +468,7 @@ func TestConversationEventStorageFootprint(t *testing.T) {
 }
 
 func TestConversationPublicationRechecksTokenExpiry(t *testing.T) {
+	t.Parallel()
 	objects := &conversationContentFixture{}
 	now := time.Now().UTC().Truncate(time.Second)
 	var clockMu sync.Mutex
@@ -500,6 +507,7 @@ func TestConversationPublicationRechecksTokenExpiry(t *testing.T) {
 }
 
 func TestConversationRejectedCreateDoesNotPublish(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		key       string
@@ -567,6 +575,7 @@ func TestConversationRejectedCreateDoesNotPublish(t *testing.T) {
 }
 
 func TestConversationTurnBatchValidationReadsEachControlOnce(t *testing.T) {
+	t.Parallel()
 	reads := make(map[string]int)
 	for _, test := range []struct {
 		name    string
@@ -606,6 +615,7 @@ func TestConversationTurnBatchValidationReadsEachControlOnce(t *testing.T) {
 }
 
 func TestConversationRejectedTurnBatchDoesNotPublish(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		event  map[string]any
@@ -646,6 +656,7 @@ func TestConversationRejectedTurnBatchDoesNotPublish(t *testing.T) {
 }
 
 func TestConversationUsesExistingArchiveBackend(t *testing.T) {
+	t.Parallel()
 	objects := map[string][]byte{}
 	writes := 0
 	server := &Service{database: &database{}, notifications: newNotificationBroker(), config: Config{Logger: discardLogger(), now: time.Now}}

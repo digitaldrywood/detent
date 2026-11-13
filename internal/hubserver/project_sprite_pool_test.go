@@ -39,6 +39,7 @@ import (
 )
 
 func TestSpritePoolPlacement(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, mode                   string
 		depth, overflow, wantCreated int
@@ -319,6 +320,7 @@ type spritePipeBody struct {
 func (b *spritePipeBody) Read(data []byte) (int, error) { return b.reader.Read(data) }
 
 func TestSpritePoolLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, failure                            string
 		wantCreated, wantDeleted, wantCheckpoint int
@@ -495,6 +497,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 }
 
 func TestSpritePoolNameCollisions(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		conflicts int
@@ -591,6 +594,7 @@ func TestSpritePoolNameCollisions(t *testing.T) {
 }
 
 func TestSpritePoolCapacity(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                            string
 		runners                         int
@@ -648,6 +652,7 @@ func TestSpritePoolCapacity(t *testing.T) {
 }
 
 func TestSpritePoolFreshAuthority(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, change string
 		wantError    bool
@@ -687,6 +692,7 @@ func TestSpritePoolFreshAuthority(t *testing.T) {
 }
 
 func TestSpritePoolCancelledBootstrap(t *testing.T) {
+	t.Parallel()
 	f, scope, provider := newSpritePoolFixture(t, "cancel")
 	provider.started = make(chan struct{})
 	ctx, cancel := context.WithCancel(t.Context())
@@ -720,6 +726,7 @@ func TestSpritePoolCancelledBootstrap(t *testing.T) {
 }
 
 func TestSpritePoolDeletionBoundaries(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, change string
 		wantDeleted  int
@@ -800,6 +807,7 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 }
 
 func TestSpritePoolMutationDuringDeletion(t *testing.T) {
+	t.Parallel()
 	f, scope, provider := newSpritePoolFixture(t, "")
 	if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
 		t.Fatal(err)
@@ -1052,6 +1060,7 @@ func setSpriteMemberChecks(t *testing.T, f nativeFixture, checks runnerauth.Loca
 var spriteMemberReady = runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}
 
 func TestProjectSpriteAllocationCommands(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
 	later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
@@ -1089,6 +1098,7 @@ func TestProjectSpriteAllocationCommands(t *testing.T) {
 }
 
 func TestSpritePoolOperatorTools(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	captured := make(chan context.Context, 1)
 	f.service.echo.GET("/api/v2/organizations/:organization/sprite-tools-test", func(c echo.Context) error {
@@ -1181,6 +1191,7 @@ func TestSpritePoolOperatorTools(t *testing.T) {
 }
 
 func TestProjectSpriteAllocationLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, order := range []string{"oldest", "project ID tie"} {
 		t.Run(order, func(t *testing.T) {
 			f, scope, provider := newSpritePoolFixture(t, "")
@@ -1255,6 +1266,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 }
 
 func TestProjectSpriteBudgetSelection(t *testing.T) {
+	t.Parallel()
 	for _, managed := range []bool{true, false} {
 		name := "eligible organization demand"
 		if managed {
@@ -1334,6 +1346,7 @@ func TestProjectSpriteConcurrentReservations(t *testing.T) {
 }
 
 func TestProjectSpriteAllocationLimits(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                                              string
 		organizationMembers, providerLimit, wantAllocated int
@@ -1391,6 +1404,7 @@ func TestProjectSpriteAllocationLimits(t *testing.T) {
 }
 
 func TestProjectSpriteWorkspaceClaims(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, mode, state                   string
 		desired                             int
@@ -1463,6 +1477,7 @@ func TestProjectSpriteWorkspaceClaims(t *testing.T) {
 }
 
 func TestHostedProjectSpriteAllocationAuthority(t *testing.T) {
+	t.Parallel()
 	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
 	const organization = tracker.OrganizationID("org_browser_preview")
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -1523,6 +1538,7 @@ func projectSpriteMembers(t *testing.T, f nativeFixture, scope hubscope.NativeSc
 }
 
 func TestProjectSpriteScaleSequence(t *testing.T) {
+	t.Parallel()
 	f, scope, provider := newSpritePoolFixture(t, "")
 	spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=3 WHERE organization_id=$1`, scope.Organization)
 	revision := tracker.Revision(0)
@@ -1551,6 +1567,7 @@ func TestProjectSpriteScaleSequence(t *testing.T) {
 }
 
 func TestProjectSpriteLateProvisioning(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		stage      string
 		checkpoint int
@@ -1591,6 +1608,7 @@ func TestProjectSpriteLateProvisioning(t *testing.T) {
 }
 
 func TestProjectSpriteDrain(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		expired bool
@@ -1651,6 +1669,7 @@ func TestProjectSpriteDrain(t *testing.T) {
 }
 
 func TestProjectSpriteProvisioningRecovery(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		rewrite bool
@@ -1720,6 +1739,7 @@ func TestProjectSpriteProvisioningRecovery(t *testing.T) {
 }
 
 func TestProjectSpriteLoginReadiness(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		checks       *runnerauth.LocalChecks
@@ -1781,6 +1801,7 @@ func TestProjectSpriteLoginReadiness(t *testing.T) {
 }
 
 func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
+	t.Parallel()
 	f, scope, provider := newSpritePoolFixture(t, "")
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
@@ -1817,6 +1838,7 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 }
 
 func TestZZSpriteBootstrapProbe(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://hub.example.test"}
 	scope := placementFixtureScope(t, f)

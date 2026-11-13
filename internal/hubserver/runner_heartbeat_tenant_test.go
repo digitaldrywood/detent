@@ -69,6 +69,7 @@ func (c *heartbeatConn) Write(value []byte) (int, error) {
 }
 
 func TestTenantHeartbeatHTTPCommandAndAuthority(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	connection := startupConnection(t, f.admin, "detent_runtime_v2", "")
 	config := postgresStartupTemplate.NativeConfig(t, f.admin, connection.User, connection.Password)

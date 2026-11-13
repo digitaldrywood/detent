@@ -18,6 +18,7 @@ import (
 )
 
 func TestChangeFindingAttributionPersistsForTwoItems(t *testing.T) {
+	t.Parallel()
 	f := newChangeFixture(t, nil)
 	second := f.create(t, "second")
 	path := f.base + "/work-items/" + string(second.WorkItemID) + "/changes"

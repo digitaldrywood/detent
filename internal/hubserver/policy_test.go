@@ -43,6 +43,7 @@ import (
 )
 
 func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *testing.T) {
+	t.Parallel()
 	repository, _ := projectRecordPostgresWithAdmin(t, 4)
 	details := &memoryRunDetails{}
 	service := openPostgresHubTestService(t, repository, Config{RunDetails: details})
@@ -475,6 +476,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 }
 
 func TestSelectedPostgresPolicyApprovalFailsClosedWithoutAccessRepository(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := &Service{config: Config{TenantRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now, Logger: discardLogger()}}
 	scope := hubscope.NativeScope{Organization: "org_example", Project: "prj_example", Credential: hubapi.APICredential{ID: "credential_example", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
@@ -501,6 +503,7 @@ func TestSelectedPostgresPolicyApprovalFailsClosedWithoutAccessRepository(t *tes
 }
 
 func TestPostgresProjectPolicyApprovalRejectsDemotedHostedAdmin(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
@@ -2264,6 +2267,7 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 }
 
 func TestPostgresObservedPolicyPreservesHubTriageAndOccupiedWorkflow(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	descriptor := func(instructions, revision string, legacy bool) policy.Descriptor {
@@ -2409,6 +2413,7 @@ func TestPostgresObservedPolicyPreservesHubTriageAndOccupiedWorkflow(t *testing.
 }
 
 func TestNativeWorkflowPolicyCanonicalStates(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		change   func(*projectstore.Record)
@@ -2457,6 +2462,7 @@ func TestNativeWorkflowPolicyCanonicalStates(t *testing.T) {
 }
 
 func TestPolicyScopeRequiresTypedRepository(t *testing.T) {
+	t.Parallel()
 	for _, organization := range []string{"", "org_example"} {
 		t.Run(organization, func(t *testing.T) {
 			service := &Service{}

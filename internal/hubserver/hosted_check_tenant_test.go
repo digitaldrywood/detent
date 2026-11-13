@@ -22,6 +22,7 @@ import (
 )
 
 func TestPostgresHostedCheckAuthenticationWithoutLegacyDatabase(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{}}}

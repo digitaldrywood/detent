@@ -17,6 +17,7 @@ import (
 )
 
 func TestRunnerCompletionPublicationWireBudget(t *testing.T) {
+	t.Parallel()
 	first, second, repository, wire, logs := newRunnerEventWireFixtures(t)
 	if _, err := first.admin.ExecContext(t.Context(), `CREATE FUNCTION reject_completion_receipt() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF NEW.command_key='rollback_completion' THEN RAISE EXCEPTION 'fixture publication rejection'; END IF; RETURN NEW; END$$; CREATE TRIGGER reject_completion_receipt BEFORE INSERT ON native_commands FOR EACH ROW EXECUTE FUNCTION reject_completion_receipt()`); err != nil {
 		t.Fatal(err)

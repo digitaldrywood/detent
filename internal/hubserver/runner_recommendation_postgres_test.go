@@ -35,6 +35,7 @@ import (
 )
 
 func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Hour)
 	f := newSharedRouteFixture(t, func(cfg *Config) { cfg.now = func() time.Time { return now } })
 	for _, service := range f.services {

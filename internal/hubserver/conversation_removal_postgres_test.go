@@ -21,6 +21,7 @@ import (
 )
 
 func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	objects := &conversationContentFixture{}

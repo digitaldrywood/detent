@@ -215,6 +215,7 @@ func requireLoadStatus(t *testing.T, response *responseRecorderCode, status int)
 // grew with accumulated history and message length while they held the
 // tenant's single writer.
 func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("runner write load reproduction")
 	}
@@ -306,6 +307,7 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 }
 
 func TestRunnerHostSummaryWriteCost(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("ten-runner heartbeat write measurement")
 	}

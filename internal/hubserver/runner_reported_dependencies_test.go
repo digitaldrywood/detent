@@ -126,6 +126,7 @@ func (p rejectedRunnerDependencyParticipant) ApplyNativeRunEvent(ctx context.Con
 }
 
 func TestRunnerCompletionRecordsDependencyEdgesAtomically(t *testing.T) {
+	t.Parallel()
 	barrier := &runnerDependencyPayloadBarrier{}
 	f := newRunnerPGFixtureWithDetails(t, func(store attachment.DetailStore) attachment.DetailStore {
 		barrier.DetailStore = store

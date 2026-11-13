@@ -129,6 +129,7 @@ func TestReleaseNotesPreferences(t *testing.T) {
 }
 
 func TestReleaseNotesMCP(t *testing.T) {
+	t.Parallel()
 	for _, transport := range []string{"stdio", "http"} {
 		for _, test := range []struct {
 			name   string

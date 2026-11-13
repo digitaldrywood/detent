@@ -40,6 +40,7 @@ import (
 )
 
 func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, now: time.Now}}
 	first := nativeOrganization{ID: "org_first", Name: "First organization", Slug: "first"}
@@ -277,6 +278,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 }
 
 func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Date(2026, time.November, 1, 22, 0, 0, 0, time.UTC)}
 	service := &Service{database: &database{postgres: repository, now: clock.Now}, notifications: newNotificationBroker(), echo: echo.New(), secretRewrapReady: make(chan struct{}), config: (Config{RunDetails: &memoryRunDetails{}, TenantRepository: repository, AccessRepository: repository, Clock: clock.Now, Logger: discardLogger(), RunnerReleaseClient: &runnerReleaseFixture{}}).normalized()}
@@ -1184,6 +1186,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 }
 
 func TestRunnerTenantUsageUsesBillingReceiptsAndPreservesExemptions(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Date(2026, time.November, 1, 22, 0, 0, 0, time.UTC)}
 	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: clock.Now}}

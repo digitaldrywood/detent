@@ -18,6 +18,7 @@ import (
 )
 
 func TestPostgresHostedArtifactAllowanceBoundary(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	for _, suffix := range []string{"a", "b"} {
 		t.Run(suffix, func(t *testing.T) {

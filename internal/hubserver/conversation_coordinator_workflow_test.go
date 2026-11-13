@@ -30,6 +30,7 @@ import (
 )
 
 func TestCoordinatorWorkflowTools(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, tool, role string
 		refuse           bool
@@ -71,6 +72,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 		{name: "repository workflow refusal", tool: "update_project_integration", role: "owner", refuse: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			backend := newFakeCoordinatorBackend()
 			f := newHostedSecurityFixture(t, func(cfg *Config) {
 				cfg.Conversation = &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}

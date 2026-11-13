@@ -566,6 +566,7 @@ func storeOrganizationSpritesSecret(t *testing.T, f nativeFixture, token string)
 }
 
 func TestWakeManagedSpriteMembers(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		ready, drain bool

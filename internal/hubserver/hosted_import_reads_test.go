@@ -33,6 +33,7 @@ import (
 )
 
 func TestHostedImportTypedReads(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 4)
 	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
@@ -353,6 +354,7 @@ func TestHostedImportTypedReads(t *testing.T) {
 }
 
 func TestHostedImportOutboxFields(t *testing.T) {
+	t.Parallel()
 	objects := &memoryRunDetails{}
 	f := newDefaultNativeFixture(t, Config{RunDetails: objects})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
@@ -526,6 +528,7 @@ func TestHostedImportOutboxFields(t *testing.T) {
 }
 
 func TestHostedImportReplaySurvivesLegacyEvaluationFailure(t *testing.T) {
+	t.Parallel()
 	details := &memoryRunDetails{}
 	f := newDefaultNativeFixture(t, Config{RunDetails: details})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {

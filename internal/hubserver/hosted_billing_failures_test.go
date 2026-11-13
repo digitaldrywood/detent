@@ -18,6 +18,7 @@ import (
 )
 
 func TestHostedBillingCheckoutFailures(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, path string
 		status     int

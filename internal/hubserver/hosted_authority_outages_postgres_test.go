@@ -15,6 +15,7 @@ import (
 )
 
 func TestPostgresHostedUsageAuthorityOutages(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		repository := service.config.AccessRepository
@@ -53,6 +54,7 @@ func TestPostgresHostedUsageAuthorityOutages(t *testing.T) {
 }
 
 func TestPostgresHostedProjectWriteOutages(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		repository := service.config.TenantRepository

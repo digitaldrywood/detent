@@ -18,6 +18,7 @@ import (
 )
 
 func TestRunnerIsolationClaims(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		report       isolation.Report
@@ -76,6 +77,7 @@ func TestRunnerIsolationClaims(t *testing.T) {
 }
 
 func TestRunnerIsolationHeartbeatWithdrawsTier(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name            string
 		previousSandbox bool
@@ -138,6 +140,7 @@ func TestRunnerIsolationHeartbeatWithdrawsTier(t *testing.T) {
 }
 
 func TestRunnerIsolationOmittedHeartbeatClearsReport(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
@@ -157,6 +160,7 @@ func TestRunnerIsolationOmittedHeartbeatClearsReport(t *testing.T) {
 }
 
 func TestRunnerIsolationPolicyPinnedToClaim(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
@@ -192,6 +196,7 @@ func TestRunnerIsolationPolicyPinnedToClaim(t *testing.T) {
 }
 
 func TestRunnerIsolationLeaseLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, initial, changed string
 		legacy                 bool
@@ -305,6 +310,7 @@ func TestRunnerIsolationLeaseLifecycle(t *testing.T) {
 }
 
 func TestRunnerIsolationRefusalAfterHeartbeatDuringClaim(t *testing.T) {
+	t.Parallel()
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	f := newDefaultNativeFixture(t, Config{Clock: clock.Now})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)

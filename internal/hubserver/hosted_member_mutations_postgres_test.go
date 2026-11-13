@@ -26,6 +26,7 @@ import (
 )
 
 func TestPostgresHostedEntitlementRoutesUseCurrentTenant(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	details := &memoryRunDetails{}
 	now := time.Date(2026, time.November, 4, 0, 0, 0, 0, time.UTC)
@@ -131,6 +132,7 @@ func TestPostgresHostedEntitlementRoutesUseCurrentTenant(t *testing.T) {
 }
 
 func TestPostgresMemberMutationRoutesPreserveCurrentAuthority(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	provider := newHostedSecurityProvider()
 	details := &memoryRunDetails{}

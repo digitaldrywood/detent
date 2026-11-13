@@ -153,6 +153,7 @@ func newReleaseTenantFixtureFor(t *testing.T, repo tenantstore.Repository, f hos
 }
 
 func TestReleaseAssociationPostgres(t *testing.T) {
+	t.Parallel()
 	f := newReleaseTenantFixture(t)
 	path := f.f.base + "/work-items/" + string(f.delivery.WorkItemID) + "/release-pick"
 	first := f.f.request(t, f.owner, http.MethodPost, path, f.request)
@@ -397,6 +398,7 @@ func TestReleaseAssociationPostgres(t *testing.T) {
 }
 
 func TestReleaseAssociationRefreshPostgres(t *testing.T) {
+	t.Parallel()
 	f := newReleaseTenantFixture(t)
 	path := f.f.base + "/work-items/" + string(f.delivery.WorkItemID) + "/release-pick"
 	var first tracker.ReleaseDelivery
@@ -435,6 +437,7 @@ func TestReleaseAssociationRefreshPostgres(t *testing.T) {
 }
 
 func TestReleaseAssociationRechecksProviderPostgres(t *testing.T) {
+	t.Parallel()
 	f := newReleaseTenantFixture(t)
 	f.verifier.verify = func(tracker.ReleasePickInput) error {
 		return f.f.provider.RevokeMembership(t.Context(), "membership_"+f.owner.identity.Subject)

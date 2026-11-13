@@ -30,6 +30,7 @@ func (r *scheduledSourceMaintenanceRepository) BackfillScheduledSourcesAfter(_ c
 }
 
 func TestScheduledSourceMaintenanceKeepsEachTenantOwnerAndPassesPoison(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("unreadable source")
 	repository := &scheduledSourceMaintenanceRepository{calls: map[tracker.OrganizationID][]postgres.ScheduledSourceCursor{}, failure: failure}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {

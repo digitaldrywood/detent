@@ -627,6 +627,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 }
 
 func TestPlacementConcurrentClaims(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, mode                     string
 		ceiling, overflow, limit, want int
@@ -792,6 +793,7 @@ func TestPlacementClaimTenantBoundaries(t *testing.T) {
 }
 
 func TestPlacementIgnoresExhaustedSubscriptionQuota(t *testing.T) {
+	t.Parallel()
 	for _, claimant := range []string{"local", "sprite"} {
 		t.Run(claimant, func(t *testing.T) {
 			f := placementNativeFixture(t, Config{})
@@ -821,6 +823,7 @@ func TestPlacementIgnoresExhaustedSubscriptionQuota(t *testing.T) {
 }
 
 func TestPlacementWake(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, mode           string
 		depth                int
@@ -890,6 +893,7 @@ func TestPlacementWake(t *testing.T) {
 }
 
 func TestPlacementSettingsCompatibility(t *testing.T) {
+	t.Parallel()
 	f := placementNativeFixture(t, Config{})
 	scope := placementFixtureScope(t, f)
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {

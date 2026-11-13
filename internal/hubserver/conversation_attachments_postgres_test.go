@@ -31,6 +31,7 @@ import (
 )
 
 func TestConversationAttachmentPostgresHTTP(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &conversationContentFixture{}
 	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: time.Now}}
@@ -722,6 +723,7 @@ func (r *attachmentReadCounter) ReadTenant(ctx context.Context, org tracker.Orga
 }
 
 func TestConversationAttachmentPostgresSweep(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &conversationContentFixture{}
 	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: time.Now}}

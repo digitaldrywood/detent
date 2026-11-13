@@ -186,6 +186,7 @@ func (f runnerPGFixture) client(t *testing.T, index int) (*api.NativeClient, con
 }
 
 func TestPostgresRunnerSessionMutationOrdersLocksWithLeaseRenewal(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"session", "progress", "progress with another runner"} {
 		t.Run(name, func(t *testing.T) {
 			f := newRunnerPGFixture(t)
@@ -294,6 +295,7 @@ func (r runnerSessionFaultReader) ProjectPolicyRevision(ctx context.Context, id 
 }
 
 func TestPostgresRunnerSessionFencePreservesStorageErrors(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	credential, status, err := f.service.authenticateAccessHash(t.Context(), apikey.HashToken(f.tokens[0]), "", "")
 	if err != nil || status != http.StatusOK {

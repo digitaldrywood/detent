@@ -1832,6 +1832,7 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 }
 
 func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC().Truncate(time.Microsecond)
 	var clock atomic.Int64
 	clock.Store(base.UnixNano())

@@ -18,6 +18,7 @@ import (
 )
 
 func TestProjectGitHubBatchUsesPostgresRecords(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	details := &memoryRunDetails{}
 	now := time.Now().UTC()

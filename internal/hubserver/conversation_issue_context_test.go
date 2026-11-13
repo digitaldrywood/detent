@@ -22,6 +22,7 @@ import (
 )
 
 func TestCoordinatorSubjectPrompt(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, subject string }{{"general chat", ""}, {"pinned issue", "wi_subject"}} {
 		t.Run(test.name, func(t *testing.T) {
 			record := conversationRecord{ProjectID: "prj_subject", SubjectWorkItemID: test.subject}
@@ -48,6 +49,7 @@ func TestCoordinatorSubjectPrompt(t *testing.T) {
 }
 
 func TestConversationSubjectOwnership(t *testing.T) {
+	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
 	worker := f.create(t, f.token, map[string]any{})
 	response := f.link(t, f.token, worker.Conversation.ID, "worker-link", true, "subject issue")
@@ -92,6 +94,7 @@ func TestConversationSubjectOwnership(t *testing.T) {
 }
 
 func TestCoordinatorSubjectRefresh(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		sizes       []int
@@ -107,6 +110,7 @@ func TestCoordinatorSubjectRefresh(t *testing.T) {
 		{name: "failed history read", unavailable: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			details := &memoryRunDetails{}
 			f := newConfiguredCoordinatorFixture(t, "subject-refresh-"+strings.ReplaceAll(test.name, " ", "-"), func(cfg *Config) { cfg.RunDetails = details })
 			issue := f.create(t, "question subject")

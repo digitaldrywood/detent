@@ -17,6 +17,7 @@ import (
 )
 
 func TestBillingMaintenanceCreditStepAdvancesOneTenantEvent(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -91,6 +92,7 @@ func (p *maintenanceBillingProvider) Reconcile(_ context.Context, binding billin
 }
 
 func TestBillingMaintenanceSubscriptionReceiptsAndDueCheck(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	service := &Service{database: &database{billingRepository: repository, hostedOrganization: "org_unselected", billingAuditStore: &memoryRunDetails{}}, config: Config{now: func() time.Time { return now }}}

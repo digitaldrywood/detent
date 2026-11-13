@@ -149,6 +149,7 @@ func diagnosticsFixtureSnapshot(t *testing.T, f diagnosticsPostgresFixture, proj
 }
 
 func TestDiagnosticsProjectionReadBound(t *testing.T) {
+	t.Parallel()
 	for _, f := range diagnosticsPostgresFixtures(t) {
 		t.Run(string(f.organization), func(t *testing.T) {
 			now := f.hosted.service.config.now().UTC().Truncate(time.Hour)
@@ -188,6 +189,7 @@ func TestDiagnosticsProjectionReadBound(t *testing.T) {
 }
 
 func TestDiagnosticsAttemptCandidatesBound(t *testing.T) {
+	t.Parallel()
 	for _, population := range []int{4000, 40000} {
 		for _, f := range diagnosticsPostgresFixtures(t) {
 			now := f.hosted.service.config.now().UTC().Truncate(time.Hour)
@@ -230,6 +232,7 @@ func TestDiagnosticsAttemptCandidatesBound(t *testing.T) {
 }
 
 func TestDiagnosticsRefusalPageByteParity(t *testing.T) {
+	t.Parallel()
 	for _, f := range diagnosticsPostgresFixtures(t) {
 		t.Run(string(f.organization), func(t *testing.T) {
 			now := f.hosted.service.config.now().UTC().Truncate(time.Hour)

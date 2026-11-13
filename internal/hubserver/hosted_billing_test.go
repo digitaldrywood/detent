@@ -402,6 +402,7 @@ func TestHostedBillingAuthorizationAndCheckout(t *testing.T) {
 }
 
 func TestCapacityTestPriceCompatibility(t *testing.T) {
+	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
 	d := f.service.database
 	provider := &hostedBillingProvider{snapshot: activeBillingSnapshot(time.Now())}
@@ -467,6 +468,7 @@ func TestCapacityTestPriceCompatibility(t *testing.T) {
 }
 
 func TestCapacityPaidPlanChanges(t *testing.T) {
+	t.Parallel()
 	f, provider := newHostedBillingFixture(t)
 	d := f.service.database
 	cfg := f.service.config.Hosted

@@ -572,6 +572,7 @@ func TestHostedOnboardingFirstRun(t *testing.T) {
 }
 
 func TestOnboardingBrowserPreview(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("DETENT_ONBOARDING_BROWSER_PREVIEW") == "" {
 		t.Skip("isolated onboarding browser preview")
 	}
@@ -1041,6 +1042,7 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 }
 
 func TestRunnerFirstOnboardingSteps(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                                      string
 		runner, repository, checks, config, files bool

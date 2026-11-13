@@ -31,6 +31,7 @@ import (
 )
 
 func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	provider := newHostedSecurityProvider()
@@ -159,6 +160,7 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 }
 
 func TestAccessInvitationLifecycleIsTenantScoped(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	provider := newHostedSecurityProvider()
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -380,6 +382,7 @@ func (r *countingTenantRepository) WriteTenant(ctx context.Context, organization
 }
 
 func TestSharedAccessSessionLookupFailureIsUnavailable(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
@@ -439,6 +442,7 @@ func TestSharedAccessSessionLookupFailureIsUnavailable(t *testing.T) {
 }
 
 func TestBootstrapLookupFailureIsUnavailable(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	repository := &countingTenantRepository{readErr: errors.New("storage unavailable")}
 	service := &Service{config: Config{AccessRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_example", SharedEntry: &hostedplans.HostedSharedEntry{}}, Logger: slog.Default(), now: func() time.Time { return now }}}

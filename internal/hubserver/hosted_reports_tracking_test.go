@@ -21,6 +21,7 @@ import (
 )
 
 func TestReportsTrackingIssues(t *testing.T) {
+	t.Parallel()
 	failures := []nativeFailure{
 		{WorkItem: "wi_a", Example: "hub request timed out"},
 		{WorkItem: "wi_b", Example: "landing gate failed"},

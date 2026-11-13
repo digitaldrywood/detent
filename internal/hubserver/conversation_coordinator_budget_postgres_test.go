@@ -176,6 +176,7 @@ func (r coordinatorBudgetReadReader) BillingMonthlyPolicy(ctx context.Context, p
 }
 
 func TestCoordinatorProjectBudgetPostgres(t *testing.T) {
+	t.Parallel()
 	first := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir(), ArchiveContents: &conversationContentFixture{}}
 	})

@@ -11,6 +11,7 @@ import (
 )
 
 func TestRunnerCancellationPublicationWireBudget(t *testing.T) {
+	t.Parallel()
 	first, second, _, wire, logs := newRunnerEventWireFixtures(t)
 	if _, err := first.admin.ExecContext(t.Context(), `CREATE FUNCTION reject_runner_release() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF OLD.release_reason='fixture_reject' AND NEW.released_at IS NOT NULL THEN RAISE EXCEPTION 'fixture release rejection'; END IF; RETURN NEW; END$$; CREATE TRIGGER reject_runner_release BEFORE UPDATE ON leases FOR EACH ROW EXECUTE FUNCTION reject_runner_release()`); err != nil {
 		t.Fatal(err)

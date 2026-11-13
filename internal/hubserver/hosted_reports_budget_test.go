@@ -29,6 +29,7 @@ import (
 )
 
 func TestReportsLongRangeReadBudget(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
 	f := newUsageHostedFixture(t, func(cfg *Config) { cfg.now = func() time.Time { return now } })
 	installReportsBudgetTrace(t, f.service)

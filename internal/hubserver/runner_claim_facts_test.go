@@ -32,6 +32,7 @@ import (
 )
 
 func TestRunnerClaimFactsRecoverOnlyVerifiedCurrentSource(t *testing.T) {
+	t.Parallel()
 	const humanReport = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the plan\n```"
 	const permissionReport = "```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: null\n```"
 	repository, admin := projectRecordPostgresWithAdmin(t, 4)

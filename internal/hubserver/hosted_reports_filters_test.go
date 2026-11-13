@@ -24,6 +24,7 @@ import (
 )
 
 func TestReportsFilterDimensions(t *testing.T) {
+	t.Parallel()
 	f := newUsageHostedFixture(t)
 	session, err := f.service.hostedSessions.Authenticate(t.Context(), f.cookies["owner"].Value)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 )
 
 func TestCoordinatorPostgresReadsPendingMessages(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, organization := range []tracker.OrganizationID{"org_coordinator_first", "org_coordinator_second"} {
@@ -77,6 +78,7 @@ func TestCoordinatorPostgresReadsPendingMessages(t *testing.T) {
 }
 
 func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	organization := tracker.OrganizationID("org_coordinator_access")

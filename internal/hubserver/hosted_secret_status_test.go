@@ -16,6 +16,7 @@ import (
 )
 
 func TestHostedSecretStatusTenantPagesAndKeyChecks(t *testing.T) {
+	t.Parallel()
 	f := newSecretPostgresFixture(t)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(organization), func(t *testing.T) {

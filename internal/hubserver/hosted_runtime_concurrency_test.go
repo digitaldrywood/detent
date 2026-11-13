@@ -96,6 +96,7 @@ func runtimeProbeService(repo tenantstore.Repository) *Service {
 	return &Service{database: d, config: Config{Logger: discardLogger(), now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_example", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}}
 }
 func TestRuntimeRefreshExcludesUnrelatedRoutes(t *testing.T) {
+	t.Parallel()
 	probe := &runtimeReadProbe{err: errors.New("runtime storage unavailable")}
 	s := runtimeProbeService(probe)
 	e := echo.New()
@@ -127,6 +128,7 @@ func (p *runtimeObjectProbe) ReadDetail(ctx context.Context, _ string, _ attachm
 	}
 }
 func TestRuntimeRefreshSharesChangedObjectLoad(t *testing.T) {
+	t.Parallel()
 	for _, failed := range []bool{false, true} {
 		t.Run(fmt.Sprint(failed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

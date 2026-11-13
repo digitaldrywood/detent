@@ -50,6 +50,7 @@ func (b *ciDecisionBackend) RunTurn(_ context.Context, request runner.AgentTurnR
 }
 
 func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, log string
 		decision  progresscheck.CIDecision

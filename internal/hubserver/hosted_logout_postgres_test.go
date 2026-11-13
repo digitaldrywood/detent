@@ -17,6 +17,7 @@ import (
 )
 
 func TestPostgresLogoutRevokesExpiredSessions(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

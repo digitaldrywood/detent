@@ -29,6 +29,7 @@ import (
 )
 
 func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t, func(p *policy.Descriptor) { p.Gates.SecurityAudit = true })
 	for _, role := range []string{"operator", "admin"} {
 		token := "example-disposition-" + role

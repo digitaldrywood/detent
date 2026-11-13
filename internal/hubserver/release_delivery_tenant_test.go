@@ -13,6 +13,7 @@ import (
 )
 
 func TestReleaseDeliveryStatusPostgresMissingItem(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := &Service{config: Config{TenantRepository: repository, Logger: slog.Default()}}
 	request := httptest.NewRequest(http.MethodGet, "/release-pick", nil)

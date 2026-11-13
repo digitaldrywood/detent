@@ -38,6 +38,7 @@ func (f conversationWorkerAuthorityFunc) VerifyConversationWorker(ctx context.Co
 }
 
 func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
+	t.Parallel()
 	for _, concurrent := range []bool{false, true} {
 		t.Run(fmt.Sprintf("concurrent_event=%t", concurrent), func(t *testing.T) {
 			for _, origin := range []string{conversationOriginWorker, conversationOriginUser} {

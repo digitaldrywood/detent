@@ -16,6 +16,7 @@ import (
 )
 
 func TestHostedProjectDeletion(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, account, update, confirm, organization, role string
 		noCSRF                                             bool

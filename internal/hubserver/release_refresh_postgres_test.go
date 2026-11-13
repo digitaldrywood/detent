@@ -17,6 +17,7 @@ import (
 )
 
 func TestReleaseRefreshLeavesLandingPostgres(t *testing.T) {
+	t.Parallel()
 	f := newReleaseTenantFixture(t)
 	seedReleaseTenantAudit(t, f)
 	path := f.f.base + "/work-items/" + string(f.delivery.WorkItemID)

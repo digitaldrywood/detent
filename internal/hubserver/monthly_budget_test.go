@@ -388,6 +388,7 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 }
 
 func TestMonthlyBudgetHistoricalAdmissionsCannotFundNewClaims(t *testing.T) {
+	t.Parallel()
 	for _, organization := range []bool{true, false} {
 		for _, archived := range []bool{false, true} {
 			t.Run(fmt.Sprintf("organization=%t/archived=%t", organization, archived), func(t *testing.T) {
@@ -727,6 +728,7 @@ func TestMonthlyBudgetCorrectionsAndSettingsAuthority(t *testing.T) {
 }
 
 func TestMonthlyBudgetClaimsApplyCorrectionsAcrossTenants(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.April, 15, 12, 0, 0, 0, time.UTC)
 	var logs bytes.Buffer
 	t.Cleanup(func() {

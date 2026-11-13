@@ -12,6 +12,7 @@ import (
 )
 
 func TestPreparedConfigurationPreservesOtherProjects(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunnerForScope(t, f, "organization", runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)

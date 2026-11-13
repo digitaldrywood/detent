@@ -246,6 +246,7 @@ func (f *coordinatorFixture) coordinator() conversationCoordinator {
 }
 
 func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"revision", "event sequence", "preferences", "execution"} {
 		t.Run(change, func(t *testing.T) {
 			f := newCoordinatorFixture(t, "publication-conflict")
@@ -309,6 +310,7 @@ func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
 }
 
 func TestCoordinatorWriterReadsIgnoreHistory(t *testing.T) {
+	t.Parallel()
 	for _, count := range []int{1, 128} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			f := newCoordinatorFixture(t, "writer-history")
@@ -2172,6 +2174,7 @@ func TestConversationCoordinatorRefusesWritesOnceLinked(t *testing.T) {
 }
 
 func TestCoordinatorFreeRefusesLuna(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		included     bool

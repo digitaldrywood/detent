@@ -90,6 +90,7 @@ func coordinatorViewerTools(t *testing.T, f hostedSecurityFixture, record conver
 }
 
 func TestCoordinatorScreenReads(t *testing.T) {
+	t.Parallel()
 	for _, role := range []struct {
 		name, role string
 		runner     bool
@@ -207,6 +208,7 @@ func TestCoordinatorScreenReads(t *testing.T) {
 }
 
 func TestCoordinatorScreenReadBoundaries(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, args string
 		revoke     bool
@@ -234,6 +236,7 @@ func TestCoordinatorScreenReadBoundaries(t *testing.T) {
 }
 
 func TestCoordinatorWorkListRefusalNamesReason(t *testing.T) {
+	t.Parallel()
 	f, owner, record := coordinatorReadFixture(t)
 	tools, _ := coordinatorViewerTools(t, f, record, owner)
 	for _, test := range []struct{ args, reason string }{
@@ -248,6 +251,7 @@ func TestCoordinatorWorkListRefusalNamesReason(t *testing.T) {
 }
 
 func TestCoordinatorReadAudience(t *testing.T) {
+	t.Parallel()
 	f, owner, record := coordinatorReadFixture(t)
 	tools, _ := coordinatorViewerTools(t, f, record, owner)
 	result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "get_native_project", Arguments: json.RawMessage(`{}`)})
@@ -304,6 +308,7 @@ func TestCoordinatorReadAudience(t *testing.T) {
 }
 
 func TestCoordinatorProjectRunners(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		count        int

@@ -16,6 +16,7 @@ import (
 )
 
 func TestConversationCollaborationGrowthAllowancePostgres(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	ref := billingstore.PlanReference{ID: "example", Version: 1}
 	now := time.Unix(120, 0).UTC()
@@ -87,6 +88,7 @@ func TestConversationCollaborationGrowthAllowancePostgres(t *testing.T) {
 }
 
 func TestConversationCollaborationGrowthAllowancePostgresIsTenantScoped(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	ref := billingstore.PlanReference{ID: "example", Version: 1}
 	allowances := map[string]int64{"collaboration_bytes": 10, "api_mutations": 2}
@@ -150,6 +152,7 @@ func conversationAllowanceDatabase(organization tracker.OrganizationID, ref bill
 }
 
 func TestAttachmentAPIMutationChargesPostgres(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	ref := billingstore.PlanReference{ID: "example", Version: 1}
 	allowances := map[string]int64{"collaboration_bytes": 10, "api_mutations": 3}
@@ -199,6 +202,7 @@ func TestAttachmentAPIMutationChargesPostgres(t *testing.T) {
 }
 
 func TestRunEventGrowthCountsCompletionEventsPostgres(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	ref := billingstore.PlanReference{ID: "example", Version: 1}
 	allowances := map[string]int64{"ingested_events": 0, "history_records": 0}

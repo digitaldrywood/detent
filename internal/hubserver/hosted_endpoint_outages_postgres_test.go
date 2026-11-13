@@ -66,6 +66,7 @@ func (r hostedUsageFaultReader) AccessMissingUsageGrant(context.Context, string)
 }
 
 func TestPostgresHostedEndpointCredentialOutages(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		repository := service.config.AccessRepository
@@ -108,6 +109,7 @@ func TestPostgresHostedEndpointCredentialOutages(t *testing.T) {
 }
 
 func TestPostgresHostedMemberProviderOutages(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		provider := &entryAuthProvider{browserHostedProvider: &browserHostedProvider{members: map[string]auth.Membership{}}}

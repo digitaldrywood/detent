@@ -147,6 +147,7 @@ func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 }
 
 func TestRunnerProjectDiagnosticOwner(t *testing.T) {
+	t.Parallel()
 	var logs bytes.Buffer
 	var clock atomic.Int64
 	clock.Store(time.Now().UTC().Truncate(time.Microsecond).UnixNano())
@@ -555,6 +556,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 }
 
 func TestRunnerProjectDiagnosticsIsolationPlatform(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, goos, tier string
 		unsupported      bool

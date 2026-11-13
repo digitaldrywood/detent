@@ -86,12 +86,16 @@ func newHostedKeyMCPFixture(t *testing.T, deployment, role string) (hostedKeyMCP
 }
 
 func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
+			t.Parallel()
 			for _, access := range []hubapi.HostedProjectAccess{hubapi.HostedProjectsSelected, hubapi.HostedProjectsAll} {
 				t.Run(string(access), func(t *testing.T) {
+					t.Parallel()
 					for _, scenario := range []string{"read", "write", "admin", "key revoked", "key expired", "key grant removed", "user grant removed", "provider membership removed", "local membership removed", "membership replaced", "provider role downgraded", "local role downgraded", "write grant removed", "foreign organization", "foreign organization route", "foreign project", "unselected project", "issuer principal revoked", "issuer grant removed", "future project", "future project read key", "future project without user grant", "future project without issuer grant", "no projects at creation", "machine", "worker", "never expires read", "never expires write", "never expires admin", "never expires key revoked", "never expires provider membership removed", "never expires local membership removed", "never expires provider role downgraded", "never expires local role downgraded", "never expires user grant removed", "never expires key grant removed"} {
 						t.Run(scenario, func(t *testing.T) {
+							t.Parallel()
 							neverExpires := strings.HasPrefix(scenario, "never expires ")
 							scenario := strings.TrimPrefix(scenario, "never expires ")
 							var f hostedSecurityFixture
@@ -484,6 +488,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 }
 
 func TestHostedAPIKeyManagement(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
 			var f hostedSecurityFixture
@@ -653,6 +658,7 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 }
 
 func TestHostedProjectRankTools(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"shared", "dedicated"} {
 		for _, role := range []string{"owner", "admin", "member", "viewer"} {
 			t.Run(deployment+"/"+role, func(t *testing.T) {

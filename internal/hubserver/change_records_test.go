@@ -247,6 +247,7 @@ func (s *changeReviewDetailReadGuard) ReadDetail(ctx context.Context, organizati
 }
 
 func TestChangeDetailEmptyCollectionsAreArrays(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -366,6 +367,7 @@ func TestChangeDetailEmptyCollectionsAreArrays(t *testing.T) {
 }
 
 func TestChangeDetailResponsePreservesStoredCollections(t *testing.T) {
+	t.Parallel()
 	stored := tracker.ChangeDetail{Versions: []tracker.ChangeVersion{{ID: "version_example"}}, Checks: []tracker.ChangeCheck{{VersionID: "version_example"}}}
 	raw, err := json.Marshal(changeDetailResponse(stored))
 	if err != nil {
@@ -390,6 +392,7 @@ func TestChangeDetailResponsePreservesStoredCollections(t *testing.T) {
 }
 
 func TestChangeRecordBackendParity(t *testing.T) {
+	t.Parallel()
 	repository, f, owner := newChangePolicyPostgresFixture(t)
 	createItem := func(key string) tracker.NativeIssue {
 		t.Helper()
@@ -464,6 +467,7 @@ func TestChangeRecordBackendParity(t *testing.T) {
 }
 
 func TestChangeRecordReceiptRejectsChangedRequest(t *testing.T) {
+	t.Parallel()
 	_, f, owner := newChangePolicyPostgresFixture(t)
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue"}, Title: "Example issue", Body: workItemRecordBody, State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -484,6 +488,7 @@ func TestChangeRecordReceiptRejectsChangedRequest(t *testing.T) {
 }
 
 func TestChangeReviewPolicyUsesSelectedTenantPolicyAndReceipt(t *testing.T) {
+	t.Parallel()
 	repository, f, owner := newChangePolicyPostgresFixture(t)
 	descriptor := hubTestPolicy()
 	path := f.base + "/change-review-policy"
@@ -562,6 +567,7 @@ func TestChangeReviewPolicyUsesSelectedTenantPolicyAndReceipt(t *testing.T) {
 }
 
 func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
+	t.Parallel()
 	repository, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 3)
 	service := f.service
 	if err := service.stopGitHubWebhookMaintenance(); err != nil {
@@ -764,6 +770,7 @@ func newChangePolicyPostgresTenantFixture(t *testing.T, repository tenantstore.R
 }
 
 func TestChangeReviewPolicyRechecksDemotedAdminInTenantWriter(t *testing.T) {
+	t.Parallel()
 	repository, f, owner := newChangePolicyPostgresFixture(t)
 	now := f.service.config.now()
 	var member accessstore.Member

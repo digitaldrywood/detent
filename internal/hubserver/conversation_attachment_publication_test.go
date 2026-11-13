@@ -23,6 +23,7 @@ import (
 )
 
 func TestConversationAttachmentReplayDoesNotPublish(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		content []byte
@@ -53,6 +54,7 @@ func TestConversationAttachmentReplayDoesNotPublish(t *testing.T) {
 }
 
 func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		allowance    int64
@@ -278,6 +280,7 @@ func (s *conversationAttachmentRaceContent) ReadContent(ctx context.Context, org
 }
 
 func TestConversationAttachmentPublicationRechecksRevision(t *testing.T) {
+	t.Parallel()
 	objects := &conversationAttachmentRaceContent{conversationContentFixture: &conversationContentFixture{}}
 	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
@@ -327,6 +330,7 @@ func TestConversationAttachmentPublicationRechecksRevision(t *testing.T) {
 }
 
 func TestConversationUnsentAttachmentReclaimsArchiveCharge(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		expire bool

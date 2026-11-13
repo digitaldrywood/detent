@@ -18,6 +18,7 @@ import (
 )
 
 func TestPostgresAccessCommandLookupOutages(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, func(cfg *Config) {
 		plans := hostedplans.PilotPlans()
 		cfg.Hosted.Plans = &plans

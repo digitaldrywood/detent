@@ -16,6 +16,7 @@ import (
 )
 
 func TestUrgentRunnerUpdateHeartbeatSurvivesReplayExpiry(t *testing.T) {
+	t.Parallel()
 	for _, format := range []string{"current"} {
 		t.Run(format, func(t *testing.T) {
 			start := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
@@ -81,6 +82,7 @@ func TestUrgentRunnerUpdateHeartbeatSurvivesReplayExpiry(t *testing.T) {
 }
 
 func TestUrgentRunnerUpdateFleet(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/runner-update/urgent"

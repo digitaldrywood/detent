@@ -28,6 +28,7 @@ func (r genericRunnerEventRepository) WriteTenant(ctx context.Context, org track
 }
 
 func TestGenericRunnerEventCommandDoesNotDeadlockMachineHeartbeat(t *testing.T) {
+	t.Parallel()
 	first, second, repository, _, _ := newRunnerEventWireFixtures(t)
 	service := &Service{config: Config{TenantRepository: genericRunnerEventRepository{repository}, NativeRunEvents: &nativeRunEventParticipantFixture{}}}
 	for index, fixture := range []runnerPGFixture{first, second} {

@@ -39,6 +39,7 @@ import (
 )
 
 func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	asOf := now
@@ -1137,6 +1138,7 @@ func (w routingAuditFailureWriter) RecordAccessAudit(context.Context, accessstor
 }
 
 func TestPostgresRunnerHostChangeWithoutLegacyDatabase(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC()
 	service := &Service{database: &database{}, notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), config: Config{TenantRepository: repository, AccessRepository: repository, now: func() time.Time { return now }}}

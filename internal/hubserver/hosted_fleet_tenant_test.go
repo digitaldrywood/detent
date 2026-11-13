@@ -37,6 +37,7 @@ import (
 )
 
 func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{}

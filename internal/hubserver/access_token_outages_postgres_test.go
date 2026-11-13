@@ -27,6 +27,7 @@ func (p *accessCommandSessionProvider) CurrentSession(ctx context.Context, ident
 }
 
 func TestPostgresAccessTokenMutationIdentityOutage(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, func(cfg *Config) { cfg.Hosted.SharedEntry = nil })
 	for org, service := range f.services {
 		provider := &accessCommandSessionProvider{browserHostedProvider: &browserHostedProvider{members: map[string]auth.Membership{}, sessions: map[string]auth.HostedIdentity{}}}

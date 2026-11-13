@@ -19,6 +19,7 @@ import (
 )
 
 func TestRunnerDiagnosticsUsesTenantOwnerWithoutLegacyAlias(t *testing.T) {
+	t.Parallel()
 	repository, _ := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC()
 	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: func() time.Time { return now }}}
@@ -45,6 +46,7 @@ func TestRunnerDiagnosticsUsesTenantOwnerWithoutLegacyAlias(t *testing.T) {
 }
 
 func TestRunnerRemovalUsesTenantAuthorityAndActiveLeases(t *testing.T) {
+	t.Parallel()
 	repository, _ := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC()
 	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: func() time.Time { return now }}}

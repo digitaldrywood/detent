@@ -13,6 +13,7 @@ import (
 // waits in: neither dispatchable nor terminal, reachable from In Progress by
 // the orchestrator, and left by a person to Done or back to In Progress.
 func TestHostedProjectTemplateHasReviewLane(t *testing.T) {
+	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
 	project := f.createProject(t, "Template project")
 	response := f.page(t, "owner", "/api/v2/organizations/"+f.service.config.Hosted.OrganizationID+"/projects/"+project)

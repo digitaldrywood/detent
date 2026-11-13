@@ -34,6 +34,7 @@ import (
 )
 
 func TestConversationPostgresStreamReauthorizesAgainstTenantProject(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := openPostgresHubTestService(t, repository, Config{
 		Conversation: &ConversationConfig{Enabled: true},
@@ -157,6 +158,7 @@ func (w *conversationReplayBarrier) Flush() {
 }
 
 func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, tc := range []struct {

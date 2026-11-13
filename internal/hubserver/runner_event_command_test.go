@@ -34,6 +34,7 @@ import (
 )
 
 func TestRunnerEventSubmissionWireBudget(t *testing.T) {
+	t.Parallel()
 	first, second, repository, wire, apiLog := newRunnerEventWireFixtures(t)
 	if _, err := first.admin.ExecContext(t.Context(), `CREATE FUNCTION reject_run_command_receipt() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF NEW.command_key='rollback' THEN RAISE EXCEPTION 'fixture publication rejection'; END IF; RETURN NEW; END$$; CREATE TRIGGER reject_run_command_receipt BEFORE INSERT ON native_commands FOR EACH ROW EXECUTE FUNCTION reject_run_command_receipt()`); err != nil {
 		t.Fatal(err)
@@ -329,6 +330,7 @@ func newRunnerEventWireFixtures(t *testing.T) (runnerPGFixture, runnerPGFixture,
 }
 
 func TestRunnerSessionRepeatedMetadataStaysWithinBudget(t *testing.T) {
+	t.Parallel()
 	first, second, _, wire, _ := newRunnerEventWireFixtures(t)
 	for index, fixture := range []runnerPGFixture{first, second} {
 		organization := []string{"org_startup", "org_second"}[index]

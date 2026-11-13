@@ -23,6 +23,7 @@ import (
 )
 
 func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
+	t.Parallel()
 	counts := map[string]int{}
 	for _, role := range []struct{ name, role, grant string }{
 		{"owner", "owner", "write"}, {"admin", "admin", "write"}, {"member", "member", "write"}, {"viewer", "viewer", "read"},
@@ -155,6 +156,7 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 }
 
 func TestCoordinatorTurnOutlivesSharedBrowserAccessToken(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("durable PostgreSQL integration")
 	}
@@ -168,6 +170,7 @@ func TestCoordinatorTurnOutlivesSharedBrowserAccessToken(t *testing.T) {
 		{"turn outlasts its own budget", coordinatorTurnTimeout + time.Minute, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			var skew atomic.Int64
 			backend := newFakeCoordinatorBackend()
 			key := hostedSharedKey(7)

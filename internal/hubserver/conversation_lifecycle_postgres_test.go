@@ -19,6 +19,7 @@ import (
 )
 
 func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	repository := projectRecordPostgres(t)
 	f := newConversationTenantFixture(t, repository, now)

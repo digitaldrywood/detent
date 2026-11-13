@@ -2264,6 +2264,7 @@ func TestConversationAnswerRefusesExpiredQuestion(t *testing.T) {
 }
 
 func TestConversationControlRejectionDoesNotPublish(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		invalidate func(*testing.T, *conversationWorkerFixture)

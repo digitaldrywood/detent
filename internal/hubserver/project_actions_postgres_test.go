@@ -32,6 +32,7 @@ import (
 )
 
 func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC()
 	organizations := []tracker.OrganizationID{"org_startup", "org_action_other"}
@@ -306,6 +307,7 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 }
 
 func TestPostgresProjectActionDeletionLifecycle(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC()
 	details := &memoryRunDetails{}
@@ -403,6 +405,7 @@ func TestPostgresProjectActionDeletionLifecycle(t *testing.T) {
 }
 
 func TestPostgresProjectActionsRollbackRefusesRetainedData(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC()
 	details := &memoryRunDetails{}

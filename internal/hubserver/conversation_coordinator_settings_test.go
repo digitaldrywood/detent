@@ -125,6 +125,7 @@ func coordinatorSettingsProposal(t *testing.T, f hostedSecurityFixture, conversa
 }
 
 func TestCoordinatorSettingsActions(t *testing.T) {
+	t.Parallel()
 	for _, tool := range coordinatorSettingsNames() {
 		roles := []string{"owner", "admin", "member", "runner member", "viewer"}
 		if tool == operatortool.UpdateRunnerCapacity {
@@ -132,6 +133,7 @@ func TestCoordinatorSettingsActions(t *testing.T) {
 		}
 		for _, role := range roles {
 			t.Run(tool+"/"+role, func(t *testing.T) {
+				t.Parallel()
 				f, _, record := coordinatorReadFixture(t)
 				name := role
 				if role == "organization owner" {
@@ -191,6 +193,7 @@ func TestCoordinatorSettingsActions(t *testing.T) {
 }
 
 func TestCoordinatorSettingsBoundaries(t *testing.T) {
+	t.Parallel()
 	for _, tool := range coordinatorSettingsNames() {
 		for _, scenario := range []string{"foreign project", "unknown field", "revoked grant", "unattached runner", "stale runner"} {
 			if !hubFleetTool(tool) && (scenario == "unattached runner" || scenario == "stale runner") {
@@ -252,6 +255,7 @@ func TestCoordinatorSettingsBoundaries(t *testing.T) {
 }
 
 func TestConfigurationMapOwners(t *testing.T) {
+	t.Parallel()
 	f, _, _ := coordinatorReadFixture(t)
 	_, body, err := skills.ReadBuiltin("configuration-map")
 	if err != nil {
@@ -295,6 +299,7 @@ func TestConfigurationMapOwners(t *testing.T) {
 }
 
 func TestCoordinatorSettingsCapacityBatch(t *testing.T) {
+	t.Parallel()
 	f, owner, record := coordinatorReadFixture(t)
 	tools, _ := coordinatorViewerTools(t, f, record, owner)
 	ids := []string{"settings-one", "settings-two", "settings-three"}

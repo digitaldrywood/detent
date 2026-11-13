@@ -12,6 +12,7 @@ import (
 )
 
 func TestPostgresOrganizationMembersAndSecretRoutes(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC()
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {

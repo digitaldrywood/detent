@@ -39,6 +39,7 @@ func (r completionCostFailureReader) ReadCompletionCosts(context.Context, report
 }
 
 func TestReportCurrentUsageIngestionPreservesCoverage(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	ctx := t.Context()
 	organization := tracker.OrganizationID("org_report_ingestion")
@@ -123,6 +124,7 @@ func TestReportCurrentUsageIngestionPreservesCoverage(t *testing.T) {
 }
 
 func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
+	t.Parallel()
 	repository, _ := projectRecordPostgresWithAdmin(t, 4)
 	ctx := t.Context()
 	now := time.Now().UTC().Truncate(time.Microsecond)

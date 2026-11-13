@@ -23,6 +23,7 @@ import (
 )
 
 func TestOnboardingPageFencesPublicationAndAccess(t *testing.T) {
+	t.Parallel()
 	service := newPostgresNativeService(t, Config{})
 	repository := service.config.TenantRepository
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
@@ -142,6 +143,7 @@ func TestOnboardingPageFencesPublicationAndAccess(t *testing.T) {
 }
 
 func TestOnboardingPageKeepsViewerVisibilityAndRevocation(t *testing.T) {
+	t.Parallel()
 	service := newPostgresNativeService(t, Config{})
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		t.Run(string(organization), func(t *testing.T) {
@@ -224,6 +226,7 @@ func (r onboardingQueueFailureRepository) WriteTenant(context.Context, tracker.O
 }
 
 func TestOnboardingColdFallbackSurvivesPreparationFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newPostgresDefaultNativeFixture(t, Config{})
 	service := fixture.service
 	original := service.config.TenantRepository
@@ -252,6 +255,7 @@ func TestOnboardingColdFallbackSurvivesPreparationFailure(t *testing.T) {
 }
 
 func TestOnboardingPageKeepsSavedProgressCurrent(t *testing.T) {
+	t.Parallel()
 	service := newPostgresNativeService(t, Config{})
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		t.Run(string(organization), func(t *testing.T) {

@@ -220,6 +220,7 @@ func selectPostgresHubTestOrganization(service *Service, organization tracker.Or
 }
 
 func TestPostgresProjectRecords(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	for _, orgName := range []string{"First organization", "Second organization"} {
@@ -421,6 +422,7 @@ func verifyProjectRecordParticipants(t *testing.T) {
 }
 
 func TestPostgresProjectParticipantsAuditLifecycleAndRevokeGrants(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	org := nativeOrganization{ID: "org_project_lifecycle", Name: "Project lifecycle", Slug: "project-lifecycle"}
@@ -478,6 +480,7 @@ func TestPostgresProjectParticipantsAuditLifecycleAndRevokeGrants(t *testing.T) 
 }
 
 func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 4)
 	service := openPostgresHubTestService(t, repository, Config{})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
@@ -635,6 +638,7 @@ func (r countedProjectReader) OrganizationModels(ctx context.Context) (policysto
 }
 
 func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	counted := &countedProjectReads{Repository: repository}
 	accessCounted := &countedProjectReads{Repository: repository}

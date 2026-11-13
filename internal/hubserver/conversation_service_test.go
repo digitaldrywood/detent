@@ -27,6 +27,7 @@ func (w *recordingWaker) Wake(id string) {
 func (w *recordingWaker) Stop() {}
 
 func TestConversationServiceWakesPendingWorkAfterRestart(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name            string
 		coordinator     bool

@@ -31,6 +31,7 @@ import (
 )
 
 func TestWorkspaceOperatorFiles(t *testing.T) {
+	t.Parallel()
 	f := newWorkspaceRunnerFixture(t)
 	bound, lease := f.bound(t)
 	var originalLease leasestore.Lease
@@ -352,6 +353,7 @@ func workspaceOperatorData(t *testing.T, result operatortool.Result) json.RawMes
 }
 
 func TestWorkItemConversationMissingDiagnostic(t *testing.T) {
+	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
 	tenants := []nativeFixture{f.nativeFixture, newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "second conversation tenant")}
 	type tenantItems struct{ linked, unlinked tracker.NativeWorkItemID }
@@ -440,6 +442,7 @@ func TestWorkItemConversationMissingDiagnostic(t *testing.T) {
 }
 
 func TestWorkItemConversationLookup(t *testing.T) {
+	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
 	issue := f.nativeFixture.create(t, "ordinary issue")
 	created := f.create(t, f.token, map[string]any{"title": "Private history"})
@@ -571,6 +574,7 @@ func TestWorkItemConversationLookup(t *testing.T) {
 // Catches duplicated externally visible messages after reconnect, foreign
 // conversation access, and model-controlled authority/approval arguments.
 func TestWorkspaceOperatorConversation(t *testing.T) {
+	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
 	ctx := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "first")
 	args := map[string]any{"project_id": f.project.ID, "request_id": "create", "input": map[string]any{"title": "Tool conversation"}}
@@ -806,6 +810,7 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 // Catches oversized history losing its continuation cursor. Both projections
 // must retain newest messages without truncating individual message content.
 func TestWorkspaceOperatorHistoryBudget(t *testing.T) {
+	t.Parallel()
 	for _, snapshot := range []bool{false, true} {
 		t.Run("unpageable/"+strconv.FormatBool(snapshot), func(t *testing.T) {
 			var value any = conversationMessagesPage{Messages: []conversationMessageResource{{Seq: 1, Text: strings.Repeat("x", operatortool.MaxResultBytes)}}}
@@ -902,6 +907,7 @@ func TestWorkspaceOperatorHistoryBudget(t *testing.T) {
 // Catches missing services accidentally falling through to nil runtimes or raw
 // internal errors, even when discovery is bypassed.
 func TestWorkspaceOperatorUnavailable(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		err     error

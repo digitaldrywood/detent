@@ -802,6 +802,7 @@ func TestHostedPlanConfigurationDefaults(t *testing.T) {
 }
 
 func TestCapacityCatalog(t *testing.T) {
+	t.Parallel()
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
 		plans := hostedplans.CapacityPlans()
 		cfg.Hosted.Plans = &plans
@@ -886,6 +887,7 @@ func TestCapacityCatalog(t *testing.T) {
 }
 
 func TestCapacityCostDriversUnknownInputs(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.now = func() time.Time { return now }
@@ -993,6 +995,7 @@ func TestCapacityCostDriversUnknownInputs(t *testing.T) {
 }
 
 func TestCapacityFreeConcurrentWorkQueues(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	d := f.service.database

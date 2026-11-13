@@ -14,6 +14,7 @@ import (
 )
 
 func TestHostedFleetRunnerViewBackendIsolationJSON(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		isolation map[string][]string
@@ -38,6 +39,7 @@ func TestHostedFleetRunnerViewBackendIsolationJSON(t *testing.T) {
 }
 
 func TestHostedFleetProductionContract(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 	response := hostedFleetResponse{Current: "v0.169.1", MinimumRunnerVersion: "v0.169.1", Usage: hostedFleetUsage{Allowances: map[string]hostedFleetAllowance{}}}
 	for i, platform := range []string{"linux", "darwin", "linux"} {

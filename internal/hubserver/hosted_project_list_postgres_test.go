@@ -29,6 +29,7 @@ import (
 )
 
 func TestPostgresHostedProjectListingUsesCurrentAccess(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	provider := newHostedSecurityProvider()
 	details := &memoryRunDetails{}

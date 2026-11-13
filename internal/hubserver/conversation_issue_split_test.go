@@ -12,6 +12,7 @@ import (
 )
 
 func TestValidateCoordinatorIssueSplit(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		change func(*chat.IssueSplit)

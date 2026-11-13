@@ -1092,6 +1092,7 @@ func TestHostedBrowserPreviewSeed(t *testing.T) {
 }
 
 func TestHostedBrowserPreview(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("loopback network listener integration")
 	}

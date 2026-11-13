@@ -21,6 +21,7 @@ import (
 )
 
 func TestScheduledFailureAttribution(t *testing.T) {
+	t.Parallel()
 	storage, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{}

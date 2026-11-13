@@ -680,6 +680,7 @@ func TestAttachmentReceiptBillingMigration(t *testing.T) {
 }
 
 func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
+	t.Parallel()
 	t.Run("immutable content without legacy database", func(t *testing.T) {
 		defer func() {
 			if recovered := recover(); recovered != nil {

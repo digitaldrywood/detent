@@ -23,6 +23,7 @@ import (
 )
 
 func TestRunnerCommandFacts(t *testing.T) {
+	t.Parallel()
 	clock := time.Now().UTC().Truncate(time.Microsecond)
 	first := newDefaultNativeFixture(t, Config{now: func() time.Time { return clock }})
 	second := newNativeFixture(t, first.service, first.project.OrganizationID, "other-command-facts")
@@ -126,6 +127,7 @@ func TestRunnerCommandFacts(t *testing.T) {
 }
 
 func TestConfigurationReceiptsExcludeExpiredHistory(t *testing.T) {
+	t.Parallel()
 	for _, history := range []int{100, 10000} {
 		t.Run(fmt.Sprint(history), func(t *testing.T) {
 			clock := time.Now().UTC().Truncate(time.Microsecond)

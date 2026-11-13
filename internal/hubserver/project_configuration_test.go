@@ -36,6 +36,7 @@ import (
 )
 
 func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"legacy", "authored"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -212,8 +213,10 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 }
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "entry personal drain", "entry service drain", "entry revoked drain", "entry expired drain", "entry member removed drain", "entry grant removed drain", "entry scoped drain", "entry service scoped drain", "entry downgraded drain", "entry service downgraded drain", "entry foreign organization drain", "entry rotated drain", "entry missing origin drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "payload outage", "settlement without diagnostics", "settlement older diagnostics", "restart pending", "restart completion", "stale configuration", "stale policy", "stale source", "stale runner", "foreign runner", "foreign project", "busy", "busy binding enable", "busy binding disable", "racing binding enable", "serialization conflict", "replace pending", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			details := &configurationDetailCounter{DetailStore: f.service.runDetailStore()}
 			f.service.config.RunDetails = details

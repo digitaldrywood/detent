@@ -23,6 +23,7 @@ import (
 )
 
 func TestProjectPageSchedulerAndLiveRoute(t *testing.T) {
+	t.Parallel()
 	reads := 0
 	details := &memoryRunDetails{beforeRead: func(_ context.Context) error { reads++; return nil }}
 	service := newPostgresNativeService(t, Config{RunDetails: hubmaintenance.LimitDetails(details)})

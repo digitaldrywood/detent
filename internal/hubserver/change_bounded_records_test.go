@@ -57,6 +57,7 @@ func (s *changeReadInterceptionStore) ReadDetail(ctx context.Context, organizati
 }
 
 func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
+	t.Parallel()
 	details := &memoryRunDetails{}
 	repository, f, owner, _ := newChangePolicyPostgresFixtureWithDetails(t, 3, details)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
@@ -173,6 +174,7 @@ func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
 }
 
 func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
+	t.Parallel()
 	details := &memoryRunDetails{}
 	repository, f, owner, admin := newChangePolicyPostgresFixtureWithDetails(t, 3, details)
 	server := httptest.NewServer(f.service.Handler())

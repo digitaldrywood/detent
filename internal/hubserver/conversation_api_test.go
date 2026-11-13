@@ -1534,6 +1534,7 @@ func TestConversationCreateIsIdempotent(t *testing.T) {
 }
 
 func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
+	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
 	repository := f.service.config.TenantRepository
 
@@ -1740,6 +1741,7 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 }
 
 func TestConversationPostgresScopeUsesTenantRecords(t *testing.T) {
+	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
 	repository := f.service.config.TenantRepository
 	created := f.create(t, f.token, map[string]any{"title": "Scoped conversation"}).Conversation

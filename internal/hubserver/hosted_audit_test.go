@@ -276,6 +276,7 @@ func TestHostedAuditRetention(t *testing.T) {
 }
 
 func TestHostedAuditLegacyReadCleanup(t *testing.T) {
+	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)

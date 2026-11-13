@@ -15,6 +15,7 @@ import (
 )
 
 func TestConversationRecordPayloadsNeverInline(t *testing.T) {
+	t.Parallel()
 	f := newConversationFixture(t)
 	ctx := conversationObjectIOContext(t, f.store.Contents.(*conversationContentFixture))
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)

@@ -24,6 +24,7 @@ import (
 )
 
 func TestRunnerProblemsHeartbeat(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		code   string
 		sprite bool
@@ -114,6 +115,7 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 }
 
 func TestRunnerHubProblems(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		code     string
 		protocol int
@@ -210,6 +212,7 @@ func TestRunnerHubProblems(t *testing.T) {
 }
 
 func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		want int
@@ -378,6 +381,7 @@ func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 }
 
 func TestRunnerCachedProbeProblemsHeartbeat(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, code             string
 		cached, backend, mixed bool
@@ -476,6 +480,7 @@ func TestRunnerCachedProbeProblemsHeartbeat(t *testing.T) {
 }
 
 func TestRunnerExpiredRuntimeProblems(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		phase    string

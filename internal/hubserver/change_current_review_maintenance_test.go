@@ -62,6 +62,7 @@ func (s currentReviewUnavailableObject) ReadDetail(ctx context.Context, organiza
 }
 
 func TestPostgresMaintenanceRebuildsCurrentReviewsPastUnavailableChange(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	objects := &memoryRunDetails{}
 	services := map[tracker.OrganizationID]*Service{}

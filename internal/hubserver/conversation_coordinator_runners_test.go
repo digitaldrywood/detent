@@ -21,6 +21,7 @@ import (
 )
 
 func TestCoordinatorRunnerTools(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, role, tool, tier string
 		preview, execute       bool
@@ -48,6 +49,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 		{"project grant revoked", "owner", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newHostedSecurityFixture(t, func(cfg *Config) {
 				cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}
 			})

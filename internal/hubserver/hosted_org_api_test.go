@@ -655,6 +655,7 @@ func browserHostedDecode(t *testing.T, response *httptest.ResponseRecorder, targ
 }
 
 func TestHostedProjectRank(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct {
 		name, account, role string
 		hidden, readOnly    bool

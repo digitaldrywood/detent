@@ -28,6 +28,7 @@ import (
 )
 
 func TestReportsShippedPopulation(t *testing.T) {
+	t.Parallel()
 	t.Run("PostgreSQL report board and work include archived shipped items", func(t *testing.T) {
 		to := time.Date(2026, time.November, 6, 18, 0, 0, 0, time.UTC)
 		from := to.Add(-24 * time.Hour)
@@ -400,6 +401,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 }
 
 func TestReportsFirstTryHistory(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.November, 6, 18, 0, 0, 0, time.UTC)
 	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return now.Add(-96 * time.Hour) }})
 	repository := service.config.TenantRepository

@@ -25,6 +25,7 @@ import (
 )
 
 func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ deployment, role string }{
 		{"dedicated", "owner"}, {"shared", "owner"}, {"dedicated", "member"}, {"shared", "member"},
 	} {
@@ -127,6 +128,7 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 }
 
 func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, hub, runner, prior, wantVersion   string
 		supported, manual, unpublished, failed  bool
@@ -320,6 +322,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 }
 
 func TestRunnerUpdateHeartbeatApplication(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "runner-update")
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	r.enroll(t)

@@ -344,6 +344,7 @@ func TestRunnerAllowedWorkflowFilter(t *testing.T) {
 }
 
 func TestRunnerAllowedOrdering(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct {
 		name                          string
 		firstPriority, secondPriority int
@@ -392,6 +393,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 		{"higher project in progress beats lower project rework", 1, 3, 1, 3, -time.Hour, time.Hour, "in-progress", true, "", "", false, false, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
 			targetMode := strings.TrimSuffix(scenario.allowed, "-in-progress")
 			first := newDefaultNativeFixture(t, Config{})
 			second := newNativeFixture(t, first.service, first.project.OrganizationID, "second")
@@ -638,6 +640,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 }
 
 func TestRunnerFutureProjectAdmission(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct {
 		name, scope       string
 		approved, deleted bool
@@ -699,6 +702,7 @@ func TestRunnerFutureProjectAdmission(t *testing.T) {
 }
 
 func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
+	t.Parallel()
 	for _, initialRevision := range []int64{0, 1} {
 		t.Run(fmt.Sprintf("revision-%d", initialRevision), func(t *testing.T) {
 			now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)

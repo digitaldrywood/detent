@@ -67,6 +67,7 @@ func spritesTestResponse(body string, status int) *http.Response {
 }
 
 func TestProjectSecretPermissions(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		credential hubapi.APICredential
@@ -243,6 +244,7 @@ func TestProjectSecretPermissions(t *testing.T) {
 }
 
 func TestProjectSecretLifecycle(t *testing.T) {
+	t.Parallel()
 	var logs hostedLogBuffer
 	reject := false
 	f := newBrowserHostedOrganizationFixture(t, true, "org_secret_lifecycle", func(cfg *Config) {
@@ -376,6 +378,7 @@ func TestProjectSecretLifecycle(t *testing.T) {
 }
 
 func TestProjectSecretStartupKeys(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, openTestService(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), Hosted: &hostedplans.HostedConfig{OrganizationID: "org_secret_startup", WorkOSOrganizationID: "provider_secret_startup", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}}), "", "Secret startup")
 	now := f.service.config.now()
 	envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD(f.project.OrganizationID, f.project.ID, flySpritesToken))

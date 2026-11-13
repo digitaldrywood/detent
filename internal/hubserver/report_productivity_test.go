@@ -33,6 +33,7 @@ import (
 )
 
 func TestOrganizationProductivity(t *testing.T) {
+	t.Parallel()
 	f := diagnosticsPostgresFixtures(t)[0]
 	service := f.hosted.service
 	to := service.config.now().UTC().Truncate(time.Hour).Add(time.Hour)
@@ -527,6 +528,7 @@ func TestOrganizationProductivity(t *testing.T) {
 	})
 }
 func TestProductivityRunnerIntervals(t *testing.T) {
+	t.Parallel()
 	f := diagnosticsPostgresFixtures(t)[0]
 	now := f.hosted.service.config.now().UTC().Truncate(time.Hour).Add(time.Hour)
 	f.hosted.service.config.now = func() time.Time { return now }
@@ -657,6 +659,7 @@ func assertProductivitySums(t *testing.T, out postgresOrganizationProductivity) 
 }
 
 func TestOrganizationProductivityTenant(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}})
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "foreign")
 	now := f.service.config.now().UTC().Truncate(time.Microsecond)

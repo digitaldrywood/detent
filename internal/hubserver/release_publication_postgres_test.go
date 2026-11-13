@@ -15,6 +15,7 @@ import (
 )
 
 func TestReleasePublicationPostgres(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"publish", "lost response", "missing audit", "wrong source", "source advanced", "wrong repository", "missing dependency", "held delivery", "terminal workflow state", "stale revision", "revoked during verification", "provider revoked during verification", "hold during verification"} {
 		t.Run(name, func(t *testing.T) {
 			f := newReleaseTenantFixture(t)
@@ -158,6 +159,7 @@ func TestReleasePublicationPostgres(t *testing.T) {
 }
 
 func TestReleasePRConflictRepositoryCasePostgres(t *testing.T) {
+	t.Parallel()
 	f := newReleaseTenantFixture(t)
 	version := f.version
 	version.ID, version.Number = hubapi.NewID("version"), version.Number+1
