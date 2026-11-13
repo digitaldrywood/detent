@@ -132,6 +132,13 @@ GRANT SELECT ON search_postings TO detent_platform;
 CREATE POLICY tenant_isolation ON search_postings TO detent_runtime,detent_migration
  USING(organization_id=NULLIF(current_setting('detent.organization_id',true),'')) WITH CHECK(organization_id=NULLIF(current_setting('detent.organization_id',true),''));
 CREATE POLICY platform_access ON search_postings FOR SELECT TO detent_platform USING (true);
+CREATE POLICY search_single_scope_rollback ON search_scope_refresh TO detent_migration USING(true) WITH CHECK(true);
+CREATE POLICY search_single_scope_rollback ON search_documents TO detent_migration USING(true) WITH CHECK(true);
+INSERT INTO search_scope_refresh(organization_id,project_id,work_item_id,archived,principal_id)
+SELECT DISTINCT organization_id,project_id,'',false,'' FROM search_documents WHERE project_id IS NOT NULL AND kind IN ('issue','thread')
+ON CONFLICT(organization_id,project_id,work_item_id) DO UPDATE SET after_id='',refresh_order=nextval('search_refresh_order');
+DROP POLICY search_single_scope_rollback ON search_scope_refresh;
+DROP POLICY search_single_scope_rollback ON search_documents;
 
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION search_document_postings() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $postings$
