@@ -269,7 +269,7 @@ func entryKeyToolSupported(name string) bool {
 		return true
 	}
 	if hubFleetTool(name) {
-		return name != operatortool.OutboxHealth
+		return true
 	}
 	if definition, ok := operatortool.Lookup(name); ok && (definition.Meta.Toolset == "projects" || definition.Meta.Toolset == "local_projects") {
 		return name != "repository_freshness" && name != "revoke_project_policy"

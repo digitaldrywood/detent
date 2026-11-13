@@ -17,7 +17,6 @@ func TestFleetArgumentBoundary(t *testing.T) {
 	}{
 		{"health has no mode input", InstanceHealth, `{"mode":"yolo"}`, false},
 		{"capability identifiers bounded", NativeCapabilities, `{"project_id":"` + strings.Repeat("x", 257) + `"}`, false},
-		{"outbox cursor bounded", OutboxHealth, `{"cursor":"` + strings.Repeat("x", 2049) + `"}`, false},
 		{"debug scope bounded", AIDebugPrompt, `{"scope":"shell"}`, false},
 		{"update read", GetRunnerUpdate, `{"runner_id":"r"}`, true},
 		{"project enrollment scope without maximum length", CreateRunnerEnrollment, `{"request_id":"enrollment","enrollment":{"scope":"projects","project_ids":["p"],"operations":["read"],"ttl_seconds":60}}`, true},

@@ -256,7 +256,7 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 			if err := executor.OpenConnection(ctx); err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range []string{operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.OutboxHealth, operatortool.GetRunnerRouting, operatortool.GetRunnerCapacity, operatortool.GetRunnerUpdate, operatortool.ListRunnerRouting, operatortool.GitHubRequestCounts} {
+			for _, name := range []string{operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.GetRunnerRouting, operatortool.GetRunnerCapacity, operatortool.GetRunnerUpdate, operatortool.ListRunnerRouting, operatortool.GitHubRequestCounts} {
 				args := map[string]any{}
 				if name == operatortool.GetRunnerRouting || name == operatortool.GetRunnerCapacity || name == operatortool.GetRunnerUpdate {
 					args["runner_id"] = r.binding.RunnerID

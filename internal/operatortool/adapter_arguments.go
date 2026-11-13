@@ -52,7 +52,6 @@ type HubFleetArguments struct {
 	Enrollment   runnerauth.EnrollmentRequest `json:"enrollment,omitempty"`
 	Change       json.RawMessage              `json:"change,omitempty"`
 	Limit        int                          `json:"limit,omitempty"`
-	Cursor       string                       `json:"cursor,omitempty"`
 	Offset       int                          `json:"offset,omitempty"`
 }
 

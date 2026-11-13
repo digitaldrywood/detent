@@ -35,10 +35,10 @@ func hubFleetTool(name string) bool {
 	if name == operatortool.Activity || name == operatortool.AnalyticsDashboard || name == operatortool.TimeSeries || name == operatortool.Reports || name == operatortool.GetUrgentRunnerUpdate || name == operatortool.MarkUrgentRunnerUpdate {
 		return true
 	}
-	return slices.Contains([]string{operatortool.UpdateApply, operatortool.GetRunnerUpdate, operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.OutboxHealth, operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.GetRunnerRouting, operatortool.ListRunnerRouting, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.GetRunnerCapacity, operatortool.UpdateRunnerCapacity, operatortool.HostedFleet, operatortool.GitHubRequestCounts}, name)
+	return slices.Contains([]string{operatortool.UpdateApply, operatortool.GetRunnerUpdate, operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.GetRunnerRouting, operatortool.ListRunnerRouting, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.GetRunnerCapacity, operatortool.UpdateRunnerCapacity, operatortool.HostedFleet, operatortool.GitHubRequestCounts}, name)
 }
 func hubFleetRequirement(name string) operatortool.Requirement {
-	if name == operatortool.Activity || name == operatortool.AnalyticsDashboard || name == operatortool.TimeSeries || name == operatortool.Reports || name == operatortool.HostedFleet || name == operatortool.InstanceHealth || name == operatortool.NativeCapabilities || name == operatortool.OutboxHealth {
+	if name == operatortool.Activity || name == operatortool.AnalyticsDashboard || name == operatortool.TimeSeries || name == operatortool.Reports || name == operatortool.HostedFleet || name == operatortool.InstanceHealth || name == operatortool.NativeCapabilities {
 		return operatortool.Requirement{Scope: apikey.ScopeRead}
 	}
 	return operatortool.Requirement{Scope: apikey.ScopeAdmin, ResourceKind: "runners"}
@@ -224,12 +224,6 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 			value, _ = s.readInstanceHealth(ctx)
 		case operatortool.NativeCapabilities:
 			value, err = s.readNativeCapabilities(ctx)
-		case operatortool.OutboxHealth:
-			cursor, decodeErr := decodeTimelineCursor(r.Cursor)
-			if decodeErr != nil {
-				return operatortool.Result{}, operatortool.ErrInvalidArguments
-			}
-			value, err = s.readOutboxHealthPage(ctx, r.Limit, cursor)
 		case operatortool.HostedFleet:
 			if s.config.Hosted == nil || credential.SessionHash == "" {
 				return operatortool.Result{}, operatortool.ErrAccessDenied
@@ -290,8 +284,6 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		switch call.Name {
 		case operatortool.InstanceHealth:
 			resourceURL = "/health"
-		case operatortool.OutboxHealth:
-			resourceURL = "/api/v1/outbox/health"
 		case operatortool.NativeCapabilities:
 			resourceURL = "/api/v2/capabilities"
 		}
@@ -711,8 +703,6 @@ func (s *Service) hubFleetReadPermitted(name string, credential apiCredential) b
 		return s.config.Hosted != nil && s.database != nil
 	case operatortool.InstanceHealth, operatortool.NativeCapabilities:
 		return s.config.Hosted == nil
-	case operatortool.OutboxHealth:
-		return s.config.Hosted == nil && !credential.NativeOnly
 	default:
 		return true
 	}

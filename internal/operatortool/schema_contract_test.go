@@ -132,7 +132,7 @@ func TestCatalogDecoderContract(t *testing.T) {
 	for _, name := range []string{AnalyticsDashboard, TimeSeries, Reports} {
 		targets[name] = reflect.TypeFor[AnalyticsRequest]()
 	}
-	for _, name := range []string{InstanceHealth, NativeCapabilities, OutboxHealth, GetRunnerUpdate, GetUrgentRunnerUpdate, MarkUrgentRunnerUpdate, GetRunnerRouting, ListRunnerRouting, GetRunnerCapacity, UpdateRunnerCapacity, UpdateRunnerRouting, UpdateRunnerHost, UpdateApply, HostedFleet, GitHubRequestCounts, CreateRunnerEnrollment, RevokeRunnerEnrollment, RevokeRunnerIdentity} {
+	for _, name := range []string{InstanceHealth, NativeCapabilities, GetRunnerUpdate, GetUrgentRunnerUpdate, MarkUrgentRunnerUpdate, GetRunnerRouting, ListRunnerRouting, GetRunnerCapacity, UpdateRunnerCapacity, UpdateRunnerRouting, UpdateRunnerHost, UpdateApply, HostedFleet, GitHubRequestCounts, CreateRunnerEnrollment, RevokeRunnerEnrollment, RevokeRunnerIdentity} {
 		targets[name] = reflect.TypeFor[HubFleetArguments]()
 	}
 	for _, definition := range definitions {

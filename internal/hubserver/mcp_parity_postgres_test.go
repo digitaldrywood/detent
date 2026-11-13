@@ -414,17 +414,11 @@ func TestPostgresMCPInstanceParity(t *testing.T) {
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			ctx := parityNativeContext(t, f.service, f.project.OrganizationID)
-			for _, name := range []string{operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.GetRunnerRouting, operatortool.GitHubRequestCounts, operatortool.OutboxHealth, operatortool.CredentialList, operatortool.OrganizationList, operatortool.OrganizationSwitch} {
+			for _, name := range []string{operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.GetRunnerRouting, operatortool.GitHubRequestCounts, operatortool.CredentialList, operatortool.OrganizationList, operatortool.OrganizationSwitch} {
 				t.Run(name, func(t *testing.T) {
 					call := parityToolCall(t, name, map[string]any{"runner_id": r.binding.RunnerID, "request_id": "instance-parity", "organization_id": f.project.OrganizationID})
 					result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, call)
-					if name == operatortool.OutboxHealth {
-						if !errors.Is(err, errHubOperatorUnavailable) {
-							t.Fatalf("retired outbox read: %v", err)
-						}
-					} else {
-						paritySuccess(t, result, err)
-					}
+					paritySuccess(t, result, err)
 				})
 			}
 		})
@@ -524,7 +518,6 @@ func TestPostgresMCPCatalogAuthorities(t *testing.T) {
 		{"health", "local"},
 		{"hosted_fleet", "owner shared member viewer staff admin"},
 		{"native_capabilities", "local"},
-		{"outbox_health", ""},
 		{"time_series", "owner shared member viewer staff admin"},
 		{"apply_local_project_policy", "local owner shared staff admin"},
 		{"detach_local_project", "local owner shared staff admin"},

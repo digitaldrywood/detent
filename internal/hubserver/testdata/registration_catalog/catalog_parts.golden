@@ -110,7 +110,6 @@ commands move_item
 commands native_capabilities
 commands operations_report
 commands order_item
-commands outbox_health
 commands recover_work_attempt
 commands refresh
 commands remove_item
@@ -160,7 +159,6 @@ fleet list_runner_routing
 fleet mark_urgent_runner_update
 fleet native_capabilities
 fleet operations_report
-fleet outbox_health
 fleet recover_work_attempt
 fleet refresh
 fleet reports
