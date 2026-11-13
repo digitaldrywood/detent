@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/budget"
@@ -24,10 +26,10 @@ import (
 )
 
 func TestBillingPlansKeepHistoricalTermsAndTenantScope(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		start := time.Date(2024, 2, 29, 23, 59, 59, 123456000, time.UTC)
 		end := start.AddDate(0, 1, 0)
 		plan := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "example", Version: 7}, Name: "Historical plan", MonthlyUSDCents: new(int64(1234)), RuntimeID: "runtime_example", Allowances: map[string]int64{"collaboration_bytes": 98765, "requests": 10}, Features: []string{"collaboration", "native_execution"}}
@@ -124,16 +126,16 @@ func TestBillingPlansKeepHistoricalTermsAndTenantScope(t *testing.T) {
 		}
 	}
 	t.Run("historical storage floors preserve catalog and tenant terms", func(t *testing.T) {
-		admin, fixture := migrationDatabaseAtVersion(t, 20261112124957)
+		admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261112124957)
 		var database string
 		if err := admin.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&database); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+fmt.Sprintf(" CONNECTION LIMIT %d", smallPool().MaxConnections+2)); err != nil {
+		if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+fmt.Sprintf(" CONNECTION LIMIT %d", pgstoretest.SmallPool().MaxConnections+2)); err != nil {
 			t.Fatal(err)
 		}
-		pool := rolePoolFromTemplate(t, fixture, admin, postgres.RuntimeRoleName, "")
-		repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+		pool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, postgres.RuntimeRoleName, "")
+		repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -164,7 +166,7 @@ func TestBillingPlansKeepHistoricalTermsAndTenantScope(t *testing.T) {
 		}
 		expected := make(map[tracker.OrganizationID]map[billingstore.PlanReference]billingstore.Plan)
 		for index, org := range organizations {
-			seedTenantAccess(t, repository, org)
+			pgstoretest.SeedTenantAccess(t, repository, org)
 			expected[org] = make(map[billingstore.PlanReference]billingstore.Plan)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				for _, test := range tests {
@@ -186,7 +188,7 @@ func TestBillingPlansKeepHistoricalTermsAndTenantScope(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		migrationPool := rolePoolFromTemplate(t, fixture, admin, postgres.MigrationRoleName, "")
+		migrationPool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, postgres.MigrationRoleName, "")
 		login := migrationPool.Config().ConnConfig
 		connection := fixture.Connection(t, admin, login.User, login.Password)
 		for run := range 2 {
@@ -228,10 +230,10 @@ func TestBillingPlansKeepHistoricalTermsAndTenantScope(t *testing.T) {
 }
 
 func TestBillingEffectiveGrantsExcludeHistoryAndKeepAllActiveScopes(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_grants")
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	revokedAt := now.Add(-time.Minute)
 	plan := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "example", Version: 1}, Name: "Example", RuntimeID: "runtime_example", Allowances: map[string]int64{}, Features: []string{}}
@@ -276,10 +278,10 @@ func TestBillingEffectiveGrantsExcludeHistoryAndKeepAllActiveScopes(t *testing.T
 }
 
 func TestBillingFeatureGateUsesCurrentAssignmentsAndGrantScope(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_feature_gate")
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	expiredAt := now
 	revokedAt := now.Add(-time.Minute)
@@ -385,12 +387,12 @@ func TestBillingFeatureGateUsesCurrentAssignmentsAndGrantScope(t *testing.T) {
 }
 
 func TestBillingPlanAuditRetainsArchiveReferenceAndCommandReplay(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_plan_audit")
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	archive := attachment.ArchiveReference{BindingID: "binding_example", CustomerOwned: true, Key: "billing/example", SHA256: "sha256_example", CompressedSize: 18, UncompressedSize: 31, Codec: "gzip", SchemaVersion: 1, Kind: "detail", Retention: "retained"}
-	audit := billingstore.PlanAudit{OrganizationID: org, CommandID: "command_example", RequestHash: "hash_example", ActorID: "actor_example", Action: "grant", RecordedAt: historyAt(), Reference: billingstore.AuditReferenceFromArchive(archive)}
+	audit := billingstore.PlanAudit{OrganizationID: org, CommandID: "command_example", RequestHash: "hash_example", ActorID: "actor_example", Action: "grant", RecordedAt: pgstoretest.HistoryAt(), Reference: billingstore.AuditReferenceFromArchive(archive)}
 	for _, applied := range []bool{true, false} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			created, err := w.CreateBillingPlanAudit(t.Context(), audit)
@@ -424,12 +426,12 @@ func TestBillingPlanAuditRetainsArchiveReferenceAndCommandReplay(t *testing.T) {
 }
 
 func TestHostedBillingSourceParityRestoresSourceWithoutReplacingCurrentTenantData(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_source_parity")
 	otherOrg := tracker.OrganizationID("org_source_parity_other")
-	seedTenantAccess(t, repository, org)
-	seedTenantAccess(t, repository, otherOrg)
+	pgstoretest.SeedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, otherOrg)
 	now := time.Date(2026, 11, 4, 2, 0, 0, 0, time.UTC)
 	free := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "free", Version: 1}, Name: "Free", Features: []string{}, Allowances: map[string]int64{"collaboration_bytes": 1 << 20}}
 	monthlyPrice := int64(4900)
@@ -593,10 +595,10 @@ func TestHostedBillingSourceParityRestoresSourceWithoutReplacingCurrentTenantDat
 }
 
 func TestHostedBillingSourceParityRefusesChangedSeedPlan(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_source_parity_cas")
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	now := time.Date(2026, 11, 4, 2, 0, 0, 0, time.UTC)
 	base := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "base", Version: 1}, Name: "Base", Features: []string{}, Allowances: map[string]int64{}}
 	current := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "starter", Version: 1}, Name: "Starter", Features: []string{}, Allowances: map[string]int64{"collaboration_bytes": 1 << 30}}
@@ -672,10 +674,10 @@ func TestHostedBillingSourceParityRefusesChangedSeedPlan(t *testing.T) {
 }
 
 func TestBillingMonthlyBudgetParticipantsAreTypedAndTenantScoped(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_budget", "org_budget_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			for id := int64(1); id <= 2; id++ {
 				project := tracker.ProjectID(fmt.Sprintf("prj_budget_%d", id))
@@ -683,7 +685,7 @@ func TestBillingMonthlyBudgetParticipantsAreTypedAndTenantScoped(t *testing.T) {
 					return fmt.Errorf("create budget project %s: %w", project, err)
 				}
 				item := tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", id))
-				state, at := "Todo", historyAt()
+				state, at := "Todo", pgstoretest.HistoryAt()
 				if _, err := w.CreateWorkItemWithClaimFacts(t.Context(), corestore.WorkItem{OrganizationID: org, ID: id, ProjectID: project, NativeID: item, Number: id, Title: "Budget example", WorkflowStateName: &state}, nil, claimstore.WorkItemFacts{OrganizationID: org, ProjectID: project, WorkItemID: item}, claimstore.QueueEntry{OrganizationID: org, ProjectID: project, WorkItemID: item, Scope: string(project), State: state, Rank: string(item), CreatedAt: at, UpdatedAt: at}); err != nil {
 					return fmt.Errorf("create budget issue %s: %w", item, err)
 				}
@@ -717,7 +719,7 @@ func TestBillingMonthlyBudgetParticipantsAreTypedAndTenantScoped(t *testing.T) {
 			}
 			leases = append(leases, lease)
 		}
-		firstAt := historyAt()
+		firstAt := pgstoretest.HistoryAt()
 		for i, lease := range leases {
 			row := billingstore.MonthlyLease{OrganizationID: org, LeaseID: tracker.LeaseID(lease.LeaseID), LunaAPI: i == 0, RunnerAPI: i == 1, SpriteInfrastructure: i == 0}
 			admission := billingstore.MonthlyAdmission{OrganizationID: org, IssueID: tracker.WorkItemID(i + 1), AdmittedAt: firstAt.Add(time.Duration(i) * time.Minute)}

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -11,11 +13,11 @@ import (
 )
 
 func TestHealthPageRejectsStaleEvidence(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	var first healthstore.Finding
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		_, err := admin.ExecContext(t.Context(), `INSERT INTO health_findings(organization_id,id,fingerprint,signal,class,subject_kind,subject_id,opened_at,last_seen_at,severity,summary,next_action,evidence_object_key,evidence_sha256,evidence_bytes,evidence_content_bytes) VALUES($1,'finding','fingerprint','signal','class','project','prj_first',now(),now(),'attention','summary','inspect','','',0,0)`, org)
 		if err != nil {
 			t.Fatal(err)

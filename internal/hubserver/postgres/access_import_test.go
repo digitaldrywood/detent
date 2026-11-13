@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -28,7 +30,7 @@ var accessFixtureTables = []string{
 	"project_secret_audit", "hosted_audit", "hosted_audit_times", "hosted_work_view_preferences",
 }
 
-func accessImportSourceFor(t *testing.T, db *sql.DB, schema string, organization tracker.OrganizationID, malformedInvitation bool) (postgres.AccessImportSource, *historyObjects) {
+func accessImportSourceFor(t *testing.T, db *sql.DB, schema string, organization tracker.OrganizationID, malformedInvitation bool) (postgres.AccessImportSource, *pgstoretest.HistoryObjects) {
 	t.Helper()
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
@@ -129,7 +131,7 @@ func accessImportSourceFor(t *testing.T, db *sql.DB, schema string, organization
 	for _, name := range accessFixtureTables {
 		insertAccessSourceRow(t, db, schema, name, source.Schema[name], rows[name])
 	}
-	objects := newHistoryObjects()
+	objects := pgstoretest.NewHistoryObjects()
 	source.Objects = objects
 	return source, objects
 }
@@ -149,15 +151,6 @@ func insertAccessSourceRow(t *testing.T, db *sql.DB, schema, table string, schem
 	if _, err := db.ExecContext(t.Context(), statement, args...); err != nil {
 		t.Fatalf("insert raw source row for %s: %v", table, err)
 	}
-}
-
-func seedAccessTarget(t *testing.T, db *sql.DB, repository *postgres.Repository, organization tracker.OrganizationID) {
-	t.Helper()
-	createdAt := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,slug,local,created_at) VALUES($1,'Example organization','example',false,$2)`, organization, createdAt); err != nil {
-		t.Fatal(err)
-	}
-	seedRepository(t, repository, organization)
 }
 
 func finishAccessImport(t *testing.T, r *postgres.Repository, source postgres.AccessImportSource) postgres.AccessImportProgress {
@@ -183,11 +176,11 @@ func finishAccessImport(t *testing.T, r *postgres.Repository, source postgres.Ac
 }
 
 func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	sources := make([]postgres.AccessImportSource, len(organizations))
-	objects := make([]*historyObjects, len(organizations))
+	objects := make([]*pgstoretest.HistoryObjects, len(organizations))
 	for n, organization := range organizations {
 		sources[n], objects[n] = accessImportSourceFor(t, db, fmt.Sprintf("raw_access_%d", n), organization, false)
 		if n == 0 {
@@ -202,7 +195,7 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 		if err := r.InitializeAccessCopyOrganization(t.Context(), copySource); err != nil {
 			t.Fatalf("initialize tenant organization: %v", err)
 		}
-		seedRepository(t, r, organization)
+		pgstoretest.SeedRepository(t, r, organization)
 		processed, err := r.ImportAccessCopy(t.Context(), copySource)
 		if err != nil || processed != int64(2*len(accessFixtureTables)-2) {
 			t.Fatalf("tenant %s import = %d, %v", organizations[n], processed, err)
@@ -334,7 +327,7 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
 	}
-	r, _ = repositoryFor(t, db, smallPool())
+	r, _ = pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	for _, org := range organizations {
 		if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
 			for _, suffix := range []string{"first", "second"} {
@@ -370,10 +363,10 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 }
 
 func TestAccessImportMissingProjectReferenceDoesNotAdvanceCheckpoint(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_missing_project")
-	seedAccessTarget(t, db, r, organization)
+	pgstoretest.SeedAccessTarget(t, db, r, organization)
 	source, _ := accessImportSourceFor(t, db, "raw_access_missing_project", organization, false)
 	if _, err := db.ExecContext(t.Context(), `UPDATE "raw_access_missing_project".token_grants SET project_id='prj_missing'`); err != nil {
 		t.Fatal(err)
@@ -405,8 +398,8 @@ func TestAccessImportMissingProjectReferenceDoesNotAdvanceCheckpoint(t *testing.
 }
 
 func TestAccessImportRejectsForeignOrganizationBindings(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	for _, transport := range []string{"postgres", "neutral"} {
 		for _, tc := range []struct {
 			name, table, column string
@@ -416,7 +409,7 @@ func TestAccessImportRejectsForeignOrganizationBindings(t *testing.T) {
 		} {
 			t.Run(transport+"_"+tc.name, func(t *testing.T) {
 				organization := tracker.OrganizationID("org_" + transport + "_" + tc.name)
-				seedAccessTarget(t, db, r, organization)
+				pgstoretest.SeedAccessTarget(t, db, r, organization)
 				schema := "raw_" + transport + "_" + tc.name
 				source, _ := accessImportSourceFor(t, db, schema, organization, false)
 				if _, err := db.ExecContext(t.Context(), "UPDATE "+pgx.Identifier{schema, tc.table}.Sanitize()+" SET "+pgx.Identifier{tc.column}.Sanitize()+"='org_other'"); err != nil {
@@ -458,10 +451,10 @@ func TestAccessImportRejectsForeignOrganizationBindings(t *testing.T) {
 }
 
 func TestAccessImportMalformedInvitationDoesNotAdvanceCheckpoint(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_malformed")
-	seedAccessTarget(t, db, r, organization)
+	pgstoretest.SeedAccessTarget(t, db, r, organization)
 	source, _ := accessImportSourceFor(t, db, "raw_access_malformed", organization, true)
 	importer, err := r.NewAccessImporter(t.Context(), source)
 	if err != nil {
@@ -490,10 +483,10 @@ func TestAccessImportMalformedInvitationDoesNotAdvanceCheckpoint(t *testing.T) {
 }
 
 func TestAccessImportContinuesAfterEmptyTextKey(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_empty_key")
-	seedAccessTarget(t, db, r, organization)
+	pgstoretest.SeedAccessTarget(t, db, r, organization)
 	source, _ := accessImportSourceFor(t, db, "raw_access_empty_key", organization, false)
 	insertAccessSourceRow(t, db, "raw_access_empty_key", "hosted_invitations", source.Schema["hosted_invitations"], map[string]any{
 		"id": "", "organization_id": string(organization), "email": "empty-id@example.test", "role": "viewer", "accepted_user_id": "",
@@ -523,10 +516,10 @@ func TestAccessImportContinuesAfterEmptyTextKey(t *testing.T) {
 }
 
 func TestAccessImportRejectsSourceColumnTypeDrift(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_source_type")
-	seedAccessTarget(t, db, r, organization)
+	pgstoretest.SeedAccessTarget(t, db, r, organization)
 	source, _ := accessImportSourceFor(t, db, "raw_access_source_type", organization, false)
 	if _, err := db.ExecContext(t.Context(), `ALTER TABLE raw_access_source_type.hosted_tenant ALTER COLUMN deployment TYPE bytea USING convert_to(deployment,'UTF8')`); err != nil {
 		t.Fatal(err)
@@ -537,10 +530,10 @@ func TestAccessImportRejectsSourceColumnTypeDrift(t *testing.T) {
 }
 
 func TestAccessImportPreservesInvitationBeyondServingPage(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_many_grants")
-	seedAccessTarget(t, db, r, organization)
+	pgstoretest.SeedAccessTarget(t, db, r, organization)
 	source, _ := accessImportSourceFor(t, db, "raw_access_many_grants", organization, false)
 	grants := make([]map[string]any, 0, corestore.MaxPageSize+1)
 	if err := r.Write(t.Context(), organization, corestore.Serving, func(w corestore.Writer) error {

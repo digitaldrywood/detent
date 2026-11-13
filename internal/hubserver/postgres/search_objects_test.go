@@ -55,9 +55,9 @@ func TestSearchIndexedRankingHydratesOnlySelectedSnippets(t *testing.T) {
 	for _, missingOther := range []bool{false, true} {
 		t.Run(map[bool]string{false: "healthy objects", true: "nonselected object missing"}[missingOther], func(t *testing.T) {
 			if missingOther {
-				f.objects.mu.Lock()
-				delete(f.objects.objects, second.Payload.Key)
-				f.objects.mu.Unlock()
+				f.objects.Mu.Lock()
+				delete(f.objects.Objects, second.Payload.Key)
+				f.objects.Mu.Unlock()
 			}
 			objects.reads.Store(0)
 			page, err := content.Find(t.Context(), f.repository, "org_first", query)

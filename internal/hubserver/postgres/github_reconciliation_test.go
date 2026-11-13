@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -17,8 +19,8 @@ import (
 )
 
 func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)
 	organizations := []tracker.OrganizationID{"first", "second"}
 	outcomes := make(map[tracker.OrganizationID]projectstore.GitHubReconciliation)
@@ -212,7 +214,7 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 
 	t.Run("webhook_policy_landing", func(t *testing.T) {
 		for _, org := range []tracker.OrganizationID{"org_webhook_first", "org_webhook_second"} {
-			content := eventstore.NewContent(newHistoryObjects())
+			content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 			write := func(run func(tenantstore.Writer) error) {
 				t.Helper()
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, run); err != nil {
@@ -239,7 +241,7 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 				observation := projectstore.GitHubPullRequestObservation{Repository: "example-org/example-project", Number: 18, HeadSHA: strings.Repeat("a", 40), SourceUpdatedAt: now, ObservedAt: now, State: "merged", RepositoryDefaultBranch: new("develop"), MergeSHA: new(strings.Repeat("b", 40)), BaseRef: new("develop"), MergedAt: new(now), MergedBy: new("example-" + string(project))}
 				prepareSource := func(value projectstore.GitHubPullRequestObservation, delivery string) projectstore.GitHubWebhook {
 					t.Helper()
-					raw := historyJSON(t, map[string]any{"action": "closed", "repository": map[string]any{"full_name": value.Repository, "default_branch": value.RepositoryDefaultBranch}, "pull_request": map[string]any{"node_id": "PR_" + string(project), "number": value.Number, "title": "Workflow source", "state": "closed", "draft": value.Draft, "html_url": "https://github.com/example-org/example-project/pull/18", "created_at": now.Add(-2 * time.Hour), "updated_at": value.SourceUpdatedAt, "merged_at": value.MergedAt, "merge_commit_sha": value.MergeSHA, "merged_by": map[string]any{"login": value.MergedBy}, "head": map[string]any{"ref": "workflow-source", "sha": value.HeadSHA}, "base": map[string]any{"ref": value.BaseRef, "sha": strings.Repeat("a", 40)}}})
+					raw := pgstoretest.HistoryJSON(t, map[string]any{"action": "closed", "repository": map[string]any{"full_name": value.Repository, "default_branch": value.RepositoryDefaultBranch}, "pull_request": map[string]any{"node_id": "PR_" + string(project), "number": value.Number, "title": "Workflow source", "state": "closed", "draft": value.Draft, "html_url": "https://github.com/example-org/example-project/pull/18", "created_at": now.Add(-2 * time.Hour), "updated_at": value.SourceUpdatedAt, "merged_at": value.MergedAt, "merge_commit_sha": value.MergeSHA, "merged_by": map[string]any{"login": value.MergedBy}, "head": map[string]any{"ref": "workflow-source", "sha": value.HeadSHA}, "base": map[string]any{"ref": value.BaseRef, "sha": strings.Repeat("a", 40)}}})
 					ref, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org}, raw)
 					if err != nil {
 						t.Fatal(err)
@@ -351,7 +353,7 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 		saved := make(map[tracker.OrganizationID]projectstore.GitHubPullRequestRefresh)
 		for orgIndex, org := range []tracker.OrganizationID{"org_refresh_first", "org_refresh_second"} {
 			t.Run(string(org), func(t *testing.T) {
-				content := eventstore.NewContent(newHistoryObjects())
+				content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 				write := func(fn func(tenantstore.Writer) error) {
 					t.Helper()
 					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, fn); err != nil {
@@ -367,11 +369,11 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 						project = "prj_other"
 					}
 					item := tracker.NativeWorkItemID("wi_" + name)
-					change, err := content.PrepareChange(t.Context(), org, historyJSON(t, tracker.ChangeRequest{ID: "change_" + name, OrganizationID: org, ProjectID: project, WorkItemID: item, Title: "Example " + name, Body: "Change body", Revision: 1, CreatedAt: now, UpdatedAt: now}))
+					change, err := content.PrepareChange(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.ChangeRequest{ID: "change_" + name, OrganizationID: org, ProjectID: project, WorkItemID: item, Title: "Example " + name, Body: "Change body", Revision: 1, CreatedAt: now, UpdatedAt: now}))
 					if err != nil {
 						t.Fatal(err)
 					}
-					version, err := content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: "version_" + name, ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head_" + name, BaseSHA: "base", Repository: "example-org/example-project", PolicyID: "policy"}, Actor: historyActor(), CreatedAt: now}))
+					version, err := content.PrepareVersion(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.ChangeVersion{ID: "version_" + name, ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head_" + name, BaseSHA: "base", Repository: "example-org/example-project", PolicyID: "policy"}, Actor: pgstoretest.HistoryActor(), CreatedAt: now}))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -627,7 +629,7 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 				}
 				updateVersion := func(row projectstore.GitHubPullRequestRefresh, id, head string) projectstore.GitHubPullRequestRefresh {
 					t.Helper()
-					version, err := content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: id, ChangeID: row.ChangeID, Number: 2, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: head, BaseSHA: "base", Repository: row.Repository, PolicyID: "policy"}, Actor: historyActor(), CreatedAt: now.Add(time.Minute)}))
+					version, err := content.PrepareVersion(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.ChangeVersion{ID: id, ChangeID: row.ChangeID, Number: 2, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: head, BaseSHA: "base", Repository: row.Repository, PolicyID: "policy"}, Actor: pgstoretest.HistoryActor(), CreatedAt: now.Add(time.Minute)}))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -877,7 +879,7 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 	})
 
 	t.Run("moved_head_observation_preserves_requested_authority", func(t *testing.T) {
-		content := eventstore.NewContent(newHistoryObjects())
+		content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 		key := projectstore.GitHubPullRequestRefreshKey{ProjectID: "prj_moved", ChangeID: "change_moved", Repository: "example-org/example-project", Number: 18}
 		organizations := []tracker.OrganizationID{"org_moved_first", "org_moved_second"}
 		saved := make(map[tracker.OrganizationID]projectstore.GitHubPullRequestRefresh)
@@ -894,11 +896,11 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 			return row
 		}
 		for _, org := range organizations {
-			change, err := content.PrepareChange(t.Context(), org, historyJSON(t, tracker.ChangeRequest{ID: key.ChangeID, OrganizationID: org, ProjectID: key.ProjectID, WorkItemID: "wi_moved", Title: "Moved head", Revision: 1, CreatedAt: now, UpdatedAt: now}))
+			change, err := content.PrepareChange(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.ChangeRequest{ID: key.ChangeID, OrganizationID: org, ProjectID: key.ProjectID, WorkItemID: "wi_moved", Title: "Moved head", Revision: 1, CreatedAt: now, UpdatedAt: now}))
 			if err != nil {
 				t.Fatal(err)
 			}
-			version, err := content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: "version_moved", ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "original_head", BaseSHA: "base", Repository: key.Repository, PolicyID: "policy"}, Actor: historyActor(), CreatedAt: now}))
+			version, err := content.PrepareVersion(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.ChangeVersion{ID: "version_moved", ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "original_head", BaseSHA: "base", Repository: key.Repository, PolicyID: "policy"}, Actor: pgstoretest.HistoryActor(), CreatedAt: now}))
 			if err != nil {
 				t.Fatal(err)
 			}

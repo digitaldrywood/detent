@@ -3,7 +3,6 @@ package postgres_test
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +10,14 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -26,19 +25,19 @@ import (
 )
 
 func TestCoreWorkEventObjectsConvertPopulatedUpgrade(t *testing.T) {
-	db, fixture := migrationDatabaseAtVersion(t, 20261109002731)
-	seedCore(t, db)
+	db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
+	pgstoretest.SeedCore(t, db)
 	payloads := map[string][]byte{}
 	for _, org := range []string{"org_first", "org_second"} {
 		for _, id := range []int64{7, 8} {
 			raw := []byte(fmt.Sprintf(" {\"tenant\":%q, \"event\":%d, \"detail\": [1, 2], \"text\": \"Café 世界\"} \n", org, id))
 			payloads[fmt.Sprintf("%s/%d", org, id)] = raw
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,41,'progress',$3,$4,$4)`, org, id, string(raw), historyAt()); err != nil {
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,41,'progress',$3,$4,$4)`, org, id, string(raw), pgstoretest.HistoryAt()); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	provider, err := migrationProvider(db)
+	provider, err := pgstoretest.MigrationProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +45,7 @@ func TestCoreWorkEventObjectsConvertPopulatedUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, org := range []string{"org_first", "org_second"} {
-		_, err := db.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,9,41,'progress','{}',$2,$2)`, org, historyAt())
+		_, err := db.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,9,41,'progress','{}',$2,$2)`, org, pgstoretest.HistoryAt())
 		var constraint *pgconn.PgError
 		if !errors.As(err, &constraint) || constraint.Code != "23514" || constraint.ConstraintName != "core_work_events_object_writes" {
 			t.Fatalf("new inline write was not rejected: %v", err)
@@ -55,10 +54,10 @@ func TestCoreWorkEventObjectsConvertPopulatedUpgrade(t *testing.T) {
 	if _, err := db.ExecContext(t.Context(), `ALTER TABLE core_work_events VALIDATE CONSTRAINT core_work_events_object_writes`); err == nil {
 		t.Fatal("contract allowed before source conversion")
 	}
-	repository, _ := coreWorkEventRepository(t, db, fixture)
-	objects := newHistoryObjects()
+	repository, _ := pgstoretest.CoreWorkEventRepository(t, db, fixture)
+	objects := pgstoretest.NewHistoryObjects()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		storage := postgres.NewConversionStorage(repository, org, objects, convertPayload)
+		storage := postgres.NewConversionStorage(repository, org, objects, pgstoretest.ConvertPayload)
 		families, err := storage.Start(t.Context())
 		if err != nil || !slices.Contains(families, "core-work-events") {
 			t.Fatalf("work-event conversion owner missing: families=%v error=%v", families, err)
@@ -100,7 +99,7 @@ func TestCoreWorkEventObjectsConvertPopulatedUpgrade(t *testing.T) {
 				t.Fatalf("other tenant conversion changed: pending=%d error=%v", pending, err)
 			}
 		}
-		if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(repository, org, objects, convertPayload)); err != nil {
+		if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(repository, org, objects, pgstoretest.ConvertPayload)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -123,7 +122,7 @@ func TestCoreWorkEventObjectsConvertPopulatedUpgrade(t *testing.T) {
 }
 
 type coreWorkEventFaultObjects struct {
-	*historyObjects
+	*pgstoretest.HistoryObjects
 	mode      string
 	cancel    func()
 	onStore   func(context.Context) error
@@ -137,14 +136,14 @@ func (s *coreWorkEventFaultObjects) StoreDetail(ctx context.Context, org string,
 	if s.mode == "rejected" {
 		return attachment.ArchiveReference{}, io.ErrUnexpectedEOF
 	}
-	ref, err := s.historyObjects.StoreDetail(ctx, org, raw)
+	ref, err := s.HistoryObjects.StoreDetail(ctx, org, raw)
 	if err != nil {
 		return ref, err
 	}
 	if s.mode == "corrupt-object" {
-		s.mu.Lock()
-		s.objects[ref.Key][0] ^= 1
-		s.mu.Unlock()
+		s.Mu.Lock()
+		s.Objects[ref.Key][0] ^= 1
+		s.Mu.Unlock()
 	}
 	if s.onStore != nil {
 		if err := s.onStore(ctx); err != nil {
@@ -169,7 +168,7 @@ func (s *coreWorkEventFaultObjects) ReadDetail(ctx context.Context, org string, 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	raw, err := s.historyObjects.ReadDetail(ctx, org, ref)
+	raw, err := s.HistoryObjects.ReadDetail(ctx, org, ref)
 	if err == nil && s.mode == "corrupt" {
 		raw[0] ^= 1
 	}
@@ -179,27 +178,27 @@ func (s *coreWorkEventFaultObjects) ReadDetail(ctx context.Context, org string, 
 func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 	for _, mode := range []string{"rejected", "uncertain", "corrupt", "corrupt-object", "interrupted"} {
 		t.Run(mode, func(t *testing.T) {
-			db, fixture := migrationDatabaseAtVersion(t, 20261109002731)
-			seedCore(t, db)
+			db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
+			pgstoretest.SeedCore(t, db)
 			for _, org := range []string{"org_first", "org_second"} {
 				for _, id := range []int64{7, 8} {
-					if _, err := db.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,41,'progress',' {"step": "compile"} ',$3,$3)`, org, id, historyAt()); err != nil {
+					if _, err := db.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,41,'progress',' {"step": "compile"} ',$3,$3)`, org, id, pgstoretest.HistoryAt()); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
-			provider, err := migrationProvider(db)
+			provider, err := pgstoretest.MigrationProvider(db)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err := provider.Up(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			repository, _ := coreWorkEventRepository(t, db, fixture)
+			repository, _ := pgstoretest.CoreWorkEventRepository(t, db, fixture)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			objects := &coreWorkEventFaultObjects{historyObjects: newHistoryObjects(), mode: mode, cancel: cancel}
-			err = storageconversion.ConvertStorageBatch(ctx, postgres.NewConversionStorage(repository, "org_first", objects, convertPayload))
+			objects := &coreWorkEventFaultObjects{HistoryObjects: pgstoretest.NewHistoryObjects(), mode: mode, cancel: cancel}
+			err = storageconversion.ConvertStorageBatch(ctx, postgres.NewConversionStorage(repository, "org_first", objects, pgstoretest.ConvertPayload))
 			expected := error(io.ErrUnexpectedEOF)
 			if mode == "corrupt" || mode == "corrupt-object" {
 				expected = artifact.ErrIntegrity
@@ -219,7 +218,7 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 			objects.mode = ""
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 				for range 2 {
-					if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(repository, org, objects, convertPayload)); err != nil {
+					if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(repository, org, objects, pgstoretest.ConvertPayload)); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -236,8 +235,8 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 	}
 	for _, aggregates := range []int{1, 3} {
 		t.Run(fmt.Sprintf("interrupted progress/%d aggregates", aggregates), func(t *testing.T) {
-			db, fixture := migrationDatabaseAtVersion(t, 20261109002731)
-			seedCore(t, db)
+			db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
+			pgstoretest.SeedCore(t, db)
 			payloads := map[int64][]byte{}
 			for _, org := range []string{"org_first", "org_second"} {
 				if aggregates == 3 {
@@ -254,20 +253,20 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 					}
 					raw := []byte(fmt.Sprintf(" {\"step\":\"compile\",\"source_id\":%d} ", id))
 					payloads[id] = raw
-					if _, err := db.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,$3,'progress',$4,$5,$5)`, org, id, issue, string(raw), historyAt()); err != nil {
+					if _, err := db.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,$3,'progress',$4,$5,$5)`, org, id, issue, string(raw), pgstoretest.HistoryAt()); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
-			provider, err := migrationProvider(db)
+			provider, err := pgstoretest.MigrationProvider(db)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err := provider.Up(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			repository, _ := coreWorkEventRepository(t, db, fixture)
-			objects := &coreWorkEventFaultObjects{historyObjects: newHistoryObjects()}
+			repository, _ := pgstoretest.CoreWorkEventRepository(t, db, fixture)
+			objects := &coreWorkEventFaultObjects{HistoryObjects: pgstoretest.NewHistoryObjects()}
 			count := func(org string) int {
 				t.Helper()
 				var count int
@@ -301,7 +300,7 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 				}
 				return nil
 			}
-			if err := storageconversion.ConvertStorageBatch(ctx, postgres.NewConversionStorage(repository, "org_first", objects, convertPayload)); !errors.Is(err, context.Canceled) {
+			if err := storageconversion.ConvertStorageBatch(ctx, postgres.NewConversionStorage(repository, "org_first", objects, pgstoretest.ConvertPayload)); !errors.Is(err, context.Canceled) {
 				t.Fatalf("canceled run: %v", err)
 			}
 			if got := count("org_first"); got != 1 {
@@ -333,7 +332,7 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 				resumed = append(resumed, source.ID)
 				return nil
 			}
-			if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(repository, "org_first", objects, convertPayload)); err != nil {
+			if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(repository, "org_first", objects, pgstoretest.ConvertPayload)); err != nil {
 				t.Fatal(err)
 			}
 			if got := count("org_first"); got != 3 || len(resumed) != 2 {
@@ -341,7 +340,7 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 			}
 			objects.onContent = nil
 			for range 2 {
-				if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(repository, "org_second", objects, convertPayload)); err != nil {
+				if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(repository, "org_second", objects, pgstoretest.ConvertPayload)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -370,50 +369,35 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 
 }
 
-func coreWorkEventRepository(t *testing.T, db *sql.DB, fixture *pgtest.Template) (*postgres.Repository, *pgxpool.Pool) {
-	t.Helper()
-	pool := rolePoolFromTemplate(t, fixture, db, "detent_runtime_v2", "")
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	return repository, pool
-}
-
 func TestCoreWorkEventObjectsFenceConcurrentReplay(t *testing.T) {
-	db, fixture := migrationDatabaseAtVersion(t, 20261109002731)
-	seedCore(t, db)
+	db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
+	pgstoretest.SeedCore(t, db)
 	for _, org := range []string{"org_first", "org_second"} {
 		for _, id := range []int64{7, 8} {
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,41,'progress',' {"step": "compile"} ',$3,$3)`, org, id, historyAt()); err != nil {
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO core_work_events (organization_id,source_id,issue_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,41,'progress',' {"step": "compile"} ',$3,$3)`, org, id, pgstoretest.HistoryAt()); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	provider, err := migrationProvider(db)
+	provider, err := pgstoretest.MigrationProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.Up(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	repository, pool := coreWorkEventRepository(t, db, fixture)
-	base := newHistoryObjects()
+	repository, pool := pgstoretest.CoreWorkEventRepository(t, db, fixture)
+	base := pgstoretest.NewHistoryObjects()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		objects := &coreWorkEventFaultObjects{historyObjects: base}
+		objects := &coreWorkEventFaultObjects{HistoryObjects: base}
 		objects.onStore = func(ctx context.Context) error {
 			objects.onStore = nil
 			if pool.Stat().AcquiredConns() != 0 {
 				return errors.New("conversion held a database connection during object publication")
 			}
-			return storageconversion.ConvertStorageBatch(ctx, postgres.NewConversionStorage(repository, org, base, convertPayload))
+			return storageconversion.ConvertStorageBatch(ctx, postgres.NewConversionStorage(repository, org, base, pgstoretest.ConvertPayload))
 		}
-		storage := postgres.NewConversionStorage(repository, org, objects, convertPayload)
+		storage := postgres.NewConversionStorage(repository, org, objects, pgstoretest.ConvertPayload)
 		if _, err := storage.Start(t.Context()); err != nil {
 			t.Fatal(err)
 		}

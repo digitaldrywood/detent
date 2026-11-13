@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
@@ -22,17 +24,17 @@ import (
 
 func workspaceContractFixture(t *testing.T) (*sql.DB, *postgres.Repository, *pgxpool.Pool, time.Time) {
 	t.Helper()
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
-	now := historyAt()
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, repository, org)
+		pgstoretest.SeedLeaseFamily(t, repository, org)
 		for i := int64(1); i <= 2; i++ {
 			project := tracker.ProjectID(fmt.Sprintf("prj_%d", i))
 			id := fmt.Sprintf("ws_%032x", i)
 			runner := fmt.Sprintf("runner_%d", i)
-			seedRunnerIdentity(t, repository, org, runner, fmt.Sprintf("machine_%d", i), now, false)
-			lease := claimLease(t, repository, org, leaseClaim(i))
+			pgstoretest.SeedRunnerIdentity(t, repository, org, runner, fmt.Sprintf("machine_%d", i), now, false)
+			lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(i))
 			err := repository.WriteWorkspace(t.Context(), org, corestore.Serving, func(w postgres.WorkspaceWriter) error {
 				created, err := w.CreateWorkspaceSession(t.Context(), postgres.WorkspaceCreate{OrganizationID: org, ProjectID: project, ID: id, SubjectWorkItemID: fmt.Sprintf("wi_%d", i), Ref: "refs/heads/example", Requires: []string{"files", "diff"}, IdleTimeoutSeconds: 300, ExpiresAt: now.Add(time.Hour), RequestedExpiresAt: now.Add(time.Minute), CreatedBy: string(org), CreatedAt: now})
 				if err != nil {
@@ -261,7 +263,7 @@ func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, pool = repositoryFor(t, admin, smallPool())
+	repository, pool = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadWorkspace(t.Context(), org, corestore.Serving, func(r postgres.WorkspaceReader) error {
 			expired, err := r.ExpiringWorkspaces(t.Context(), now.Add(time.Hour), 2)
@@ -299,8 +301,8 @@ func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
 	}
 
 	t.Run("activity preserves lifecycle and current ownership", func(t *testing.T) {
-		counter := new(reportCountingTracer)
-		counted, err := postgres.NewRepository(t.Context(), tracedFeaturePool(t, pool, counter), smallPool())
+		counter := new(pgstoretest.ReportCountingTracer)
+		counted, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, counter), pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -379,15 +381,15 @@ func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
 		}
 		touch := func(key scope, at time.Time, want error) {
 			t.Helper()
-			counter.count.Store(0)
+			counter.Count.Store(0)
 			err := counted.WriteWorkspace(t.Context(), key.organization, corestore.Serving, func(w postgres.WorkspaceWriter) error {
-				before := counter.count.Load()
+				before := counter.Count.Load()
 				err := w.TouchWorkspaceActivity(t.Context(), key.project, key.id, at)
 				statements := int64(1)
 				if at.IsZero() {
 					statements = 0
 				}
-				if got := counter.count.Load() - before; got != statements {
+				if got := counter.Count.Load() - before; got != statements {
 					t.Fatalf("activity owner statements=%d want=%d", got, statements)
 				}
 				return err
@@ -399,7 +401,7 @@ func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
 			if at.IsZero() {
 				statements = 1
 			}
-			if got := counter.count.Load(); got != statements {
+			if got := counter.Count.Load(); got != statements {
 				t.Fatalf("activity tenant bind and owner statements=%d want=%d", got, statements)
 			}
 			assertAll()
@@ -448,7 +450,7 @@ func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
 				touch(key, lease.ExpiresAt, nil)
 				if i == 1 {
 					if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-						_, err := w.Release(t.Context(), leaseFence(lease), "example")
+						_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "example")
 						return err
 					}); err != nil {
 						t.Fatal(err)

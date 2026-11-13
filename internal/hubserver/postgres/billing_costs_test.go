@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -17,11 +19,11 @@ import (
 )
 
 func TestBillingCostsCorrectMonthlySpendWithoutDoubleCounting(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	boundary := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		for _, project := range []tracker.ProjectID{"project_first", "project_second"} {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				_, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: project, Name: string(project), Profile: "native"})

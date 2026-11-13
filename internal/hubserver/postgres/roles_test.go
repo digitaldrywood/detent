@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 
 	"github.com/jackc/pgx/v5"
@@ -14,7 +16,7 @@ import (
 )
 
 func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
-	db := template.Database(t)
+	db := pgstoretest.Template.Database(t)
 	var versionedRoles, legacyRoles int
 	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_roles
 		WHERE rolname = ANY($1)`, []string{postgres.MigrationRoleName, postgres.RuntimeRoleName, postgres.PlatformRoleName}).Scan(&versionedRoles); err != nil {
@@ -40,9 +42,9 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 
 	for _, group := range []string{"detent_runtime_v2", "detent_platform_v2", "detent_migration_v2"} {
 		t.Run(group, func(t *testing.T) {
-			admin := template.Database(t)
-			seedCore(t, admin)
-			pool := rolePool(t, admin, group, "")
+			admin := pgstoretest.Template.Database(t)
+			pgstoretest.SeedCore(t, admin)
+			pool := pgstoretest.RolePool(t, admin, group, "")
 			for _, table := range []string{"projects", "issues", "native_comments"} {
 				t.Run(table, func(t *testing.T) {
 					var count int
@@ -77,7 +79,7 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 					}
 					defer tx.Rollback(t.Context())
 					_, err = tx.Exec(t.Context(), "SET LOCAL ROLE "+target)
-					requireSQLState(t, err, "42501")
+					pgstoretest.RequireSQLState(t, err, "42501")
 				})
 			}
 			for _, statement := range []string{
@@ -98,13 +100,13 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 							t.Fatal(err)
 						}
 					} else {
-						requireSQLState(t, err, "42501")
+						pgstoretest.RequireSQLState(t, err, "42501")
 					}
 				})
 			}
 			t.Run("allocator refuses other relations", func(t *testing.T) {
 				_, err := pool.Exec(t.Context(), `SELECT public.allocate_core_record_id('public.projects'::regclass, 100)`)
-				requireSQLState(t, err, "42501")
+				pgstoretest.RequireSQLState(t, err, "42501")
 			})
 			if group == "detent_runtime_v2" {
 				for _, statement := range []string{
@@ -114,7 +116,7 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 				} {
 					t.Run(statement, func(t *testing.T) {
 						_, err := pool.Exec(t.Context(), statement)
-						requireSQLState(t, err, "42501")
+						pgstoretest.RequireSQLState(t, err, "42501")
 					})
 				}
 			}
@@ -125,8 +127,8 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 func TestRuntimeRejectsCombinedAuthority(t *testing.T) {
 	for _, group := range []string{"detent_platform_v2", "detent_migration_v2"} {
 		t.Run(group, func(t *testing.T) {
-			admin := template.Database(t)
-			pool := rolePool(t, admin, "detent_runtime_v2", "")
+			admin := pgstoretest.Template.Database(t)
+			pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 			var login string
 			if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 				t.Fatal(err)
@@ -142,10 +144,10 @@ func TestRuntimeRejectsCombinedAuthority(t *testing.T) {
 }
 
 func TestTenantBindingFailureReleasesConnection(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	pool := rolePool(t, admin, "detent_runtime_v2", "")
-	runtime := runtimeFor(t, pool, pool)
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
 	tx, err := runtime.Begin(t.Context(), "org_\x00invalid", pgtransport.Options{})
 	if tx != nil || err == nil {
 		if tx != nil {
@@ -156,7 +158,7 @@ func TestTenantBindingFailureReleasesConnection(t *testing.T) {
 	if stats := pool.Stat(); stats.AcquiredConns() != 0 {
 		t.Fatalf("failed binding retained %d connections", stats.AcquiredConns())
 	}
-	valid := tenantTx(t, runtime, pool, "org_second")
+	valid := pgstoretest.TenantTx(t, runtime, pool, "org_second")
 	var count int
 	if err := valid.QueryRow(t.Context(), `SELECT count(*) FROM issues`).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("usable transaction after failed binding returned %d rows: %v", count, err)

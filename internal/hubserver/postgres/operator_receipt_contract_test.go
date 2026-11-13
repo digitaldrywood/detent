@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -28,15 +30,15 @@ import (
 )
 
 func TestOperatorReceiptGenericWritesCannotBypassCustody(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	content := eventstore.NewContent(newHistoryObjects())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, historyAt()); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
 		for _, key := range []string{"complete", "abandon"} {
-			claim := receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: key, RequestHash: artifact.Digest([]byte(key)), CreatedAt: historyAt(), ResponseClaimed: true, ResponsePending: true}
+			claim := receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: key, RequestHash: artifact.Digest([]byte(key)), CreatedAt: pgstoretest.HistoryAt(), ResponseClaimed: true, ResponsePending: true}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				_, _, err := w.(receiptstore.Writer).ClaimReceipt(t.Context(), claim)
 				return err
@@ -46,7 +48,7 @@ func TestOperatorReceiptGenericWritesCannotBypassCustody(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), `UPDATE native_command_states SET reservation_project_id='prj_example',reservation_correlation_id='example-correlation' WHERE organization_id=$1 AND command_key=$2`, org, key); err != nil {
 				t.Fatal(err)
 			}
-			completed, err := content.PrepareReceipt(t.Context(), receiptstore.Record{OrganizationID: org, ActorID: claim.ActorID, Operation: claim.Operation, CommandKey: key, RequestHash: claim.RequestHash, CreatedAt: historyAt()}, []byte(`{"outcome":"succeeded"}`))
+			completed, err := content.PrepareReceipt(t.Context(), receiptstore.Record{OrganizationID: org, ActorID: claim.ActorID, Operation: claim.Operation, CommandKey: key, RequestHash: claim.RequestHash, CreatedAt: pgstoretest.HistoryAt()}, []byte(`{"outcome":"succeeded"}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -65,15 +67,15 @@ func TestOperatorReceiptGenericWritesCannotBypassCustody(t *testing.T) {
 }
 
 func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
-	admin := template.Database(t)
-	config := smallPool()
+	admin := pgstoretest.Template.Database(t)
+	config := pgstoretest.SmallPool()
 	config.MaxConnections, config.ServingConnections = 5, 3
-	repository, pool := repositoryFor(t, admin, config)
-	content := eventstore.NewContent(newHistoryObjects())
-	keys := accessTestKeys(t, true)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, config)
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
+	keys := pgstoretest.AccessTestKeys(t, true)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", CreatedAt: historyAt()}); err != nil {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", CreatedAt: pgstoretest.HistoryAt()}); err != nil {
 				return err
 			}
 			for _, suffix := range []string{"first", "second"} {
@@ -86,10 +88,10 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_command_states(organization_id,actor_id,operation,command_key,request_hash,created_at,response_expired) SELECT $1,'example-history','example.history',n::text,repeat('a',64),$2,true FROM generate_series(1,10000) n`, org, historyAt()); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_command_states(organization_id,actor_id,operation,command_key,request_hash,created_at,response_expired) SELECT $1,'example-history','example.history',n::text,repeat('a',64),$2,true FROM generate_series(1,10000) n`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
-		global := postgres.OperatorReceiptReservation{Receipt: receiptstore.Record{OrganizationID: org, ActorID: "example-principal", Operation: "example.command", CommandKey: "organization", RequestHash: artifact.Digest([]byte("organization")), CreatedAt: historyAt()}, CorrelationID: "example-correlation"}
+		global := postgres.OperatorReceiptReservation{Receipt: receiptstore.Record{OrganizationID: org, ActorID: "example-principal", Operation: "example.command", CommandKey: "organization", RequestHash: artifact.Digest([]byte("organization")), CreatedAt: pgstoretest.HistoryAt()}, CorrelationID: "example-correlation"}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			_, _, err := w.(postgres.OperatorReceiptWriter).ReserveOperatorReceipt(t.Context(), global)
 			return err
@@ -100,7 +102,7 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 			request := global
 			request.ProjectID, request.Receipt.CommandKey = project, string(project)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				if err := w.RequireProjectIdle(t.Context(), project, historyAt()); err != nil {
+				if err := w.RequireProjectIdle(t.Context(), project, pgstoretest.HistoryAt()); err != nil {
 					return err
 				}
 				_, _, err := w.(postgres.OperatorReceiptWriter).ReserveOperatorReceipt(t.Context(), request)
@@ -119,13 +121,15 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.RequireProjectIdle(t.Context(), project, historyAt()) }); !errors.Is(err, projectstore.ErrActiveWork) {
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.RequireProjectIdle(t.Context(), project, pgstoretest.HistoryAt())
+			}); !errors.Is(err, projectstore.ErrActiveWork) {
 				t.Errorf("pending operator custody permits idle project: %v", err)
 			}
 			assertOperatorProjectActivitySeek(t, pool, org, project)
 			rollback := errors.New("unexpected retirement rolled back")
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				if err := w.RetireProject(t.Context(), project, 1, historyAt()); err != nil {
+				if err := w.RetireProject(t.Context(), project, 1, pgstoretest.HistoryAt()); err != nil {
 					return err
 				}
 				return rollback
@@ -142,7 +146,7 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 				if _, err := w.(postgres.OperatorReceiptWriter).CompleteOperatorReceipt(t.Context(), completion, true); err != nil {
 					return err
 				}
-				return w.RequireProjectIdle(t.Context(), project, historyAt())
+				return w.RequireProjectIdle(t.Context(), project, pgstoretest.HistoryAt())
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -150,8 +154,8 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			secret := accessstore.Secret{OrganizationID: org, ProjectID: project, Kind: "example", OrganizationSlug: "example", Envelope: envelope, UpdatedAt: historyAt()}
-			audit := accessstore.SecretAudit{OrganizationID: org, ProjectID: project, Kind: secret.Kind, Actor: "example-principal", Event: "race", KeyVersion: envelope.Version, RecordedAt: historyAt()}
+			secret := accessstore.Secret{OrganizationID: org, ProjectID: project, Kind: "example", OrganizationSlug: "example", Envelope: envelope, UpdatedAt: pgstoretest.HistoryAt()}
+			audit := accessstore.SecretAudit{OrganizationID: org, ProjectID: project, Kind: secret.Kind, Actor: "example-principal", Event: "race", KeyVersion: envelope.Version, RecordedAt: pgstoretest.HistoryAt()}
 			if project == "prj_second" {
 				seedAudit := audit
 				seedAudit.Event = "seed"
@@ -164,7 +168,7 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 
 			locked, release := make(chan struct{}), make(chan struct{})
 			var releaseOnce sync.Once
-			locker := startRepositoryTask(t, func(ctx context.Context) error {
+			locker := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 					if err := w.LockWorkItemProject(ctx, project); err != nil {
 						return err
@@ -172,21 +176,21 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 					close(locked)
 					select {
 					case <-release:
-						return w.RetireProject(ctx, project, 1, historyAt())
+						return w.RetireProject(ctx, project, 1, pgstoretest.HistoryAt())
 					case <-ctx.Done():
 						return ctx.Err()
 					}
 				})
 			})
 			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-			waitRepositorySignal(t, locked)
+			pgstoretest.WaitRepositorySignal(t, locked)
 			var lockerPID int
 			if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE '-- name: LockWorkItemProject :one%'`, pool.Config().ConnConfig.User).Scan(&lockerPID); err != nil {
 				t.Fatal(err)
 			}
 			race := request
 			race.Receipt.CommandKey += "-after-retirement"
-			reserver := startRepositoryTask(t, func(ctx context.Context) error {
+			reserver := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 					_, _, err := w.(postgres.OperatorReceiptWriter).ReserveOperatorReceipt(ctx, race)
 					return err
@@ -197,13 +201,13 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 			var reserverPID int
 			testenv.WaitUntil(t, t.Context(), func() error {
 				select {
-				case <-reserver.done:
+				case <-reserver.Done:
 					t.Fatal("reservation completed without waiting for the project retirement lock")
 				default:
 				}
 				return admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)) AND query LIKE '-- name: LockWorkItemProject :one%'`, pool.Config().ConnConfig.User, lockerPID).Scan(&reserverPID)
 			})
-			storer := startRepositoryTask(t, func(ctx context.Context) error {
+			storer := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 					return w.StoreAccessSecret(ctx, secret, audit)
 				})
@@ -211,7 +215,7 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 			testenv.WaitUntil(t, t.Context(), func() error {
 				select {
-				case <-storer.done:
+				case <-storer.Done:
 					t.Fatal("secret store completed without waiting for the project retirement lock")
 				default:
 				}
@@ -220,13 +224,13 @@ func TestOperatorReceiptFencesProjectLifetime(t *testing.T) {
 			})
 
 			releaseOnce.Do(func() { close(release) })
-			if err := locker.wait(t); err != nil {
+			if err := locker.Wait(t); err != nil {
 				t.Fatal(err)
 			}
-			if err := reserver.wait(t); !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, corestore.ErrSerializationFailure) {
+			if err := reserver.Wait(t); !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, corestore.ErrSerializationFailure) {
 				t.Fatalf("reservation accepted retired project: %v", err)
 			}
-			if err := storer.wait(t); !errors.Is(err, corestore.ErrNotFound) {
+			if err := storer.Wait(t); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("secret store did not reject retired project: %v", err)
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -303,26 +307,26 @@ func assertOperatorProjectActivitySeek(t *testing.T, pool *pgxpool.Pool, organiz
 }
 
 func TestOperatorReceiptPreservesScopedCustodyAndReplay(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	config := smallPool()
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	config := pgstoretest.SmallPool()
 	config.MaxConnections, config.ServingConnections = 4, 2
-	repository, _ := repositoryFor(t, admin, config)
-	content := eventstore.NewContent(newHistoryObjects())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, config)
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	var completed []postgres.OperatorReceiptReservation
 	var payloads [][]byte
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, project := range []tracker.ProjectID{"prj_shared", "prj_other"} {
-			identity := receiptstore.Record{OrganizationID: org, ActorID: "example-principal", Operation: "example.command", CommandKey: artifact.Digest([]byte(project)), RequestHash: artifact.Digest([]byte("request:" + project)), CreatedAt: historyAt()}
+			identity := receiptstore.Record{OrganizationID: org, ActorID: "example-principal", Operation: "example.command", CommandKey: artifact.Digest([]byte(project)), RequestHash: artifact.Digest([]byte("request:" + project)), CreatedAt: pgstoretest.HistoryAt()}
 			reservation := postgres.OperatorReceiptReservation{Receipt: identity, ProjectID: project}
 			start := make(chan struct{})
-			var tasks [2]*repositoryTask
+			var tasks [2]*pgstoretest.RepositoryTask
 			var inserted [2]bool
 			var reserved [2]postgres.OperatorReceiptState
 			for index := range tasks {
 				candidate := reservation
 				candidate.CorrelationID = fmt.Sprintf("example-correlation-%d", index)
-				tasks[index] = startRepositoryTask(t, func(ctx context.Context) error {
+				tasks[index] = pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 					select {
 					case <-start:
 					case <-ctx.Done():
@@ -338,7 +342,7 @@ func TestOperatorReceiptPreservesScopedCustodyAndReplay(t *testing.T) {
 			close(start)
 			owners := 0
 			for index, task := range tasks {
-				if err := task.wait(t); err != nil {
+				if err := task.Wait(t); err != nil {
 					if errors.Is(err, corestore.ErrSerializationFailure) {
 						continue
 					}
@@ -433,7 +437,7 @@ func TestOperatorReceiptPreservesScopedCustodyAndReplay(t *testing.T) {
 				start = make(chan struct{})
 				var claimed [2]bool
 				for index := range tasks {
-					tasks[index] = startRepositoryTask(t, func(ctx context.Context) error {
+					tasks[index] = pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 						select {
 						case <-start:
 						case <-ctx.Done():
@@ -449,7 +453,7 @@ func TestOperatorReceiptPreservesScopedCustodyAndReplay(t *testing.T) {
 				close(start)
 				owners = 0
 				for index, task := range tasks {
-					if err := task.wait(t); err != nil {
+					if err := task.Wait(t); err != nil {
 						if errors.Is(err, corestore.ErrSerializationFailure) {
 							continue
 						}
@@ -505,7 +509,7 @@ func TestOperatorReceiptPreservesScopedCustodyAndReplay(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, _ := repositoryFor(t, admin, config)
+	reopened, _ := pgstoretest.RepositoryFor(t, admin, config)
 	for index, request := range completed {
 		var state postgres.OperatorReceiptState
 		if err := reopened.ReadTenant(t.Context(), request.Receipt.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -537,7 +541,7 @@ func TestOperatorReceiptPreservesScopedCustodyAndReplay(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			expired, err := w.(receiptstore.RetentionWriter).ExpireReceipt(t.Context(), prior.Receipt, historyAt().Add(48*time.Hour))
+			expired, err := w.(receiptstore.RetentionWriter).ExpireReceipt(t.Context(), prior.Receipt, pgstoretest.HistoryAt().Add(48*time.Hour))
 			if err == nil && expired {
 				t.Error("operator response lost durable replay")
 			}

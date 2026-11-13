@@ -2,8 +2,6 @@ package postgres_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -26,17 +26,17 @@ import (
 )
 
 func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	organizations := []tracker.OrganizationID{"org_policy_first", "org_policy_second"}
 	for _, organization := range organizations {
-		seedRepository(t, repository, organization)
+		pgstoretest.SeedRepository(t, repository, organization)
 	}
 	now := time.Date(2026, 11, 1, 20, 0, 0, 0, time.UTC)
 	for index, organization := range organizations {
 		project := tracker.ProjectID("prj_first")
 		policyID := fmt.Sprintf("policy_%d", index+1)
-		row := policyTestRevision(organization, project, policyID, now)
+		row := pgstoretest.PolicyTestRevision(organization, project, policyID, now)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.ApproveProjectPolicy(t.Context(), row, "")
 		}); err != nil {
@@ -54,7 +54,7 @@ func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T
 		}); err != nil {
 			t.Fatal(err)
 		}
-		stale := policyTestRevision(organization, project, policyID+"_next", now.Add(time.Minute))
+		stale := pgstoretest.PolicyTestRevision(organization, project, policyID+"_next", now.Add(time.Minute))
 		err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.ApproveProjectPolicy(t.Context(), stale, "stale")
 		})
@@ -63,7 +63,7 @@ func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T
 		}
 	}
 
-	policy := policyTestRevision(organizations[0], "prj_first", "policy_1", now)
+	policy := pgstoretest.PolicyTestRevision(organizations[0], "prj_first", "policy_1", now)
 	review := eventstore.ReviewPolicy{OrganizationID: organizations[0], ProjectID: "prj_first", PolicyRevisionID: policy.PolicyID, ReviewPolicyID: "review_1", Revision: 1, UpdatedBy: "admin", UpdatedAt: now, PayloadObjectKey: policy.PayloadObjectKey, PayloadSHA256: policy.PayloadSHA256, PayloadBytes: policy.PayloadBytes, PayloadContentBytes: policy.PayloadContentBytes}
 	if err := repository.WriteTenant(t.Context(), organizations[0], corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.SetReviewPolicy(t.Context(), review, ""); err != nil {
@@ -102,7 +102,7 @@ func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T
 		t.Fatal(err)
 	}
 	tampered := review
-	replacement := policyTestRevision(organizations[0], "prj_first", "tampered", now)
+	replacement := pgstoretest.PolicyTestRevision(organizations[0], "prj_first", "tampered", now)
 	tampered.Revision = 3
 	tampered.PayloadObjectKey, tampered.PayloadSHA256 = replacement.PayloadObjectKey, replacement.PayloadSHA256
 	err = repository.WriteTenant(t.Context(), organizations[0], corestore.Serving, func(w tenantstore.Writer) error {
@@ -180,7 +180,7 @@ func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T
 					}
 					selected := currentPolicy
 					if test.project {
-						selected = policyTestRevision(organization, key.project, "reset_"+strings.ReplaceAll(test.name, " ", "_"), now)
+						selected = pgstoretest.PolicyTestRevision(organization, key.project, "reset_"+strings.ReplaceAll(test.name, " ", "_"), now)
 						expected := currentPolicy.PolicyID
 						if errors.Is(test.want, corestore.ErrRevisionConflict) {
 							expected = "stale"
@@ -192,7 +192,7 @@ func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T
 					if test.review {
 						next := eventstore.ReviewPolicy{
 							OrganizationID: organization, ProjectID: key.project, PolicyRevisionID: selected.PolicyID,
-							ReviewPolicyID: "review_"+strings.ReplaceAll(test.name, " ", "_"), Revision: currentReview.Revision+1,
+							ReviewPolicyID: "review_" + strings.ReplaceAll(test.name, " ", "_"), Revision: currentReview.Revision + 1,
 							UpdatedBy: "admin", UpdatedAt: now, PayloadObjectKey: selected.PayloadObjectKey,
 							PayloadSHA256: selected.PayloadSHA256, PayloadBytes: selected.PayloadBytes, PayloadContentBytes: selected.PayloadContentBytes,
 						}
@@ -209,7 +209,7 @@ func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T
 						}
 					}
 					if test.otherProject {
-						next := policyTestRevision(organization, "prj_second", "second_project_policy", now)
+						next := pgstoretest.PolicyTestRevision(organization, "prj_second", "second_project_policy", now)
 						if err := w.ApproveProjectPolicy(t.Context(), next, ""); err != nil {
 							return err
 						}
@@ -290,13 +290,13 @@ func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T
 }
 
 func TestProjectPolicyRevisionRetainsFrozenLandingGate(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_policy_landing")
-	seedRepository(t, repository, organization)
+	pgstoretest.SeedRepository(t, repository, organization)
 	project := tracker.ProjectID("prj_first")
 	now := time.Date(2026, 11, 1, 20, 0, 0, 0, time.UTC)
-	initial := policyTestRevision(organization, project, "policy_non_github", now)
-	next := policyTestRevision(organization, project, "policy_github", now.Add(time.Minute))
+	initial := pgstoretest.PolicyTestRevision(organization, project, "policy_non_github", now)
+	next := pgstoretest.PolicyTestRevision(organization, project, "policy_github", now.Add(time.Minute))
 	*next.GitHubPullRequest = true
 	for _, write := range []struct {
 		row      policystore.Revision
@@ -325,14 +325,14 @@ func TestProjectPolicyRevisionRetainsFrozenLandingGate(t *testing.T) {
 }
 
 func TestLeasePolicyPinSharesClaimTransactionAndTenantScope(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	var statement string
 	organizations := []tracker.OrganizationID{"org_lease_policy_first", "org_lease_policy_second"}
 	now := time.Date(2026, 11, 1, 20, 0, 0, 0, time.UTC)
 	for _, organization := range organizations {
-		seedLeaseFamily(t, repository, organization)
-		policy := policyTestRevision(organization, "prj_1", "policy_claim", now)
+		pgstoretest.SeedLeaseFamily(t, repository, organization)
+		policy := pgstoretest.PolicyTestRevision(organization, "prj_1", "policy_claim", now)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.ApproveProjectPolicy(t.Context(), policy, "")
 		}); err != nil {
@@ -343,7 +343,7 @@ func TestLeasePolicyPinSharesClaimTransactionAndTenantScope(t *testing.T) {
 	rollback := errors.New("rollback claim fixture")
 	first := organizations[0]
 	err := repository.WriteTenant(t.Context(), first, corestore.Serving, func(w tenantstore.Writer) error {
-		lease, err := w.Claim(t.Context(), leaseClaim(1))
+		lease, err := w.Claim(t.Context(), pgstoretest.LeaseClaim(1))
 		if err != nil {
 			return fmt.Errorf("claim lease: %w", err)
 		}
@@ -375,7 +375,7 @@ func TestLeasePolicyPinSharesClaimTransactionAndTenantScope(t *testing.T) {
 		var lease leasestore.Lease
 		err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			var err error
-			lease, err = w.Claim(t.Context(), leaseClaim(1))
+			lease, err = w.Claim(t.Context(), pgstoretest.LeaseClaim(1))
 			if err != nil {
 				return err
 			}
@@ -531,15 +531,15 @@ func TestLeasePolicyPinSharesClaimTransactionAndTenantScope(t *testing.T) {
 	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, first, "lease_1", "prj_1").Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	var plan []struct{ Plan searchPlanNode }
+	var plan []struct{ Plan pgstoretest.SearchPlanNode }
 	if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
 		t.Fatalf("decode lease policy plan: %v", err)
 	}
-	if !plan[0].Plan.usesIndex("monthly_budget_policies_pkey") {
+	if !plan[0].Plan.UsesIndex("monthly_budget_policies_pkey") {
 		t.Fatalf("latest policy reads did not use default index: %s", raw)
 	}
-	var visits func(searchPlanNode) float64
-	visits = func(node searchPlanNode) float64 {
+	var visits func(pgstoretest.SearchPlanNode) float64
+	visits = func(node pgstoretest.SearchPlanNode) float64 {
 		count := 0.0
 		if node.Relation == "monthly_budget_policies" {
 			count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
@@ -557,8 +557,8 @@ func TestLeasePolicyPinSharesClaimTransactionAndTenantScope(t *testing.T) {
 }
 
 func TestPolicyWritesWaitForSharedProjectAuthorityLock(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	now := time.Date(2026, 11, 1, 20, 0, 0, 0, time.UTC)
 	for _, updateReview := range []bool{false, true} {
 		name := "project policy"
@@ -568,8 +568,8 @@ func TestPolicyWritesWaitForSharedProjectAuthorityLock(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			organization := tracker.OrganizationID("org_policy_lock_" + map[bool]string{false: "project", true: "review"}[updateReview])
 			project := tracker.ProjectID("prj_first")
-			seedRepository(t, repository, organization)
-			initial := policyTestRevision(organization, project, "policy_initial", now)
+			pgstoretest.SeedRepository(t, repository, organization)
+			initial := pgstoretest.PolicyTestRevision(organization, project, "policy_initial", now)
 			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.ApproveProjectPolicy(t.Context(), initial, "")
 			}); err != nil {
@@ -585,7 +585,7 @@ func TestPolicyWritesWaitForSharedProjectAuthorityLock(t *testing.T) {
 			release := make(chan struct{})
 			var releaseOnce sync.Once
 			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-			first := startRepositoryTask(t, func(ctx context.Context) error {
+			first := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 					if err := w.LockWorkItemProject(ctx, project); err != nil {
 						return err
@@ -599,9 +599,9 @@ func TestPolicyWritesWaitForSharedProjectAuthorityLock(t *testing.T) {
 					}
 				})
 			})
-			waitRepositorySignal(t, locked)
+			pgstoretest.WaitRepositorySignal(t, locked)
 			started := make(chan struct{})
-			second := startRepositoryTask(t, func(ctx context.Context) error {
+			second := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 					close(started)
 					if updateReview {
@@ -611,17 +611,17 @@ func TestPolicyWritesWaitForSharedProjectAuthorityLock(t *testing.T) {
 						next.UpdatedAt = now.Add(time.Minute)
 						return w.SetReviewPolicy(ctx, next, initialReview.ReviewPolicyID)
 					}
-					next := policyTestRevision(organization, project, "policy_next", now.Add(time.Minute))
+					next := pgstoretest.PolicyTestRevision(organization, project, "policy_next", now.Add(time.Minute))
 					return w.ApproveProjectPolicy(ctx, next, initial.PolicyID)
 				})
 			})
-			waitRepositorySignal(t, started)
-			waitLeaseLock(t, admin, 1, second)
+			pgstoretest.WaitRepositorySignal(t, started)
+			pgstoretest.WaitLeaseLock(t, admin, 1, second)
 			releaseOnce.Do(func() { close(release) })
-			if err := first.wait(t); err != nil {
+			if err := first.Wait(t); err != nil {
 				t.Fatal(err)
 			}
-			if err := second.wait(t); err != nil {
+			if err := second.Wait(t); err != nil {
 				t.Fatal(err)
 			}
 			if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -648,12 +648,6 @@ func TestPolicyWritesWaitForSharedProjectAuthorityLock(t *testing.T) {
 			}
 		})
 	}
-}
-
-func policyTestRevision(organization tracker.OrganizationID, project tracker.ProjectID, policyID string, at time.Time) policystore.Revision {
-	digestBytes := sha256.Sum256([]byte(string(organization) + "/" + string(project) + "/" + policyID))
-	digest := hex.EncodeToString(digestBytes[:])
-	return policystore.Revision{OrganizationID: organization, ProjectID: project, PolicyID: policyID, GitHubPullRequest: new(false), ApprovedBy: "admin", ApprovedAt: at, PayloadObjectKey: "orgs/" + string(organization) + "/blobs/sha256/" + digest[:2] + "/" + digest, PayloadSHA256: digest, PayloadBytes: 1, PayloadContentBytes: 1}
 }
 
 func policyRevisionEqual(left, right policystore.Revision) bool {

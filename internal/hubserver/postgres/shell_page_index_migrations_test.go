@@ -6,14 +6,16 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/pressly/goose/v3"
 )
 
 func TestShellPageIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
 	const migrationVersion = 20261107060935
-	db, _ := migrationDatabaseAtVersion(t, 20261107051229)
+	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261107051229)
 	db.SetMaxOpenConns(1)
-	seedCore(t, db)
+	pgstoretest.SeedCore(t, db)
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO project_onboarding_page_viewers
  (organization_id,project_id,viewer_key,viewer_native_only,viewer_projects,viewer_blocked_projects)
  SELECT organization_id,id,'example-viewer',false,ARRAY[id],ARRAY[]::text[] FROM projects;
@@ -29,7 +31,7 @@ func TestShellPageIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
  CREATE EVENT TRIGGER shell_index_locks ON ddl_command_end WHEN TAG IN ('CREATE INDEX') EXECUTE FUNCTION capture_shell_index_locks();`); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := migrationProvider(db)
+	provider, err := pgstoretest.MigrationProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}

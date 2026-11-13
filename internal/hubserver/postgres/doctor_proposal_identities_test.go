@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -124,15 +126,15 @@ func TestDoctorProposalIdentitiesPreserveFullBodyAndFirstOrigin(t *testing.T) {
 }
 
 func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
-	admin := template.Database(t)
-	config := smallPool()
+	admin := pgstoretest.Template.Database(t)
+	config := pgstoretest.SmallPool()
 	config.ServingConnections = 2
-	repository, pool := repositoryFor(t, admin, config)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, config)
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
 	trace := &doctorProposalQueryTrace{}
-	repository, err := postgres.NewRepository(t.Context(), tracedFeaturePool(t, pool, trace), config)
+	repository, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, trace), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +144,7 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	content := eventstore.NewContent(newHistoryObjects())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	marker := "<!-- detent:self-improvement proposal_id=example-first -->"
 	otherMarker := "<!-- detent:self-improvement proposal_id=" + strings.Repeat("y", 7000) + " -->"
 	fingerprint := "example\x00fingerprint"
@@ -158,7 +160,7 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 		return result, err
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error { return seedCoreOrganization(t.Context(), w, org) }); err != nil {
+		if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error { return pgstoretest.SeedCoreOrganization(t.Context(), w, org) }); err != nil {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -199,7 +201,7 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 						workflow = new(state)
 					}
 					snapshot := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: item, Number: int(number), Revision: 1}, Title: "Example proposal", Body: body, State: state, Terminal: number == 2}
-					version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: string(item), Revision: 1}, historyJSON(t, snapshot))
+					version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: string(item), Revision: 1}, pgstoretest.HistoryJSON(t, snapshot))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -367,7 +369,7 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 					t.Fatal(err)
 				}
 				current := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: bindings[0].WorkItemID, Number: 1, Revision: 2}, Title: "Example proposal", Body: "Example resolved issue", State: "Open", Terminal: true}
-				version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: current.WorkItemID, RecordID: string(current.WorkItemID), Revision: 2}, historyJSON(t, current))
+				version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: current.WorkItemID, RecordID: string(current.WorkItemID), Revision: 2}, pgstoretest.HistoryJSON(t, current))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -392,14 +394,14 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 				if err != nil || result.WorkItemID != "" {
 					t.Fatalf("removed identities or known-empty head = %+v, error %v", result, err)
 				}
-				var tasks []*repositoryTask
+				var tasks []*pgstoretest.RepositoryTask
 				start := make(chan struct{})
 				ids := []string{"racing_" + suffix + "_first", "racing_" + suffix + "_second"}
 				var versions []eventstore.CollaborationVersion
 				for i, id := range ids {
 					item := tracker.NativeWorkItemID(id)
 					snapshot := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: item, Number: 3 + i, Revision: 1}, Title: "Example racing proposal", Body: body, State: "Open", Terminal: true}
-					version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: id, Revision: 1}, historyJSON(t, snapshot))
+					version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: id, Revision: 1}, pgstoretest.HistoryJSON(t, snapshot))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -407,7 +409,7 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 				}
 				identities := postgres.DeriveDoctorProposalIdentities(body)
 				for i, version := range versions {
-					tasks = append(tasks, startRepositoryTask(t, func(ctx context.Context) error {
+					tasks = append(tasks, pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 						select {
 						case <-start:
 						case <-ctx.Done():
@@ -430,7 +432,7 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 				close(start)
 				created, fenced := 0, 0
 				for _, task := range tasks {
-					err := task.wait(t)
+					err := task.Wait(t)
 					if err == nil {
 						created++
 					} else if errors.Is(err, corestore.ErrSerializationFailure) {
@@ -464,7 +466,7 @@ func TestDoctorProposalIdentityCoverageFencesCurrentSelection(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, _ = repositoryFor(t, admin, smallPool())
+	repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
 			result, err := lookup(t, org, postgres.DoctorProposalIdentitySelection{ProjectID: project, Identity: postgres.DoctorProposalIdentity{Kind: "marker", Value: marker}})

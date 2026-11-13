@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -12,8 +14,8 @@ import (
 )
 
 func TestArtifactCatalogMigrationBackfillsExistingTenants(t *testing.T) {
-	admin, fixture := migrationDatabaseAtVersion(t, 20261108195800)
-	now := historyAt()
+	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261108195800)
+	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, now); err != nil {
 			t.Fatal(err)
@@ -67,7 +69,7 @@ func TestArtifactCatalogMigrationBackfillsExistingTenants(t *testing.T) {
 	if err := admin.QueryRowContext(t.Context(), "SELECT current_user").Scan(&role); err != nil || role != postgres.MigrationRoleName {
 		t.Fatal("backfill fixture did not select the migration role", role, err)
 	}
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,8 +88,8 @@ func TestArtifactCatalogMigrationBackfillsExistingTenants(t *testing.T) {
 			t.Fatal("migration did not restore forced tenant isolation", table, enabled, forced, err)
 		}
 	}
-	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	pool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}

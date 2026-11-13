@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -16,13 +18,13 @@ import (
 )
 
 func TestCutoverContractAtomicallyPinsSourcesAndDestinationMappings(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	now := historyAt()
-	objects := newHistoryObjects()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
+	objects := pgstoretest.NewHistoryObjects()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := seedCoreOrganization(t.Context(), w, org); err != nil {
+			if err := pgstoretest.SeedCoreOrganization(t.Context(), w, org); err != nil {
 				return err
 			}
 			for _, id := range []string{"first", "second"} {
@@ -120,7 +122,7 @@ func TestCutoverContractAtomicallyPinsSourcesAndDestinationMappings(t *testing.T
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, _ = repositoryFor(t, admin, smallPool())
+	repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadCutover(t.Context(), org, corestore.Serving, func(r postgres.CutoverReader) error {
 			for _, id := range []string{"first", "second"} {

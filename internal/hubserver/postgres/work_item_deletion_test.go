@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -24,14 +26,14 @@ func TestWorkItemDeletionRetainsHistoryAndReceipts(t *testing.T) {
 	var baseline [2]int64
 	for _, size := range []int{2, 50} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
-			admin := template.Database(t)
-			repository, pool := repositoryFor(t, admin, smallPool())
-			fixtures := map[tracker.OrganizationID]historyFixture{}
+			admin := pgstoretest.Template.Database(t)
+			repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+			fixtures := map[tracker.OrganizationID]pgstoretest.HistoryFixture{}
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-				seedRepository(t, repository, org)
-				fixtures[org] = seedHistory(t, repository, org, "retained")
+				pgstoretest.SeedRepository(t, repository, org)
+				fixtures[org] = pgstoretest.SeedHistory(t, repository, org, "retained")
 				for i := 1; i < size; i++ {
-					event := historyEvent(t, fixtures[org].content, org, fmt.Sprintf("history_%d", i))
+					event := pgstoretest.HistoryEvent(t, fixtures[org].Content, org, fmt.Sprintf("history_%d", i))
 					if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 						t.Fatal(err)
 					}
@@ -64,39 +66,39 @@ func TestWorkItemDeletionRetainsHistoryAndReceipts(t *testing.T) {
 					if len(events) != size {
 						t.Fatalf("retained events=%d want=%d", len(events), size)
 					}
-					snapshot, err := r.CollaborationVersion(t.Context(), f.snapshot.RecordID, 2)
+					snapshot, err := r.CollaborationVersion(t.Context(), f.Snapshot.RecordID, 2)
 					if err != nil {
 						return err
 					}
-					if !reflect.DeepEqual(snapshot, f.snapshot) {
+					if !reflect.DeepEqual(snapshot, f.Snapshot) {
 						t.Fatal("snapshot changed during deletion")
 					}
-					receipt, err := r.Receipt(t.Context(), f.receipt.ActorID, f.receipt.Operation, f.receipt.CommandKey)
+					receipt, err := r.Receipt(t.Context(), f.Receipt.ActorID, f.Receipt.Operation, f.Receipt.CommandKey)
 					if err != nil {
 						return err
 					}
-					if !reflect.DeepEqual(receipt, f.receipt) {
+					if !reflect.DeepEqual(receipt, f.Receipt) {
 						t.Fatal("receipt changed during deletion")
 					}
-					change, err := r.Change(t.Context(), f.change.ID)
+					change, err := r.Change(t.Context(), f.Change.ID)
 					if err != nil {
 						return err
 					}
-					if !reflect.DeepEqual(change, f.change) {
+					if !reflect.DeepEqual(change, f.Change) {
 						t.Fatal("change changed during deletion")
 					}
-					versions, err := r.Versions(t.Context(), f.change.ID, 0, 10)
+					versions, err := r.Versions(t.Context(), f.Change.ID, 0, 10)
 					if err != nil {
 						return err
 					}
-					if !reflect.DeepEqual(versions, []eventstore.Version{f.version}) {
+					if !reflect.DeepEqual(versions, []eventstore.Version{f.Version}) {
 						t.Fatal("version changed during deletion")
 					}
-					evidence, err := r.Evidence(t.Context(), f.change.ID, 0, 10)
+					evidence, err := r.Evidence(t.Context(), f.Change.ID, 0, 10)
 					if err != nil {
 						return err
 					}
-					if !reflect.DeepEqual(evidence, []eventstore.Evidence{f.evidence}) {
+					if !reflect.DeepEqual(evidence, []eventstore.Evidence{f.Evidence}) {
 						t.Fatal("evidence changed during deletion")
 					}
 					comments, err := r.Comments(t.Context(), "prj_first", "wi_first_1", 0, 10)
@@ -111,22 +113,22 @@ func TestWorkItemDeletionRetainsHistoryAndReceipts(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				event := historyEvent(t, f.content, org, "after_delete")
+				event := pgstoretest.HistoryEvent(t, f.Content, org, "after_delete")
 				err = repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err })
 				if !errors.Is(err, corestore.ErrNotFound) {
 					t.Fatalf("late event=%v", err)
 				}
 				_, err = admin.ExecContext(t.Context(), `INSERT INTO collaboration_events (organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT organization_id,project_id,work_item_id,'late_event',999,'issue.edited',1,actor_kind,actor_principal_id,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events WHERE organization_id=$1 LIMIT 1`, org)
-				requireSQLState(t, err, "23503")
+				pgstoretest.RequireSQLState(t, err, "23503")
 				err = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 					_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "prj_first", NativeID: "wi_first_1", Number: 3, Title: "Example"})
 					return err
 				})
-				requireSQLState(t, err, "23505")
+				pgstoretest.RequireSQLState(t, err, "23505")
 				_, err = admin.ExecContext(t.Context(), `DELETE FROM collaboration_events WHERE organization_id=$1`, org)
-				requireSQLState(t, err, "23514")
+				pgstoretest.RequireSQLState(t, err, "23514")
 				_, err = admin.ExecContext(t.Context(), `UPDATE issues SET native_id='changed' WHERE organization_id=$1 AND native_id='wi_first_2'`, org)
-				requireSQLState(t, err, "23514")
+				pgstoretest.RequireSQLState(t, err, "23514")
 				if org == "org_first" {
 					if err := repository.ReadTenant(t.Context(), "org_second", corestore.Serving, func(r tenantstore.Reader) error {
 						_, err := r.WorkItem(t.Context(), "prj_first", "wi_first_1")
@@ -142,7 +144,7 @@ func TestWorkItemDeletionRetainsHistoryAndReceipts(t *testing.T) {
 
 func seedIdentityMigrationIssues(t *testing.T, admin *sql.DB, organization tracker.OrganizationID) {
 	t.Helper()
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, organization, historyAt()); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, organization, pgstoretest.HistoryAt()); err != nil {
 		t.Fatal(err)
 	}
 	for _, suffix := range []string{"first", "second"} {
@@ -159,12 +161,12 @@ func seedIdentityMigrationIssues(t *testing.T, admin *sql.DB, organization track
 
 func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 	const migrationVersion = 20261107060339
-	admin, fixture := migrationDatabaseAtVersion(t, migrationVersion-1)
-	provider, err := migrationProvider(admin)
+	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, migrationVersion-1)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	pool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedIdentityMigrationIssues(t, admin, org)
 	}
@@ -182,7 +184,7 @@ func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 	}
 	const organization, project, item = "org_first", "prj_first", "wi_first_1"
 	ctx := t.Context()
-	tx := tenantTx(t, runtimeFor(t, pool, pool), pool, organization)
+	tx := pgstoretest.TenantTx(t, pgstoretest.RuntimeFor(t, pool, pool), pool, organization)
 	if _, err := tx.Exec(ctx, `UPDATE projects SET duplicate_source_sequence=duplicate_source_sequence+1 WHERE organization_id=$1 AND id=$2`, organization, project); err != nil {
 		t.Fatal(err)
 	}
@@ -194,29 +196,29 @@ func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = provider.Down(t.Context())
-	requireSQLState(t, err, "23514")
+	pgstoretest.RequireSQLState(t, err, "23514")
 }
 
 func TestWorkItemDeletionRefusesActiveExecution(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, repository, org)
-		lease := claimLease(t, repository, org, leaseClaim(1))
+		pgstoretest.SeedLeaseFamily(t, repository, org)
+		lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
 		remove := func() error {
 			return repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteWorkItem(t.Context(), "prj_1", "wi_1") })
 		}
-		requireSQLState(t, remove(), "23503")
+		pgstoretest.RequireSQLState(t, remove(), "23503")
 		expireLeaseFixture(t, admin, org, lease.LeaseID)
-		requireSQLState(t, remove(), "23503")
+		pgstoretest.RequireSQLState(t, remove(), "23503")
 		if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET acquired_at=$3::timestamptz,renewed_at=$3::timestamptz,expires_at=$3::timestamptz+interval '1 hour' WHERE organization_id=$1 AND lease_id=$2`, org, lease.LeaseID, lease.RenewedAt); err != nil {
 			t.Fatal(err)
 		}
-		recordLeaseAttempt(t, repository, org, attemptEvent(lease))
+		pgstoretest.RecordLeaseAttempt(t, repository, org, pgstoretest.AttemptEvent(lease))
 		if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET released_at=renewed_at WHERE organization_id=$1 AND lease_id=$2`, org, lease.LeaseID); err != nil {
 			t.Fatal(err)
 		}
-		requireSQLState(t, remove(), "23503")
+		pgstoretest.RequireSQLState(t, remove(), "23503")
 		if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET status='cancelled' WHERE organization_id=$1`, org); err != nil {
 			t.Fatal(err)
 		}
@@ -224,11 +226,11 @@ func TestWorkItemDeletionRefusesActiveExecution(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := admin.ExecContext(t.Context(), `UPDATE leases SET released_at=NULL WHERE organization_id=$1`, org)
-		requireSQLState(t, err, "23503")
+		pgstoretest.RequireSQLState(t, err, "23503")
 		_, err = admin.ExecContext(t.Context(), `UPDATE native_attempts SET status='running' WHERE organization_id=$1`, org)
-		requireSQLState(t, err, "23503")
+		pgstoretest.RequireSQLState(t, err, "23503")
 		_, err = admin.ExecContext(t.Context(), `INSERT INTO native_attempts SELECT * FROM native_attempts WHERE organization_id=$1`, org)
-		requireSQLState(t, err, "23503")
+		pgstoretest.RequireSQLState(t, err, "23503")
 		var count int
 		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND status='cancelled'`, org).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -240,11 +242,11 @@ func TestWorkItemDeletionRefusesActiveExecution(t *testing.T) {
 }
 
 func TestWorkItemDeletionOrdersConcurrentHistoryInsertion(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	admin.SetMaxOpenConns(2)
-	seedRepository(t, repository, "org_first")
-	seedHistory(t, repository, "org_first", "concurrent")
+	pgstoretest.SeedRepository(t, repository, "org_first")
+	pgstoretest.SeedHistory(t, repository, "org_first", "concurrent")
 	insert := `INSERT INTO collaboration_events (organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT organization_id,project_id,work_item_id,'concurrent_event',999,'issue.edited',1,actor_kind,actor_principal_id,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events WHERE organization_id='org_first' LIMIT 1`
 	tx, err := admin.BeginTx(t.Context(), nil)
 	if err != nil {
@@ -261,7 +263,7 @@ func TestWorkItemDeletionOrdersConcurrentHistoryInsertion(t *testing.T) {
 	if _, err := tx.ExecContext(t.Context(), insert); err != nil {
 		t.Fatal(err)
 	}
-	deletion := startRepositoryTask(t, func(ctx context.Context) error {
+	deletion := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, "org_first", corestore.Background, func(w tenantstore.Writer) error { return w.DeleteWorkItem(ctx, "prj_first", "wi_first_1") })
 	})
 	testenv.WaitUntil(t, t.Context(), func() error {
@@ -277,7 +279,7 @@ func TestWorkItemDeletionOrdersConcurrentHistoryInsertion(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if err := deletion.wait(t); err != nil {
+	if err := deletion.Wait(t); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -290,10 +292,10 @@ func TestWorkItemDeletionOrdersConcurrentHistoryInsertion(t *testing.T) {
 }
 
 func TestRetainedWorkItemIdentitiesEnforceTenantReadOnlyAccess(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		tx, err := admin.BeginTx(t.Context(), nil)
@@ -314,7 +316,7 @@ func TestRetainedWorkItemIdentitiesEnforceTenantReadOnlyAccess(t *testing.T) {
 			t.Fatalf("tenant identity visibility=%d", count)
 		}
 		_, err = tx.ExecContext(t.Context(), `INSERT INTO work_item_identities VALUES($1,999,'prj_first','fabricated')`, org)
-		requireSQLState(t, err, "42501")
+		pgstoretest.RequireSQLState(t, err, "42501")
 		if err := tx.Rollback(); err != nil {
 			t.Fatal(err)
 		}
@@ -322,13 +324,13 @@ func TestRetainedWorkItemIdentitiesEnforceTenantReadOnlyAccess(t *testing.T) {
 }
 
 func TestWorkItemDeletionRemovesOnlyLiveAttachmentReferences(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
-		seedTenantAccess(t, repository, org)
-		seedHistory(t, repository, org, "attachment")
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO attachments(organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at) VALUES($1,'prj_first','attachment_shared','first','example.txt','text/plain',1,$2,$3)`, org, strings.Repeat("a", 64), historyAt()); err != nil {
+		pgstoretest.SeedRepository(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedHistory(t, repository, org, "attachment")
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO attachments(organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at) VALUES($1,'prj_first','attachment_shared','first','example.txt','text/plain',1,$2,$3)`, org, strings.Repeat("a", 64), pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -396,13 +398,13 @@ func TestWorkItemDeletionRemovesOnlyLiveAttachmentReferences(t *testing.T) {
 
 func TestRetainedIdentityMigrationIncludesConcurrentIssueCreation(t *testing.T) {
 	const migrationVersion = 20261107060339
-	admin, fixture := migrationDatabaseAtVersion(t, migrationVersion-1)
-	provider, err := migrationProvider(admin)
+	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, migrationVersion-1)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	pool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,11 +415,11 @@ func TestRetainedIdentityMigrationIncludesConcurrentIssueCreation(t *testing.T) 
 	})
 	admin.SetMaxOpenConns(2)
 	seedIdentityMigrationIssues(t, admin, "org_first")
-	runtime := runtimeFor(t, pool, pool)
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
 	inserted, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	writer := startRepositoryTask(t, func(ctx context.Context) error {
+	writer := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		tx, err := runtime.Begin(ctx, "org_first", pgtransport.Options{})
 		if err != nil {
 			return err
@@ -434,8 +436,8 @@ func TestRetainedIdentityMigrationIncludesConcurrentIssueCreation(t *testing.T) 
 			return ctx.Err()
 		}
 	})
-	waitRepositorySignal(t, inserted)
-	migration := startRepositoryTask(t, func(ctx context.Context) error { _, err := provider.UpTo(ctx, migrationVersion); return err })
+	pgstoretest.WaitRepositorySignal(t, inserted)
+	migration := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error { _, err := provider.UpTo(ctx, migrationVersion); return err })
 	testenv.WaitUntil(t, t.Context(), func() error {
 		var waiting bool
 		if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE a.datname=current_database() AND l.relation='public.issues'::regclass AND l.mode='ShareRowExclusiveLock' AND NOT l.granted)`).Scan(&waiting); err != nil {
@@ -447,10 +449,10 @@ func TestRetainedIdentityMigrationIncludesConcurrentIssueCreation(t *testing.T) 
 		return nil
 	})
 	releaseOnce.Do(func() { close(release) })
-	if err := writer.wait(t); err != nil {
+	if err := writer.Wait(t); err != nil {
 		t.Fatal(err)
 	}
-	if err := migration.wait(t); err != nil {
+	if err := migration.Wait(t); err != nil {
 		t.Fatal(err)
 	}
 	var captured bool

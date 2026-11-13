@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -20,15 +22,15 @@ import (
 )
 
 func TestBillingEventMetadataRetainsReplayAndSnapshotSemantics(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 2, BackgroundConnections: 1})
-	content := eventstore.NewContent(newHistoryObjects())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 2, BackgroundConnections: 1})
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for index, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		read := func(t *testing.T, count int64, known bool, eventAt, sessionAt *time.Time) {
 			t.Helper()
 			if err := repository.ReadTenantSnapshot(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-				got, ready, err := r.(billingstore.PopulationReader).BillingPopulation(t.Context(), "retained_collaboration_events", historyAt(), 0)
+				got, ready, err := r.(billingstore.PopulationReader).BillingPopulation(t.Context(), "retained_collaboration_events", pgstoretest.HistoryAt(), 0)
 				if err != nil {
 					return err
 				}
@@ -60,10 +62,10 @@ func TestBillingEventMetadataRetainsReplayAndSnapshotSemantics(t *testing.T) {
 			}
 		}
 		read(t, 0, true, nil, nil)
-		at := historyAt().Add(time.Duration(index) * time.Hour)
+		at := pgstoretest.HistoryAt().Add(time.Duration(index) * time.Hour)
 		prepare := func(id string, sequence int64, recorded time.Time) eventstore.Event {
-			value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", AggregateSequence: sequence, Type: "issue.edited", SchemaVersion: 1, Actor: historyActor(), RecordedAt: recorded, Data: tracker.CollaborationData{Revision: 2, Fields: []string{"title"}}}
-			row, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+			value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", AggregateSequence: sequence, Type: "issue.edited", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: recorded, Data: tracker.CollaborationData{Revision: 2, Fields: []string{"title"}}}
+			row, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,7 +82,7 @@ func TestBillingEventMetadataRetainsReplayAndSnapshotSemantics(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RecordID: "metadata_version", Revision: 1}, historyJSON(t, tracker.NativeIssue{Title: "Example"}))
+		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RecordID: "metadata_version", Revision: 1}, pgstoretest.HistoryJSON(t, tracker.NativeIssue{Title: "Example"}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -179,8 +181,8 @@ func TestBillingEventMetadataRetainsReplayAndSnapshotSemantics(t *testing.T) {
 }
 
 func TestBillingEventMetadataUsesTenantTimestampIndexes(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
 	for _, statement := range []string{
 		`INSERT INTO organizations(organization_id,name,local,created_at) SELECT 'org_noise_'||n,'Example',false,'2026-10-01'::timestamptz FROM generate_series(1,9998) n`,
 		`INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,schema_version,recorded_at,history_hidden,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
@@ -193,10 +195,10 @@ SELECT organization_id,'plan_'||n,'example@example.test','example','','',now(),n
 			t.Fatal(err)
 		}
 	}
-	repository, _ := repositoryFor(t, admin, smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []string{"org_first", "org_second"} {
 		if err := repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
-			count, known, err := r.(billingstore.PopulationReader).BillingPopulation(t.Context(), "retained_collaboration_events", historyAt(), 0)
+			count, known, err := r.(billingstore.PopulationReader).BillingPopulation(t.Context(), "retained_collaboration_events", pgstoretest.HistoryAt(), 0)
 			if err == nil && (count != 20002 || !known) {
 				return fmt.Errorf("exact retained population=%d/%t, want20002/true", count, known)
 			}

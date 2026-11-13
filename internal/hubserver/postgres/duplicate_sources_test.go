@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -64,7 +66,7 @@ func TestDuplicateSourceFenceRejectsChangedVisibilityAndSerializesCandidateMutat
 	var noMatch searchstore.DuplicateSourcePage
 	if err := f.repository.ReadSearch(t.Context(), "org_first", corestore.Serving, func(r searchstore.Reader) error {
 		var err error
-		noMatch, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "absentmarker", Now: historyAt()})
+		noMatch, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "absentmarker", Now: pgstoretest.HistoryAt()})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -171,7 +173,7 @@ func TestDuplicateSourceCandidatesRetainSourceRankingAndLiteralIdentity(t *testi
 		var page searchstore.DuplicateSourcePage
 		err := f.repository.ReadSearch(t.Context(), org, corestore.Serving, func(r searchstore.Reader) error {
 			var err error
-			page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "unique-731", Exact: true, Sequence: &state.Sequence, Now: historyAt()})
+			page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "unique-731", Exact: true, Sequence: &state.Sequence, Now: pgstoretest.HistoryAt()})
 			return err
 		})
 		if err != nil {
@@ -213,7 +215,7 @@ func TestDuplicateSourcesSkipDeletedUnpublishedComments(t *testing.T) {
 		var page searchstore.DuplicateSourcePage
 		err := f.repository.ReadSearch(t.Context(), org, corestore.Serving, func(r searchstore.Reader) error {
 			var err error
-			page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "comment", Sequence: &state.Sequence, Limit: 128, Now: historyAt()})
+			page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "comment", Sequence: &state.Sequence, Limit: 128, Now: pgstoretest.HistoryAt()})
 			return err
 		})
 		if err != nil {
@@ -253,7 +255,7 @@ func TestDuplicateSourceCommentFingerprintUsesParentIssueContext(t *testing.T) {
 		var page searchstore.DuplicateSourcePage
 		err := f.repository.ReadSearch(t.Context(), org, corestore.Serving, func(r searchstore.Reader) error {
 			var err error
-			page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: diagnostic, Limit: 128, Now: historyAt()})
+			page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: diagnostic, Limit: 128, Now: pgstoretest.HistoryAt()})
 			return err
 		})
 		if err != nil {
@@ -314,12 +316,12 @@ func TestDuplicateSourceVisibilityAndTerminalBoundary(t *testing.T) {
 			reporter string
 			want     int
 		}{
-			{"owner", false, "Todo", historyAt(), "example", 2},
-			{"unknown workflow", false, "", historyAt(), "example", 1},
-			{"other principal", false, "Todo", historyAt(), "other", 0},
-			{"archive", true, "Todo", historyAt(), "example", 1},
-			{"terminal boundary", false, "Done", historyAt().AddDate(0, 0, -30), "example", 2},
-			{"outside terminal window", false, "Done", historyAt().AddDate(0, 0, -30).Add(-time.Microsecond), "example", 1},
+			{"owner", false, "Todo", pgstoretest.HistoryAt(), "example", 2},
+			{"unknown workflow", false, "", pgstoretest.HistoryAt(), "example", 1},
+			{"other principal", false, "Todo", pgstoretest.HistoryAt(), "other", 0},
+			{"archive", true, "Todo", pgstoretest.HistoryAt(), "example", 1},
+			{"terminal boundary", false, "Done", pgstoretest.HistoryAt().AddDate(0, 0, -30), "example", 2},
+			{"outside terminal window", false, "Done", pgstoretest.HistoryAt().AddDate(0, 0, -30).Add(-time.Microsecond), "example", 1},
 		} {
 			t.Run(string(org)+"/"+test.name, func(t *testing.T) {
 				previous := duplicateState(t, f, org)
@@ -334,7 +336,7 @@ func TestDuplicateSourceVisibilityAndTerminalBoundary(t *testing.T) {
 				var page searchstore.DuplicateSourcePage
 				err := f.repository.ReadSearch(t.Context(), org, corestore.Serving, func(r searchstore.Reader) error {
 					var err error
-					page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "Example body comment", Reporter: &test.reporter, Limit: 128, Now: historyAt()})
+					page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "Example body comment", Reporter: &test.reporter, Limit: 128, Now: pgstoretest.HistoryAt()})
 					return err
 				})
 				if test.want < 0 {
@@ -365,7 +367,7 @@ func TestDuplicateSourceNoMatchFenceRejectsConcurrentMatchingCreate(t *testing.T
 		var page searchstore.DuplicateSourcePage
 		err := f.repository.ReadSearch(t.Context(), org, corestore.Serving, func(r searchstore.Reader) error {
 			var err error
-			page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "novel sentinel", Sequence: &state.Sequence, Limit: 128, Now: historyAt()})
+			page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "novel sentinel", Sequence: &state.Sequence, Limit: 128, Now: pgstoretest.HistoryAt()})
 			return err
 		})
 		if err != nil {
@@ -375,7 +377,7 @@ func TestDuplicateSourceNoMatchFenceRejectsConcurrentMatchingCreate(t *testing.T
 			t.Fatal("fixture did not establish exhaustive fresh no-match")
 		}
 		document := searchIssue(org, "wi_first_3")
-		document.UpdatedAt = historyAt()
+		document.UpdatedAt = pgstoretest.HistoryAt()
 		prepared, err := f.content.Prepare(t.Context(), document, searchstore.Text{Title: "novel sentinel", Body: "matching payload"})
 		if err != nil {
 			t.Fatal(err)
@@ -444,7 +446,7 @@ func TestDuplicateSourceTopFiveFiltersBeforeLimitAndReadsCurrentPayload(t *testi
 		read := func() error {
 			return f.repository.ReadSearch(t.Context(), org, corestore.Serving, func(r searchstore.Reader) error {
 				var err error
-				page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "rankmarker", Request: &searchstore.Text{Title: "rankmarker retained"}, Reporter: new("example"), Now: historyAt()})
+				page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "rankmarker", Request: &searchstore.Text{Title: "rankmarker retained"}, Reporter: new("example"), Now: pgstoretest.HistoryAt()})
 				return err
 			})
 		}
@@ -520,7 +522,7 @@ func TestDuplicateSourcePendingRetainsFilingFallback(t *testing.T) {
 					t.Fatal("pending search reported available")
 				}
 				for _, machine := range []bool{false, true} {
-					query := searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "Example", Machine: machine, Now: historyAt()}
+					query := searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "Example", Machine: machine, Now: pgstoretest.HistoryAt()}
 					check := func(r searchstore.Reader) error {
 						page, err := r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), query)
 						if !errors.Is(err, searchstore.ErrIndexPending) || page.State.Ready || page.Exhausted || len(page.Sources) != 0 {
@@ -571,7 +573,7 @@ func TestDuplicateSourceUsesExistingAggregateHintsAndImmutableMachineSource(t *t
 		event.ID = "event/example"
 		event.Kind = "event"
 		event.SourceID = "example"
-		record := historyEvent(t, eventstore.NewContent(f.objects), org, "example")
+		record := pgstoretest.HistoryEvent(t, eventstore.NewContent(f.objects), org, "example")
 		if err := f.repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvent(t.Context(), record); return err }); err != nil {
 			t.Fatal(err)
 		}
@@ -581,7 +583,7 @@ func TestDuplicateSourceUsesExistingAggregateHintsAndImmutableMachineSource(t *t
 			var page searchstore.DuplicateSourcePage
 			if err := f.repository.ReadSearch(t.Context(), org, corestore.Serving, func(r searchstore.Reader) error {
 				var err error
-				page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "aggregatehint", Machine: machine, Now: historyAt()})
+				page, err = r.(searchstore.DuplicateSourceReader).DuplicateSources(t.Context(), searchstore.DuplicateSourceQuery{ProjectID: "prj_first", Text: "aggregatehint", Machine: machine, Now: pgstoretest.HistoryAt()})
 				return err
 			}); err != nil {
 				t.Fatal(err)

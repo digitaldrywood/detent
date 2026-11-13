@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -17,9 +19,9 @@ type scheduledDecisions interface {
 }
 
 func TestScheduledDecisionTenantReplay(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		input := progresscheck.CIFailure{Repository: "owner/repository", HeadSHA: "head", RunID: "run", RunAttempt: "1", JobID: "job", JobName: "test", ExitStatus: "failure"}
 		want := progresscheck.CIDecision{Outcome: progresscheck.CISource, Target: "test", Reason: string(org)}
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

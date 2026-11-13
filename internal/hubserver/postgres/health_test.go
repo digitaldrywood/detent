@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
@@ -16,11 +18,11 @@ import (
 )
 
 func TestHealthFindingsTenantVisibilityAndCursor(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	at := time.Date(2026, 11, 6, 1, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		for _, id := range []string{"first", "second"} {
 			_, err := admin.ExecContext(t.Context(), `INSERT INTO health_findings(organization_id,id,fingerprint,signal,class,subject_kind,subject_id,opened_at,last_seen_at,severity,summary,next_action,evidence_object_key,evidence_sha256,evidence_bytes,evidence_content_bytes) VALUES($1,$2,$2,'signal','class','work_item','wi_first_1',$3,$3,'attention',$1,'inspect','','',0,0)`, org, id, at)
 			if err != nil {
@@ -191,7 +193,7 @@ func TestHealthFindingsTenantVisibilityAndCursor(t *testing.T) {
 				}
 			}
 			for _, kind := range []string{"items", "items_tail", "questions", "conversation"} {
-				probe := &searchPlanProbe{}
+				probe := &pgstoretest.SearchPlanProbe{}
 				tx, err := pool.Begin(t.Context())
 				if err != nil {
 					t.Fatal(err)
@@ -234,12 +236,12 @@ func TestHealthFindingsTenantVisibilityAndCursor(t *testing.T) {
 				if kind == "items_tail" {
 					expected = 0
 				}
-				if selected != expected || probe.statement == "" || len(probe.args) == 0 {
+				if selected != expected || probe.Statement == "" || len(probe.Args) == 0 {
 					tx.Rollback(t.Context())
 					t.Fatalf("health plan capture empty: kind=%s rows=%d", kind, selected)
 				}
 				var raw []byte
-				err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw)
+				err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw)
 				rollbackErr := tx.Rollback(t.Context())
 				if err != nil {
 					t.Fatal(err)
@@ -247,12 +249,12 @@ func TestHealthFindingsTenantVisibilityAndCursor(t *testing.T) {
 				if rollbackErr != nil {
 					t.Fatal(rollbackErr)
 				}
-				var plan []struct{ Plan searchPlanNode }
+				var plan []struct{ Plan pgstoretest.SearchPlanNode }
 				if err := json.Unmarshal(raw, &plan); err != nil {
 					t.Fatal(err)
 				}
-				var visited func(searchPlanNode) float64
-				visited = func(node searchPlanNode) float64 {
+				var visited func(pgstoretest.SearchPlanNode) float64
+				visited = func(node pgstoretest.SearchPlanNode) float64 {
 					var work float64
 					if node.Relation == relation {
 						work = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
@@ -262,7 +264,7 @@ func TestHealthFindingsTenantVisibilityAndCursor(t *testing.T) {
 					}
 					return work
 				}
-				if len(plan) != 1 || !plan[0].Plan.usesIndex(index) || visited(plan[0].Plan) > 4 {
+				if len(plan) != 1 || !plan[0].Plan.UsesIndex(index) || visited(plan[0].Plan) > 4 {
 					t.Fatalf("health active seek scanned history: kind=%s analyzed=%t plan=%s", kind, analyzed, raw)
 				}
 			}

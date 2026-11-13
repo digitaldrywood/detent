@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 )
 
 func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) {
 	const requiredVersion = 20261108232743
-	db, _ := migrationDatabaseAtVersion(t, 20261108224925)
-	seedCore(t, db)
+	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261108224925)
+	pgstoretest.SeedCore(t, db)
 	cases := []struct {
 		name, delivery string
 		statuses       []string
@@ -120,7 +122,7 @@ func TestConversationContinuationUpgradePreservesAcceptedCommands(t *testing.T) 
 	if _, err := db.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := migrationProvider(db)
+	provider, err := pgstoretest.MigrationProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}

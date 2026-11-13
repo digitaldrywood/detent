@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -47,7 +49,7 @@ func TestRequestMetricsConcurrentMerge(t *testing.T) {
 		separateMinutes bool
 	}{{"same keys", false}, {"shared hours across different minutes", true}} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, _ := repositoryFor(t, template.Database(t), postgres.PoolConfig{MaxConnections: 10, ServingConnections: 2, BackgroundConnections: 8})
+			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), postgres.PoolConfig{MaxConnections: 10, ServingConnections: 2, BackgroundConnections: 8})
 			const workers, iterations = 8, 8
 			start := make(chan struct{})
 			failures := make(chan error, workers)
@@ -116,7 +118,7 @@ func TestRequestMetricsConcurrentMerge(t *testing.T) {
 
 func TestRequestMetricsBucketRoundTripAndPages(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, route := range []string{"GET /first", "GET /second"} {
 			m := metricSample(now, route, "same_caller")
@@ -163,7 +165,7 @@ func TestRequestMetricsBucketRoundTripAndPages(t *testing.T) {
 
 func TestRequestMetricsCallerLimit(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
-	r, _ := repositoryFor(t, template.Database(t), postgres.PoolConfig{MaxConnections: 10, ServingConnections: 2, BackgroundConnections: 8})
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), postgres.PoolConfig{MaxConnections: 10, ServingConnections: 2, BackgroundConnections: 8})
 	start := make(chan struct{})
 	failures := make(chan error, 8)
 	var wg sync.WaitGroup
@@ -226,7 +228,7 @@ func TestRequestMetricsCallerLimit(t *testing.T) {
 
 func TestRequestMetricsRejectInvalidBatch(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, tc := range []struct {
 		name   string
 		change func(*metricsstore.Metric)
@@ -304,7 +306,7 @@ func seedMetric(t *testing.T, pool *pgxpool.Pool, org tracker.OrganizationID, gr
 
 func TestRequestMetricsRetentionBoundaries(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 34, 56, 123456789, time.UTC)
-	r, pool := repositoryFor(t, template.Database(t), smallPool())
+	r, pool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	cases := []struct {
 		grain           metricsstore.Grain
 		retention, unit time.Duration
@@ -365,7 +367,7 @@ func TestRequestMetricsRetentionBoundaries(t *testing.T) {
 
 func TestRequestMetricsRetentionResumes(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
-	r, pool := repositoryFor(t, template.Database(t), smallPool())
+	r, pool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for i := range metricsstore.RetentionLimit + 1 {
 		m := metricSample(now.Add(-15*24*time.Hour), "GET /example", fmt.Sprintf("caller_%d", i))
 		seedMetric(t, pool, "org_first", metricsstore.Minute, m)
@@ -386,7 +388,7 @@ func TestRequestMetricsRetentionResumes(t *testing.T) {
 
 func TestRequestMetricsWriteRetention(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, tc := range []struct {
 		name           string
 		age            time.Duration
@@ -421,7 +423,7 @@ func TestRequestMetricsWriteRetention(t *testing.T) {
 
 func TestRequestMetricsConcurrentRetention(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
-	r, pool := repositoryFor(t, template.Database(t), postgres.PoolConfig{MaxConnections: 10, ServingConnections: 2, BackgroundConnections: 8})
+	r, pool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), postgres.PoolConfig{MaxConnections: 10, ServingConnections: 2, BackgroundConnections: 8})
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for i := range 40 {
 			seedMetric(t, pool, org, metricsstore.Minute, metricSample(now.Add(-15*24*time.Hour), "GET /example", fmt.Sprintf("caller_%d", i)))
@@ -455,10 +457,10 @@ func TestRequestMetricsConcurrentRetention(t *testing.T) {
 
 func TestRequestMetricsRetentionBatchLimits(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
-	r, pool := repositoryFor(t, template.Database(t), smallPool())
-	runtime := runtimeFor(t, pool, pool)
+	r, pool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
 	for _, org := range []string{"org_first", "org_second"} {
-		tx := tenantTx(t, runtime, pool, org)
+		tx := pgstoretest.TenantTx(t, runtime, pool, org)
 		for _, seed := range []struct {
 			query     string
 			histogram bool
@@ -492,7 +494,7 @@ func TestRequestMetricsRetentionBatchLimits(t *testing.T) {
 			multiplier int
 		}{{"request_hours", 1}, {"request_days", 1}, {"request_metric_windows", 1}, {"request_metric_callers", 2}} {
 			for _, org := range []string{"org_first", "org_second"} {
-				tx := tenantTx(t, runtime, pool, org)
+				tx := pgstoretest.TenantTx(t, runtime, pool, org)
 				var count int
 				if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+tc.table).Scan(&count); err != nil {
 					t.Fatal(err)
@@ -514,7 +516,7 @@ func TestRequestMetricsRetentionBatchLimits(t *testing.T) {
 
 func TestRequestMetricsImportedAggregates(t *testing.T) {
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-	r, pool := repositoryFor(t, template.Database(t), smallPool())
+	r, pool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for tenant, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for i := range tenant + 1 {
 			at := now.Add(-time.Duration(i+1) * time.Minute)

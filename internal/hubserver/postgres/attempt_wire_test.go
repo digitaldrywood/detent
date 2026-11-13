@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -74,7 +76,7 @@ func attemptCountedRepository(t *testing.T, repository *postgres.Repository, poo
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err = postgres.NewRepository(t.Context(), counted, smallPool())
+	repository, err = postgres.NewRepository(t.Context(), counted, pgstoretest.SmallPool())
 	if err != nil {
 		counted.Close()
 		t.Fatal(err)

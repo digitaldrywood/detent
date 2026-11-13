@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -34,43 +35,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func seedTenantAccess(t *testing.T, r tenantstore.Repository, org tracker.OrganizationID) {
-	t.Helper()
-	now := historyAt()
-	err := r.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.AccessOrganization(t.Context()); errors.Is(err, corestore.ErrNotFound) {
-			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: now}); err != nil {
-				return err
-			}
-		} else if err != nil {
-			return err
-		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org), AllocationGeneration: 1}); err != nil {
-			return err
-		}
-		for _, id := range []string{"first", "second"} {
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: id, Name: id, Hash: "hash_" + id, Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "selected", Kind: "personal"}); err != nil {
-				return err
-			}
-			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: id, Email: id + "@example.com", MembershipID: "membership_" + id, Role: "admin", Active: true, PrincipalID: id, NotifyIssues: true, CreatedAt: now, UpdatedAt: now}); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	if organization, err := repository.DesignatedLocalOrganization(t.Context()); organization != "" || !errors.Is(err, corestore.ErrNotFound) {
 		t.Fatalf("empty database designation = %q, %v", organization, err)
 	}
 	for i, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		serverID := fmt.Sprintf("hub_%032x", i+1)
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: serverID, CursorKey: bytes.Repeat([]byte{byte(i + 1)}, 32)})
@@ -79,10 +51,10 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 		}
 	}
 	t.Run("credential metadata pages exclude runner bindings", func(t *testing.T) {
-		now := historyAt()
+		now := pgstoretest.HistoryAt()
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			for _, id := range []string{"00_runner", "page_m_runner", "zz_runner"} {
-				seedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
+				pgstoretest.SeedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
 			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				for _, id := range []string{"page_a", "page_z"} {
@@ -146,7 +118,7 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 		}
 	})
 	t.Run("instance organization pages require current admin", func(t *testing.T) {
-		created := historyAt()
+		created := pgstoretest.HistoryAt()
 		for index, org := range []tracker.OrganizationID{"000_org_a", "000_org_b", "000_org_c"} {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: fmt.Sprintf("Example organization %d", index), CreatedAt: created})
@@ -313,7 +285,7 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 	if !errors.Is(err, corestore.ErrTenantMismatch) {
 		t.Fatalf("cross-tenant write=%v", err)
 	}
-	platform := rolePool(t, admin, "detent_platform_v2", "")
+	platform := pgstoretest.RolePool(t, admin, "detent_platform_v2", "")
 	defer platform.Close()
 	if _, err := platform.Exec(pgtest.UnboundProbe(t.Context()), `SELECT * FROM api_tokens`); err == nil {
 		t.Fatal("platform authority read tenant credentials")
@@ -328,7 +300,7 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 		}
 	}
 	t.Run("native credential grant transaction", func(t *testing.T) {
-		now := historyAt()
+		now := pgstoretest.HistoryAt()
 		grantedAt := now.Add(time.Hour)
 		organizations := []tracker.OrganizationID{"org_first", "org_second"}
 		for _, organization := range organizations {
@@ -419,7 +391,7 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 		}
 		createLocal := func(organization tracker.OrganizationID) error {
 			return repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-				return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Local organization", Local: true, CreatedAt: historyAt()})
+				return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Local organization", Local: true, CreatedAt: pgstoretest.HistoryAt()})
 			})
 		}
 		if err := createLocal("org_local"); err != nil {
@@ -442,7 +414,7 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 			WHERE r.rolname='detent_local_bootstrap_reader_v2' AND p.oid='public.lookup_designated_local_organization()'::regprocedure`).Scan(&allowed); err != nil || !allowed {
 			t.Fatalf("isolated discovery owner = %t, %v", allowed, err)
 		}
-		migration := rolePool(t, admin, "detent_migration_v2", "")
+		migration := pgstoretest.RolePool(t, admin, "detent_migration_v2", "")
 		defer migration.Close()
 		if err := migration.QueryRow(pgtest.UnboundProbe(t.Context()), `SELECT count(*) FROM public.organizations`).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("migration can read unbound organization rows: count=%d error=%v", count, err)
@@ -504,10 +476,10 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 }
 
 func TestAccessCurrentAuthority(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	seedTenantAccess(t, repository, "org_first")
-	now := historyAt()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	pgstoretest.SeedTenantAccess(t, repository, "org_first")
+	now := pgstoretest.HistoryAt()
 	base := accessstore.Authority{CredentialID: "first", Hash: "hash_first", UserID: "first", MembershipID: "membership_first", Write: true, Admin: true}
 	tests := []struct {
 		name   string
@@ -558,21 +530,23 @@ func TestAccessCurrentAuthority(t *testing.T) {
 }
 
 func TestAccessRevokedCredentialCannotClaim(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		seedLeaseFamily(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedLeaseFamily(t, repository, org)
 	}
-	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error { return w.RevokeAccessCredential(t.Context(), "first", historyAt()) }); err != nil {
+	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RevokeAccessCredential(t.Context(), "first", pgstoretest.HistoryAt())
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if _, err := w.AuthorizeAccess(t.Context(), accessstore.Authority{CredentialID: "first", Hash: "hash_first"}, historyAt()); err != nil {
+			if _, err := w.AuthorizeAccess(t.Context(), accessstore.Authority{CredentialID: "first", Hash: "hash_first"}, pgstoretest.HistoryAt()); err != nil {
 				return err
 			}
-			_, err := w.Claim(t.Context(), leaseClaim(1))
+			_, err := w.Claim(t.Context(), pgstoretest.LeaseClaim(1))
 			return err
 		})
 		if org == "org_first" && !errors.Is(err, accessstore.ErrDenied) {
@@ -587,49 +561,22 @@ func TestAccessRevokedCredentialCannotClaim(t *testing.T) {
 	}
 }
 
-func accessTestKeys(t *testing.T, retain bool, activeVersion ...string) *hubsecrets.Keyring {
-	t.Helper()
-	raw := fmt.Sprintf(`{"2":%q}`, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)))
-	if retain {
-		raw = fmt.Sprintf(`{"1":%q,"2":%q}`, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)), base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)))
-	}
-	keys, err := hubsecrets.FromEnvironment(func(name string) string {
-		if name == "DETENT_HUB_SECRET_KEYS" {
-			return raw
-		}
-		if name == "DETENT_HUB_SECRET_KEY_VERSION" {
-			if len(activeVersion) > 0 {
-				return activeVersion[0]
-			}
-			if retain {
-				return "1"
-			}
-			return "2"
-		}
-		return ""
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return keys
-}
-
 func TestAccessImportedEnvelopesAndAtomicAudit(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	keys := accessTestKeys(t, true)
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	keys := pgstoretest.AccessTestKeys(t, true)
 	secrets := map[tracker.OrganizationID]accessstore.Secret{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		seedRepository(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		envelope, err := keys.Seal([]byte("example credential"), accessstore.SecretAAD(org, "prj_first", "example"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		secret := accessstore.Secret{OrganizationID: org, ProjectID: "prj_first", Kind: "example", OrganizationSlug: "example", Envelope: envelope, UpdatedAt: historyAt()}
+		secret := accessstore.Secret{OrganizationID: org, ProjectID: "prj_first", Kind: "example", OrganizationSlug: "example", Envelope: envelope, UpdatedAt: pgstoretest.HistoryAt()}
 		secrets[org] = secret
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.StoreAccessSecret(t.Context(), secret, accessstore.SecretAudit{OrganizationID: org, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "first", Event: "import", KeyVersion: envelope.Version, RecordedAt: historyAt()})
+			return w.StoreAccessSecret(t.Context(), secret, accessstore.SecretAudit{OrganizationID: org, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "first", Event: "import", KeyVersion: envelope.Version, RecordedAt: pgstoretest.HistoryAt()})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -650,7 +597,7 @@ func TestAccessImportedEnvelopesAndAtomicAudit(t *testing.T) {
 			if string(value) != "example credential" {
 				t.Fatal("import changed plaintext")
 			}
-			if err := accessstore.VerifySecret(accessTestKeys(t, false), got); !errors.Is(err, hubsecrets.ErrUnavailable) {
+			if err := accessstore.VerifySecret(pgstoretest.AccessTestKeys(t, false), got); !errors.Is(err, hubsecrets.ErrUnavailable) {
 				t.Fatalf("missing retained key=%v", err)
 			}
 			got.OrganizationID = "org_other"
@@ -666,7 +613,7 @@ func TestAccessImportedEnvelopesAndAtomicAudit(t *testing.T) {
 	err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
 		secret := secrets["org_first"]
 		secret.ProjectID = "prj_second"
-		if err := w.StoreAccessSecret(t.Context(), secret, accessstore.SecretAudit{OrganizationID: secret.OrganizationID, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "first", Event: "set", KeyVersion: secret.Envelope.Version, RecordedAt: historyAt()}); err != nil {
+		if err := w.StoreAccessSecret(t.Context(), secret, accessstore.SecretAudit{OrganizationID: secret.OrganizationID, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "first", Event: "set", KeyVersion: secret.Envelope.Version, RecordedAt: pgstoretest.HistoryAt()}); err != nil {
 			return err
 		}
 		return rollback
@@ -687,12 +634,12 @@ func TestAccessImportedEnvelopesAndAtomicAudit(t *testing.T) {
 }
 
 func TestAccessSessionTombstoneAndTransactionReplay(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		seedRepository(t, repository, org)
-		now := historyAt()
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
+		now := pgstoretest.HistoryAt()
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.RevokeAccessSession(t.Context(), "binding", now); err != nil {
 				return err
@@ -783,13 +730,13 @@ func TestAccessSessionTombstoneAndTransactionReplay(t *testing.T) {
 }
 
 func TestAccessAuditReferencesAndRewrap(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
-	objects := newHistoryObjects()
-	keys := accessTestKeys(t, true)
-	active := accessTestKeys(t, true, "2")
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	objects := pgstoretest.NewHistoryObjects()
+	keys := pgstoretest.AccessTestKeys(t, true)
+	active := pgstoretest.AccessTestKeys(t, true, "2")
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		ref, err := objects.StoreDetail(t.Context(), string(org), []byte(`{"actor":"example"}`))
 		if err != nil {
 			t.Fatal(err)
@@ -798,15 +745,15 @@ func TestAccessAuditReferencesAndRewrap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		secret := accessstore.Secret{OrganizationID: org, Kind: "example", Envelope: envelope, UpdatedAt: historyAt()}
-		audit := accessstore.SecretAudit{OrganizationID: org, Kind: "example", Actor: "first", Event: "set", KeyVersion: envelope.Version, RecordedAt: historyAt()}
+		secret := accessstore.Secret{OrganizationID: org, Kind: "example", Envelope: envelope, UpdatedAt: pgstoretest.HistoryAt()}
+		audit := accessstore.SecretAudit{OrganizationID: org, Kind: "example", Actor: "first", Event: "set", KeyVersion: envelope.Version, RecordedAt: pgstoretest.HistoryAt()}
 		var ids []int64
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.StoreAccessSecret(t.Context(), secret, audit); err != nil {
 				return err
 			}
 			for _, key := range []string{"first", "second"} {
-				id, err := w.RecordAccessAudit(t.Context(), accessstore.Audit{OrganizationID: org, SessionID: "session", ActualActor: "first", EffectiveUser: "first", Event: "key_call", StartedAt: historyAt(), ExpiresAt: historyAt().Add(time.Hour), RecordedAt: historyAt(), RecordedAtNS: historyAt().UnixNano(), Mutation: &ref, KeyID: key, KeyKind: "personal", KeyOwner: "first"})
+				id, err := w.RecordAccessAudit(t.Context(), accessstore.Audit{OrganizationID: org, SessionID: "session", ActualActor: "first", EffectiveUser: "first", Event: "key_call", StartedAt: pgstoretest.HistoryAt(), ExpiresAt: pgstoretest.HistoryAt().Add(time.Hour), RecordedAt: pgstoretest.HistoryAt(), RecordedAtNS: pgstoretest.HistoryAt().UnixNano(), Mutation: &ref, KeyID: key, KeyKind: "personal", KeyOwner: "first"})
 				if err != nil {
 					return err
 				}
@@ -868,14 +815,14 @@ func TestAccessAuditReferencesAndRewrap(t *testing.T) {
 }
 
 func TestAccessLookupFailureIsUnavailable(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	now := historyAt()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	authority := accessstore.Authority{CredentialID: "first", Hash: "hash_first", UserID: "first", MembershipID: "membership_first", SessionHash: "session", ProjectID: "prj_first", Write: true}
 	for _, org := range organizations {
-		seedTenantAccess(t, repository, org)
-		seedRepository(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: org, Hash: authority.SessionHash, Subject: authority.UserID, CreatedAt: now, ExpiresAt: now.Add(time.Hour), IdentityCreatedAt: now, IdentityExpiresAt: now.Add(time.Hour)}); err != nil {
 				return err
@@ -943,7 +890,7 @@ func (p *accessAuditQueryTrace) TraceQueryStart(ctx context.Context, conn *pgx.C
 }
 func (*accessAuditQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository, pool *pgxpool.Pool, admin *sql.DB, objects *historyObjects) {
+func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository, pool *pgxpool.Pool, admin *sql.DB, objects *pgstoretest.HistoryObjects) {
 	t.Helper()
 	admin.SetMaxOpenConns(2)
 	var database string
@@ -954,7 +901,7 @@ func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository,
 		t.Fatal(err)
 	}
 	trace := &accessAuditQueryTrace{started: make(chan uint32, 1)}
-	pruner, err := postgres.NewRepository(t.Context(), tracedFeaturePool(t, pool, trace), smallPool())
+	pruner, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, trace), pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -963,7 +910,7 @@ func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository,
 			t.Error(err)
 		}
 	})
-	now := historyAt()
+	now := pgstoretest.HistoryAt()
 	cutoff := now.Add(-30 * 24 * time.Hour)
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for index, org := range organizations {
@@ -1010,7 +957,7 @@ func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository,
 			if err == nil {
 				t.Fatal("parent delete failure did not abort audit retention")
 			}
-			requireSQLState(t, err, "P0001")
+			pgstoretest.RequireSQLState(t, err, "P0001")
 			for _, tenant := range organizations {
 				if err := repository.ReadTenant(t.Context(), tenant, corestore.Serving, func(r tenantstore.Reader) error { _, err := r.AccessAudit(t.Context(), ids[tenant]); return err }); err != nil {
 					t.Fatalf("rollback lost %s audit: %v", tenant, err)
@@ -1082,7 +1029,7 @@ func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository,
 				t.Fatal(err)
 			}
 			trace.armed.Store(true)
-			task := startRepositoryTask(t, func(ctx context.Context) error {
+			task := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return pruner.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
 					count, err := w.PruneAccessAuditReads(ctx, 2)
 					if err == nil && count != 0 {
@@ -1111,7 +1058,7 @@ func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository,
 			if err := blocker.Commit(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if err := task.wait(t); err != nil {
+			if err := task.Wait(t); err != nil {
 				t.Fatal(err)
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -1186,11 +1133,11 @@ func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository,
 			for _, cutoff := range []any{nil, int64(0)} {
 				var count int
 				err := pool.QueryRow(t.Context(), `SELECT public.prune_expired_access_audits($1,$2)`, cutoff, 2).Scan(&count)
-				requireSQLState(t, err, "22023")
+				pgstoretest.RequireSQLState(t, err, "22023")
 			}
 			for _, statement := range []string{`SELECT public.prune_legacy_access_audits(NULL)`, `SELECT public.prune_expired_access_audits(1,NULL)`} {
 				var count int
-				requireSQLState(t, pool.QueryRow(t.Context(), statement).Scan(&count), "22023")
+				pgstoretest.RequireSQLState(t, pool.QueryRow(t.Context(), statement).Scan(&count), "22023")
 			}
 			for _, zone := range []string{"UTC", "America/New_York"} {
 				ref, err := objects.StoreDetail(t.Context(), string(org), []byte("clock safety mutation "+zone))
@@ -1257,7 +1204,7 @@ func runAccessAuditRetentionCases(t *testing.T, repository *postgres.Repository,
 
 func runAccessAuditPruneIsolation(t *testing.T, pool *pgxpool.Pool, admin *sql.DB, organizations []tracker.OrganizationID, ids map[tracker.OrganizationID]int64) {
 	t.Helper()
-	migration := rolePool(t, admin, postgres.MigrationRoleName, "")
+	migration := pgstoretest.RolePool(t, admin, postgres.MigrationRoleName, "")
 	defer migration.Close()
 	for _, reader := range []*pgxpool.Pool{pool, migration} {
 		var role string
@@ -1316,7 +1263,7 @@ func runAccessAuditPruneIsolation(t *testing.T, pool *pgxpool.Pool, admin *sql.D
 
 func runAccessAuditPrunePlans(t *testing.T, repository, pruner *postgres.Repository, admin *sql.DB, trace *accessAuditQueryTrace, organizations []tracker.OrganizationID, now, cutoff time.Time) {
 	t.Helper()
-	migration := rolePool(t, admin, postgres.MigrationRoleName, "")
+	migration := pgstoretest.RolePool(t, admin, postgres.MigrationRoleName, "")
 	defer migration.Close()
 	for _, org := range organizations {
 		if _, err := admin.ExecContext(t.Context(), `WITH inserted AS (
@@ -1360,7 +1307,7 @@ func runAccessAuditPrunePlans(t *testing.T, repository, pruner *postgres.Reposit
 			t.Fatal(err)
 		}
 		_, err = tx.Exec(t.Context(), `UPDATE hosted_audit SET status=403 WHERE organization_id=$1 AND recorded_at_ns<$2`, organizations[1], cutoff.UnixNano())
-		requireSQLState(t, err, "42501")
+		pgstoretest.RequireSQLState(t, err, "42501")
 	})
 	rollback := errors.New("restore audit plan source")
 	for _, org := range organizations {
@@ -1483,7 +1430,7 @@ func runAccessAuditPrunePlans(t *testing.T, repository, pruner *postgres.Reposit
 				}(); err != nil {
 					t.Fatal(err)
 				}
-				var plans []struct{ Plan searchPlanNode }
+				var plans []struct{ Plan pgstoretest.SearchPlanNode }
 				if err := json.Unmarshal(raw, &plans); err != nil {
 					t.Fatal(err)
 				}
@@ -1494,12 +1441,12 @@ func runAccessAuditPrunePlans(t *testing.T, repository, pruner *postgres.Reposit
 				if test.legacy {
 					expectedIndex = "hosted_audit_legacy_read_cleanup_seek"
 				}
-				if !plans[0].Plan.usesIndex(expectedIndex) {
+				if !plans[0].Plan.UsesIndex(expectedIndex) {
 					t.Fatalf("audit plan lost %s: %s", expectedIndex, raw)
 				}
 				var visits float64
-				var walk func(searchPlanNode)
-				walk = func(p searchPlanNode) {
+				var walk func(pgstoretest.SearchPlanNode)
+				walk = func(p pgstoretest.SearchPlanNode) {
 					if p.Relation == "hosted_audit" {
 						visits += (p.Rows + p.Removed + p.IndexRemoved) * p.Loops
 					}
@@ -1518,10 +1465,10 @@ func runAccessAuditPrunePlans(t *testing.T, repository, pruner *postgres.Reposit
 }
 
 func TestAuthorizeAccessRunnerProjectScope(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
-	now := historyAt()
+	now := pgstoretest.HistoryAt()
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	organizationRunners := []string{"runner_org", "runner_expiring", "runner_removed", "runner_reduced", "runner_revoked", "runner_session"}
 	hash := func(organization tracker.OrganizationID, credential string) string {
@@ -1544,7 +1491,7 @@ func TestAuthorizeAccessRunnerProjectScope(t *testing.T) {
 				return err
 			}
 			for _, credential := range append([]string{"runner_selected", "service_plain"}, organizationRunners...) {
-				row := accessstore.Credential{OrganizationID: organization, ID: credential, Name: credential, Hash: hash(organization, credential), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: timePointer(now.Add(24 * time.Hour)), ProjectAccess: "selected", Kind: "service"}
+				row := accessstore.Credential{OrganizationID: organization, ID: credential, Name: credential, Hash: hash(organization, credential), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: pgstoretest.TimePointer(now.Add(24 * time.Hour)), ProjectAccess: "selected", Kind: "service"}
 				if err := w.CreateAccessCredential(ctx, row); err != nil {
 					return err
 				}

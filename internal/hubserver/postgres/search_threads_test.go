@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -29,7 +31,7 @@ func TestSearchExistingTeamThreadFilters(t *testing.T) {
 			{ID: "middle", SourceID: "middle", Scope: "project", ProjectID: "prj_first", Status: "open"},
 			{ID: "last", SourceID: "last", Scope: "issue", ProjectID: "prj_first", WorkItemID: "wi_first_1", Status: "resolved"},
 		} {
-			d.OrganizationID, d.Kind, d.Revision, d.UpdatedAt = org, "thread", 1, historyAt().Add(time.Duration(index)*time.Nanosecond)
+			d.OrganizationID, d.Kind, d.Revision, d.UpdatedAt = org, "thread", 1, pgstoretest.HistoryAt().Add(time.Duration(index)*time.Nanosecond)
 			f.put(t, d, searchstore.Text{Title: "Shared research"}, 0)
 		}
 	}
@@ -83,7 +85,7 @@ func TestSearchExistingTeamThreadFilters(t *testing.T) {
 			}
 		})
 	}
-	if _, err := f.admin.ExecContext(t.Context(), `UPDATE projects SET deleted_at=$1 WHERE organization_id='org_first' AND id='prj_first'`, historyAt()); err != nil {
+	if _, err := f.admin.ExecContext(t.Context(), `UPDATE projects SET deleted_at=$1 WHERE organization_id='org_first' AND id='prj_first'`, pgstoretest.HistoryAt()); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -100,11 +102,11 @@ func TestSearchExistingTeamThreadFilters(t *testing.T) {
 func TestSearchCommentEventAndChange(t *testing.T) {
 	f := newSearchFixture(t)
 	org := tracker.OrganizationID("org_first")
-	history := seedHistory(t, f.repository, org, "search")
+	history := pgstoretest.SeedHistory(t, f.repository, org, "search")
 	for _, test := range []struct{ kind, source, text string }{
 		{"comment", "comment_first_1_1", "Unicorns decorate mock fixture data"},
-		{"event", history.event.ID, "Example event transition"},
-		{"change", history.change.ID, "Example change discussion"},
+		{"event", history.Event.ID, "Example event transition"},
+		{"change", history.Change.ID, "Example change discussion"},
 	} {
 		d := searchIssue(org, "wi_first_1")
 		d.ID, d.Kind, d.SourceID = test.kind+"/"+test.source, test.kind, test.source
@@ -161,7 +163,7 @@ func TestSearchThreadCursorContinuesBeyondCandidateBudget(t *testing.T) {
 	documents := make([]searchstore.Document, 0, searchstore.CandidateLimit+2)
 	for index := range searchstore.CandidateLimit + 2 {
 		id := fmt.Sprintf("thread_%06d", index)
-		d, err := f.content.Prepare(t.Context(), searchstore.Document{OrganizationID: org, ID: id, SourceID: id, Kind: "thread", Scope: "general", Status: "open", Revision: 1, UpdatedAt: historyAt().Add(time.Duration(index) * time.Nanosecond)}, searchstore.Text{Title: "Shared research", Body: "unsearchablepreview"})
+		d, err := f.content.Prepare(t.Context(), searchstore.Document{OrganizationID: org, ID: id, SourceID: id, Kind: "thread", Scope: "general", Status: "open", Revision: 1, UpdatedAt: pgstoretest.HistoryAt().Add(time.Duration(index) * time.Nanosecond)}, searchstore.Text{Title: "Shared research", Body: "unsearchablepreview"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -222,7 +224,7 @@ func TestSearchTargetKeysetSurvivesEarlierDeletion(t *testing.T) {
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, id := range []string{"a", "b", "c", "d"} {
-			f.put(t, searchstore.Document{OrganizationID: org, ID: id, SourceID: id, Kind: "thread", Scope: "general", Status: "open", Revision: 1, UpdatedAt: historyAt()}, searchstore.Text{Title: "keyset sentinel"}, 0)
+			f.put(t, searchstore.Document{OrganizationID: org, ID: id, SourceID: id, Kind: "thread", Scope: "general", Status: "open", Revision: 1, UpdatedAt: pgstoretest.HistoryAt()}, searchstore.Text{Title: "keyset sentinel"}, 0)
 		}
 		f.drain(t, org)
 		q := searchstore.Query{Kind: "thread", Text: "keyset", Limit: 1}
@@ -414,7 +416,7 @@ func assertThreadCandidatePointLookups(t *testing.T, f searchFixture, org tracke
 		if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true),set_config('jit','off',true)", org); err != nil {
 			return err
 		}
-		probe := &searchPlanProbe{DBTX: tx}
+		probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
 		rows, err := pgquery.New(probe).SearchCandidates(t.Context(), pgquery.SearchCandidatesParams{OrganizationID: org, Kind: query.Kind, ProjectID: string(query.ProjectID), ProjectIds: []string{}, Expression: strings.Join(searchstore.Expressions(org, query), " | "), SearchTerms: searchstore.CandidateTerms(org, query), EmptyQuery: strings.TrimSpace(query.Text) == ""})
 		if err != nil {
 			return err
@@ -423,10 +425,10 @@ func assertThreadCandidatePointLookups(t *testing.T, f searchFixture, org tracke
 			t.Fatal("thread plan returned no candidates")
 		}
 		var raw []byte
-		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw); err != nil {
 			return err
 		}
-		var plans []struct{ Plan searchPlanNode }
+		var plans []struct{ Plan pgstoretest.SearchPlanNode }
 		if err := json.Unmarshal(raw, &plans); err != nil {
 			return err
 		}
@@ -434,8 +436,8 @@ func assertThreadCandidatePointLookups(t *testing.T, f searchFixture, org tracke
 			t.Fatalf("thread plans=%d, want 1", len(plans))
 		}
 		var visits float64
-		var inspect func(searchPlanNode)
-		inspect = func(node searchPlanNode) {
+		var inspect func(pgstoretest.SearchPlanNode)
+		inspect = func(node pgstoretest.SearchPlanNode) {
 			if node.Relation == "search_documents" {
 				visits += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
 			}

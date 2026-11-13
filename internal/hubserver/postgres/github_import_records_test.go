@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -13,7 +15,7 @@ import (
 )
 
 func TestGitHubImportRecordsPageWithinProject(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	if err := repository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org", Name: "Example", Slug: "example", Local: true, CreatedAt: time.Now()})
 	}); err != nil {

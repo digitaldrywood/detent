@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
@@ -103,8 +105,8 @@ func TestSearchNativeRepresentationIsolation(t *testing.T) {
 
 func TestSearchBackfillResumesBoundedTenantPages(t *testing.T) {
 	t.Run("populated conversion family upgrade", func(t *testing.T) {
-		db, fixture := migrationDatabaseAtVersion(t, 20261109184650)
-		seedCore(t, db)
+		db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109184650)
+		pgstoretest.SeedCore(t, db)
 		families := []string{"runs", "versions", "evidence", "core-work-events"}
 		for _, org := range []string{"org_first", "org_second"} {
 			for _, family := range families {
@@ -160,7 +162,7 @@ func TestSearchBackfillResumesBoundedTenantPages(t *testing.T) {
 			return value
 		}
 		before, progressConstraint := snapshot(), constraint()
-		provider, err := migrationProvider(db)
+		provider, err := pgstoretest.MigrationProvider(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -177,9 +179,9 @@ func TestSearchBackfillResumesBoundedTenantPages(t *testing.T) {
 		if constraint() != progressConstraint {
 			t.Fatal("cursor repair changed progress family contract")
 		}
-		repository, pool := coreWorkEventRepository(t, db, fixture)
+		repository, pool := pgstoretest.CoreWorkEventRepository(t, db, fixture)
 		orgs := []tracker.OrganizationID{"org_first", "org_second"}
-		objects := newHistoryObjects()
+		objects := pgstoretest.NewHistoryObjects()
 		search := searchFixture{repository: repository, content: searchstore.NewContent(objects), objects: objects, admin: db, pool: pool}
 		for _, org := range orgs {
 			document := searchIssue(org, "wi_shared")
@@ -188,7 +190,7 @@ func TestSearchBackfillResumesBoundedTenantPages(t *testing.T) {
 			search.drain(t, org)
 		}
 		for index, org := range orgs {
-			owner := postgres.NewConversionStorage(repository, org, newHistoryObjects(), convertPayload)
+			owner := postgres.NewConversionStorage(repository, org, pgstoretest.NewHistoryObjects(), pgstoretest.ConvertPayload)
 			if _, err := owner.Start(t.Context()); err != nil {
 				t.Fatal(err)
 			}

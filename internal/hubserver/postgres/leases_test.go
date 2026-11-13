@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -28,70 +30,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func seedLeaseFamily(t *testing.T, r *postgres.Repository, org tracker.OrganizationID) {
-	t.Helper()
-	err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
-		if err := seedCoreOrganization(t.Context(), w, org); err != nil {
-			return err
-		}
-		for id := int64(1); id <= 2; id++ {
-			project := tracker.ProjectID(fmt.Sprintf("prj_%d", id))
-			if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: project, Name: string(project), Profile: "native"}); err != nil {
-				return err
-			}
-			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: id, ProjectID: project, NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", id)), Number: 1, Title: "Example"}); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-		for _, id := range []string{"machine_1", "machine_2"} {
-			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: id, Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func leaseClaim(id int64) leasestore.Claim {
-	return leasestore.Claim{IssueID: id, ExpectedRevision: 1, MachineID: fmt.Sprintf("machine_%d", id), SessionID: fmt.Sprintf("session_%d", id), LeaseID: fmt.Sprintf("lease_%d", id), TTL: time.Hour}
-}
-
-func claimLease(t *testing.T, r *postgres.Repository, org tracker.OrganizationID, request leasestore.Claim) leasestore.Lease {
-	t.Helper()
-	var lease leasestore.Lease
-	err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-		var err error
-		lease, err = w.Claim(t.Context(), request)
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return lease
-}
-
-func leaseFence(lease leasestore.Lease) leasestore.Fence {
-	return leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
-}
-
-func attemptEvent(lease leasestore.Lease) leasestore.AttemptEvent {
-	return leasestore.AttemptEvent{ID: "attempt_" + lease.LeaseID, Fence: leaseFence(lease), RunID: "run_" + lease.LeaseID, Sequence: 1, Status: "running", PayloadObjectKey: "example/start", DispatchGeneration: 2}
-}
-
 func TestAttemptEventDoesNotDeadlockIssueTransition(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
-	seedLeaseFamily(t, repository, "org_first")
-	lease := claimLease(t, repository, "org_first", leaseClaim(1))
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	pgstoretest.SeedLeaseFamily(t, repository, "org_first")
+	lease := pgstoretest.ClaimLease(t, repository, "org_first", pgstoretest.LeaseClaim(1))
 	var login string
 	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
@@ -99,7 +42,7 @@ func TestAttemptEventDoesNotDeadlockIssueTransition(t *testing.T) {
 	locked, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	transition := startRepositoryTask(t, func(ctx context.Context) error {
+	transition := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
 			item, err := w.LockWorkItem(ctx, "prj_1", "wi_1")
 			if err != nil {
@@ -116,14 +59,14 @@ func TestAttemptEventDoesNotDeadlockIssueTransition(t *testing.T) {
 			return err
 		})
 	})
-	waitRepositorySignal(t, locked)
+	pgstoretest.WaitRepositorySignal(t, locked)
 	var transitionPID int
 	if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE '-- name: LockWorkItem :one%'`, login).Scan(&transitionPID); err != nil {
 		t.Fatal(err)
 	}
-	attempt := startRepositoryTask(t, func(ctx context.Context) error {
+	attempt := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteLeases(ctx, "org_first", corestore.Background, func(w leasestore.Writer) error {
-			_, err := w.RecordAttempt(ctx, attemptEvent(lease))
+			_, err := w.RecordAttempt(ctx, pgstoretest.AttemptEvent(lease))
 			return err
 		})
 	})
@@ -138,20 +81,20 @@ func TestAttemptEventDoesNotDeadlockIssueTransition(t *testing.T) {
 		return nil
 	})
 	releaseOnce.Do(func() { close(release) })
-	if err := transition.wait(t); err != nil {
+	if err := transition.Wait(t); err != nil {
 		t.Errorf("issue transition lock: %v", err)
 	}
-	if err := attempt.wait(t); err != nil {
+	if err := attempt.Wait(t); err != nil {
 		t.Errorf("attempt event: %v", err)
 	}
 }
 
 func TestAttemptEventDoesNotDeadlockUsageAccounting(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
-	seedLeaseFamily(t, repository, "org_first")
-	lease := claimLease(t, repository, "org_first", leaseClaim(1))
-	start := recordLeaseAttempt(t, repository, "org_first", attemptEvent(lease))
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	pgstoretest.SeedLeaseFamily(t, repository, "org_first")
+	lease := pgstoretest.ClaimLease(t, repository, "org_first", pgstoretest.LeaseClaim(1))
+	start := pgstoretest.RecordLeaseAttempt(t, repository, "org_first", pgstoretest.AttemptEvent(lease))
 	if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET runner_tokens_recorded=false WHERE organization_id=$1 AND id=$2`, "org_first", start.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -163,9 +106,9 @@ func TestAttemptEventDoesNotDeadlockUsageAccounting(t *testing.T) {
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	usage := []tracker.NativeUsage{{Model: "example-model", Input: 5, Output: 2, To: time.Now().UTC()}}
-	event := attemptEvent(lease)
+	event := pgstoretest.AttemptEvent(lease)
 	event.Sequence, event.PayloadObjectKey, event.Usage = 2, "example/next", usage
-	transition := startRepositoryTask(t, func(ctx context.Context) error {
+	transition := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.LockWorkItem(ctx, "prj_1", "wi_1"); err != nil {
 				return err
@@ -180,20 +123,20 @@ func TestAttemptEventDoesNotDeadlockUsageAccounting(t *testing.T) {
 			return err
 		})
 	})
-	waitRepositorySignal(t, locked)
+	pgstoretest.WaitRepositorySignal(t, locked)
 	var transitionPID int
 	if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE '-- name: LockWorkItem :one%'`, login).Scan(&transitionPID); err != nil {
 		t.Fatal(err)
 	}
-	accounting := startRepositoryTask(t, func(ctx context.Context) error {
+	accounting := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, "org_first", corestore.Background, func(w tenantstore.Writer) error {
 			return w.(leasestore.RunnerUsageWriter).AccountRunnerTokenUsage(ctx, start, usage)
 		})
 	})
 	testenv.WaitUntil(t, t.Context(), func() error {
 		select {
-		case <-accounting.done:
-			t.Fatalf("accounting ended before lock observation: %v", accounting.err)
+		case <-accounting.Done:
+			t.Fatalf("accounting ended before lock observation: %v", accounting.Err)
 		default:
 		}
 		var waiting bool
@@ -206,24 +149,24 @@ func TestAttemptEventDoesNotDeadlockUsageAccounting(t *testing.T) {
 		return nil
 	})
 	releaseOnce.Do(func() { close(release) })
-	if err := transition.wait(t); err != nil {
+	if err := transition.Wait(t); err != nil {
 		t.Errorf("attempt event: %v", err)
 	}
-	if err := accounting.wait(t); !errors.Is(err, corestore.ErrRevisionConflict) {
+	if err := accounting.Wait(t); !errors.Is(err, corestore.ErrRevisionConflict) {
 		t.Errorf("stale usage accounting error = %v", err)
 	}
 }
 
 func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 2, BackgroundConnections: 2})
-	seedLeaseFamily(t, repository, "org_first")
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 2, BackgroundConnections: 2})
+	pgstoretest.SeedLeaseFamily(t, repository, "org_first")
 	var login string
 	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	content := eventstore.NewContent(newHistoryObjects())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: "org_first", ProjectID: "prj_1", WorkItemID: "wi_imported", RecordID: "wi_imported", Revision: 1}, []byte(`{}`))
 	if err != nil {
 		t.Fatal(err)
@@ -240,7 +183,7 @@ func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
 	locked, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	owner := startRepositoryTask(t, func(ctx context.Context) error {
+	owner := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.LockWorkItemProject(ctx, "prj_1"); err != nil {
 				return err
@@ -254,16 +197,16 @@ func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
 			}
 		})
 	})
-	waitRepositorySignal(t, locked)
+	pgstoretest.WaitRepositorySignal(t, locked)
 	var ownerPID int
 	if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE '-- name: LockWorkItemProject :one%'`, login).Scan(&ownerPID); err != nil {
 		t.Fatal(err)
 	}
-	imported := startRepositoryTask(t, func(ctx context.Context) error { return repository.ImportCoreWorkItem(ctx, record) })
+	imported := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error { return repository.ImportCoreWorkItem(ctx, record) })
 	testenv.WaitUntil(t, t.Context(), func() error {
 		select {
-		case <-imported.done:
-			t.Fatalf("import finished before acquiring the project lock: %v", imported.err)
+		case <-imported.Done:
+			t.Fatalf("import finished before acquiring the project lock: %v", imported.Err)
 		default:
 		}
 		var query string
@@ -276,11 +219,11 @@ func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
 		}
 		return err
 	})
-	replayed := startRepositoryTask(t, func(ctx context.Context) error { return repository.ImportCoreWorkItem(ctx, record) })
+	replayed := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error { return repository.ImportCoreWorkItem(ctx, record) })
 	testenv.WaitUntil(t, t.Context(), func() error {
 		select {
-		case <-replayed.done:
-			t.Fatalf("concurrent replay finished before acquiring the project lock: %v", replayed.err)
+		case <-replayed.Done:
+			t.Fatalf("concurrent replay finished before acquiring the project lock: %v", replayed.Err)
 		default:
 		}
 		var waiting int
@@ -293,13 +236,13 @@ func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
 		return nil
 	})
 	releaseOnce.Do(func() { close(release) })
-	if err := owner.wait(t); err != nil {
+	if err := owner.Wait(t); err != nil {
 		t.Fatal(err)
 	}
-	if err := imported.wait(t); err != nil {
+	if err := imported.Wait(t); err != nil {
 		t.Fatal(err)
 	}
-	if err := replayed.wait(t); err != nil {
+	if err := replayed.Wait(t); err != nil {
 		t.Fatalf("concurrent replay: %v", err)
 	}
 	if _, err := admin.ExecContext(t.Context(), `UPDATE projects SET deleted_at=$1 WHERE organization_id='org_first' AND id='prj_1'`, now); err != nil {
@@ -315,15 +258,15 @@ func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
 }
 
 func TestImportedLeaseWaitsForIssueBeforeFencingAllocation(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 1, BackgroundConnections: 3})
-	seedLeaseFamily(t, repository, "org_first")
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 1, BackgroundConnections: 3})
+	pgstoretest.SeedLeaseFamily(t, repository, "org_first")
 	var login string
 	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	receipt, err := eventstore.NewContent(newHistoryObjects()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: "org_first", ActorID: "production-import", Operation: "core-lease", CommandKey: "imported-lease", RequestHash: artifact.Digest([]byte("imported-lease")), CreatedAt: now}, []byte(`{}`))
+	receipt, err := eventstore.NewContent(pgstoretest.NewHistoryObjects()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: "org_first", ActorID: "production-import", Operation: "core-lease", CommandKey: "imported-lease", RequestHash: artifact.Digest([]byte("imported-lease")), CreatedAt: now}, []byte(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +274,7 @@ func TestImportedLeaseWaitsForIssueBeforeFencingAllocation(t *testing.T) {
 	locked, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	transition := startRepositoryTask(t, func(ctx context.Context) error {
+	transition := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.LockWorkItem(ctx, "prj_1", "wi_1"); err != nil {
 				return err
@@ -345,15 +288,15 @@ func TestImportedLeaseWaitsForIssueBeforeFencingAllocation(t *testing.T) {
 			}
 		})
 	})
-	waitRepositorySignal(t, locked)
+	pgstoretest.WaitRepositorySignal(t, locked)
 	var transitionPID int
 	if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE '-- name: LockWorkItem :one%'`, login).Scan(&transitionPID); err != nil {
 		t.Fatal(err)
 	}
-	imported := startRepositoryTask(t, func(ctx context.Context) error {
+	imported := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.ImportCoreLease(ctx, postgres.CoreLeaseImport{Lease: lease, Receipt: receipt})
 	})
-	duplicate := startRepositoryTask(t, func(ctx context.Context) error {
+	duplicate := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.ImportCoreLease(ctx, postgres.CoreLeaseImport{Lease: lease, Receipt: receipt})
 	})
 	var importPID int
@@ -382,13 +325,13 @@ func TestImportedLeaseWaitsForIssueBeforeFencingAllocation(t *testing.T) {
 		t.Error("lease import holds the fencing allocator while waiting for the issue")
 	}
 	releaseOnce.Do(func() { close(release) })
-	if err := transition.wait(t); err != nil {
+	if err := transition.Wait(t); err != nil {
 		t.Errorf("issue transition lock: %v", err)
 	}
-	if err := imported.wait(t); err != nil {
+	if err := imported.Wait(t); err != nil {
 		t.Errorf("lease import: %v", err)
 	}
-	if err := duplicate.wait(t); err != nil {
+	if err := duplicate.Wait(t); err != nil {
 		t.Errorf("concurrent lease replay: %v", err)
 	}
 	var last int64
@@ -400,23 +343,9 @@ func TestImportedLeaseWaitsForIssueBeforeFencingAllocation(t *testing.T) {
 	}
 }
 
-func recordLeaseAttempt(t *testing.T, r *postgres.Repository, org tracker.OrganizationID, event leasestore.AttemptEvent) leasestore.Attempt {
-	t.Helper()
-	var attempt leasestore.Attempt
-	err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-		var err error
-		attempt, err = w.RecordAttempt(t.Context(), event)
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return attempt
-}
-
 func prepareLeaseCancellationFixture(t *testing.T, org tracker.OrganizationID, lease leasestore.Lease, current leasestore.AttemptEvent) (*leasestore.AttemptCancellation, *eventstore.Content) {
 	t.Helper()
-	objects := eventstore.NewContent(newHistoryObjects())
+	objects := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	now := lease.AcquiredAt
 	run := tracker.NativeRunData{AttemptID: current.ID, RunID: current.RunID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken),
 		Sequence: current.Sequence + 1, Outcome: "cancelled", TerminalFailure: &tracker.NativeTerminalFailure{ErrorClass: "lease_released", Stage: "lease_release", ObservedAt: now, Error: "Example lease expired"}}
@@ -441,7 +370,7 @@ func prepareLeaseCancellationFixture(t *testing.T, org tracker.OrganizationID, l
 		t.Fatal(err)
 	}
 	return &leasestore.AttemptCancellation{
-		Attempt: leasestore.AttemptEvent{ID: current.ID, RunID: current.RunID, Fence: leaseFence(lease), Sequence: run.Sequence, Status: "cancelled",
+		Attempt: leasestore.AttemptEvent{ID: current.ID, RunID: current.RunID, Fence: pgstoretest.LeaseFence(lease), Sequence: run.Sequence, Status: "cancelled",
 			DispatchGeneration: current.DispatchGeneration, PayloadObjectKey: payload.Key, PayloadReference: payload},
 		History: history,
 	}, objects
@@ -470,23 +399,23 @@ func requireLeaseUsage(t *testing.T, r *postgres.Repository, org tracker.Organiz
 }
 
 func TestLeaseAttemptLifecycle(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, r, org)
+		pgstoretest.SeedLeaseFamily(t, r, org)
 		for _, id := range []int64{1, 2} {
 			t.Run(fmt.Sprintf("%s/%d", org, id), func(t *testing.T) {
-				request := leaseClaim(id)
-				lease := claimLease(t, r, org, request)
+				request := pgstoretest.LeaseClaim(id)
+				lease := pgstoretest.ClaimLease(t, r, org, request)
 				request.LeaseID = "unused_replay_id"
-				replay := claimLease(t, r, org, request)
+				replay := pgstoretest.ClaimLease(t, r, org, request)
 				if replay.LeaseID != lease.LeaseID || replay.FencingToken != lease.FencingToken || !replay.ExpiresAt.Equal(lease.ExpiresAt) || lease.WorkItemRevision != 1 {
 					t.Fatalf("claim replay changed ownership: %+v, first %+v", replay, lease)
 				}
-				event := attemptEvent(lease)
+				event := pgstoretest.AttemptEvent(lease)
 				event.RuntimeHeartbeatAt = new(lease.RenewedAt.Add(-time.Minute))
 				event.WorkerCleanupRequired = new(id == 1)
-				start := recordLeaseAttempt(t, r, org, event)
+				start := pgstoretest.RecordLeaseAttempt(t, r, org, event)
 				if start.Sequence != 1 || start.Status != "running" || start.WorkItemRevision != lease.WorkItemRevision || start.RuntimeSummarySequence != 1 || start.WorkerCleanupRequired == nil || *start.WorkerCleanupRequired != (id == 1) || start.RuntimeHeartbeatAt == nil || !start.RuntimeHeartbeatAt.Equal(*event.RuntimeHeartbeatAt) {
 					t.Fatalf("start = %+v", start)
 				}
@@ -511,7 +440,7 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 				if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempt_events SET request_hash=$1 WHERE organization_id=$2 AND attempt_id=$3 AND sequence=$4", hex.EncodeToString(digest[:]), org, event.ID, event.Sequence); err != nil {
 					t.Fatal(err)
 				}
-				if replay := recordLeaseAttempt(t, r, org, event); replay.ID != start.ID || replay.Sequence != start.Sequence || replay.FencingToken != start.FencingToken {
+				if replay := pgstoretest.RecordLeaseAttempt(t, r, org, event); replay.ID != start.ID || replay.Sequence != start.Sequence || replay.FencingToken != start.FencingToken {
 					t.Fatalf("legacy receipt replay changed attempt: %+v", replay)
 				}
 				if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET runtime_heartbeat_at=NULL,runtime_summary_sequence=NULL,worker_cleanup_required=NULL WHERE organization_id=$1 AND id=$2`, org, event.ID); err != nil {
@@ -543,7 +472,7 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				checkpointObjects := newHistoryObjects()
+				checkpointObjects := pgstoretest.NewHistoryObjects()
 				checkpointRef, err := checkpointObjects.StoreDetail(t.Context(), string(org), checkpointRaw)
 				if err != nil {
 					t.Fatal(err)
@@ -554,7 +483,7 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 				event.ArtifactsObjectKey = new("example/artifacts")
 				event.RuntimeHeartbeatAt = nil
 				event.WorkerCleanupRequired = nil
-				updated := recordLeaseAttempt(t, r, org, event)
+				updated := pgstoretest.RecordLeaseAttempt(t, r, org, event)
 				if updated.WorkerCleanupRequired != nil || updated.RuntimeHeartbeatAt != nil || updated.RuntimeSummarySequence != 2 {
 					t.Fatalf("runtime summary survived absent runtime: %+v", updated)
 				}
@@ -575,20 +504,20 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 				event.Sequence, event.Status, event.PayloadObjectKey = 3, "succeeded", "example/finish"
 				event.CheckpointObjectKey, event.ArtifactsObjectKey = nil, nil
 				event.CheckpointPreservesSource = nil
-				finished := recordLeaseAttempt(t, r, org, event)
+				finished := pgstoretest.RecordLeaseAttempt(t, r, org, event)
 				if finished.Status != "succeeded" || finished.Sequence != 3 || finished.CheckpointObjectKey == nil || *finished.CheckpointObjectKey != checkpointRef.Key || finished.ArtifactsObjectKey == nil || *finished.ArtifactsObjectKey != "example/artifacts" || finished.CheckpointPreservesSource == nil || *finished.CheckpointPreservesSource != checkpoint.PreservesSource() {
 					t.Fatalf("finish lost checkpoint: %+v", finished)
 				}
 				requireLeaseUsage(t, r, org, lease.MachineID, 1)
 				err = r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-					renewed, err := w.RenewWithLandingCapacity(t.Context(), leaseFence(lease), 2*time.Hour, 3)
+					renewed, err := w.RenewWithLandingCapacity(t.Context(), pgstoretest.LeaseFence(lease), 2*time.Hour, 3)
 					if err != nil {
 						return err
 					}
 					if renewed.FencingToken != lease.FencingToken || !renewed.ExpiresAt.After(lease.ExpiresAt) || renewed.LandingCapacity != 3 {
 						t.Errorf("renew changed owner or failed to extend expiry: %+v", renewed)
 					}
-					released, err := w.Release(t.Context(), leaseFence(lease), "finished")
+					released, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "finished")
 					if err == nil && (released.ReleasedAt == nil || released.ReleaseReason != "finished") {
 						t.Errorf("release = %+v", released)
 					}
@@ -597,30 +526,30 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				recordLeaseAttempt(t, r, org, event)
+				pgstoretest.RecordLeaseAttempt(t, r, org, event)
 				requireLeaseUsage(t, r, org, lease.MachineID, 0)
 				request.LeaseID, request.SessionID = lease.LeaseID+"_next", lease.SessionID+"_next"
-				next := claimLease(t, r, org, request)
+				next := pgstoretest.ClaimLease(t, r, org, request)
 				if next.FencingToken <= lease.FencingToken {
 					t.Errorf("next fence = %d, previous %d", next.FencingToken, lease.FencingToken)
 				}
-				continued := attemptEvent(next)
+				continued := pgstoretest.AttemptEvent(next)
 				continued.RunID = event.RunID
-				recordLeaseAttempt(t, r, org, continued)
+				pgstoretest.RecordLeaseAttempt(t, r, org, continued)
 			})
 		}
 	}
 }
 
 func TestLeaseIssueReadsReturnActiveLeaseAndBoundedAttemptPages(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
-	seedLeaseFamily(t, r, "org_first")
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	pgstoretest.SeedLeaseFamily(t, r, "org_first")
 	var attempts []leasestore.Attempt
 	for sequence := 1; sequence <= 3; sequence++ {
-		request := leaseClaim(1)
+		request := pgstoretest.LeaseClaim(1)
 		request.LeaseID = fmt.Sprintf("lease_page_%d", sequence)
 		request.SessionID = fmt.Sprintf("session_page_%d", sequence)
-		lease := claimLease(t, r, "org_first", request)
+		lease := pgstoretest.ClaimLease(t, r, "org_first", request)
 		if sequence == 1 {
 			err := r.ReadTenant(t.Context(), "org_first", corestore.Serving, func(reader tenantstore.Reader) error {
 				active, err := reader.ActiveLeaseForIssue(t.Context(), 1)
@@ -633,22 +562,22 @@ func TestLeaseIssueReadsReturnActiveLeaseAndBoundedAttemptPages(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		event := attemptEvent(lease)
+		event := pgstoretest.AttemptEvent(lease)
 		event.ID = fmt.Sprintf("attempt_page_%d", sequence)
 		event.RunID = fmt.Sprintf("run_page_%d", sequence)
-		attempts = append(attempts, recordLeaseAttempt(t, r, "org_first", event))
+		attempts = append(attempts, pgstoretest.RecordLeaseAttempt(t, r, "org_first", event))
 		if err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(writer leasestore.Writer) error {
-			_, err := writer.Release(t.Context(), leaseFence(lease), "finished")
+			_, err := writer.Release(t.Context(), pgstoretest.LeaseFence(lease), "finished")
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	seedLeaseFamily(t, r, "org_second")
-	foreignLease := claimLease(t, r, "org_second", leaseClaim(1))
-	foreignEvent := attemptEvent(foreignLease)
+	pgstoretest.SeedLeaseFamily(t, r, "org_second")
+	foreignLease := pgstoretest.ClaimLease(t, r, "org_second", pgstoretest.LeaseClaim(1))
+	foreignEvent := pgstoretest.AttemptEvent(foreignLease)
 	foreignEvent.ID, foreignEvent.RunID = attempts[0].ID, attempts[0].RunID
-	foreignAttempt := recordLeaseAttempt(t, r, "org_second", foreignEvent)
+	foreignAttempt := pgstoretest.RecordLeaseAttempt(t, r, "org_second", foreignEvent)
 	if err := r.ReadTenant(t.Context(), "org_second", corestore.Serving, func(reader tenantstore.Reader) error {
 		page, err := reader.AttemptPage(t.Context(), 1, leasestore.AttemptCursor{IssueID: 1, Oldest: true, ThroughFence: attempts[1].FencingToken}, 1)
 		if err != nil {
@@ -747,18 +676,18 @@ func TestLeaseIssueReadsReturnActiveLeaseAndBoundedAttemptPages(t *testing.T) {
 func TestLeaseRejectsStaleAndInvalidMutations(t *testing.T) {
 	for _, state := range []string{"live", "expired", "released", "reassigned"} {
 		t.Run(state, func(t *testing.T) {
-			admin := template.Database(t)
-			r, _ := repositoryFor(t, admin, smallPool())
-			seedLeaseFamily(t, r, "org_first")
-			lease := claimLease(t, r, "org_first", leaseClaim(1))
-			event := attemptEvent(lease)
-			recordLeaseAttempt(t, r, "org_first", event)
+			admin := pgstoretest.Template.Database(t)
+			r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+			pgstoretest.SeedLeaseFamily(t, r, "org_first")
+			lease := pgstoretest.ClaimLease(t, r, "org_first", pgstoretest.LeaseClaim(1))
+			event := pgstoretest.AttemptEvent(lease)
+			pgstoretest.RecordLeaseAttempt(t, r, "org_first", event)
 			if state == "expired" || state == "reassigned" {
 				expireLeaseFixture(t, admin, "org_first", lease.LeaseID)
 			}
 			if state == "released" {
 				if err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error {
-					_, err := w.Release(t.Context(), leaseFence(lease), "cancelled")
+					_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "cancelled")
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -774,10 +703,10 @@ func TestLeaseRejectsStaleAndInvalidMutations(t *testing.T) {
 				}
 			}
 			if state == "reassigned" {
-				request := leaseClaim(1)
+				request := pgstoretest.LeaseClaim(1)
 				request.LeaseID, request.SessionID = "replacement", "replacement"
 				request.PreviousAttemptCancellation, _ = prepareLeaseCancellationFixture(t, "org_first", lease, event)
-				claimLease(t, r, "org_first", request)
+				pgstoretest.ClaimLease(t, r, "org_first", request)
 			}
 			for _, operation := range []string{"renew", "release", "finish", "wrong fence", "expire live"} {
 				if state == "live" && operation != "wrong fence" && operation != "expire live" || state != "live" && operation == "expire live" {
@@ -785,7 +714,7 @@ func TestLeaseRejectsStaleAndInvalidMutations(t *testing.T) {
 				}
 				t.Run(operation, func(t *testing.T) {
 					err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error {
-						fence := leaseFence(lease)
+						fence := pgstoretest.LeaseFence(lease)
 						switch operation {
 						case "renew":
 							_, err := w.Renew(t.Context(), fence, time.Hour)
@@ -822,11 +751,11 @@ func TestLeaseRejectsStaleAndInvalidMutations(t *testing.T) {
 }
 
 func TestLeaseAttemptRejectsConflictingSequences(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
-	seedLeaseFamily(t, r, "org_first")
-	lease := claimLease(t, r, "org_first", leaseClaim(1))
-	event := attemptEvent(lease)
-	recordLeaseAttempt(t, r, "org_first", event)
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	pgstoretest.SeedLeaseFamily(t, r, "org_first")
+	lease := pgstoretest.ClaimLease(t, r, "org_first", pgstoretest.LeaseClaim(1))
+	event := pgstoretest.AttemptEvent(lease)
+	pgstoretest.RecordLeaseAttempt(t, r, "org_first", event)
 	for _, tc := range []struct {
 		name string
 		edit func(*leasestore.AttemptEvent)
@@ -847,59 +776,38 @@ func TestLeaseAttemptRejectsConflictingSequences(t *testing.T) {
 			}
 		})
 	}
-	if got := recordLeaseAttempt(t, r, "org_first", event); got.Sequence != 1 || got.PayloadObjectKey != event.PayloadObjectKey {
+	if got := pgstoretest.RecordLeaseAttempt(t, r, "org_first", event); got.Sequence != 1 || got.PayloadObjectKey != event.PayloadObjectKey {
 		t.Fatalf("rejections changed attempt: %+v", got)
 	}
 }
 
 func TestLeaseAttemptUsageCorrectionPreservesTerminalLifecycle(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
-	seedLeaseFamily(t, r, "org_first")
-	lease := claimLease(t, r, "org_first", leaseClaim(1))
-	started := attemptEvent(lease)
-	recordLeaseAttempt(t, r, "org_first", started)
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	pgstoretest.SeedLeaseFamily(t, r, "org_first")
+	lease := pgstoretest.ClaimLease(t, r, "org_first", pgstoretest.LeaseClaim(1))
+	started := pgstoretest.AttemptEvent(lease)
+	pgstoretest.RecordLeaseAttempt(t, r, "org_first", started)
 	finished := started
 	finished.Sequence = 2
 	finished.Status = "succeeded"
 	finished.PayloadObjectKey = "example/finish"
-	terminal := recordLeaseAttempt(t, r, "org_first", finished)
+	terminal := pgstoretest.RecordLeaseAttempt(t, r, "org_first", finished)
 	corrected := finished
 	corrected.Sequence = 3
 	corrected.PayloadObjectKey = "example/finish-corrected"
 	corrected.UsageCorrection = true
-	updated := recordLeaseAttempt(t, r, "org_first", corrected)
+	updated := pgstoretest.RecordLeaseAttempt(t, r, "org_first", corrected)
 	if updated.Sequence != 3 || updated.Status != terminal.Status || !updated.UpdatedAt.Equal(terminal.UpdatedAt) || updated.PayloadObjectKey != corrected.PayloadObjectKey {
 		t.Fatalf("usage correction changed terminal attempt lifecycle: before=%+v after=%+v", terminal, updated)
 	}
 }
 
-func waitLeaseLock(t *testing.T, admin *sql.DB, count int, tasks ...*repositoryTask) {
-	t.Helper()
-	testenv.WaitUntil(t, t.Context(), func() error {
-		for _, task := range tasks {
-			select {
-			case <-task.done:
-				t.Fatalf("transaction exited before the lock barrier: %v", task.err)
-			default:
-			}
-		}
-		var waiting int
-		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&waiting); err != nil {
-			return err
-		}
-		if waiting < count {
-			return fmt.Errorf("waiting transactions = %d, want %d", waiting, count)
-		}
-		return nil
-	})
-}
-
 func TestLeaseCompetingClaims(t *testing.T) {
 	for _, sameSession := range []bool{false, true} {
 		t.Run(fmt.Sprintf("same_session_%t", sameSession), func(t *testing.T) {
-			admin := template.Database(t)
-			r, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
-			seedLeaseFamily(t, r, "org_first")
+			admin := pgstoretest.Template.Database(t)
+			r, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+			pgstoretest.SeedLeaseFamily(t, r, "org_first")
 			admin.SetMaxOpenConns(2)
 			blocker, err := admin.BeginTx(t.Context(), nil)
 			if err != nil {
@@ -910,11 +818,11 @@ func TestLeaseCompetingClaims(t *testing.T) {
 				t.Fatal(err)
 			}
 			var leases [2]leasestore.Lease
-			var tasks []*repositoryTask
+			var tasks []*pgstoretest.RepositoryTask
 			for i, workload := range []corestore.Workload{corestore.Serving, corestore.Background} {
-				tasks = append(tasks, startRepositoryTask(t, func(ctx context.Context) error {
+				tasks = append(tasks, pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 					return r.WriteLeases(ctx, "org_first", workload, func(w leasestore.Writer) error {
-						request := leaseClaim(1)
+						request := pgstoretest.LeaseClaim(1)
 						if !sameSession {
 							request.LeaseID, request.SessionID = fmt.Sprintf("lease_%d", i), fmt.Sprintf("session_%d", i)
 						}
@@ -924,13 +832,13 @@ func TestLeaseCompetingClaims(t *testing.T) {
 					})
 				}))
 			}
-			waitLeaseLock(t, admin, 2, tasks...)
+			pgstoretest.WaitLeaseLock(t, admin, 2, tasks...)
 			if err := blocker.Commit(); err != nil {
 				t.Fatal(err)
 			}
 			var winners, conflicts int
 			for _, task := range tasks {
-				err := task.wait(t)
+				err := task.Wait(t)
 				if err == nil {
 					winners++
 				} else if errors.Is(err, tracker.ErrLeaseConflict) {
@@ -951,8 +859,8 @@ func TestLeaseCompetingClaims(t *testing.T) {
 }
 
 func TestLeaseClaimEligibility(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
-	seedLeaseFamily(t, r, "org_first")
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	pgstoretest.SeedLeaseFamily(t, r, "org_first")
 	for _, tc := range []struct {
 		name string
 		edit func(*leasestore.Claim)
@@ -965,7 +873,7 @@ func TestLeaseClaimEligibility(t *testing.T) {
 		{"empty session", func(c *leasestore.Claim) { c.SessionID = " " }, tracker.ErrInvalidClaimRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			request := leaseClaim(1)
+			request := pgstoretest.LeaseClaim(1)
 			tc.edit(&request)
 			err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error { _, err := w.Claim(t.Context(), request); return err })
 			if !errors.Is(err, tc.want) {
@@ -984,7 +892,7 @@ func TestLeaseClaimEligibility(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	request := leaseClaim(1)
+	request := pgstoretest.LeaseClaim(1)
 	request.ExpectedRevision = 2
 	err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error { _, err := w.Claim(t.Context(), request); return err })
 	if !errors.Is(err, corestore.ErrRevisionConflict) {
@@ -996,10 +904,10 @@ func TestLeaseClaimEligibility(t *testing.T) {
 }
 
 func TestLeaseClaimReplayOnlyTightensLandingCapacity(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
-	seedLeaseFamily(t, r, "org_first")
-	firstRequest := leaseClaim(1)
-	first := claimLease(t, r, "org_first", firstRequest)
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	pgstoretest.SeedLeaseFamily(t, r, "org_first")
+	firstRequest := pgstoretest.LeaseClaim(1)
+	first := pgstoretest.ClaimLease(t, r, "org_first", firstRequest)
 	for _, test := range []struct {
 		name     string
 		capacity int64
@@ -1014,7 +922,7 @@ func TestLeaseClaimReplayOnlyTightensLandingCapacity(t *testing.T) {
 			replayRequest := firstRequest
 			replayRequest.LeaseID = "lease_replay"
 			replayRequest.LandingCapacity = test.capacity
-			replay := claimLease(t, r, "org_first", replayRequest)
+			replay := pgstoretest.ClaimLease(t, r, "org_first", replayRequest)
 			if replay.LeaseID != first.LeaseID || replay.FencingToken != first.FencingToken || replay.LandingCapacity != test.want || !replay.ExpiresAt.Equal(first.ExpiresAt) {
 				t.Fatalf("capacity replay=%+v original=%+v want capacity=%d", replay, first, test.want)
 			}
@@ -1025,18 +933,18 @@ func TestLeaseClaimReplayOnlyTightensLandingCapacity(t *testing.T) {
 func TestLandingLeaseRenewalPreservesFenceAndCeiling(t *testing.T) {
 	for _, state := range []string{"live", "expired", "released", "reassigned"} {
 		t.Run(state, func(t *testing.T) {
-			admin := template.Database(t)
-			r, _ := repositoryFor(t, admin, smallPool())
-			seedLeaseFamily(t, r, "org_first")
-			request := leaseClaim(1)
+			admin := pgstoretest.Template.Database(t)
+			r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+			pgstoretest.SeedLeaseFamily(t, r, "org_first")
+			request := pgstoretest.LeaseClaim(1)
 			request.LandingCapacity = 3
-			lease := claimLease(t, r, "org_first", request)
+			lease := pgstoretest.ClaimLease(t, r, "org_first", request)
 			if state == "expired" || state == "reassigned" {
 				expireLeaseFixture(t, admin, "org_first", lease.LeaseID)
 			}
 			if state == "released" {
 				if err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error {
-					_, err := w.Release(t.Context(), leaseFence(lease), "cancelled")
+					_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "cancelled")
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -1044,17 +952,17 @@ func TestLandingLeaseRenewalPreservesFenceAndCeiling(t *testing.T) {
 			}
 			if state == "reassigned" {
 				request.LeaseID, request.SessionID = "replacement", "replacement"
-				claimLease(t, r, "org_first", request)
+				pgstoretest.ClaimLease(t, r, "org_first", request)
 			}
 			err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error {
-				renewed, err := w.RenewWithLandingCapacity(t.Context(), leaseFence(lease), time.Hour, 1)
+				renewed, err := w.RenewWithLandingCapacity(t.Context(), pgstoretest.LeaseFence(lease), time.Hour, 1)
 				if err != nil {
 					return err
 				}
 				if renewed.LeaseID != lease.LeaseID || renewed.FencingToken != lease.FencingToken || renewed.LandingCapacity != 1 || !renewed.ExpiresAt.After(lease.ExpiresAt) {
 					t.Fatalf("landing renewal=%+v original=%+v", renewed, lease)
 				}
-				wider, err := w.RenewWithLandingCapacity(t.Context(), leaseFence(lease), time.Hour, 4)
+				wider, err := w.RenewWithLandingCapacity(t.Context(), pgstoretest.LeaseFence(lease), time.Hour, 4)
 				if err == nil && wider.LandingCapacity != 1 {
 					t.Fatalf("renewal widened ceiling to %d", wider.LandingCapacity)
 				}
@@ -1072,11 +980,11 @@ func TestLandingLeaseRenewalPreservesFenceAndCeiling(t *testing.T) {
 }
 
 func TestLeaseIsolationTierConstraint(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, r, organization)
-		lease := claimLease(t, r, organization, leaseClaim(1))
+		pgstoretest.SeedLeaseFamily(t, r, organization)
+		lease := pgstoretest.ClaimLease(t, r, organization, pgstoretest.LeaseClaim(1))
 		for _, test := range []struct {
 			name  string
 			tier  *string
@@ -1117,12 +1025,12 @@ func TestLeaseIsolationTierConstraint(t *testing.T) {
 func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
 	for _, scenario := range []string{"repeated observations", "issue across days"} {
 		t.Run(scenario, func(t *testing.T) {
-			r, _ := repositoryFor(t, template.Database(t), smallPool())
+			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 			day := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-				seedLeaseFamily(t, r, org)
-				lease := claimLease(t, r, org, leaseClaim(1))
-				event := attemptEvent(lease)
+				pgstoretest.SeedLeaseFamily(t, r, org)
+				lease := pgstoretest.ClaimLease(t, r, org, pgstoretest.LeaseClaim(1))
+				event := pgstoretest.AttemptEvent(lease)
 				for batch := 0; batch < 7; batch++ {
 					event.Sequence = int64(batch + 1)
 					event.PayloadObjectKey = fmt.Sprintf("example/observation-%d", batch)
@@ -1134,7 +1042,7 @@ func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
 					for index := 0; index < count; index++ {
 						event.Usage = append(event.Usage, tracker.NativeUsage{Model: fmt.Sprintf("example-model-%03d", batch*32+index), To: day})
 					}
-					recordLeaseAttempt(t, r, org, event)
+					pgstoretest.RecordLeaseAttempt(t, r, org, event)
 				}
 				overflow := event
 				overflow.Sequence++
@@ -1153,7 +1061,7 @@ func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
 				event.Sequence++
 				event.PayloadObjectKey = "example/correction"
 				event.Usage = []tracker.NativeUsage{{Model: "example-model-000", Input: 20, CachedInput: 5, Output: 3, To: day}}
-				recordLeaseAttempt(t, r, org, event)
+				pgstoretest.RecordLeaseAttempt(t, r, org, event)
 				for _, at := range []*time.Time{&day, nil} {
 					err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {
 						spend, err := reader.(leasestore.RunnerSpendReader).RunnerTokenSpend(t.Context(), "prj_1", "wi_1", at, nil)
@@ -1195,12 +1103,12 @@ func (s repositorySpend) IssueTokenSpend(ctx context.Context, issue store.IssueI
 }
 
 func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	day := time.Date(2026, 12, 25, 12, 0, 0, 0, time.UTC)
 	next := day.AddDate(0, 0, 1)
 	third := day.AddDate(0, 0, 2)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, r, org)
+		pgstoretest.SeedLeaseFamily(t, r, org)
 		if err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
 			for _, id := range []int64{3, 4} {
 				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: id, ProjectID: "prj_1", NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", id)), Number: id, Title: "Example"}); err != nil {
@@ -1212,14 +1120,14 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 			t.Fatal(err)
 		}
 		claim := func(machine, issue int64, lease string) leasestore.Claim {
-			request := leaseClaim(machine)
+			request := pgstoretest.LeaseClaim(machine)
 			request.IssueID, request.LeaseID, request.SessionID = issue, lease, "session_"+lease
 			return request
 		}
 		release := func(lease leasestore.Lease) {
 			t.Helper()
 			if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-				_, err := w.Release(t.Context(), leaseFence(lease), "finished")
+				_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "finished")
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -1229,11 +1137,11 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 			claim leasestore.Claim
 			at    time.Time
 		}{
-			{claim: leaseClaim(1), at: day},
+			{claim: pgstoretest.LeaseClaim(1), at: day},
 			{claim: claim(1, 4, "lease_flood_4"), at: third},
 		} {
-			flooding := claimLease(t, r, org, flood.claim)
-			event := attemptEvent(flooding)
+			flooding := pgstoretest.ClaimLease(t, r, org, flood.claim)
+			event := pgstoretest.AttemptEvent(flooding)
 			for batch := 0; batch < 7; batch++ {
 				event.Sequence = int64(batch + 1)
 				event.PayloadObjectKey = fmt.Sprintf("example/flood-%d", batch)
@@ -1241,7 +1149,7 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 				for index := batch * 32; index < min((batch+1)*32, 200); index++ {
 					event.Usage = append(event.Usage, tracker.NativeUsage{Model: fmt.Sprintf("example-fabricated-%03d", index), To: flood.at})
 				}
-				recordLeaseAttempt(t, r, org, event)
+				pgstoretest.RecordLeaseAttempt(t, r, org, event)
 			}
 			release(flooding)
 		}
@@ -1254,9 +1162,9 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 			{claim: claim(1, 4, "lease_4_input"), usage: tracker.NativeUsage{Model: "gpt-6-astra", Input: 5_000_000, To: third}},
 			{claim: claim(2, 4, "lease_4_cached"), usage: tracker.NativeUsage{Model: "example-cached-only", CachedInput: 5_000_000, To: third}},
 		} {
-			lease := claimLease(t, r, org, completion.claim)
-			finished := attemptEvent(lease)
-			recordLeaseAttempt(t, r, org, finished)
+			lease := pgstoretest.ClaimLease(t, r, org, completion.claim)
+			finished := pgstoretest.AttemptEvent(lease)
+			pgstoretest.RecordLeaseAttempt(t, r, org, finished)
 			finished.Sequence, finished.Status, finished.PayloadObjectKey = 2, "succeeded", "example/finished"
 			finished.Usage = []tracker.NativeUsage{completion.usage}
 			if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
@@ -1324,23 +1232,23 @@ func TestRunnerSpendRejectsCumulativeDecrease(t *testing.T) {
 		{name: "output", decrease: tracker.NativeUsage{Input: 100, CachedInput: 40}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			r, _ := repositoryFor(t, template.Database(t), smallPool())
+			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-				seedLeaseFamily(t, r, org)
-				event := attemptEvent(claimLease(t, r, org, leaseClaim(1)))
+				pgstoretest.SeedLeaseFamily(t, r, org)
+				event := pgstoretest.AttemptEvent(pgstoretest.ClaimLease(t, r, org, pgstoretest.LeaseClaim(1)))
 				event.Usage = []tracker.NativeUsage{{Model: "example-model", Input: 100, CachedInput: 40, Output: 1_000_000, To: yesterday}}
-				recordLeaseAttempt(t, r, org, event)
+				pgstoretest.RecordLeaseAttempt(t, r, org, event)
 				if err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
 					_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 3, Title: "Example"})
 					return err
 				}); err != nil {
 					t.Fatal(err)
 				}
-				claim := leaseClaim(2)
+				claim := pgstoretest.LeaseClaim(2)
 				claim.IssueID = 3
-				other := attemptEvent(claimLease(t, r, org, claim))
+				other := pgstoretest.AttemptEvent(pgstoretest.ClaimLease(t, r, org, claim))
 				other.Usage = []tracker.NativeUsage{{Model: "example-model", Input: 7, Output: 500, To: today}}
-				recordLeaseAttempt(t, r, org, other)
+				pgstoretest.RecordLeaseAttempt(t, r, org, other)
 				decreased := event
 				decreased.Sequence, decreased.PayloadObjectKey = 2, "example/decreased"
 				decreased.Usage = []tracker.NativeUsage{test.decrease}
@@ -1355,7 +1263,7 @@ func TestRunnerSpendRejectsCumulativeDecrease(t *testing.T) {
 				grown := event
 				grown.Sequence, grown.PayloadObjectKey = 2, "example/grown"
 				grown.Usage = []tracker.NativeUsage{{Model: "example-model", Input: 110, CachedInput: 40, Output: 1_000_020, To: today}}
-				recordLeaseAttempt(t, r, org, grown)
+				pgstoretest.RecordLeaseAttempt(t, r, org, grown)
 				for _, want := range []struct {
 					project       tracker.ProjectID
 					issue         string
@@ -1384,21 +1292,21 @@ func TestRunnerSpendRejectsCumulativeDecrease(t *testing.T) {
 }
 
 func TestRunnerSpendConcurrentModelAdmission(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	day := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, r, org)
+		pgstoretest.SeedLeaseFamily(t, r, org)
 		if err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
 			_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 3, Title: "Example"})
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
-		first := attemptEvent(claimLease(t, r, org, leaseClaim(1)))
-		claim := leaseClaim(2)
+		first := pgstoretest.AttemptEvent(pgstoretest.ClaimLease(t, r, org, pgstoretest.LeaseClaim(1)))
+		claim := pgstoretest.LeaseClaim(2)
 		claim.IssueID = 3
-		second := attemptEvent(claimLease(t, r, org, claim))
+		second := pgstoretest.AttemptEvent(pgstoretest.ClaimLease(t, r, org, claim))
 		for batch := 0; batch < 7; batch++ {
 			first.Sequence = int64(batch + 1)
 			first.PayloadObjectKey = fmt.Sprintf("example/observation-%d", batch)
@@ -1406,18 +1314,18 @@ func TestRunnerSpendConcurrentModelAdmission(t *testing.T) {
 			for index := batch * 32; index < min((batch+1)*32, 199); index++ {
 				first.Usage = append(first.Usage, tracker.NativeUsage{Model: fmt.Sprintf("example-model-%03d", index), To: day})
 			}
-			recordLeaseAttempt(t, r, org, first)
+			pgstoretest.RecordLeaseAttempt(t, r, org, first)
 		}
 		first.Sequence++
 		first.PayloadObjectKey = "example/last-model"
 		first.Usage = []tracker.NativeUsage{{Model: "example-last", Input: 11, To: day}}
 		second.Usage = []tracker.NativeUsage{{Model: "example-overflow", Input: 29, To: day}}
-		var competing *repositoryTask
+		var competing *pgstoretest.RepositoryTask
 		if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
 			if _, err := w.RecordAttempt(t.Context(), first); err != nil {
 				return err
 			}
-			competing = startRepositoryTask(t, func(ctx context.Context) error {
+			competing = pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return r.WriteLeases(ctx, org, corestore.Background, func(other leasestore.Writer) error {
 					_, err := other.RecordAttempt(ctx, second)
 					return err
@@ -1425,7 +1333,7 @@ func TestRunnerSpendConcurrentModelAdmission(t *testing.T) {
 			})
 			testenv.WaitUntil(t, t.Context(), func() error {
 				select {
-				case <-competing.done:
+				case <-competing.Done:
 					return nil
 				default:
 				}
@@ -1442,7 +1350,7 @@ func TestRunnerSpendConcurrentModelAdmission(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := competing.wait(t); err != nil {
+		if err := competing.Wait(t); err != nil {
 			t.Errorf("concurrent observation beyond report bound = %v, want accepted", err)
 		}
 		if err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {

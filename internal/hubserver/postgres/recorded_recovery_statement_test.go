@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
@@ -38,8 +40,8 @@ func (p *recoveryStatementTrace) TraceQueryStart(ctx context.Context, conn *pgx.
 func (*recoveryStatementTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestRecordedRecoveryUsesCurrentStatementWithoutBlockerLocks(t *testing.T) {
-	admin := template.Database(t)
-	original, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	admin.SetMaxOpenConns(2)
 	var database string
 	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
@@ -49,7 +51,7 @@ func TestRecordedRecoveryUsesCurrentStatementWithoutBlockerLocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	trace := &recoveryStatementTrace{}
-	repository, err := postgres.NewRepository(t.Context(), tracedFeaturePool(t, pool, trace), smallPool())
+	repository, err := postgres.NewRepository(t.Context(), pgstoretest.TracedFeaturePool(t, pool, trace), pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +60,7 @@ func TestRecordedRecoveryUsesCurrentStatementWithoutBlockerLocks(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	content := eventstore.NewContent(newHistoryObjects())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	recoveries := map[tracker.OrganizationID]leasestore.RecordedRecovery{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		recoveries[org] = seedRecordedRecovery(t, original, admin, content, org)
@@ -123,7 +125,7 @@ func TestRecordedRecoveryUsesCurrentStatementWithoutBlockerLocks(t *testing.T) {
 						if org == other {
 							other = "org_second"
 						}
-						return repository.WriteLeases(t.Context(), other, corestore.Background, func(w leasestore.Writer) error { _, err := w.Claim(t.Context(), leaseClaim(2)); return err })
+						return repository.WriteLeases(t.Context(), other, corestore.Background, func(w leasestore.Writer) error { _, err := w.Claim(t.Context(), pgstoretest.LeaseClaim(2)); return err })
 					}
 					return nil
 				})
@@ -159,7 +161,7 @@ func TestRecordedRecoveryUsesCurrentStatementWithoutBlockerLocks(t *testing.T) {
 			if err := blocker.QueryRowContext(t.Context(), "SELECT pg_backend_pid()").Scan(&pid); err != nil {
 				t.Fatal(err)
 			}
-			task := startRepositoryTask(t, func(ctx context.Context) error {
+			task := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 					if err := lockRecordedRecovery(ctx, w, recovery); err != nil {
 						return err
@@ -184,7 +186,7 @@ func TestRecordedRecoveryUsesCurrentStatementWithoutBlockerLocks(t *testing.T) {
 			if err := blocker.Commit(); err != nil {
 				t.Fatal(err)
 			}
-			if err := task.wait(t); !errors.Is(err, corestore.ErrRevisionConflict) {
+			if err := task.Wait(t); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Fatalf("post-wait readiness error=%v", err)
 			}
 		})

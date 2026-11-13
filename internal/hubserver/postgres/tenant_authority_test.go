@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -18,7 +20,7 @@ import (
 
 func tenantAuthorityFixture(t *testing.T, configure ...func(*pgxpool.Config)) (*sql.DB, *pgtransport.Pools) {
 	t.Helper()
-	db := template.Database(t)
+	db := pgstoretest.Template.Database(t)
 	role := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if _, err := db.ExecContext(t.Context(), `CREATE ROLE `+role+` LOGIN PASSWORD 'fixture-only'; GRANT detent_runtime_v2 TO `+role); err != nil {
 		t.Fatal(err)
@@ -28,7 +30,7 @@ func tenantAuthorityFixture(t *testing.T, configure ...func(*pgxpool.Config)) (*
 			t.Error(err)
 		}
 	})
-	config := template.NativeConfig(t, db, role, "fixture-only")
+	config := pgstoretest.Template.NativeConfig(t, db, role, "fixture-only")
 	for _, apply := range configure {
 		apply(config)
 	}

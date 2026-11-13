@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -13,8 +15,8 @@ import (
 )
 
 func TestRunnerClaimFactsUpgradeRetainsUnresolvedTenantAttempts(t *testing.T) {
-	db, fixture := migrationDatabaseAtVersion(t, 20261109002731)
-	seedCore(t, db)
+	db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
+	pgstoretest.SeedCore(t, db)
 	for _, organization := range []string{"org_first", "org_second"} {
 		for _, statement := range []string{
 			`INSERT INTO machines(organization_id,id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES($1,'machine_shared','example',1,'example',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
@@ -31,7 +33,7 @@ func TestRunnerClaimFactsUpgradeRetainsUnresolvedTenantAttempts(t *testing.T) {
 	if _, err := db.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := migrationProvider(db)
+	provider, err := pgstoretest.MigrationProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,8 +46,8 @@ func TestRunnerClaimFactsUpgradeRetainsUnresolvedTenantAttempts(t *testing.T) {
 	if _, err := db.ExecContext(t.Context(), `RESET ROLE`); err != nil {
 		t.Fatal(err)
 	}
-	pool := rolePoolFromTemplate(t, fixture, db, "detent_runtime_v2", "")
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	pool := pgstoretest.RolePoolFromTemplate(t, fixture, db, "detent_runtime_v2", "")
+	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}

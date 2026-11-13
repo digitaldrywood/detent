@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -16,12 +18,12 @@ import (
 )
 
 func TestSchedulerEventHeadsFollowCommittedSequence(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	content := eventstore.NewContent(newHistoryObjects())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
-		foreign, err := content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: "foreign_item", OrganizationID: org, ProjectID: "prj_first", AggregateID: "wi_auxiliary", AggregateSequence: 10, Type: "scheduler.decision", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped"}}}))
+		pgstoretest.SeedRepository(t, repository, org)
+		foreign, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "foreign_item", OrganizationID: org, ProjectID: "prj_first", AggregateID: "wi_auxiliary", AggregateSequence: 10, Type: "scheduler.decision", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped"}}}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -38,8 +40,8 @@ func TestSchedulerEventHeadsFollowCommittedSequence(t *testing.T) {
 			t.Run(string(org)+"/"+string(item), func(t *testing.T) {
 				prepare := func(id, outcome string, sequence int64) eventstore.Event {
 					t.Helper()
-					value := tracker.CollaborationEvent{ID: string(item) + "_" + id, OrganizationID: org, ProjectID: "prj_first", AggregateID: item, AggregateSequence: sequence, Type: "scheduler.decision", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: outcome}}}
-					row, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+					value := tracker.CollaborationEvent{ID: string(item) + "_" + id, OrganizationID: org, ProjectID: "prj_first", AggregateID: item, AggregateSequence: sequence, Type: "scheduler.decision", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: outcome}}}
+					row, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -140,7 +142,7 @@ func TestSchedulerEventHeadsFollowCommittedSequence(t *testing.T) {
 					})
 				}
 				_, err = admin.ExecContext(t.Context(), "UPDATE scheduler_event_heads SET scheduler_outcome='ready' WHERE organization_id=$1 AND project_id='prj_first' AND work_item_id=$2 AND head_kind='excluded'", org, item)
-				requireSQLState(t, err, "23514")
+				pgstoretest.RequireSQLState(t, err, "23514")
 				for _, query := range []string{
 					"UPDATE scheduler_event_heads SET sequence=sequence+1 WHERE organization_id=$1",
 					"DELETE FROM scheduler_event_heads WHERE organization_id=$1",
@@ -157,7 +159,7 @@ func TestSchedulerEventHeadsFollowCommittedSequence(t *testing.T) {
 						t.Fatal(err)
 					}
 					_, err = tx.ExecContext(t.Context(), query, org)
-					requireSQLState(t, err, "42501")
+					pgstoretest.RequireSQLState(t, err, "42501")
 					if err := tx.Rollback(); err != nil {
 						t.Fatal(err)
 					}
@@ -233,9 +235,9 @@ func TestSchedulerEventHeadsFollowCommittedSequence(t *testing.T) {
 
 func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 	const version = 20261108215450
-	admin, fixture := migrationDatabaseAtVersion(t, version-1)
-	seedCore(t, admin)
-	content := eventstore.NewContent(newHistoryObjects())
+	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, version-1)
+	pgstoretest.SeedCore(t, admin)
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, item := range []tracker.NativeWorkItemID{"wi_shared", "wi_other"} {
 			project := tracker.ProjectID("prj_shared")
@@ -243,8 +245,8 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 				project = "prj_other"
 			}
 			for sequence := int64(1); sequence <= 2; sequence++ {
-				value := tracker.CollaborationEvent{ID: fmt.Sprintf("%s_%d", item, sequence), OrganizationID: org, ProjectID: project, AggregateID: item, AggregateSequence: sequence, Type: "scheduler.decision", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped"}}}
-				event, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+				value := tracker.CollaborationEvent{ID: fmt.Sprintf("%s_%d", item, sequence), OrganizationID: org, ProjectID: project, AggregateID: item, AggregateSequence: sequence, Type: "scheduler.decision", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped"}}}
+				event, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -261,7 +263,7 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "SET detent.organization_id=''"); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,8 +307,8 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "RESET ROLE"); err != nil {
 		t.Fatal(err)
 	}
-	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	pool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +337,7 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			prepared, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+			prepared, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -343,7 +345,7 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 			decision := *value.Data.Decision
 			decision.Reason = "Different source"
 			changed.Data.Decision = &decision
-			changedPayload, err := content.PrepareEvent(t.Context(), org, historyJSON(t, changed))
+			changedPayload, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, changed))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -400,16 +402,16 @@ func TestSchedulerEventHeadsBackfillUnknownHistory(t *testing.T) {
 }
 
 func TestSchedulerClaimDecisionLookupIsScopedAndIndexed(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	content := eventstore.NewContent(newHistoryObjects())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		for _, item := range []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"} {
 			prepare := func(sequence int64, outcome string) eventstore.Event {
 				t.Helper()
-				value := tracker.CollaborationEvent{ID: fmt.Sprintf("%s_%d", item, sequence), OrganizationID: org, ProjectID: "prj_first", AggregateID: item, AggregateSequence: sequence, Type: "scheduler.decision", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: outcome}}}
-				row, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+				value := tracker.CollaborationEvent{ID: fmt.Sprintf("%s_%d", item, sequence), OrganizationID: org, ProjectID: "prj_first", AggregateID: item, AggregateSequence: sequence, Type: "scheduler.decision", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: outcome}}}
+				row, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -497,15 +499,15 @@ func TestSchedulerClaimDecisionLookupIsScopedAndIndexed(t *testing.T) {
 	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='scheduler.decision' AND scheduler_outcome='claimed' ORDER BY sequence DESC LIMIT 1", "org_first", "prj_first", "wi_first_1").Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	var plan []struct{ Plan searchPlanNode }
+	var plan []struct{ Plan pgstoretest.SearchPlanNode }
 	if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
 		t.Fatalf("decode default plan: %v", err)
 	}
-	if !plan[0].Plan.usesIndex("collaboration_events_claimed_decision_idx") {
+	if !plan[0].Plan.UsesIndex("collaboration_events_claimed_decision_idx") {
 		t.Fatalf("claimed lookup did not use bounded index: %s", raw)
 	}
-	var visits func(searchPlanNode) float64
-	visits = func(node searchPlanNode) float64 {
+	var visits func(pgstoretest.SearchPlanNode) float64
+	visits = func(node pgstoretest.SearchPlanNode) float64 {
 		count := 0.0
 		if node.Relation == "collaboration_events" {
 			count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops

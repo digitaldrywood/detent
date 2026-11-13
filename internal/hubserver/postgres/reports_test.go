@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/activitystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -33,25 +34,25 @@ import (
 
 func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 	t.Run("analytics landing excludes corrupt request pointers", func(t *testing.T) {
-		admin := template.Database(t)
-		repository, _ := repositoryFor(t, admin, smallPool())
+		admin := pgstoretest.Template.Database(t)
+		repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		for _, org := range []tracker.OrganizationID{"org_landing_first", "org_landing_second"} {
-			seedRepository(t, repository, org)
-			first := seedHistory(t, repository, org, "defensive_first")
-			second := seedHistory(t, repository, org, "defensive_second")
-			for _, fixture := range []historyFixture{first, second} {
-				value, err := fixture.content.Change(t.Context(), fixture.change)
+			pgstoretest.SeedRepository(t, repository, org)
+			first := pgstoretest.SeedHistory(t, repository, org, "defensive_first")
+			second := pgstoretest.SeedHistory(t, repository, org, "defensive_second")
+			for _, fixture := range []pgstoretest.HistoryFixture{first, second} {
+				value, err := fixture.Content.Change(t.Context(), fixture.Change)
 				if err != nil {
 					t.Fatal(err)
 				}
 				value.Revision++
-				value.CurrentVersion = fixture.version.ID
-				value.Landed = &tracker.ChangeLanding{VersionID: fixture.version.ID, HeadSHA: fixture.version.HeadSHA, MergeSHA: strings.Repeat("a", 40), BaseRef: "develop", LandedAt: historyAt(), Actor: historyActor()}
-				record, err := fixture.content.PrepareChange(t.Context(), org, historyJSON(t, value))
+				value.CurrentVersion = fixture.Version.ID
+				value.Landed = &tracker.ChangeLanding{VersionID: fixture.Version.ID, HeadSHA: fixture.Version.HeadSHA, MergeSHA: strings.Repeat("a", 40), BaseRef: "develop", LandedAt: pgstoretest.HistoryAt(), Actor: pgstoretest.HistoryActor()}
+				record, err := fixture.Content.PrepareChange(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 				if err != nil {
 					t.Fatal(err)
 				}
-				record.Revision = fixture.change.Revision
+				record.Revision = fixture.Change.Revision
 				if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.UpdateChange(t.Context(), record); return err }); err != nil {
 					t.Fatal(err)
 				}
@@ -61,7 +62,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				var page eventstore.AnalyticsLandingPage
 				if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
 					var err error
-					page, err = r.(eventstore.AnalyticsLandingReader).ReadAnalyticsLandingPage(t.Context(), eventstore.AnalyticsLandingQuery{ProjectID: "prj_first", From: historyAt().Add(-time.Hour), To: historyAt().Add(time.Hour), Limit: 10})
+					page, err = r.(eventstore.AnalyticsLandingReader).ReadAnalyticsLandingPage(t.Context(), eventstore.AnalyticsLandingQuery{ProjectID: "prj_first", From: pgstoretest.HistoryAt().Add(-time.Hour), To: pgstoretest.HistoryAt().Add(time.Hour), Limit: 10})
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -77,14 +78,14 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				{"absent landed version", "landed_version_id", "missing-version"},
 			} {
 				t.Run(string(org)+"/"+test.name, func(t *testing.T) {
-					if _, err := admin.ExecContext(t.Context(), "UPDATE change_requests SET "+test.column+"=$3 WHERE organization_id=$1 AND id=$2", org, first.change.ID, test.value); err != nil {
+					if _, err := admin.ExecContext(t.Context(), "UPDATE change_requests SET "+test.column+"=$3 WHERE organization_id=$1 AND id=$2", org, first.Change.ID, test.value); err != nil {
 						t.Fatal(err)
 					}
 					page := read(t)
-					if len(page.Items) != 1 || page.Items[0].ChangeID != second.change.ID || page.Items[0].VersionID != second.version.ID {
+					if len(page.Items) != 1 || page.Items[0].ChangeID != second.Change.ID || page.Items[0].VersionID != second.Version.ID {
 						t.Fatalf("invalid landing leaked or valid second lost: page=%+v", page)
 					}
-					if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET landed_head_sha=$3,landed_merge_sha=$4,landed_version_id=$5 WHERE organization_id=$1 AND id=$2`, org, first.change.ID, first.version.HeadSHA, strings.Repeat("a", 40), first.version.ID); err != nil {
+					if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET landed_head_sha=$3,landed_merge_sha=$4,landed_version_id=$5 WHERE organization_id=$1 AND id=$2`, org, first.Change.ID, first.Version.HeadSHA, strings.Repeat("a", 40), first.Version.ID); err != nil {
 						t.Fatal(err)
 					}
 					if page := read(t); len(page.Items) != 2 {
@@ -95,14 +96,14 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 	})
 	t.Run("analytics residence seeks selected project history before residuals", func(t *testing.T) {
-		admin := template.Database(t)
-		original, pool := repositoryFor(t, admin, smallPool())
+		admin := pgstoretest.Template.Database(t)
+		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		if err := original.Close(); err != nil {
 			t.Fatal(err)
 		}
 		capture := &analyticsAttemptQueryCapture{}
-		observedPool := tracedFeaturePool(t, pool, capture)
-		repository, err := postgres.NewRepository(t.Context(), observedPool, smallPool())
+		observedPool := pgstoretest.TracedFeaturePool(t, pool, capture)
+		repository, err := postgres.NewRepository(t.Context(), observedPool, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,8 +118,8 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 		base := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
 		for _, org := range []tracker.OrganizationID{"org_residence_first", "org_residence_second"} {
-			seedRepository(t, repository, org)
-			seedHistory(t, repository, org, "residence")
+			pgstoretest.SeedRepository(t, repository, org)
+			pgstoretest.SeedHistory(t, repository, org, "residence")
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,board_rank)
  SELECT $1,p.id,s.name,s.terminal,s.dispatchable,s.rank FROM (VALUES('prj_first'),('prj_second'))p(id)
  CROSS JOIN (VALUES('Todo',false,true,0),('In Progress',false,true,1),('Done',true,false,2))s(name,terminal,dispatchable,rank)`, org); err != nil {
@@ -170,20 +171,20 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 					if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, arguments[index]...).Scan(&raw); err != nil {
 						t.Fatal(err)
 					}
-					var nodes []struct{ Plan searchPlanNode }
+					var nodes []struct{ Plan pgstoretest.SearchPlanNode }
 					if err := json.Unmarshal(raw, &nodes); err != nil || len(nodes) != 1 {
 						t.Fatalf("residence plan error=%v", err)
 					}
 					visits := map[string]float64{}
-					var walk func(searchPlanNode)
-					walk = func(node searchPlanNode) {
+					var walk func(pgstoretest.SearchPlanNode)
+					walk = func(node pgstoretest.SearchPlanNode) {
 						visits[node.Relation] += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
 						for _, child := range node.Plans {
 							walk(child)
 						}
 					}
 					walk(nodes[0].Plan)
-					if index == 0 && (visits["issues"] > 1001 || visits["collaboration_events"] > 2002) || index == 1 && (visits["collaboration_events"] > 1001 || !nodes[0].Plan.usesIndex("collaboration_events_analytics_residence_seek")) {
+					if index == 0 && (visits["issues"] > 1001 || visits["collaboration_events"] > 2002) || index == 1 && (visits["collaboration_events"] > 1001 || !nodes[0].Plan.UsesIndex("collaboration_events_analytics_residence_seek")) {
 						t.Fatalf("residence source=%d visits=%v plan=%s", index, visits, raw)
 					}
 				}
@@ -212,14 +213,14 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 	})
 	t.Run("analytics usage seeks both sources before visibility and override residuals", func(t *testing.T) {
-		admin := template.Database(t)
-		original, pool := repositoryFor(t, admin, smallPool())
+		admin := pgstoretest.Template.Database(t)
+		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		if err := original.Close(); err != nil {
 			t.Fatal(err)
 		}
 		capture := &analyticsAttemptQueryCapture{}
-		observedPool := tracedFeaturePool(t, pool, capture)
-		repository, err := postgres.NewRepository(t.Context(), observedPool, smallPool())
+		observedPool := pgstoretest.TracedFeaturePool(t, pool, capture)
+		repository, err := postgres.NewRepository(t.Context(), observedPool, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -234,18 +235,18 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 		base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 		for _, org := range []tracker.OrganizationID{"org_usage_first", "org_usage_second"} {
-			seedLeaseFamily(t, repository, org)
+			pgstoretest.SeedLeaseFamily(t, repository, org)
 			for _, source := range []struct {
 				issue   int64
 				attempt string
 				project string
 			}{{1, "usage_import", "prj_1"}, {2, "usage_other", "prj_2"}} {
-				lease := claimLease(t, repository, org, leaseClaim(source.issue))
+				lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(source.issue))
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-					if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: source.attempt, Fence: leaseFence(lease), RunID: source.attempt + "-run", Sequence: 1, Status: "succeeded", StartedAt: base, PayloadObjectKey: "fixture/usage"}); err != nil {
+					if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: source.attempt, Fence: pgstoretest.LeaseFence(lease), RunID: source.attempt + "-run", Sequence: 1, Status: "succeeded", StartedAt: base, PayloadObjectKey: "fixture/usage"}); err != nil {
 						return err
 					}
-					_, err := w.Release(t.Context(), leaseFence(lease), "completed")
+					_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "completed")
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -284,15 +285,15 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
 					t.Fatal(err)
 				}
-				var nodes []struct{ Plan searchPlanNode }
+				var nodes []struct{ Plan pgstoretest.SearchPlanNode }
 				if err := json.Unmarshal(raw, &nodes); err != nil || len(nodes) != 1 {
 					t.Fatalf("usage plan error=%v", err)
 				}
 				sourceVisits := map[string]float64{}
 				metricVisits := map[string]float64{}
 				coverageVisits := float64(0)
-				var inspect func(searchPlanNode)
-				inspect = func(node searchPlanNode) {
+				var inspect func(pgstoretest.SearchPlanNode)
+				inspect = func(node pgstoretest.SearchPlanNode) {
 					visits := (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
 					switch node.Alias {
 					case "metric_current", "metric_history":
@@ -309,8 +310,8 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 					}
 				}
 				inspect(nodes[0].Plan)
-				importIndexed := nodes[0].Plan.usesIndex("attempt_usage_analytics_currency_seek") || !requireSeek && nodes[0].Plan.usesIndex("attempt_usage_report_window_idx")
-				if !importIndexed || wantCurrent && !nodes[0].Plan.usesIndex("report_usage_current_analytics_seek") || sourceVisits["attempt_usage"] > 1001 || sourceVisits["report_usage_current"] > 1001 || metricVisits["attempt_usage"] > 1001 || metricVisits["report_usage_current"] > 1001 || coverageVisits > 1001 || sourceVisits["native_attempts"] > 1001 || sourceVisits["issues"] > 1001 || sourceVisits["runner_lease_assignments"] > 1001 || sourceVisits["runner_identities"] > 1001 {
+				importIndexed := nodes[0].Plan.UsesIndex("attempt_usage_analytics_currency_seek") || !requireSeek && nodes[0].Plan.UsesIndex("attempt_usage_report_window_idx")
+				if !importIndexed || wantCurrent && !nodes[0].Plan.UsesIndex("report_usage_current_analytics_seek") || sourceVisits["attempt_usage"] > 1001 || sourceVisits["report_usage_current"] > 1001 || metricVisits["attempt_usage"] > 1001 || metricVisits["report_usage_current"] > 1001 || coverageVisits > 1001 || sourceVisits["native_attempts"] > 1001 || sourceVisits["issues"] > 1001 || sourceVisits["runner_lease_assignments"] > 1001 || sourceVisits["runner_identities"] > 1001 {
 					t.Fatalf("usage source seek/index budget candidates=%v metrics=%v coverage=%.0f plan=%s", sourceVisits, metricVisits, coverageVisits, raw)
 				}
 			}
@@ -380,15 +381,15 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 			if len(rawTail.Items) != 1 || rawTail.Items[0].Model != "model-1000" || rawTail.Items[0].Cost != 9 || rawTail.Items[0].Input != 4 || rawTail.Items[0].Output != 3 || rawTail.Examined != 2 || !rawTail.Partial || !rawTail.Next.Period.IsZero() {
 				t.Fatalf("current override tail=%+v", rawTail)
 			}
-			emptyClaim := leaseClaim(1)
+			emptyClaim := pgstoretest.LeaseClaim(1)
 			emptyClaim.LeaseID = "empty-usage-lease"
 			emptyClaim.SessionID = "empty-usage-session"
-			emptyLease := claimLease(t, repository, org, emptyClaim)
+			emptyLease := pgstoretest.ClaimLease(t, repository, org, emptyClaim)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "usage_empty_dimensions", Fence: leaseFence(emptyLease), RunID: "usage_empty_dimensions_run", Sequence: 1, Status: "succeeded", StartedAt: base, PayloadObjectKey: "fixture/usage"}); err != nil {
+				if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "usage_empty_dimensions", Fence: pgstoretest.LeaseFence(emptyLease), RunID: "usage_empty_dimensions_run", Sequence: 1, Status: "succeeded", StartedAt: base, PayloadObjectKey: "fixture/usage"}); err != nil {
 					return err
 				}
-				_, err := w.Release(t.Context(), leaseFence(emptyLease), "completed")
+				_, err := w.Release(t.Context(), pgstoretest.LeaseFence(emptyLease), "completed")
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -410,14 +411,14 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 	})
 	t.Run("analytics attempts retain start keyset and bounded residuals", func(t *testing.T) {
-		admin := template.Database(t)
-		original, pool := repositoryFor(t, admin, smallPool())
+		admin := pgstoretest.Template.Database(t)
+		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		if err := original.Close(); err != nil {
 			t.Fatal(err)
 		}
 		capture := &analyticsAttemptQueryCapture{}
-		observedPool := tracedFeaturePool(t, pool, capture)
-		r, err := postgres.NewRepository(t.Context(), observedPool, smallPool())
+		observedPool := pgstoretest.TracedFeaturePool(t, pool, capture)
+		r, err := postgres.NewRepository(t.Context(), observedPool, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -432,7 +433,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 		base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 		for _, org := range []tracker.OrganizationID{"org_analytics_first", "org_analytics_second"} {
-			seedLeaseFamily(t, r, org)
+			pgstoretest.SeedLeaseFamily(t, r, org)
 			for _, source := range []struct {
 				project tracker.ProjectID
 				issue   int64
@@ -494,13 +495,13 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
 					t.Fatal(err)
 				}
-				var nodes []struct{ Plan searchPlanNode }
+				var nodes []struct{ Plan pgstoretest.SearchPlanNode }
 				if err := json.Unmarshal(raw, &nodes); err != nil || len(nodes) != 1 {
 					t.Fatalf("decode analytics plan: %v", err)
 				}
 				visited := float64(0)
-				var inspect func(searchPlanNode)
-				inspect = func(node searchPlanNode) {
+				var inspect func(pgstoretest.SearchPlanNode)
+				inspect = func(node pgstoretest.SearchPlanNode) {
 					if node.Relation == "native_attempts" {
 						visited += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
 					}
@@ -509,7 +510,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 					}
 				}
 				inspect(nodes[0].Plan)
-				if !nodes[0].Plan.usesIndex("native_attempts_project_started_seek") || visited > 1001 {
+				if !nodes[0].Plan.UsesIndex("native_attempts_project_started_seek") || visited > 1001 {
 					t.Fatalf("analytics attempt source exceeded exact seek/index budget: visits=%.0f plan=%s", visited, raw)
 				}
 			}
@@ -577,13 +578,13 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 	t.Run("issue history truncation preserves complete activity window", func(t *testing.T) {
 		for _, kind := range []string{"transitions", "attempts"} {
 			t.Run(kind, func(t *testing.T) {
-				r, _ := repositoryFor(t, template.Database(t), smallPool())
-				objects := newHistoryObjects()
+				r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+				objects := pgstoretest.NewHistoryObjects()
 				content := eventstore.NewContent(objects)
 				now := time.Now().UTC().Truncate(time.Microsecond)
 				old := now.Add(-24 * time.Hour)
 				for _, org := range []tracker.OrganizationID{"org_history_first", "org_history_second"} {
-					seedLeaseFamily(t, r, org)
+					pgstoretest.SeedLeaseFamily(t, r, org)
 					receipt := func(operation, key string) eventstore.Receipt {
 						t.Helper()
 						value, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "production-import", Operation: operation, CommandKey: key, RequestHash: fmt.Sprintf("%x", sha256.Sum256([]byte(operation+key))), CreatedAt: now}, []byte(`{}`))
@@ -597,7 +598,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 						item := tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", issue))
 						if kind == "transitions" {
 							for index := 0; index <= 50; index++ {
-								event, err := content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: fmt.Sprintf("transition_%d_%d", issue, index), OrganizationID: org, ProjectID: project, AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: historyActor(), RecordedAt: old.Add(time.Duration(index) * time.Minute), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Todo"}}))
+								event, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: fmt.Sprintf("transition_%d_%d", issue, index), OrganizationID: org, ProjectID: project, AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: old.Add(time.Duration(index) * time.Minute), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Todo"}}))
 								if err != nil {
 									t.Fatal(err)
 								}
@@ -613,7 +614,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 								if err := r.ImportCoreLease(t.Context(), postgres.CoreLeaseImport{Lease: lease, Receipt: receipt("core-lease", id)}); err != nil {
 									t.Fatal(err)
 								}
-								ref, err := objects.StoreDetail(t.Context(), string(org), historyJSON(t, tracker.NativeRunData{AttemptID: id, RunID: id, LeaseID: tracker.LeaseID(id), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded"}))
+								ref, err := objects.StoreDetail(t.Context(), string(org), pgstoretest.HistoryJSON(t, tracker.NativeRunData{AttemptID: id, RunID: id, LeaseID: tracker.LeaseID(id), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded"}))
 								if err != nil {
 									t.Fatal(err)
 								}
@@ -623,15 +624,15 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 								}
 							}
 						}
-						lease := claimLease(t, r, org, leaseClaim(issue))
+						lease := pgstoretest.ClaimLease(t, r, org, pgstoretest.LeaseClaim(issue))
 						id := fmt.Sprintf("current_%d", issue)
 						run := tracker.NativeRunData{AttemptID: id, RunID: id, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1}
-						ref, err := objects.StoreDetail(t.Context(), string(org), historyJSON(t, run))
+						ref, err := objects.StoreDetail(t.Context(), string(org), pgstoretest.HistoryJSON(t, run))
 						if err != nil {
 							t.Fatal(err)
 						}
 						if err := r.WriteTenant(t.Context(), org, corestore.Serving, func(writer tenantstore.Writer) error {
-							_, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: id, Fence: leaseFence(lease), RunID: id, Sequence: 1, Status: "running", StartedAt: now.Add(-time.Minute), PayloadObjectKey: ref.Key})
+							_, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: id, Fence: pgstoretest.LeaseFence(lease), RunID: id, Sequence: 1, Status: "running", StartedAt: now.Add(-time.Minute), PayloadObjectKey: ref.Key})
 							return err
 						}); err != nil {
 							t.Fatal(err)
@@ -676,11 +677,11 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 	})
 	t.Run("running overlap retains the ten thousand duration clip", func(t *testing.T) {
-		admin := template.Database(t)
-		r, _ := repositoryFor(t, admin, smallPool())
+		admin := pgstoretest.Template.Database(t)
+		r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		const org tracker.OrganizationID = "org_activity_cap"
-		seedLeaseFamily(t, r, org)
-		objects := newHistoryObjects()
+		pgstoretest.SeedLeaseFamily(t, r, org)
+		objects := pgstoretest.NewHistoryObjects()
 		content := eventstore.NewContent(objects)
 		base := time.Now().UTC().Truncate(time.Microsecond).Add(-2 * time.Minute)
 		for _, index := range []int{0, 10000} {
@@ -698,14 +699,14 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 				if status == "running" {
 					run.Outcome = ""
 				}
-				ref, err := objects.StoreDetail(t.Context(), string(org), historyJSON(t, run))
+				ref, err := objects.StoreDetail(t.Context(), string(org), pgstoretest.HistoryJSON(t, run))
 				if err != nil {
 					return err
 				}
-				if _, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: id, Fence: leaseFence(lease), RunID: id, Sequence: 1, Status: status, StartedAt: base, PayloadObjectKey: ref.Key}); err != nil {
+				if _, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: id, Fence: pgstoretest.LeaseFence(lease), RunID: id, Sequence: 1, Status: status, StartedAt: base, PayloadObjectKey: ref.Key}); err != nil {
 					return err
 				}
-				event, err := content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: "event_" + id, OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: kind, SchemaVersion: 1, Actor: historyActor(), RecordedAt: base.Add(time.Minute), Data: tracker.CollaborationData{Run: &run}}))
+				event, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "event_" + id, OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: kind, SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: base.Add(time.Minute), Data: tracker.CollaborationData{Run: &run}}))
 				if err != nil {
 					return err
 				}
@@ -713,7 +714,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 					return err
 				}
 				if status != "running" {
-					if _, err := writer.Release(t.Context(), leaseFence(lease), "completed"); err != nil {
+					if _, err := writer.Release(t.Context(), pgstoretest.LeaseFence(lease), "completed"); err != nil {
 						return err
 					}
 				}
@@ -741,12 +742,12 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 					t.Fatal(err)
 				}
 				run := tracker.NativeRunData{AttemptID: id, RunID: id, LeaseID: tracker.LeaseID(id), FencingToken: tracker.FencingToken(fence), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Configured("codex", "codex", "", "code", "example", "openai", "high", "", base), Phases: []tracker.NativePhase{{StartedAt: base, FinishedAt: base.Add(time.Minute)}}}}
-				ref, err := objects.StoreDetail(t.Context(), string(org), historyJSON(t, run))
+				ref, err := objects.StoreDetail(t.Context(), string(org), pgstoretest.HistoryJSON(t, run))
 				if err != nil {
 					rows.Close()
 					t.Fatal(err)
 				}
-				event, err := content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: "event_" + id, OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: "run.finished", SchemaVersion: 1, Actor: historyActor(), RecordedAt: base.Add(time.Minute), Data: tracker.CollaborationData{Run: &run}}))
+				event, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "event_" + id, OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: "run.finished", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: base.Add(time.Minute), Data: tracker.CollaborationData{Run: &run}}))
 				if err != nil {
 					rows.Close()
 					t.Fatal(err)
@@ -834,27 +835,27 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 	})
 	t.Run("activity duration population ignores presentation limit and preserves completeness", func(t *testing.T) {
-		admin := template.Database(t)
-		r, _ := repositoryFor(t, admin, smallPool())
-		objects := newHistoryObjects()
+		admin := pgstoretest.Template.Database(t)
+		r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+		objects := pgstoretest.NewHistoryObjects()
 		content := eventstore.NewContent(objects)
 		base := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Minute)
 		for _, org := range []tracker.OrganizationID{"org_activity_first", "org_activity_second"} {
-			seedLeaseFamily(t, r, org)
+			pgstoretest.SeedLeaseFamily(t, r, org)
 			for index := int64(1); index <= 2; index++ {
-				lease := claimLease(t, r, org, leaseClaim(index))
+				lease := pgstoretest.ClaimLease(t, r, org, pgstoretest.LeaseClaim(index))
 				project := tracker.ProjectID(fmt.Sprintf("prj_%d", index))
 				run := tracker.NativeRunData{AttemptID: fmt.Sprintf("activity_attempt_%d", index), RunID: fmt.Sprintf("activity_run_%d", index), LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Configured("codex", "codex", "", "code", "example", "openai", "high", "", base), Phases: []tracker.NativePhase{{StartedAt: base, FinishedAt: base.Add(time.Minute)}}, PhasesDropped: int(index - 1)}}
-				event, err := content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: fmt.Sprintf("activity_event_%d", index), OrganizationID: org, ProjectID: project, AggregateID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", index)), Type: "run.finished", SchemaVersion: 1, Actor: historyActor(), RecordedAt: base.Add(time.Minute), Data: tracker.CollaborationData{Run: &run}}))
+				event, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: fmt.Sprintf("activity_event_%d", index), OrganizationID: org, ProjectID: project, AggregateID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", index)), Type: "run.finished", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: base.Add(time.Minute), Data: tracker.CollaborationData{Run: &run}}))
 				if err != nil {
 					t.Fatal(err)
 				}
-				runRef, err := objects.StoreDetail(t.Context(), string(org), historyJSON(t, run))
+				runRef, err := objects.StoreDetail(t.Context(), string(org), pgstoretest.HistoryJSON(t, run))
 				if err != nil {
 					t.Fatal(err)
 				}
 				if err := r.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-					if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: run.AttemptID, Fence: leaseFence(lease), RunID: run.RunID, Sequence: 1, Status: run.Outcome, StartedAt: base, PayloadObjectKey: runRef.Key}); err != nil {
+					if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: run.AttemptID, Fence: pgstoretest.LeaseFence(lease), RunID: run.RunID, Sequence: 1, Status: run.Outcome, StartedAt: base, PayloadObjectKey: runRef.Key}); err != nil {
 						return err
 					}
 					_, err := w.AppendEvent(t.Context(), event)
@@ -877,7 +878,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 			}
 			duplicateValue.ID, duplicateValue.AggregateSequence = "activity_event_repeat", 0
 			duplicateValue.RecordedAt = base.Add(61 * time.Second)
-			duplicate, err = content.PrepareEvent(t.Context(), org, historyJSON(t, duplicateValue))
+			duplicate, err = content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, duplicateValue))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1001,9 +1002,9 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 	})
 	t.Run("activity durations use current overlap projection", func(t *testing.T) {
-		admin := template.Database(t)
-		r, _ := repositoryFor(t, admin, smallPool())
-		objects := newHistoryObjects()
+		admin := pgstoretest.Template.Database(t)
+		r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+		objects := pgstoretest.NewHistoryObjects()
 		content := eventstore.NewContent(objects)
 		base := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Minute)
 		for testIndex, test := range []struct {
@@ -1027,24 +1028,24 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 			t.Run(test.name, func(t *testing.T) {
 				for index, org := range []tracker.OrganizationID{"org_activity_gap_first", "org_activity_gap_second"} {
 					org = tracker.OrganizationID(fmt.Sprintf("%s_%d", org, testIndex))
-					seedLeaseFamily(t, r, org)
-					lease := claimLease(t, r, org, leaseClaim(1))
+					pgstoretest.SeedLeaseFamily(t, r, org)
+					lease := pgstoretest.ClaimLease(t, r, org, pgstoretest.LeaseClaim(1))
 					run := tracker.NativeRunData{AttemptID: "gap_attempt", RunID: "gap_run", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "interrupted", Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Configured("codex", "codex", "", "code", "example", "openai", "high", "", base), Phases: []tracker.NativePhase{{StartedAt: base, FinishedAt: base.Add(time.Minute)}}}}
 					if test.outcome != "" {
 						run.Outcome = test.outcome
 					}
-					ref, err := objects.StoreDetail(t.Context(), string(org), historyJSON(t, run))
+					ref, err := objects.StoreDetail(t.Context(), string(org), pgstoretest.HistoryJSON(t, run))
 					if err != nil {
 						t.Fatal(err)
 					}
 					if err := r.WriteTenant(t.Context(), org, corestore.Serving, func(writer tenantstore.Writer) error {
-						if _, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: run.AttemptID, Fence: leaseFence(lease), RunID: run.RunID, Sequence: 1, Status: run.Outcome, StartedAt: base, PayloadObjectKey: ref.Key}); err != nil {
+						if _, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: run.AttemptID, Fence: pgstoretest.LeaseFence(lease), RunID: run.RunID, Sequence: 1, Status: run.Outcome, StartedAt: base, PayloadObjectKey: ref.Key}); err != nil {
 							return err
 						}
 						if !test.writeEvent {
 							return nil
 						}
-						event, err := content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: "gap_event", OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: "run.finished", SchemaVersion: 1, Actor: historyActor(), RecordedAt: test.finish, Data: tracker.CollaborationData{Run: &run}}))
+						event, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "gap_event", OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: "run.finished", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: test.finish, Data: tracker.CollaborationData{Run: &run}}))
 						if err != nil {
 							return err
 						}
@@ -1055,14 +1056,14 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 							return nil
 						}
 						run.Sequence, run.Outcome = 2, ""
-						ref, err := objects.StoreDetail(t.Context(), string(org), historyJSON(t, run))
+						ref, err := objects.StoreDetail(t.Context(), string(org), pgstoretest.HistoryJSON(t, run))
 						if err != nil {
 							return err
 						}
-						if _, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: run.AttemptID, Fence: leaseFence(lease), RunID: run.RunID, Sequence: 2, Status: "running", StartedAt: base, PayloadObjectKey: ref.Key}); err != nil {
+						if _, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: run.AttemptID, Fence: pgstoretest.LeaseFence(lease), RunID: run.RunID, Sequence: 2, Status: "running", StartedAt: base, PayloadObjectKey: ref.Key}); err != nil {
 							return err
 						}
-						observed, err := content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: "gap_reconnected", OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: "run.observed", SchemaVersion: 1, Actor: historyActor(), RecordedAt: base.Add(61 * time.Second), Data: tracker.CollaborationData{Run: &run}}))
+						observed, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "gap_reconnected", OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: "run.observed", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: base.Add(61 * time.Second), Data: tracker.CollaborationData{Run: &run}}))
 						if err != nil {
 							return err
 						}
@@ -1074,14 +1075,14 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 						}
 						run.Sequence, run.Outcome = 3, "succeeded"
 						run.Runtime.Phases = []tracker.NativePhase{{StartedAt: base, FinishedAt: base.Add(90 * time.Second)}}
-						ref, err = objects.StoreDetail(t.Context(), string(org), historyJSON(t, run))
+						ref, err = objects.StoreDetail(t.Context(), string(org), pgstoretest.HistoryJSON(t, run))
 						if err != nil {
 							return err
 						}
-						if _, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: run.AttemptID, Fence: leaseFence(lease), RunID: run.RunID, Sequence: 3, Status: "succeeded", StartedAt: base, PayloadObjectKey: ref.Key}); err != nil {
+						if _, err := writer.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: run.AttemptID, Fence: pgstoretest.LeaseFence(lease), RunID: run.RunID, Sequence: 3, Status: "succeeded", StartedAt: base, PayloadObjectKey: ref.Key}); err != nil {
 							return err
 						}
-						finished, err := content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: "gap_finished", OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: "run.finished", SchemaVersion: 1, Actor: historyActor(), RecordedAt: base.Add(90 * time.Second), Data: tracker.CollaborationData{Run: &run}}))
+						finished, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "gap_finished", OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: "run.finished", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: base.Add(90 * time.Second), Data: tracker.CollaborationData{Run: &run}}))
 						if err != nil {
 							return err
 						}
@@ -1120,10 +1121,10 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 	})
 	t.Run("history pages advance across unrelated events and freeze the upper sequence", func(t *testing.T) {
-		r, _ := repositoryFor(t, template.Database(t), smallPool())
-		content := eventstore.NewContent(newHistoryObjects())
+		r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+		content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 		for _, org := range []tracker.OrganizationID{"org_history_first", "org_history_second"} {
-			seedLeaseFamily(t, r, org)
+			pgstoretest.SeedLeaseFamily(t, r, org)
 			for index := 1; index <= 66; index++ {
 				kind := "issue.created"
 				data := tracker.CollaborationData{}
@@ -1131,7 +1132,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 					kind = "workflow.transitioned"
 					data.FromState, data.ToState = "Todo", "Done"
 				}
-				event, err := content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: fmt.Sprintf("history_page_%d", index), OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: kind, SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt().Add(time.Duration(index) * time.Second), Data: data}))
+				event, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: fmt.Sprintf("history_page_%d", index), OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: kind, SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt().Add(time.Duration(index) * time.Second), Data: data}))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1178,9 +1179,9 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 	})
 	const processEvidenceVersion = 20261109184650
-	admin, fixture := migrationDatabaseAtVersion(t, 20261109182156)
-	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109182156)
+	pool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1230,7 +1231,7 @@ FROM source_project`, int64(i+1), item.OrganizationID, item.ProjectID, item.Nati
 			t.Fatalf("seed historical report work item %s: rows=%d error=%v", item.NativeID, rows, err)
 		}
 	}
-	objects := newHistoryObjects()
+	objects := pgstoretest.NewHistoryObjects()
 	content := eventstore.NewContent(objects)
 	events := []eventstore.Event{}
 	for i, value := range []tracker.CollaborationEvent{
@@ -1242,8 +1243,8 @@ FROM source_project`, int64(i+1), item.OrganizationID, item.ProjectID, item.Nati
 		{AggregateID: "wi_report_request", Type: "workflow.transitioned", RecordedAt: now.Add(20 * time.Second), Data: tracker.CollaborationData{FromState: "Done", ToState: "Todo"}},
 	} {
 		value.ID = fmt.Sprintf("report_event_%d", i)
-		value.OrganizationID, value.ProjectID, value.Actor, value.SchemaVersion = organization, project, historyActor(), 1
-		event, err := content.PrepareEvent(ctx, organization, historyJSON(t, value))
+		value.OrganizationID, value.ProjectID, value.Actor, value.SchemaVersion = organization, project, pgstoretest.HistoryActor(), 1
+		event, err := content.PrepareEvent(ctx, organization, pgstoretest.HistoryJSON(t, value))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1267,16 +1268,16 @@ RETURNING organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,
 		t.Fatal(err)
 	}
 	run := tracker.NativeRunData{ProcessUsage: &procgroup.Usage{PeakMemoryBytes: 4096, UserCPUSeconds: 8, SystemCPUSeconds: 2, WallSeconds: 10}, AttemptID: "attempt_report_failure", RunID: "run_report_failure", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "failed", TerminalFailure: &tracker.NativeTerminalFailure{Error: "hub request timed out"}, Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Identity{Role: "merge", ResolvedModel: agentidentity.NewValue("example-model", agentidentity.ProvenanceRuntime)}, Landing: &tracker.NativeLandingReceipt{Landed: false}}}
-	runRef, err := objects.StoreDetail(ctx, string(organization), historyJSON(t, run))
+	runRef, err := objects.StoreDetail(ctx, string(organization), pgstoretest.HistoryJSON(t, run))
 	if err != nil {
 		t.Fatal(err)
 	}
-	runEvent, err := content.PrepareEvent(ctx, organization, historyJSON(t, tracker.CollaborationEvent{ID: "report_run_failure", OrganizationID: organization, ProjectID: project, AggregateID: "wi_report_bug", Type: "run.finished", SchemaVersion: 1, Actor: historyActor(), RecordedAt: now.Add(40 * time.Second), Data: tracker.CollaborationData{Run: &run}}))
+	runEvent, err := content.PrepareEvent(ctx, organization, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "report_run_failure", OrganizationID: organization, ProjectID: project, AggregateID: "wi_report_bug", Type: "run.finished", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: now.Add(40 * time.Second), Data: tracker.CollaborationData{Run: &run}}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	historicalAttempt := leasestore.AttemptEvent{ID: run.AttemptID, Fence: leaseFence(lease), RunID: run.RunID, Sequence: 1, Status: "failed", StartedAt: now.Add(5 * time.Second), PayloadObjectKey: runRef.Key}
-	attemptDigest := sha256.Sum256(historyJSON(t, historicalAttempt))
+	historicalAttempt := leasestore.AttemptEvent{ID: run.AttemptID, Fence: pgstoretest.LeaseFence(lease), RunID: run.RunID, Sequence: 1, Status: "failed", StartedAt: now.Add(5 * time.Second), PayloadObjectKey: runRef.Key}
+	attemptDigest := sha256.Sum256(pgstoretest.HistoryJSON(t, historicalAttempt))
 	result, err := admin.ExecContext(ctx, `WITH source_lease AS MATERIALIZED (
 	SELECT organization_id,issue_id,lease_id,fencing_token,work_item_revision FROM leases
 	WHERE organization_id=$1 AND issue_id=$3 AND lease_id=$5 AND fencing_token=$6 AND work_item_revision=$9
@@ -1352,7 +1353,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 		t.Fatal(err)
 	}
 
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1427,7 +1428,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 	}
 	var landedLease leasestore.Lease
 	if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.Release(ctx, leaseFence(lease), "completed"); err != nil {
+		if _, err := w.Release(ctx, pgstoretest.LeaseFence(lease), "completed"); err != nil {
 			return err
 		}
 		var err error
@@ -1437,28 +1438,28 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 		t.Fatal(err)
 	}
 	landedRun := tracker.NativeRunData{AttemptID: "attempt_report_landed", RunID: "run_report_landed", LeaseID: tracker.LeaseID(landedLease.LeaseID), FencingToken: tracker.FencingToken(landedLease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Identity{Role: "merge", ResolvedModel: agentidentity.NewValue("other-model", agentidentity.ProvenanceRuntime)}, Landing: &tracker.NativeLandingReceipt{Landed: true, ChangeID: "change_report", VersionID: "version_report"}}}
-	landedRef, err := objects.StoreDetail(ctx, string(organization), historyJSON(t, landedRun))
+	landedRef, err := objects.StoreDetail(ctx, string(organization), pgstoretest.HistoryJSON(t, landedRun))
 	if err != nil {
 		t.Fatal(err)
 	}
-	landedEvent, err := content.PrepareEvent(ctx, organization, historyJSON(t, tracker.CollaborationEvent{ID: "report_run_landed", OrganizationID: organization, ProjectID: project, AggregateID: "wi_report_bug", Type: "run.finished", SchemaVersion: 1, Actor: historyActor(), RecordedAt: now.Add(50 * time.Second), Data: tracker.CollaborationData{Run: &landedRun}}))
+	landedEvent, err := content.PrepareEvent(ctx, organization, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "report_run_landed", OrganizationID: organization, ProjectID: project, AggregateID: "wi_report_bug", Type: "run.finished", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: now.Add(50 * time.Second), Data: tracker.CollaborationData{Run: &landedRun}}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	change, err := content.PrepareChange(ctx, organization, historyJSON(t, tracker.ChangeRequest{ID: "change_report", OrganizationID: organization, ProjectID: project, WorkItemID: "wi_report_bug", Title: "Example landed change", Revision: 1, CreatedAt: now, UpdatedAt: now.Add(50 * time.Second), Landed: &tracker.ChangeLanding{VersionID: "version_report", HeadSHA: strings.Repeat("a", 40), MergeSHA: strings.Repeat("b", 40), BaseRef: "develop", LandedAt: now.Add(50 * time.Second)}}))
+	change, err := content.PrepareChange(ctx, organization, pgstoretest.HistoryJSON(t, tracker.ChangeRequest{ID: "change_report", OrganizationID: organization, ProjectID: project, WorkItemID: "wi_report_bug", Title: "Example landed change", Revision: 1, CreatedAt: now, UpdatedAt: now.Add(50 * time.Second), Landed: &tracker.ChangeLanding{VersionID: "version_report", HeadSHA: strings.Repeat("a", 40), MergeSHA: strings.Repeat("b", 40), BaseRef: "develop", LandedAt: now.Add(50 * time.Second)}}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	version, err := content.PrepareVersion(ctx, organization, historyJSON(t, tracker.ChangeVersion{ID: "version_report", ChangeID: "change_report", Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("c", 40), Repository: "owner/repository", PolicyID: "policy_example", AttemptID: landedRun.AttemptID}, Actor: historyActor(), CreatedAt: now}))
+	version, err := content.PrepareVersion(ctx, organization, pgstoretest.HistoryJSON(t, tracker.ChangeVersion{ID: "version_report", ChangeID: "change_report", Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("c", 40), Repository: "owner/repository", PolicyID: "policy_example", AttemptID: landedRun.AttemptID}, Actor: pgstoretest.HistoryActor(), CreatedAt: now}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	escapeEvidence, err := content.PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: organization, ChangeID: "change_report", Kind: "discussion"}, historyJSON(t, tracker.ChangeDiscussion{ID: "discussion_report_escape", VersionID: "version_report", Actor: historyActor(), CreatedAt: now.Add(56 * time.Second), Escape: &tracker.QualityEscape{OccurrenceID: "occurrence_report", Kind: "scheduled_failure", Cause: "validator_miss", ObservedAt: now.Add(55 * time.Second), HumanOverride: true}}))
+	escapeEvidence, err := content.PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: organization, ChangeID: "change_report", Kind: "discussion"}, pgstoretest.HistoryJSON(t, tracker.ChangeDiscussion{ID: "discussion_report_escape", VersionID: "version_report", Actor: pgstoretest.HistoryActor(), CreatedAt: now.Add(56 * time.Second), Escape: &tracker.QualityEscape{OccurrenceID: "occurrence_report", Kind: "scheduled_failure", Cause: "validator_miss", ObservedAt: now.Add(55 * time.Second), HumanOverride: true}}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.RecordAttempt(ctx, leasestore.AttemptEvent{ID: landedRun.AttemptID, Fence: leaseFence(landedLease), RunID: landedRun.RunID, Sequence: 1, Status: "succeeded", StartedAt: now.Add(45 * time.Second), PayloadObjectKey: landedRef.Key}); err != nil {
+		if _, err := w.RecordAttempt(ctx, leasestore.AttemptEvent{ID: landedRun.AttemptID, Fence: pgstoretest.LeaseFence(landedLease), RunID: landedRun.RunID, Sequence: 1, Status: "succeeded", StartedAt: now.Add(45 * time.Second), PayloadObjectKey: landedRef.Key}); err != nil {
 			return err
 		}
 		if _, err := w.AppendEvent(ctx, landedEvent); err != nil {
@@ -1675,9 +1676,9 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 				runtime := *run.Runtime
 				runtime.Identity.Role, runtime.Landing = check.role, check.receipt
 				prior.Runtime = &runtime
-				event, err := content.PrepareEvent(ctx, organization, historyJSON(t, tracker.CollaborationEvent{
+				event, err := content.PrepareEvent(ctx, organization, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{
 					ID: "report_prior_attempt_role", OrganizationID: organization, ProjectID: project, AggregateID: "wi_report_bug", Type: "run.finished", SchemaVersion: 1,
-					Actor: historyActor(), RecordedAt: now.Add(40 * time.Second), Data: tracker.CollaborationData{Run: &prior},
+					Actor: pgstoretest.HistoryActor(), RecordedAt: now.Add(40 * time.Second), Data: tracker.CollaborationData{Run: &prior},
 				}))
 				if err != nil {
 					t.Fatal(err)
@@ -1707,7 +1708,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 		}
 	})
 	t.Run("same attempt population for usage model filters", func(t *testing.T) {
-		event, err := content.PrepareEvent(ctx, organization, historyJSON(t, tracker.CollaborationEvent{ID: "report_model_update", OrganizationID: organization, ProjectID: project, AggregateID: "wi_report_bug", Type: "run.finished", SchemaVersion: 1, Actor: historyActor(), RecordedAt: now.Add(2 * time.Hour), Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: landedRun.AttemptID, RunID: landedRun.RunID, Sequence: 2, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Identity{Role: "implement", ResolvedModel: agentidentity.NewValue("other-model", agentidentity.ProvenanceRuntime)}}}}}))
+		event, err := content.PrepareEvent(ctx, organization, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "report_model_update", OrganizationID: organization, ProjectID: project, AggregateID: "wi_report_bug", Type: "run.finished", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: now.Add(2 * time.Hour), Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: landedRun.AttemptID, RunID: landedRun.RunID, Sequence: 2, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Identity{Role: "implement", ResolvedModel: agentidentity.NewValue("other-model", agentidentity.ProvenanceRuntime)}}}}}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1744,7 +1745,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 		}
 	})
 	t.Run("immutable outcome time survives late update", func(t *testing.T) {
-		correction, err := content.PrepareEvent(ctx, organization, historyJSON(t, tracker.CollaborationEvent{ID: "report_failure_correction", OrganizationID: organization, ProjectID: project, AggregateID: "wi_report_bug", Type: "run.finished", SchemaVersion: 1, Actor: historyActor(), RecordedAt: now.Add(2 * time.Hour), Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: run.AttemptID, RunID: run.RunID, Sequence: 2, Outcome: "succeeded"}}}))
+		correction, err := content.PrepareEvent(ctx, organization, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "report_failure_correction", OrganizationID: organization, ProjectID: project, AggregateID: "wi_report_bug", Type: "run.finished", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: now.Add(2 * time.Hour), Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: run.AttemptID, RunID: run.RunID, Sequence: 2, Outcome: "succeeded"}}}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1887,7 +1888,7 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 			t.Fatal(err)
 		}
 		assertCoverage(true)
-		probe := reportObjectReadProbe{DetailStore: objects, check: func() {
+		probe := pgstoretest.ReportObjectReadProbe{DetailStore: objects, Check: func() {
 			if repository.Stats().AcquiredConns() != 0 {
 				t.Fatal("object read held target transaction")
 			}
@@ -2116,16 +2117,6 @@ VALUES ($1,$2,$3,$3,$3)`, organization, run.AttemptID, runEvent.ID); err != nil 
 		}
 	})
 
-}
-
-type reportObjectReadProbe struct {
-	attachment.DetailStore
-	check func()
-}
-
-func (p reportObjectReadProbe) ReadDetail(ctx context.Context, org string, ref attachment.ArchiveReference) ([]byte, error) {
-	p.check()
-	return p.DetailStore.ReadDetail(ctx, org, ref)
 }
 
 type analyticsAttemptQueryCapture struct {

@@ -1,122 +1,34 @@
 package postgres_test
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"maps"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
-
-	"github.com/pressly/goose/v3"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/schemafingerprint"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
-	"github.com/digitaldrywood/detent/internal/testenv"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 )
 
-var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
-	roles, err := os.ReadFile("roles.sql")
-	if err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, string(roles)); err != nil {
-		return fmt.Errorf("provision PostgreSQL test roles: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration_v2`); err != nil {
-		return err
-	}
-	provider, err := migrationProvider(db)
-	if err != nil {
-		return err
-	}
-	if _, err := provider.Up(ctx); err != nil {
-		return fmt.Errorf("apply PostgreSQL core migrations: %w", err)
-	}
-	return nil
-})
-
-func migrationProvider(db *sql.DB) (*goose.Provider, error) {
-	return goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("migrations")),
-		goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS("migrations"))...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
-}
-
 func TestMain(m *testing.M) {
-	flag.Parse()
-	timeout, err := time.ParseDuration(flag.Lookup("test.timeout").Value.String())
-	if err != nil || timeout <= 0 {
-		fmt.Fprintln(os.Stderr, "PostgreSQL schema tests require a nonzero go test -timeout")
-		os.Exit(1)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	if err := testenv.ClearGitEnvironment(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		cancel()
-		os.Exit(1)
-	}
-	code := m.Run()
-	if err := template.Close(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		code = 1
-	}
-	cancel()
-	os.Exit(code)
-}
-
-func migrationDatabaseAtVersion(t *testing.T, version int64) (*sql.DB, *pgtest.Template) {
-	t.Helper()
-	fixture := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
-		roles, err := os.ReadFile("roles.sql")
-		if err != nil {
-			return err
-		}
-		if _, err := db.ExecContext(ctx, string(roles)); err != nil {
-			return err
-		}
-		db.SetMaxOpenConns(1)
-		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
-			return err
-		}
-		if version == 0 {
-			return nil
-		}
-		provider, err := migrationProvider(db)
-		if err != nil {
-			return err
-		}
-		_, err = provider.UpTo(ctx, version)
-		return err
-	})
-	t.Cleanup(func() {
-		deadline, _ := t.Deadline()
-		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
-		defer cancel()
-		if err := fixture.Close(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	return fixture.Database(t), fixture
+	pgstoretest.Main(m)
 }
 
 func TestCoreMigrationsFromEmpty(t *testing.T) {
-	db, _ := migrationDatabaseAtVersion(t, 0)
+	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 0)
 	db.SetMaxOpenConns(1)
 	if _, err := db.ExecContext(t.Context(), "SET ROLE detent_migration_v2"); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := migrationProvider(db)
+	provider, err := pgstoretest.MigrationProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +83,7 @@ func TestCoreMigrationsFromEmpty(t *testing.T) {
 }
 
 func TestTargetOnlyBillingSchemaMatchesContracts(t *testing.T) {
-	db := template.Database(t)
+	db := pgstoretest.Template.Database(t)
 	catalog, err := storagecatalog.ReadTargetCatalog(os.DirFS("../../.."), "internal/storagecatalog/targets/v1.json")
 	if err != nil {
 		t.Fatal(err)
@@ -264,29 +176,9 @@ func TestTargetOnlyBillingSchemaMatchesContracts(t *testing.T) {
 	}
 }
 
-func seedCore(t *testing.T, db *sql.DB) {
-	t.Helper()
-	for _, org := range []string{"org_first", "org_second"} {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2) ON CONFLICT(organization_id) DO NOTHING`, org, historyAt()); err != nil {
-			t.Fatal(err)
-		}
-		for _, suffix := range []string{"shared", "other"} {
-			for _, statement := range []string{
-				`INSERT INTO projects (organization_id,id,name,slug,profile) VALUES ($1,'prj_' || $2,$2,$2,'native')`,
-				`INSERT INTO issues (organization_id,id,native_id,project_id,number,title,native_source_key) VALUES ($1,CASE WHEN $2='shared' THEN 41 ELSE 42 END,'wi_' || $2,'prj_' || $2,1,$2,'source_' || $2)`,
-				`INSERT INTO native_comments (organization_id,id,project_id,work_item_id,sequence,body_object_key,actor_kind,actor_principal_id,source_key) VALUES ($1,'comment_' || $2,'prj_' || $2,'wi_' || $2,1,$1 || '/body/' || $2,'human','example','source_' || $2)`,
-			} {
-				if _, err := db.ExecContext(t.Context(), statement, org, suffix); err != nil {
-					t.Fatal(err)
-				}
-			}
-		}
-	}
-}
-
 func TestCoreIdentifiersAreTenantScoped(t *testing.T) {
-	db := template.Database(t)
-	seedCore(t, db)
+	db := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, db)
 	for _, org := range []string{"org_first", "org_second"} {
 		t.Run(org, func(t *testing.T) {
 			rows, err := db.QueryContext(t.Context(), `
@@ -322,8 +214,8 @@ func TestCoreIdentifiersAreTenantScoped(t *testing.T) {
 }
 
 func TestCoreConstraintsRejectInvalidWrites(t *testing.T) {
-	db := template.Database(t)
-	seedCore(t, db)
+	db := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, db)
 	for _, tc := range []struct {
 		name  string
 		query string
@@ -353,13 +245,13 @@ func TestCoreConstraintsRejectInvalidWrites(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := db.ExecContext(t.Context(), tc.query)
-			requireSQLState(t, err, tc.state)
+			pgstoretest.RequireSQLState(t, err, tc.state)
 		})
 	}
 }
 
 func TestCoreGeneratedIdentifiersAndOptionalKeys(t *testing.T) {
-	db := template.Database(t)
+	db := pgstoretest.Template.Database(t)
 	for _, org := range []string{"org_first", "org_second"} {
 		t.Run(org, func(t *testing.T) {
 			if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,CURRENT_TIMESTAMP)`, org); err != nil {
@@ -402,8 +294,8 @@ func TestCoreGeneratedIdentifiersAndOptionalKeys(t *testing.T) {
 }
 
 func TestCoreForeignKeysDenyOtherTenants(t *testing.T) {
-	db := template.Database(t)
-	seedCore(t, db)
+	db := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, db)
 	for _, query := range []string{
 		`INSERT INTO projects (organization_id,id,name,profile) VALUES ('org_second','prj_private','Private','native')`,
 		`INSERT INTO issues (organization_id,native_id,project_id,number,title) VALUES ('org_second','wi_private','prj_private',1,'Private')`,
@@ -422,21 +314,13 @@ func TestCoreForeignKeysDenyOtherTenants(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := db.ExecContext(t.Context(), tc.query)
-			requireSQLState(t, err, tc.state)
+			pgstoretest.RequireSQLState(t, err, tc.state)
 		})
 	}
 }
 
-func requireSQLState(t *testing.T, err error, state string) {
-	t.Helper()
-	var pgerr *pgconn.PgError
-	if !errors.As(err, &pgerr) || string(pgerr.Code) != state {
-		t.Fatalf("expected PostgreSQL SQLSTATE %s, got %v", state, err)
-	}
-}
-
 func TestCoreSchemaUsesTenantLeadingTypedColumns(t *testing.T) {
-	db := template.Database(t)
+	db := pgstoretest.Template.Database(t)
 	for _, tc := range []struct{ name, query string }{
 		{"tenant required", `SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND column_name='organization_id' AND (is_nullable<>'NO' OR data_type<>'text')`},
 		{"typed columns", `SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND (data_type NOT IN ('text','smallint','bigint','boolean','timestamp with time zone') OR column_name LIKE '%\_json' ESCAPE '\' OR column_name IN ('body','workflow_markdown'))`},

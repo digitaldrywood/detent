@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -34,7 +36,7 @@ func conversionScope(org tracker.OrganizationID, family storageconversion.Family
 	return storageconversion.Scope{Organization: org, Project: "prj_first", Family: family, AggregateID: aggregate}
 }
 
-func conversionParent(t *testing.T, repository *postgres.Repository, objects *historyObjects, scope storageconversion.Scope) {
+func conversionParent(t *testing.T, repository *postgres.Repository, objects *pgstoretest.HistoryObjects, scope storageconversion.Scope) {
 	t.Helper()
 	if scope.Family == storageconversion.Runs {
 		return
@@ -55,20 +57,20 @@ func conversionParent(t *testing.T, repository *postgres.Repository, objects *hi
 func conversionInsert(ctx context.Context, w eventstore.Writer, scope storageconversion.Scope, ref attachment.ArchiveReference, id string, sequence, version int64) error {
 	switch scope.Family {
 	case storageconversion.Runs:
-		_, err := w.AppendEvent(ctx, eventstore.Event{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(scope.AggregateID), ID: id, Sequence: sequence, Type: "run.started", SchemaVersion: 1, ActorKind: "human", ActorPrincipalID: "example", RecordedAt: historyAt(), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize, PayloadFormatVersion: version})
+		_, err := w.AppendEvent(ctx, eventstore.Event{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(scope.AggregateID), ID: id, Sequence: sequence, Type: "run.started", SchemaVersion: 1, ActorKind: "human", ActorPrincipalID: "example", RecordedAt: pgstoretest.HistoryAt(), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize, PayloadFormatVersion: version})
 		return err
 	case storageconversion.Versions:
-		_, err := w.CreateVersion(ctx, eventstore.Version{OrganizationID: scope.Organization, ID: id, ChangeID: scope.AggregateID, Number: sequence, HeadSHA: "head", PolicyRevisionID: "policy", ActorKind: "human", ActorPrincipalID: "example", CreatedAt: historyAt(), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize, PayloadFormatVersion: version})
+		_, err := w.CreateVersion(ctx, eventstore.Version{OrganizationID: scope.Organization, ID: id, ChangeID: scope.AggregateID, Number: sequence, HeadSHA: "head", PolicyRevisionID: "policy", ActorKind: "human", ActorPrincipalID: "example", CreatedAt: pgstoretest.HistoryAt(), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize, PayloadFormatVersion: version})
 		return err
 	case storageconversion.Evidence:
-		_, err := w.AppendEvidence(ctx, eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: scope.AggregateID, Sequence: sequence, Kind: "discussion", SourceKey: new(id), ActorKind: "human", ActorPrincipalID: "example", CreatedAt: historyAt(), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize, PayloadFormatVersion: version})
+		_, err := w.AppendEvidence(ctx, eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: scope.AggregateID, Sequence: sequence, Kind: "discussion", SourceKey: new(id), ActorKind: "human", ActorPrincipalID: "example", CreatedAt: pgstoretest.HistoryAt(), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize, PayloadFormatVersion: version})
 		return err
 	default:
 		return storageconversion.ErrInvalid
 	}
 }
 
-func seedConversion(t *testing.T, repository *postgres.Repository, objects *historyObjects, scope storageconversion.Scope, id string, sequence, version int64) attachment.ArchiveReference {
+func seedConversion(t *testing.T, repository *postgres.Repository, objects *pgstoretest.HistoryObjects, scope storageconversion.Scope, id string, sequence, version int64) attachment.ArchiveReference {
 	t.Helper()
 	ref, err := objects.StoreDetail(t.Context(), string(scope.Organization), []byte(fmt.Sprintf(`{"id":%q,"body":"Example historical payload"}`, id)))
 	if err != nil {
@@ -81,10 +83,6 @@ func seedConversion(t *testing.T, repository *postgres.Repository, objects *hist
 		t.Fatal(err)
 	}
 	return ref
-}
-
-func convertPayload(_ context.Context, _ storageconversion.Candidate, raw []byte) ([]byte, error) {
-	return append(bytes.Clone(raw), '\n'), nil
 }
 
 func conversionRecords(t *testing.T, r *postgres.Repository, scope storageconversion.Scope) any {
@@ -116,7 +114,7 @@ func assertConversionProgress(t *testing.T, r *postgres.Repository, scope storag
 	}
 }
 
-func assertConvertedRecords(t *testing.T, objects *historyObjects, scope storageconversion.Scope, before, after any) {
+func assertConvertedRecords(t *testing.T, objects *pgstoretest.HistoryObjects, scope storageconversion.Scope, before, after any) {
 	t.Helper()
 	oldRows, newRows := reflect.ValueOf(before), reflect.ValueOf(after)
 	if oldRows.Len() != newRows.Len() {
@@ -161,10 +159,10 @@ func assertConvertedRecords(t *testing.T, objects *historyObjects, scope storage
 func TestStorageConversionTenantRecovery(t *testing.T) {
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
-			r, _ := repositoryFor(t, template.Database(t), smallPool())
-			objects := newHistoryObjects()
+			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+			objects := pgstoretest.NewHistoryObjects()
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-				seedRepository(t, r, org)
+				pgstoretest.SeedRepository(t, r, org)
 				for _, second := range []bool{false, true} {
 					scope := conversionScope(org, family, second)
 					conversionParent(t, r, objects, scope)
@@ -188,7 +186,7 @@ func TestStorageConversionTenantRecovery(t *testing.T) {
 					}
 					var cursor storageconversion.Cursor
 					for turn := range 2 {
-						owner := newConversionBatch(r, objects, convertPayload)
+						owner := newConversionBatch(r, objects, pgstoretest.ConvertPayload)
 						result, err := owner.Batch(t.Context(), scope, cursor, 1)
 						if err != nil || result.Converted != 1 || result.Visited != 1 {
 							t.Fatalf("turn %d = %+v, %v", turn, result, err)
@@ -197,7 +195,7 @@ func TestStorageConversionTenantRecovery(t *testing.T) {
 					}
 					assertConversionProgress(t, r, scope, 2, page.Items[0].Source.UncompressedSize+page.Items[1].Source.UncompressedSize)
 					assertConvertedRecords(t, objects, scope, before, conversionRecords(t, r, scope))
-					replay, err := newConversionBatch(r, objects, convertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
+					replay, err := newConversionBatch(r, objects, pgstoretest.ConvertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
 					if err != nil || replay.Converted != 0 || replay.Next != (storageconversion.Cursor{}) {
 						t.Fatalf("replay = %+v, %v", replay, err)
 					}
@@ -208,7 +206,7 @@ func TestStorageConversionTenantRecovery(t *testing.T) {
 }
 
 type conversionObjects struct {
-	base  *historyObjects
+	base  *pgstoretest.HistoryObjects
 	read  func(context.Context, string, attachment.ArchiveReference) ([]byte, error)
 	store func(context.Context, string, []byte) (attachment.ArchiveReference, error)
 }
@@ -240,10 +238,10 @@ func TestStorageConversionCrashPoints(t *testing.T) {
 	for _, family := range conversionFamilies() {
 		for _, point := range []string{"before upload", "uncertain upload", "after upload", "before commit", "uncertain commit", "corrupt source", "corrupt target", "transform failure"} {
 			t.Run(string(family)+"/"+point, func(t *testing.T) {
-				r, _ := repositoryFor(t, template.Database(t), smallPool())
-				seedRepository(t, r, "org_first")
+				r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+				pgstoretest.SeedRepository(t, r, "org_first")
 				scope := conversionScope("org_first", family, false)
-				objects := newHistoryObjects()
+				objects := pgstoretest.NewHistoryObjects()
 				conversionParent(t, r, objects, scope)
 				ref := seedConversion(t, r, objects, scope, "legacy", 1, 1)
 				injected := errors.New("injected conversion failure")
@@ -282,7 +280,7 @@ func TestStorageConversionCrashPoints(t *testing.T) {
 					}
 					return committed, err
 				}}
-				transform := convertPayload
+				transform := pgstoretest.ConvertPayload
 				if point == "transform failure" {
 					transform = func(context.Context, storageconversion.Candidate, []byte) ([]byte, error) { return nil, injected }
 				}
@@ -304,7 +302,7 @@ func TestStorageConversionCrashPoints(t *testing.T) {
 					retryUploads++
 					return objects.StoreDetail(ctx, org, raw)
 				}}
-				retry, err := newConversionBatch(r, retryStorage, convertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
+				retry, err := newConversionBatch(r, retryStorage, pgstoretest.ConvertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
 				if err != nil || retry.Converted != 1-int(wantRows) {
 					t.Fatalf("restart = %+v, %v", retry, err)
 				}
@@ -316,9 +314,9 @@ func TestStorageConversionCrashPoints(t *testing.T) {
 				if retryUploads != wantUploads {
 					t.Fatalf("restart uploaded %d objects; want %d", retryUploads, wantUploads)
 				}
-				objects.mu.Lock()
-				objectCount := len(objects.objects)
-				objects.mu.Unlock()
+				objects.Mu.Lock()
+				objectCount := len(objects.Objects)
+				objects.Mu.Unlock()
 				wantObjects := 2
 				if family != storageconversion.Runs {
 					wantObjects++
@@ -334,10 +332,10 @@ func TestStorageConversionCrashPoints(t *testing.T) {
 func TestStorageConversionConcurrentRuns(t *testing.T) {
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
-			r, _ := repositoryFor(t, template.Database(t), smallPool())
-			seedRepository(t, r, "org_first")
+			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+			pgstoretest.SeedRepository(t, r, "org_first")
 			scope := conversionScope("org_first", family, false)
-			objects := newHistoryObjects()
+			objects := pgstoretest.NewHistoryObjects()
 			conversionParent(t, r, objects, scope)
 			ref := seedConversion(t, r, objects, scope, "legacy", 1, 1)
 			arrived, release := make(chan struct{}, 2), make(chan struct{})
@@ -364,7 +362,7 @@ func TestStorageConversionConcurrentRuns(t *testing.T) {
 						}); err != nil {
 							return nil, err
 						}
-						return convertPayload(ctx, candidate, raw)
+						return pgstoretest.ConvertPayload(ctx, candidate, raw)
 					})
 					result, err := owner.Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
 					finished <- outcome{result: result, err: err}
@@ -397,10 +395,10 @@ func TestStorageConversionConcurrentRuns(t *testing.T) {
 func TestStorageConversionLateCommit(t *testing.T) {
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
-			r, _ := repositoryFor(t, template.Database(t), smallPool())
-			seedRepository(t, r, "org_first")
+			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+			pgstoretest.SeedRepository(t, r, "org_first")
 			scope := conversionScope("org_first", family, false)
-			objects := newHistoryObjects()
+			objects := pgstoretest.NewHistoryObjects()
 			conversionParent(t, r, objects, scope)
 			first := seedConversion(t, r, objects, scope, "middle", 10, 1)
 			late, err := objects.StoreDetail(t.Context(), "org_first", []byte(`{"id":"early","body":"Late commit"}`))
@@ -442,7 +440,7 @@ func TestStorageConversionLateCommit(t *testing.T) {
 			if err != nil || len(end.Items) != 0 || end.Next != (storageconversion.Cursor{}) {
 				t.Fatalf("bounded sweep did not end = %+v, %v", end, err)
 			}
-			owner := newConversionBatch(r, objects, convertPayload)
+			owner := newConversionBatch(r, objects, pgstoretest.ConvertPayload)
 			result, err := owner.Batch(t.Context(), scope, end.Next, 100)
 			if err != nil || result.Converted != 3 {
 				t.Fatalf("next sweep missed committed records = %+v, %v", result, err)
@@ -455,10 +453,10 @@ func TestStorageConversionLateCommit(t *testing.T) {
 func TestStorageConversionCompareAndSwap(t *testing.T) {
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
-			r, _ := repositoryFor(t, template.Database(t), smallPool())
-			seedRepository(t, r, "org_first")
+			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+			pgstoretest.SeedRepository(t, r, "org_first")
 			scope := conversionScope("org_first", family, false)
-			objects := newHistoryObjects()
+			objects := pgstoretest.NewHistoryObjects()
 			conversionParent(t, r, objects, scope)
 			ref := seedConversion(t, r, objects, scope, "legacy", 1, 1)
 			page, err := r.ConversionPage(t.Context(), scope, storageconversion.Cursor{}, 1)
@@ -509,11 +507,11 @@ func TestStorageConversionCompareAndSwap(t *testing.T) {
 func TestStorageConversionRollbackAndAuthority(t *testing.T) {
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
-			admin := template.Database(t)
-			r, pool := repositoryFor(t, admin, smallPool())
-			objects := newHistoryObjects()
+			admin := pgstoretest.Template.Database(t)
+			r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+			objects := pgstoretest.NewHistoryObjects()
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-				seedRepository(t, r, org)
+				pgstoretest.SeedRepository(t, r, org)
 				for _, second := range []bool{false, true} {
 					scope := conversionScope(org, family, second)
 					conversionParent(t, r, objects, scope)
@@ -530,9 +528,9 @@ func TestStorageConversionRollbackAndAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			runtime := runtimeFor(t, pool, pool)
+			runtime := pgstoretest.RuntimeFor(t, pool, pool)
 			for _, boundOrg := range []string{"", "org_second", "org_unknown"} {
-				tx := tenantTx(t, runtime, pool, boundOrg)
+				tx := pgstoretest.TenantTx(t, runtime, pool, boundOrg)
 				changed, err := pgquery.New(tx).ConversionCommit(t.Context(), pgquery.ConversionCommitParams{OrganizationID: "org_first", ProjectID: string(scope.Project), Family: string(family), AggregateID: scope.AggregateID, RecordID: candidate.Position.ID, RecordSequence: candidate.Position.Sequence, ExpectedVersion: 1, SourceKey: candidate.Source.Key, SourceDigest: candidate.Source.SHA256, SourceBytes: candidate.Source.CompressedSize, SourceContentBytes: candidate.Source.UncompressedSize, TargetKey: target.Key, TargetDigest: target.SHA256, TargetBytes: target.CompressedSize, TargetContentBytes: target.UncompressedSize})
 				if err != nil || changed {
 					t.Fatalf("scope %q bypassed tenant authority: %v, %v", boundOrg, changed, err)
@@ -548,14 +546,14 @@ func TestStorageConversionRollbackAndAuthority(t *testing.T) {
 				"DELETE FROM " + table + " WHERE payload_format_version=1",
 				"UPDATE " + table + " SET payload_object_key=$1,payload_sha256=$2,payload_bytes=$3,payload_content_bytes=$4,payload_format_version=2 WHERE payload_format_version=1",
 			} {
-				tx := tenantTx(t, runtime, pool, "org_first")
+				tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
 				var err error
 				if bytes.Contains([]byte(statement), []byte("$1")) {
 					_, err = tx.Exec(t.Context(), statement, target.Key, target.SHA256, target.CompressedSize, target.UncompressedSize)
 				} else {
 					_, err = tx.Exec(t.Context(), statement)
 				}
-				requireSQLState(t, err, "23514")
+				pgstoretest.RequireSQLState(t, err, "23514")
 				if err := tx.Rollback(t.Context()); err != nil {
 					t.Fatal(err)
 				}
@@ -565,7 +563,7 @@ func TestStorageConversionRollbackAndAuthority(t *testing.T) {
 CREATE TRIGGER reject_conversion_progress BEFORE INSERT OR UPDATE ON storage_conversion_progress FOR EACH ROW EXECUTE FUNCTION reject_conversion_progress()`); err != nil {
 				t.Fatal(err)
 			}
-			owner := newConversionBatch(r, objects, convertPayload)
+			owner := newConversionBatch(r, objects, pgstoretest.ConvertPayload)
 			result, err := owner.Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
 			if err == nil || result.Converted != 0 {
 				t.Fatalf("rejected progress write committed: %+v, %v", result, err)
@@ -589,7 +587,7 @@ CREATE TRIGGER reject_conversion_progress BEFORE INSERT OR UPDATE ON storage_con
 				org  string
 				want int
 			}{{"", 0}, {"org_first", 2}, {"org_second", 2}, {"org_unknown", 0}} {
-				tx := tenantTx(t, runtime, pool, bound.org)
+				tx := pgstoretest.TenantTx(t, runtime, pool, bound.org)
 				var count int
 				if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM storage_conversion_progress").Scan(&count); err != nil || count != bound.want {
 					t.Fatalf("scope %q progress rows = %d, %v; want %d", bound.org, count, err, bound.want)
@@ -598,9 +596,9 @@ CREATE TRIGGER reject_conversion_progress BEFORE INSERT OR UPDATE ON storage_con
 					t.Fatal(err)
 				}
 			}
-			tx := tenantTx(t, runtime, pool, "org_first")
+			tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
 			_, err = tx.Exec(t.Context(), "UPDATE storage_conversion_progress SET converted_rows=1000")
-			requireSQLState(t, err, "42501")
+			pgstoretest.RequireSQLState(t, err, "42501")
 			if err := tx.Rollback(t.Context()); err != nil {
 				t.Fatal(err)
 			}
@@ -612,10 +610,10 @@ func TestStorageConversionBudgets(t *testing.T) {
 	for _, family := range conversionFamilies() {
 		for _, size := range []int{400_000, 1_100_000} {
 			t.Run(fmt.Sprintf("%s/%d", family, size), func(t *testing.T) {
-				r, _ := repositoryFor(t, template.Database(t), smallPool())
-				seedRepository(t, r, "org_first")
+				r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+				pgstoretest.SeedRepository(t, r, "org_first")
 				scope := conversionScope("org_first", family, false)
-				objects := newHistoryObjects()
+				objects := pgstoretest.NewHistoryObjects()
 				conversionParent(t, r, objects, scope)
 				ref, err := objects.StoreDetail(t.Context(), "org_first", bytes.Repeat([]byte("x"), size))
 				if err != nil {
@@ -628,7 +626,7 @@ func TestStorageConversionBudgets(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				storage := postgres.NewConversionStorage(r, scope.Organization, objects, convertPayload)
+				storage := postgres.NewConversionStorage(r, scope.Organization, objects, pgstoretest.ConvertPayload)
 				for turn := range 3 {
 					if err := storageconversion.ConvertStorageBatch(t.Context(), storage); err != nil {
 						t.Fatal(err)
@@ -647,10 +645,10 @@ func TestStorageConversionBudgets(t *testing.T) {
 func TestStorageConversionValidationAndFailedRowProgress(t *testing.T) {
 	for _, family := range conversionFamilies() {
 		t.Run(string(family), func(t *testing.T) {
-			r, _ := repositoryFor(t, template.Database(t), smallPool())
-			seedRepository(t, r, "org_first")
+			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+			pgstoretest.SeedRepository(t, r, "org_first")
 			scope := conversionScope("org_first", family, false)
-			objects := newHistoryObjects()
+			objects := pgstoretest.NewHistoryObjects()
 			conversionParent(t, r, objects, scope)
 			ref := seedConversion(t, r, objects, scope, "first", 1, 1)
 			seedConversion(t, r, objects, scope, "second", 2, 1)
@@ -695,7 +693,7 @@ func TestStorageConversionValidationAndFailedRowProgress(t *testing.T) {
 				if candidate.Position.Sequence == 1 {
 					return nil, injected
 				}
-				return convertPayload(ctx, candidate, raw)
+				return pgstoretest.ConvertPayload(ctx, candidate, raw)
 			})
 			failed, err := owner.Batch(t.Context(), scope, storageconversion.Cursor{}, 1)
 			if !errors.Is(err, injected) || failed.Converted != 0 || failed.Visited != 1 {
@@ -705,7 +703,7 @@ func TestStorageConversionValidationAndFailedRowProgress(t *testing.T) {
 			if err != nil || continued.Converted != 1 {
 				t.Fatalf("failure starved the next record = %+v, %v", continued, err)
 			}
-			recovered, err := newConversionBatch(r, objects, convertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
+			recovered, err := newConversionBatch(r, objects, pgstoretest.ConvertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
 			if err != nil || recovered.Converted != 1 {
 				t.Fatalf("failed record did not recover = %+v, %v", recovered, err)
 			}
@@ -714,12 +712,12 @@ func TestStorageConversionValidationAndFailedRowProgress(t *testing.T) {
 }
 
 func TestStorageConversionOwnerTick(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, smallPool())
-	objects := newHistoryObjects()
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	objects := pgstoretest.NewHistoryObjects()
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, org := range organizations {
-		seedRepository(t, r, org)
+		pgstoretest.SeedRepository(t, r, org)
 		for _, family := range conversionFamilies() {
 			for _, second := range []bool{false, true} {
 				scope := conversionScope(org, family, second)
@@ -740,7 +738,7 @@ func TestStorageConversionOwnerTick(t *testing.T) {
 		if fail && candidate.Scope.Family == storageconversion.Runs && candidate.Position.Sequence == 2 {
 			return nil, injected
 		}
-		return convertPayload(ctx, candidate, raw)
+		return pgstoretest.ConvertPayload(ctx, candidate, raw)
 	}
 	usage := func(org tracker.OrganizationID) (rows, bytes int64) {
 		t.Helper()
@@ -811,7 +809,7 @@ func TestStorageConversionOwnerTick(t *testing.T) {
 			scope := conversionScope(org, family, false)
 			seedConversion(t, r, objects, scope, "000_after_idle_"+scope.AggregateID, 500, 1)
 		}
-		if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(r, org, objects, convertPayload)); err != nil {
+		if err := storageconversion.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(r, org, objects, pgstoretest.ConvertPayload)); err != nil {
 			t.Fatal(err)
 		}
 		for _, family := range conversionFamilies() {

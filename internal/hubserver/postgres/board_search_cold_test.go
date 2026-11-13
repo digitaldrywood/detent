@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -19,7 +21,7 @@ func TestBoardSearchColdFallbackTenantWork(t *testing.T) {
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
 	probe := &boardQueryTracer{}
-	counted, err := postgres.NewRepository(ctx, tracedFeaturePool(t, f.pool, probe), smallPool())
+	counted, err := postgres.NewRepository(ctx, pgstoretest.TracedFeaturePool(t, f.pool, probe), pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}

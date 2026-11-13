@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"strings"
 	"testing"
 
@@ -17,23 +19,23 @@ import (
 )
 
 func TestAttemptMetadataBoundsTenantPage(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, repository, org)
+		pgstoretest.SeedLeaseFamily(t, repository, org)
 		for i := range 50 {
-			claim := leaseClaim(1)
+			claim := pgstoretest.LeaseClaim(1)
 			claim.LeaseID, claim.SessionID = fmt.Sprintf("lease_%d", i), fmt.Sprintf("session_%d", i)
-			lease := claimLease(t, repository, org, claim)
-			event := attemptEvent(lease)
+			lease := pgstoretest.ClaimLease(t, repository, org, claim)
+			event := pgstoretest.AttemptEvent(lease)
 			ref, _, err := attachment.PrepareArchive(string(org), 1, strings.NewReader(`{}`))
 			if err != nil {
 				t.Fatal(err)
 			}
 			event.PayloadReference, event.PayloadObjectKey = ref, ref.Key
-			recordLeaseAttempt(t, repository, org, event)
+			pgstoretest.RecordLeaseAttempt(t, repository, org, event)
 			if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-				_, err := w.Release(t.Context(), leaseFence(lease), "finished")
+				_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "finished")
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -51,7 +53,7 @@ func TestAttemptMetadataBoundsTenantPage(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: "checkpoint", Reference: checkpoint, CreatedAt: historyAt()})
+			_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: "checkpoint", Reference: checkpoint, CreatedAt: pgstoretest.HistoryAt()})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -61,7 +63,7 @@ func TestAttemptMetadataBoundsTenantPage(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: "artifacts", Reference: artifacts, CreatedAt: historyAt()})
+			_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: "artifacts", Reference: artifacts, CreatedAt: pgstoretest.HistoryAt()})
 			return err
 		}); err != nil {
 			t.Fatal(err)

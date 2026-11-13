@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -12,7 +14,7 @@ import (
 )
 
 func TestDeletionContractRefusesEachActiveFamilyIndependently(t *testing.T) {
-	admin := template.Database(t)
+	admin := pgstoretest.Template.Database(t)
 	cases := []struct {
 		name    string
 		queries []string
@@ -51,14 +53,14 @@ func TestDeletionContractRefusesEachActiveFamilyIndependently(t *testing.T) {
 
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			repository, _ := repositoryFor(t, admin, smallPool())
-			now := historyAt()
+			repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+			now := pgstoretest.HistoryAt()
 			family := strings.ReplaceAll(test.name, "-", "_")
 			organizations := []tracker.OrganizationID{tracker.OrganizationID("org_first_" + family), tracker.OrganizationID("org_second_" + family)}
 			for _, org := range organizations {
-				seedRepository(t, repository, org)
+				pgstoretest.SeedRepository(t, repository, org)
 				for _, id := range []string{"first", "second"} {
-					seedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
+					pgstoretest.SeedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
 				}
 				for _, id := range []string{"first", "second"} {
 					project := tracker.ProjectID("prj_" + id)
@@ -90,7 +92,7 @@ func TestDeletionContractRefusesEachActiveFamilyIndependently(t *testing.T) {
 			if err := repository.Close(); err != nil {
 				t.Fatal(err)
 			}
-			repository, _ = repositoryFor(t, admin, smallPool())
+			repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 			for _, org := range organizations {
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.RequireProjectIdle(t.Context(), "prj_first", now) }); !errors.Is(err, projectstore.ErrActiveWork) {
 					t.Fatalf("reopened activity=%v", err)

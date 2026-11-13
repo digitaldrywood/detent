@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -14,8 +16,8 @@ import (
 )
 
 func TestClaimCapacityGroupsNativeLandingLeases(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, setup := range []struct {
 		name     string
 		github   bool
@@ -27,21 +29,21 @@ func TestClaimCapacityGroupsNativeLandingLeases(t *testing.T) {
 	} {
 		for _, tenant := range []tracker.OrganizationID{"org_first", "org_second"} {
 			org := tracker.OrganizationID(string(tenant) + "_" + setup.name)
-			seedRepository(t, repository, org)
-			history := seedHistory(t, repository, org, "capacity")
+			pgstoretest.SeedRepository(t, repository, org)
+			history := pgstoretest.SeedHistory(t, repository, org, "capacity")
 			now := time.Now().UTC()
-			seedRunnerIdentity(t, repository, org, "runner_capacity", "machine_capacity", now, true)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_capacity", "machine_capacity", now, true)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				revision := policyTestRevision(org, "prj_first", "policy", now)
+				revision := pgstoretest.PolicyTestRevision(org, "prj_first", "policy", now)
 				*revision.GitHubPullRequest = setup.github
 				if err := w.ApproveProjectPolicy(t.Context(), revision, ""); err != nil {
 					return err
 				}
-				history.change.CurrentVersionID = new(history.version.ID)
-				if _, err := w.UpdateChange(t.Context(), history.change); err != nil {
+				history.Change.CurrentVersionID = new(history.Version.ID)
+				if _, err := w.UpdateChange(t.Context(), history.Change); err != nil {
 					return err
 				}
-				return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", ChangeID: history.change.ID, CreatedAt: now})
+				return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", ChangeID: history.Change.ID, CreatedAt: now})
 			}); err != nil {
 				t.Fatal(err)
 			}

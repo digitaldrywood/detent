@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 
@@ -24,7 +26,7 @@ import (
 
 func TestAttemptEvidenceIndexMigrationResumesAfterInterruption(t *testing.T) {
 	const version = int64(20261106222200)
-	_, fixture := migrationDatabaseAtVersion(t, version-1)
+	_, fixture := pgstoretest.MigrationDatabaseAtVersion(t, version-1)
 	for _, state := range []string{"absent", "valid", "invalid"} {
 		t.Run(state, func(t *testing.T) {
 			db := fixture.Database(t)
@@ -46,7 +48,7 @@ func TestAttemptEvidenceIndexMigrationResumesAfterInterruption(t *testing.T) {
 			if _, err := db.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
 				t.Fatal(err)
 			}
-			provider, err := migrationProvider(db)
+			provider, err := pgstoretest.MigrationProvider(db)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -81,14 +83,14 @@ func TestAttemptEvidenceIndexMigrationResumesAfterInterruption(t *testing.T) {
 }
 
 func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	repository, repositoryPool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	repository, repositoryPool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 	}
 	repository, counts := attemptCountedRepository(t, repository, repositoryPool)
-	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	previous := 0
 	for _, history := range []int{2, 50} {
 		started := time.Now()
@@ -134,7 +136,7 @@ func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
 							}
 							for j, record := range records {
 								wantID := fmt.Sprintf("target_%d_%06d", i+1, j+1)
-								wantTime := historyAt().Add(time.Duration(j/2) * time.Second)
+								wantTime := pgstoretest.HistoryAt().Add(time.Duration(j/2) * time.Second)
 								if record.OrganizationID != org || record.Metadata.ProjectID != "prj_shared" || record.Metadata.WorkItemID != "wi_shared" || record.EvidenceAttemptID != id || record.Metadata.ID != wantID || !record.Metadata.CreatedAt.Equal(wantTime) || (record.Metadata.DeletedAt != nil) != (j%2 == 1) {
 									t.Fatalf("evidence identity, order or deletion changed: attempt=%s row=%d", id, j)
 								}
@@ -164,7 +166,7 @@ func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
 					}
 					var plan []struct {
 						Plan struct {
-							searchPlanNode
+							pgstoretest.SearchPlanNode
 							Hits  float64 `json:"Shared Hit Blocks"`
 							Reads float64 `json:"Shared Read Blocks"`
 						}
@@ -172,8 +174,8 @@ func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
 					if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
 						t.Fatalf("decode evidence plan: %v", err)
 					}
-					var visits func(searchPlanNode) float64
-					visits = func(node searchPlanNode) float64 {
+					var visits func(pgstoretest.SearchPlanNode) float64
+					visits = func(node pgstoretest.SearchPlanNode) float64 {
 						count := 0.0
 						if node.Relation == "attachments" {
 							count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
@@ -183,13 +185,13 @@ func TestAttemptEvidenceDoesNotScanHistory(t *testing.T) {
 						}
 						return count
 					}
-					count := visits(plan[0].Plan.searchPlanNode)
+					count := visits(plan[0].Plan.SearchPlanNode)
 					blocks := plan[0].Plan.Hits + plan[0].Plan.Reads
 					t.Logf("history_rows_per_tenant=%d attempts=%d visited=%.0f buffers=%.0f exchanges=%d statements=%d", history*201*53, size, count, blocks, counts.exchanges.Load(), counts.statements.Load())
 					if count != float64(size*201) {
 						t.Errorf("evidence scanned %.0f history rows for %d attempts, want %d", count, size, size*201)
 					}
-					if !plan[0].Plan.usesIndex("attachments_evidence_history_order") || strings.Contains(string(raw), `"Node Type": "Sort"`) {
+					if !plan[0].Plan.UsesIndex("attachments_evidence_history_order") || strings.Contains(string(raw), `"Node Type": "Sort"`) {
 						t.Error("evidence must use its ordered history index without sorting")
 					}
 					if blocks > float64(size*240) {
@@ -259,7 +261,7 @@ func copyAttemptEvidenceHistory(ctx context.Context, admin *sql.DB, first, last 
 			} else {
 				ids[i] = ids[i][:6]
 			}
-			timestamps[i] = historyAt().Add(time.Duration((n-1)/2) * time.Second)
+			timestamps[i] = pgstoretest.HistoryAt().Add(time.Duration((n-1)/2) * time.Second)
 		}
 		perTenant := count * len(groups)
 		want := len(organizations) * perTenant
@@ -277,7 +279,7 @@ func copyAttemptEvidenceHistory(ctx context.Context, admin *sql.DB, first, last 
 			values[8], values[9], values[10] = timestamps[nIndex], g.item, g.attempt
 			values[11] = nil
 			if (first+nIndex)%2 == 0 {
-				values[11] = historyAt()
+				values[11] = pgstoretest.HistoryAt()
 			}
 			row++
 			return values, nil

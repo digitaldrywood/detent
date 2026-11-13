@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -19,10 +21,10 @@ import (
 )
 
 func TestCollaborationBytesAdjustsExistingTenantCounterAtomically(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second", "org_missing", "org_overflow", "org_negative"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 	}
 	for _, row := range []struct {
 		org   string
@@ -143,10 +145,10 @@ func TestCollaborationBytesAdjustsExistingTenantCounterAtomically(t *testing.T) 
 }
 
 func TestNewOrganizationsOwnCollaborationCounters(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	for _, org := range []tracker.OrganizationID{"org_new_first", "org_new_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			used, err := w.CollaborationBytes(t.Context())
 			if err != nil {
@@ -298,7 +300,7 @@ func TestNewOrganizationsOwnCollaborationCounters(t *testing.T) {
 	locked, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	first := startRepositoryTask(t, func(ctx context.Context) error {
+	first := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, "org_new_first", corestore.Serving, func(w tenantstore.Writer) error {
 			result, err := w.AdjustCollaborationBytes(ctx, 1, 8)
 			if err != nil || !result.Allowed || result.Used != 8 {
@@ -313,8 +315,8 @@ func TestNewOrganizationsOwnCollaborationCounters(t *testing.T) {
 			}
 		})
 	})
-	waitRepositorySignal(t, locked)
-	second := startRepositoryTask(t, func(ctx context.Context) error {
+	pgstoretest.WaitRepositorySignal(t, locked)
+	second := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, "org_new_first", corestore.Serving, func(w tenantstore.Writer) error {
 			result, err := w.AdjustCollaborationBytes(ctx, 1, 8)
 			if err != nil || result.Allowed || result.Applied || result.Used != 8 {
@@ -323,12 +325,12 @@ func TestNewOrganizationsOwnCollaborationCounters(t *testing.T) {
 			return nil
 		})
 	})
-	waitLeaseLock(t, admin, 1, second)
+	pgstoretest.WaitLeaseLock(t, admin, 1, second)
 	releaseOnce.Do(func() { close(release) })
-	if err := first.wait(t); err != nil {
+	if err := first.Wait(t); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.wait(t); err != nil {
+	if err := second.Wait(t); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.ReadTenant(t.Context(), "org_new_second", corestore.Serving, func(r tenantstore.Reader) error {

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -17,19 +19,19 @@ import (
 )
 
 func TestOperatorProcessContractFencesDurableReaping(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	objects := newHistoryObjects()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	objects := pgstoretest.NewHistoryObjects()
 	var owners []postgres.ProcessReceipt
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		seedLeaseFamily(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedLeaseFamily(t, repository, org)
 		for id := int64(1); id <= 2; id++ {
 			runner := fmt.Sprintf("runner_%d", id)
 			machine := fmt.Sprintf("machine_%d", id)
-			seedRunnerIdentity(t, repository, org, runner, machine, time.Now().UTC(), false)
-			lease := claimLease(t, repository, org, leaseClaim(id))
-			event := attemptEvent(lease)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, runner, machine, time.Now().UTC(), false)
+			lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(id))
+			event := pgstoretest.AttemptEvent(lease)
 			if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error { _, err := w.RecordAttempt(t.Context(), event); return err }); err != nil {
 				t.Fatal(err)
 			}
@@ -106,7 +108,7 @@ func TestOperatorProcessContractFencesDurableReaping(t *testing.T) {
 				t.Fatalf("live execution reaped: %v", err)
 			}
 			if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-				_, err := w.Release(t.Context(), leaseFence(lease), "complete")
+				_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "complete")
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -142,7 +144,7 @@ func TestOperatorProcessContractFencesDurableReaping(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, _ := repositoryFor(t, admin, smallPool())
+	reopened, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, owner := range owners {
 		input := postgres.OperatorProcessList{OrganizationID: owner.OrganizationID, ProjectID: owner.ProjectID, RunnerID: owner.RunnerID, EnrollmentID: owner.EnrollmentID, MachineID: owner.MachineID, Now: time.Now().UTC(), PageLimit: 2}
 		if err := reopened.ReadOperatorProcesses(t.Context(), owner.OrganizationID, corestore.Serving, func(r postgres.OperatorProcessReader) error {

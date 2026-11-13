@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
@@ -12,13 +14,13 @@ import (
 )
 
 func TestOnboardingProgressUsesOneTenantScopedRead(t *testing.T) {
-	repository, pool := repositoryFor(t, template.Database(t), smallPool())
+	repository, pool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	counts := new(pageWireCounts)
 	measured := pageMeasuredRepository(t, pool, counts)
 	for tenant, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		seedRepository(t, repository, org)
-		want := onboarding.Progress{Revision: 1, Repository: "existing", Doctor: tenant == 0, Provider: tenant == 1, Artifacts: "local", UpdatedAt: historyAt().Format("2006-01-02T15:04:05.999999999Z07:00")}
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
+		want := onboarding.Progress{Revision: 1, Repository: "existing", Doctor: tenant == 0, Provider: tenant == 1, Artifacts: "local", UpdatedAt: pgstoretest.HistoryAt().Format("2006-01-02T15:04:05.999999999Z07:00")}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.SaveProjectOnboardingProgress(t.Context(), "prj_first", want, 0)
 		}); err != nil {

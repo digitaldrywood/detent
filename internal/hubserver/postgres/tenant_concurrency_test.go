@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -15,9 +17,9 @@ import (
 func TestTenantTransactionConcurrentRevisions(t *testing.T) {
 	for _, isolated := range []bool{false, true} {
 		t.Run(map[bool]string{false: "same tenant", true: "two tenants"}[isolated], func(t *testing.T) {
-			r, _ := repositoryFor(t, template.Database(t), smallPool())
-			seedRepository(t, r, "org_first")
-			seedRepository(t, r, "org_second")
+			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+			pgstoretest.SeedRepository(t, r, "org_first")
+			pgstoretest.SeedRepository(t, r, "org_second")
 			organizations := []tracker.OrganizationID{"org_first", "org_first"}
 			if isolated {
 				organizations[1] = "org_second"
@@ -26,13 +28,13 @@ func TestTenantTransactionConcurrentRevisions(t *testing.T) {
 			proceed := make(chan struct{})
 			var once sync.Once
 			t.Cleanup(func() { once.Do(func() { close(proceed) }) })
-			var tasks []*repositoryTask
+			var tasks []*pgstoretest.RepositoryTask
 			var mutations []tenantMutation
 			for i, org := range organizations {
 				m := prepareTenantMutation(t, org, []string{"first", "second"}[i])
 				mutations = append(mutations, m)
 				workload := []corestore.Workload{corestore.Serving, corestore.Background}[i]
-				tasks = append(tasks, startRepositoryTask(t, func(ctx context.Context) error {
+				tasks = append(tasks, pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 					return r.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error {
 						item, err := w.WorkItem(ctx, m.event.ProjectID, m.event.WorkItemID)
 						if err != nil {
@@ -57,12 +59,12 @@ func TestTenantTransactionConcurrentRevisions(t *testing.T) {
 				}))
 			}
 			for range tasks {
-				waitRepositorySignal(t, ready)
+				pgstoretest.WaitRepositorySignal(t, ready)
 			}
 			once.Do(func() { close(proceed) })
 			conflicts := 0
 			for i, task := range tasks {
-				err := task.wait(t)
+				err := task.Wait(t)
 				if err == nil {
 					mutations[i].check(t, r, true)
 					continue
@@ -94,9 +96,9 @@ func TestTenantTransactionConcurrentRevisions(t *testing.T) {
 }
 
 func TestTenantTransactionReadScope(t *testing.T) {
-	admin := template.Database(t)
-	r, pool := repositoryFor(t, admin, smallPool())
-	seedRepository(t, r, "org_first")
+	admin := pgstoretest.Template.Database(t)
+	r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	pgstoretest.SeedRepository(t, r, "org_first")
 	if _, err := pool.Exec(t.Context(), `SET default_transaction_isolation='serializable'`); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +141,6 @@ func TestTenantTransactionReadScope(t *testing.T) {
 		return err
 	})
 	if err != nil {
-		requireSQLState(t, err, "25006")
+		pgstoretest.RequireSQLState(t, err, "25006")
 	}
 }

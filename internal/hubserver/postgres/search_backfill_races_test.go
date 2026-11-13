@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -73,14 +75,14 @@ func TestSearchBackfillRejectsChangedSources(t *testing.T) {
 }
 
 func TestSearchNativeIndexMigrationResumesAfterInterruption(t *testing.T) {
-	db, _ := migrationDatabaseAtVersion(t, 20261107001658)
+	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261107001658)
 	if _, err := db.ExecContext(t.Context(), `RESET ROLE;
  CREATE INDEX search_document_index_words_gin ON search_document_index USING gin(word_vector);
  UPDATE pg_index SET indisvalid=false WHERE indexrelid='search_document_index_words_gin'::regclass;
  SET ROLE detent_migration_v2`); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := migrationProvider(db)
+	provider, err := pgstoretest.MigrationProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,11 +98,11 @@ func TestSearchNativeIndexMigrationResumesAfterInterruption(t *testing.T) {
 }
 
 func TestSearchNativeSchemaRollbackRemovesBackfillCursors(t *testing.T) {
-	db, _ := migrationDatabaseAtVersion(t, 20261107001703)
+	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261107001703)
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO storage_conversion_cursors(organization_id,family) VALUES('org_first','search'),('org_second','search'); SET ROLE detent_migration_v2`); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := migrationProvider(db)
+	provider, err := pgstoretest.MigrationProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}

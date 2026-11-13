@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,13 +30,13 @@ import (
 
 func artifactCatalogFixture(t *testing.T) (*sql.DB, *postgres.Repository, *pgxpool.Pool, time.Time) {
 	t.Helper()
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
-	now := historyAt()
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		for _, id := range []string{"first", "second"} {
-			seedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, id := range []string{"first", "second"} {
@@ -173,7 +175,7 @@ func TestArtifactCatalogContractAccountsReceiptsOnceAcrossReopen(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, _ = repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	repository, _ = pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadArtifactCatalog(t.Context(), org, corestore.Serving, func(r postgres.ArtifactCatalogReader) error {
 			usage, err := r.CatalogUsage(t.Context())
@@ -509,7 +511,7 @@ func TestArtifactCatalogPendingAdmission(t *testing.T) {
 				if err := repository.Close(); err != nil {
 					t.Fatal(err)
 				}
-				repository, _ = repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+				repository, _ = pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 				for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 					for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
 						err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
@@ -586,15 +588,15 @@ func TestArtifactCatalogTrafficPruneSeeksBoundedHistoryPages(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Logf("%s: %s", probeCase.table, raw)
-				var plans []struct{ Plan searchPlanNode }
+				var plans []struct{ Plan pgstoretest.SearchPlanNode }
 				if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 					t.Fatalf("plan: %v", err)
 				}
-				if !plans[0].Plan.usesIndex(probeCase.index) || strings.Contains(string(raw), `"Node Type": "Sort"`) {
+				if !plans[0].Plan.UsesIndex(probeCase.index) || strings.Contains(string(raw), `"Node Type": "Sort"`) {
 					t.Fatalf("%s prune does not seek expiry index: %s", probeCase.table, raw)
 				}
-				var visits func(searchPlanNode) float64
-				visits = func(node searchPlanNode) float64 {
+				var visits func(pgstoretest.SearchPlanNode) float64
+				visits = func(node pgstoretest.SearchPlanNode) float64 {
 					var work float64
 					if node.Relation == probeCase.table {
 						work = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops

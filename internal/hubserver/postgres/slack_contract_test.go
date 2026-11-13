@@ -5,18 +5,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestSlackContractPersistsSettingsAndRetryReceipts(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	now := historyAt()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
-		evidence, err := newHistoryObjects().StoreDetail(t.Context(), string(org), []byte("example evidence"))
+		pgstoretest.SeedRepository(t, repository, org)
+		evidence, err := pgstoretest.NewHistoryObjects().StoreDetail(t.Context(), string(org), []byte("example evidence"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,7 +98,7 @@ func TestSlackContractPersistsSettingsAndRetryReceipts(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, _ = repositoryFor(t, admin, smallPool())
+	repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadSlack(t.Context(), org, corestore.Serving, func(r postgres.SlackReader) error {
 			settings, err := r.SlackIntegration(t.Context())

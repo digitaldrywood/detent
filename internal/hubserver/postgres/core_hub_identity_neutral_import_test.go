@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -18,14 +20,14 @@ import (
 )
 
 func TestNeutralHubIdentityImportPreservesBinaryCursor(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	objects := newHistoryObjects()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	objects := pgstoretest.NewHistoryObjects()
 	var wants []accessstore.HubIdentity
 	for index, encoding := range []string{"binary", "hex", "base64"} {
 		for tenant := 1; tenant <= 2; tenant++ {
 			org := tracker.OrganizationID(fmt.Sprintf("org_%s_%d", encoding, tenant))
-			seedTenantAccess(t, repository, org)
+			pgstoretest.SeedTenantAccess(t, repository, org)
 			key := bytes.Repeat([]byte{0, 0xff, 0x80, byte(tenant)}, 8)
 			id := fmt.Sprintf("hub_%032x", 2*index+tenant)
 			table := neutralFixtureTable(t, "hub_identity", []postgres.NeutralImportKey{{Column: "id", Kind: "text"}})
@@ -57,7 +59,7 @@ func TestNeutralHubIdentityImportPreservesBinaryCursor(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, _ = repositoryFor(t, admin, smallPool())
+	repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, want := range wants {
 		if err := repository.ReadTenant(t.Context(), want.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			got, err := r.HubIdentity(t.Context())
@@ -75,8 +77,8 @@ func TestNeutralHubIdentityImportPreservesBinaryCursor(t *testing.T) {
 }
 
 func TestNeutralHubIdentityImportRejectsAmbiguousSource(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
-	objects := newHistoryObjects()
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	objects := pgstoretest.NewHistoryObjects()
 	for _, tc := range []struct {
 		name   string
 		change func(*postgres.NeutralImportTable, *[]postgres.NeutralImportRow)
@@ -107,7 +109,7 @@ func TestNeutralHubIdentityImportRejectsAmbiguousSource(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			org := tracker.OrganizationID("org_" + tc.name)
-			seedTenantAccess(t, repository, org)
+			pgstoretest.SeedTenantAccess(t, repository, org)
 			table := neutralFixtureTable(t, "hub_identity", []postgres.NeutralImportKey{{Column: "id", Kind: "text"}})
 			rows := []postgres.NeutralImportRow{neutralFixtureRow(t, table, map[string]any{"id": "hub_00000000000000000000000000000001", "cursor_key": bytes.Repeat([]byte{0xff}, 32)})}
 			tc.change(&table, &rows)
@@ -124,7 +126,7 @@ func TestNeutralHubIdentityImportRejectsAmbiguousSource(t *testing.T) {
 		})
 	}
 	org := tracker.OrganizationID("org_existing")
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	want := accessstore.HubIdentity{OrganizationID: org, ID: "hub_00000000000000000000000000000001", CursorKey: bytes.Repeat([]byte{1}, 32)}
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.CreateHubIdentity(t.Context(), want) }); err != nil {
 		t.Fatal(err)

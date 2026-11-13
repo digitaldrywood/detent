@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 
 	"github.com/jackc/pgx/v5"
@@ -100,7 +102,7 @@ func TestSearchRLSAndSourceRelationships(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			d := searchIssue("org_first", "wi_first_1")
 			d.ID = "invalid/" + test.name
-			d.UpdatedAt = historyAt()
+			d.UpdatedAt = pgstoretest.HistoryAt()
 			test.mutate(&d)
 			d, err = f.content.Prepare(t.Context(), d, searchstore.Text{Title: "invalid source"})
 			if err != nil {
@@ -130,7 +132,7 @@ func TestSearchRLSAndSourceRelationships(t *testing.T) {
 func TestSearchSourceWritesShareRequestTransaction(t *testing.T) {
 	f := newSearchFixture(t)
 	d := searchIssue("org_first", "wi_first_1")
-	d.UpdatedAt = historyAt()
+	d.UpdatedAt = pgstoretest.HistoryAt()
 	d, err := f.content.Prepare(t.Context(), d, searchstore.Text{Title: "changed source"})
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +201,7 @@ func TestSearchIndexHelperDeniesUnscopedAndForeignTokens(t *testing.T) {
 	const query = `SELECT count(*) FROM public.search_index_candidates($1::tsquery,'prj_first',ARRAY[]::text[],false,'','work','','','all',false,'',$2::timestamptz,'',0,$3::text[],false) WHERE NOT scan_boundary`
 	terms := searchstore.CandidateTerms("org_second", searchstore.Query{Kind: "work", ProjectID: "prj_first", Text: "sentinel"})
 	var count int
-	if err := f.pool.QueryRow(pgtest.UnboundProbe(t.Context()), query, expression, historyAt(), terms).Scan(&count); err != nil || count != 0 {
+	if err := f.pool.QueryRow(pgtest.UnboundProbe(t.Context()), query, expression, pgstoretest.HistoryAt(), terms).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("unscoped helper count=%d err=%v", count, err)
 	}
 	tx, err := runtime.Begin(t.Context(), "org_first", pgtransport.Options{ReadOnly: true})
@@ -207,25 +209,14 @@ func TestSearchIndexHelperDeniesUnscopedAndForeignTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(t.Context())
-	if err := tx.QueryRow(t.Context(), query, expression, historyAt(), terms).Scan(&count); err != nil || count != 0 {
+	if err := tx.QueryRow(t.Context(), query, expression, pgstoretest.HistoryAt(), terms).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("foreign token helper count=%d err=%v", count, err)
 	}
 	own := searchstore.Query{Kind: "work", ProjectID: "prj_first", Text: "sentinel"}
-	if err := tx.QueryRow(t.Context(), query, strings.Join(searchstore.Expressions("org_first", own), " | "), historyAt(), searchstore.CandidateTerms("org_first", own)).Scan(&count); err != nil || count != 1 {
+	if err := tx.QueryRow(t.Context(), query, strings.Join(searchstore.Expressions("org_first", own), " | "), pgstoretest.HistoryAt(), searchstore.CandidateTerms("org_first", own)).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("own token helper count=%d error=%v", count, err)
 	}
 
-}
-
-type searchPlanProbe struct {
-	pgquery.DBTX
-	statement string
-	args      []any
-}
-
-func (p *searchPlanProbe) Query(ctx context.Context, statement string, args ...any) (pgx.Rows, error) {
-	p.statement, p.args = statement, args
-	return p.DBTX.Query(ctx, statement, args...)
 }
 
 func TestSearchIndexedQueryPlan(t *testing.T) {
@@ -306,7 +297,7 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 						t.Fatal(err)
 					}
 					defer tx.Rollback(t.Context())
-					probe := &searchPlanProbe{DBTX: tx}
+					probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
 					if _, err := pgquery.New(probe).SearchCandidates(t.Context(), pgquery.SearchCandidatesParams{OrganizationID: org, Kind: kind, ProjectID: string(q.ProjectID), Expression: expression, SearchTerms: terms, Exact: q.Exact, ProjectIds: []string{}}); err != nil {
 						t.Fatal(err)
 					}
@@ -325,20 +316,20 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 						t.Fatal(err)
 					}
 					var raw []byte
-					if err := planTx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+body, expression, string(q.ProjectID), []string{}, false, "", kind, "", "", "", false, "", historyAt(), "", int64(0), terms, q.Exact, []string{}, []string{}, []float64{}, []string{}, []int64{}, []bool{}).Scan(&raw); err != nil {
+					if err := planTx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+body, expression, string(q.ProjectID), []string{}, false, "", kind, "", "", "", false, "", pgstoretest.HistoryAt(), "", int64(0), terms, q.Exact, []string{}, []string{}, []float64{}, []string{}, []int64{}, []bool{}).Scan(&raw); err != nil {
 						t.Fatal(err)
 					}
-					var plan []struct{ Plan searchPlanNode }
+					var plan []struct{ Plan pgstoretest.SearchPlanNode }
 					if err := json.Unmarshal(raw, &plan); err != nil {
 						t.Fatal(err)
 					}
-					if len(plan) != 1 || org == "org_first" && !plan[0].Plan.usesIndex("search_documents_vector_idx") {
+					if len(plan) != 1 || org == "org_first" && !plan[0].Plan.UsesIndex("search_documents_vector_idx") {
 						t.Fatalf("search did not execute its GIN vector index: %s", raw)
 					}
 					if kind == "work" {
 						var visits float64
-						var inspect func(searchPlanNode)
-						inspect = func(node searchPlanNode) {
+						var inspect func(pgstoretest.SearchPlanNode)
+						inspect = func(node pgstoretest.SearchPlanNode) {
 							if node.Relation == "issues" {
 								visits += node.Rows * node.Loops
 							}
@@ -355,43 +346,6 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 			}
 		}
 	}
-}
-
-type searchPlanNode struct {
-	Alias        string           `json:"Alias"`
-	Index        string           `json:"Index Name"`
-	Relation     string           `json:"Relation Name"`
-	Rows         float64          `json:"Actual Rows"`
-	Loops        float64          `json:"Actual Loops"`
-	Removed      float64          `json:"Rows Removed by Filter"`
-	IndexRemoved float64          `json:"Rows Removed by Index Recheck"`
-	Plans        []searchPlanNode `json:"Plans"`
-}
-
-func (p searchPlanNode) usesIndex(name string) bool {
-	if p.Index == name && p.Loops > 0 {
-		return true
-	}
-	for _, child := range p.Plans {
-		if child.usesIndex(name) {
-			return true
-		}
-	}
-	return false
-}
-
-func (p searchPlanNode) documentWork() float64 {
-	work := float64(0)
-	if p.Relation == "search_documents" || p.Relation == "issues" || p.Relation == "search_postings" || p.Relation == "search_scope_refresh" || p.Relation == "search_scope_documents" || p.Relation == "projects" || p.Relation == "native_comments" {
-		work = (p.Rows + p.Removed + p.IndexRemoved) * p.Loops
-	}
-	if p.Relation == "" && (strings.HasPrefix(p.Index, "search_documents_") || strings.HasPrefix(p.Index, "search_postings_")) {
-		work += (p.Rows + p.Removed + p.IndexRemoved) * p.Loops
-	}
-	for _, child := range p.Plans {
-		work += child.documentWork()
-	}
-	return work
 }
 
 func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
@@ -447,7 +401,7 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 					for _, text := range []string{"commonterm", "common"} {
 						for _, kind := range []string{"thread", "work"} {
 							expression := strings.Join(searchstore.Expressions("org_first", searchstore.Query{ProjectID: "prj_first", Text: text}), " | ")
-							args := []any{expression, "prj_first", []string{}, false, "", kind, "", "", test.archived, test.reporter, "example-principal", historyAt(), cursor, int64(0)}
+							args := []any{expression, "prj_first", []string{}, false, "", kind, "", "", test.archived, test.reporter, "example-principal", pgstoretest.HistoryAt(), cursor, int64(0)}
 							if strings.Contains(body, "$15") {
 								args = append(args, searchstore.CandidateTerms("org_first", searchstore.Query{Kind: kind, ProjectID: "prj_first", Text: text}), false)
 							}
@@ -456,11 +410,11 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 							if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+body, args...).Scan(&raw); err != nil {
 								t.Fatal(err)
 							}
-							var plan []struct{ Plan searchPlanNode }
+							var plan []struct{ Plan pgstoretest.SearchPlanNode }
 							if err := json.Unmarshal(raw, &plan); err != nil {
 								t.Fatal(err)
 							}
-							work := plan[0].Plan.documentWork()
+							work := plan[0].Plan.DocumentWork()
 							key := test.name + "/" + kind + "/" + text + "/" + cursor
 							if work > searchstore.CandidateLimit {
 								t.Errorf("%s history=%d examined=%.0f: %s", kind, size, work, raw)
@@ -715,7 +669,7 @@ func seedSearchPlanHistory(t *testing.T, f searchFixture, d searchstore.Document
 			doc.ID = fmt.Sprintf("history_%d", index)
 			doc.Kind = "comment"
 			doc.SourceID = doc.ID
-			doc.UpdatedAt = historyAt().Add(time.Hour + time.Duration(index))
+			doc.UpdatedAt = pgstoretest.HistoryAt().Add(time.Hour + time.Duration(index))
 			doc.Title = "commonterm"
 			doc.UpdatedAt = doc.UpdatedAt.UTC()
 			sourcePayload, err := json.Marshal(struct {
@@ -995,7 +949,7 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
-			tx := tenantTx(t, runtime, f.pool, string(org))
+			tx := pgstoretest.TenantTx(t, runtime, f.pool, string(org))
 			queries := pgquery.New(tx)
 			terms := []string{searchstore.Prefix(org, "") + "g" + searchstore.LiteralHex("exa"), searchstore.Prefix(org, "prj_first") + "g" + searchstore.LiteralHex("exa")}
 			var scopes int64
@@ -1103,12 +1057,12 @@ func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
 					markerCap = 64
 				}
 				document.Revision = 2
-				document.UpdatedAt = historyAt().Add(time.Minute)
+				document.UpdatedAt = pgstoretest.HistoryAt().Add(time.Minute)
 				prepared, err := f.content.Prepare(t.Context(), document, searchstore.Text{Title: "currenttitle currentbody", Body: "currentbody"})
 				if err != nil {
 					t.Fatal(err)
 				}
-				tx := tenantTx(t, runtime, f.pool, string(org))
+				tx := pgstoretest.TenantTx(t, runtime, f.pool, string(org))
 				queries := pgquery.New(tx)
 				counts := func() [3]int64 {
 					t.Helper()

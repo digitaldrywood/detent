@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -14,13 +16,13 @@ import (
 )
 
 func TestBudgetOverrideContractScopesCapsExpiryAndOriginalLifetime(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	now := historyAt()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
 	policy := postgres.BudgetOverridePolicy{SettingsRevision: 1, Enabled: true, BasePerDayMaxUSD: 100, BasePerIssueMaxUSD: 10, MaxDuration: 48 * time.Hour, MaxMultiplier: 3, Now: now}
 	for index, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := seedCoreOrganization(t.Context(), w, org); err != nil {
+			if err := pgstoretest.SeedCoreOrganization(t.Context(), w, org); err != nil {
 				return err
 			}
 			for _, id := range []tracker.ProjectID{"first", "second"} {
@@ -111,7 +113,7 @@ func TestBudgetOverrideContractScopesCapsExpiryAndOriginalLifetime(t *testing.T)
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, _ = repositoryFor(t, admin, smallPool())
+	repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for index, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadBudgetOverrides(t.Context(), org, corestore.Serving, func(r postgres.BudgetOverrideReader) error {
 			rows, err := r.ListActiveBudgetOverrides(t.Context(), now, "", 2)

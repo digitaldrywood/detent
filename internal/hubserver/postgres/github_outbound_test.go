@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -23,8 +25,8 @@ import (
 )
 
 func TestGitHubOutboundFencesExpiredClaimsAcrossTenants(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"first", "second"} {
 		key, err := attachment.ArchiveKey(string(org), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -167,7 +169,7 @@ func TestGitHubOutboundFencesExpiredClaimsAcrossTenants(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(tracedPool.Close)
-		reader, err := postgres.NewRepository(t.Context(), tracedPool, smallPool())
+		reader, err := postgres.NewRepository(t.Context(), tracedPool, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}

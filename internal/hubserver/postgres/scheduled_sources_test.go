@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -16,11 +18,11 @@ import (
 )
 
 func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
-		objects := newHistoryObjects()
+		pgstoretest.SeedRepository(t, repository, org)
+		objects := pgstoretest.NewHistoryObjects()
 		content := eventstore.NewContent(objects)
 		for _, suffix := range []string{"first", "second"} {
 			project := tracker.ProjectID("prj_" + suffix)
@@ -44,8 +46,8 @@ func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T)
 					}); err != nil {
 						t.Fatal(err)
 					}
-					value := tracker.NativeComment{OrganizationID: org, ProjectID: project, WorkItemID: id, ID: comment.ID, Revision: tracker.Revision(comment.Revision), Sequence: comment.Sequence, Actor: historyActor(), Body: "ordinary", CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt}
-					row, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: id, RecordID: comment.ID, Revision: comment.Revision}, historyJSON(t, value))
+					value := tracker.NativeComment{OrganizationID: org, ProjectID: project, WorkItemID: id, ID: comment.ID, Revision: tracker.Revision(comment.Revision), Sequence: comment.Sequence, Actor: pgstoretest.HistoryActor(), Body: "ordinary", CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt}
+					row, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: id, RecordID: comment.ID, Revision: comment.Revision}, pgstoretest.HistoryJSON(t, value))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -53,8 +55,8 @@ func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T)
 						t.Fatal(err)
 					}
 				}
-				value := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: id, Number: number, Revision: tracker.Revision(current.Revision), Profile: "native"}, Title: current.Title, Body: "ordinary", Actor: historyActor(), CreatedAt: current.NativeCreatedAt, UpdatedAt: current.NativeUpdatedAt}
-				row, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: id, RecordID: string(id), Revision: current.Revision}, historyJSON(t, value))
+				value := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: id, Number: number, Revision: tracker.Revision(current.Revision), Profile: "native"}, Title: current.Title, Body: "ordinary", Actor: pgstoretest.HistoryActor(), CreatedAt: current.NativeCreatedAt, UpdatedAt: current.NativeUpdatedAt}
+				row, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: id, RecordID: string(id), Revision: current.Revision}, pgstoretest.HistoryJSON(t, value))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -67,20 +69,20 @@ func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T)
 		for i := range 93 {
 			id := fmt.Sprintf("scheduled_%03d", i)
 			body := "detent-checks"
-			at := historyAt().Add(time.Duration(i) * time.Second)
+			at := pgstoretest.HistoryAt().Add(time.Duration(i) * time.Second)
 			legacy := i >= 91
 			if i >= 41 && i < 91 {
 				body = "ordinary"
 			}
 			if legacy {
 				id = fmt.Sprintf("legacy_%03d", i)
-				at = historyAt().Add(-time.Second)
+				at = pgstoretest.HistoryAt().Add(-time.Second)
 				if i == 92 {
 					body = "ordinary"
 				}
 			}
-			value := tracker.NativeComment{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", ID: id, Revision: 1, Sequence: int64(i + 3), Actor: historyActor(), Body: body, CreatedAt: at, UpdatedAt: at}
-			row, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: value.ProjectID, WorkItemID: value.WorkItemID, RecordID: id, Revision: 1}, historyJSON(t, value))
+			value := tracker.NativeComment{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", ID: id, Revision: 1, Sequence: int64(i + 3), Actor: pgstoretest.HistoryActor(), Body: body, CreatedAt: at, UpdatedAt: at}
+			row, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: value.ProjectID, WorkItemID: value.WorkItemID, RecordID: id, Revision: 1}, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -117,8 +119,8 @@ func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T)
 		if rows, partial, err := read(); err != nil || !partial || len(rows) != 40 {
 			t.Fatal("unclassified current sources were reported complete or hid known evidence")
 		}
-		original := bytes.Clone(objects.objects[historical.PayloadObjectKey])
-		objects.objects[historical.PayloadObjectKey] = []byte("corrupt")
+		original := bytes.Clone(objects.Objects[historical.PayloadObjectKey])
+		objects.Objects[historical.PayloadObjectKey] = []byte("corrupt")
 		n, after, err := repository.BackfillScheduledSourcesAfter(t.Context(), org, content, 1, postgres.ScheduledSourceCursor{})
 		if n != 0 || !errors.Is(err, artifact.ErrIntegrity) || after.RecordID != historical.RecordID {
 			t.Fatalf("corrupt historical body backfill=%d %+v: %v", n, after, err)
@@ -126,7 +128,7 @@ func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T)
 		if n, _, err := repository.BackfillScheduledSourcesAfter(t.Context(), org, content, 1, after); n != 1 || err != nil {
 			t.Fatalf("poison row blocked following valid body: %d %v", n, err)
 		}
-		objects.objects[historical.PayloadObjectKey] = original
+		objects.Objects[historical.PayloadObjectKey] = original
 		if n, err := repository.BackfillScheduledSources(t.Context(), org, content, 1); n != 1 || err != nil {
 			t.Fatalf("bounded verified backfill=%d: %v", n, err)
 		}
@@ -146,7 +148,7 @@ func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T)
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(objects.objects[historical.PayloadObjectKey], original) {
+		if !bytes.Equal(objects.Objects[historical.PayloadObjectKey], original) {
 			t.Fatal("backfill changed historical object")
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -167,8 +169,8 @@ func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T)
 		}); err != nil {
 			t.Fatal(err)
 		}
-		next := tracker.NativeComment{OrganizationID: org, ProjectID: current.ProjectID, WorkItemID: current.WorkItemID, ID: current.ID, Revision: tracker.Revision(current.Revision + 1), Sequence: current.Sequence, Actor: historyActor(), Body: "ordinary", CreatedAt: current.CreatedAt, UpdatedAt: historyAt().Add(1000 * time.Second)}
-		nextVersion, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: next.ProjectID, WorkItemID: next.WorkItemID, RecordID: next.ID, Revision: int64(next.Revision)}, historyJSON(t, next))
+		next := tracker.NativeComment{OrganizationID: org, ProjectID: current.ProjectID, WorkItemID: current.WorkItemID, ID: current.ID, Revision: tracker.Revision(current.Revision + 1), Sequence: current.Sequence, Actor: pgstoretest.HistoryActor(), Body: "ordinary", CreatedAt: current.CreatedAt, UpdatedAt: pgstoretest.HistoryAt().Add(1000 * time.Second)}
+		nextVersion, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: next.ProjectID, WorkItemID: next.WorkItemID, RecordID: next.ID, Revision: int64(next.Revision)}, pgstoretest.HistoryJSON(t, next))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -194,8 +196,8 @@ func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T)
 			t.Fatal("obsolete scheduled revision remained in current sources")
 		}
 		rollback := errors.New("expected rollback")
-		rolled := tracker.NativeComment{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", ID: "rolled_back", Revision: 1, Sequence: 1000, Actor: historyActor(), Body: "detent-checks", CreatedAt: historyAt(), UpdatedAt: historyAt().Add(2000 * time.Second)}
-		rolledVersion, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: rolled.ProjectID, WorkItemID: rolled.WorkItemID, RecordID: rolled.ID, Revision: 1}, historyJSON(t, rolled))
+		rolled := tracker.NativeComment{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", ID: "rolled_back", Revision: 1, Sequence: 1000, Actor: pgstoretest.HistoryActor(), Body: "detent-checks", CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt().Add(2000 * time.Second)}
+		rolledVersion, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: rolled.ProjectID, WorkItemID: rolled.WorkItemID, RecordID: rolled.ID, Revision: 1}, pgstoretest.HistoryJSON(t, rolled))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -238,8 +240,8 @@ func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T)
 			}); err != nil {
 				t.Fatal(err)
 			}
-			value := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: item.ProjectID, WorkItemID: id, Number: int(item.Number), Revision: tracker.Revision(item.Revision + 1)}, Title: item.Title, Body: "detent-checks", Actor: historyActor(), CreatedAt: item.NativeCreatedAt, UpdatedAt: historyAt().Add(3000 * time.Second)}
-			version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: item.ProjectID, WorkItemID: id, RecordID: string(id), Revision: int64(value.Revision)}, historyJSON(t, value))
+			value := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: item.ProjectID, WorkItemID: id, Number: int(item.Number), Revision: tracker.Revision(item.Revision + 1)}, Title: item.Title, Body: "detent-checks", Actor: pgstoretest.HistoryActor(), CreatedAt: item.NativeCreatedAt, UpdatedAt: pgstoretest.HistoryAt().Add(3000 * time.Second)}
+			version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: item.ProjectID, WorkItemID: id, RecordID: string(id), Revision: int64(value.Revision)}, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -272,9 +274,9 @@ func TestScheduledSourcesSelectCurrentMarkersBeyondOrdinaryRecords(t *testing.T)
 			}
 		}
 		for i, id := range []tracker.NativeWorkItemID{"wi_missing_body", "wi_poison", "wi_success"} {
-			at := historyAt().Add(4000 * time.Second)
-			value := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: id, Number: 3 + i, Revision: 1}, Title: "Example source", Body: "ordinary", Actor: historyActor(), CreatedAt: at, UpdatedAt: at}
-			version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: value.ProjectID, WorkItemID: id, RecordID: string(id), Revision: 1}, historyJSON(t, value))
+			at := pgstoretest.HistoryAt().Add(4000 * time.Second)
+			value := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: id, Number: 3 + i, Revision: 1}, Title: "Example source", Body: "ordinary", Actor: pgstoretest.HistoryActor(), CreatedAt: at, UpdatedAt: at}
+			version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: value.ProjectID, WorkItemID: id, RecordID: string(id), Revision: 1}, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}

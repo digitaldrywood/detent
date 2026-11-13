@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/testenv/searchtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -17,7 +19,7 @@ func TestSearchPrefixReachesEveryThread(t *testing.T) {
 	const count = 65
 	for index := range count {
 		id := fmt.Sprintf("prefix_%03d", index)
-		f.put(t, searchstore.Document{OrganizationID: "org_first", ID: id, SourceID: id, Kind: "thread", Scope: "general", Status: "open", Revision: 1, UpdatedAt: historyAt().Add(time.Duration(index) * time.Nanosecond)}, searchstore.Text{Title: fmt.Sprintf("prefixword%03d", index)}, 0)
+		f.put(t, searchstore.Document{OrganizationID: "org_first", ID: id, SourceID: id, Kind: "thread", Scope: "general", Status: "open", Revision: 1, UpdatedAt: pgstoretest.HistoryAt().Add(time.Duration(index) * time.Nanosecond)}, searchstore.Text{Title: fmt.Sprintf("prefixword%03d", index)}, 0)
 	}
 	f.drain(t, "org_first")
 	for _, limit := range []int{7, 33, 200} {
@@ -125,7 +127,7 @@ func TestSearchOlderHighImpactPrefixRanksFirst(t *testing.T) {
 	seedSearchPlanHistory(t, f, d, 1, searchstore.CandidateLimit+1)
 	comment := searchIssue("org_first", "wi_first_1")
 	comment.ID, comment.Kind, comment.SourceID, comment.Revision = "history_1", "comment", "history_1", 2
-	comment.UpdatedAt = historyAt().Add(100000 * time.Hour)
+	comment.UpdatedAt = pgstoretest.HistoryAt().Add(100000 * time.Hour)
 	f.put(t, comment, searchstore.Text{Title: "commonterm"}, 1)
 	f.drain(t, "org_first")
 	if _, err := f.admin.ExecContext(t.Context(), `UPDATE search_postings SET impact=100
@@ -365,7 +367,7 @@ func TestSearchAggregateMigrationRebuildsEveryTenant(t *testing.T) {
 		f.drain(t, issue.OrganizationID)
 	}
 	f.admin.SetMaxOpenConns(1)
-	provider, err := migrationProvider(f.admin)
+	provider, err := pgstoretest.MigrationProvider(f.admin)
 	if err != nil {
 		t.Fatal(err)
 	}

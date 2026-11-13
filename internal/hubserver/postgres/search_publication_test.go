@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -150,17 +152,6 @@ CREATE TRIGGER count_search_publication_deletes AFTER DELETE ON search_postings
 	}
 }
 
-type searchPublicationProbe struct {
-	pgx.Tx
-	statement string
-	args      []any
-}
-
-func (p *searchPublicationProbe) QueryRow(ctx context.Context, statement string, args ...any) pgx.Row {
-	p.statement, p.args = statement, args
-	return p.Tx.QueryRow(ctx, statement, args...)
-}
-
 func assertSearchPublicationWork(t *testing.T, f searchFixture, d searchstore.Document, postings int64) {
 	t.Helper()
 	if err := withPlanSeedTransaction(t.Context(), f.admin, func(tx pgx.Tx) error {
@@ -179,7 +170,7 @@ FROM search_documents d WHERE organization_id=$1 AND id=$2`, d.OrganizationID, d
 		if _, err := tx.Exec(t.Context(), "SAVEPOINT publication_plan"); err != nil {
 			return err
 		}
-		probe := &searchPublicationProbe{Tx: tx}
+		probe := &pgstoretest.SearchPublicationProbe{Tx: tx}
 		if _, err := pgquery.New(probe).SearchPreparePublicationPostings(t.Context(), input); err != nil {
 			return err
 		}
@@ -187,21 +178,21 @@ FROM search_documents d WHERE organization_id=$1 AND id=$2`, d.OrganizationID, d
 			return err
 		}
 		var raw []byte
-		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(t.Context(), "ROLLBACK TO SAVEPOINT publication_plan"); err != nil {
 			return err
 		}
-		var plans []struct{ Plan searchPlanNode }
+		var plans []struct{ Plan pgstoretest.SearchPlanNode }
 		if err := json.Unmarshal(raw, &plans); err != nil {
 			return err
 		}
 		if len(plans) != 1 {
 			t.Fatalf("publication has %d plans, want one", len(plans))
 		}
-		var visits func(searchPlanNode) float64
-		visits = func(node searchPlanNode) float64 {
+		var visits func(pgstoretest.SearchPlanNode) float64
+		visits = func(node pgstoretest.SearchPlanNode) float64 {
 			total := (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
 			for _, child := range node.Plans {
 				total += visits(child)
@@ -337,7 +328,7 @@ END $fn$`)
 				waitBlocked("words")
 
 				if mode == "duplicate publisher" {
-					other, err := postgres.NewRepository(t.Context(), f.pool, smallPool())
+					other, err := postgres.NewRepository(t.Context(), f.pool, pgstoretest.SmallPool())
 					if err != nil {
 						t.Fatal(err)
 					}

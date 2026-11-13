@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 
@@ -46,12 +48,12 @@ func (c *boardQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, dat
 func (c *boardQueryTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
-	objects := newHistoryObjects()
+	objects := pgstoretest.NewHistoryObjects()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
 			_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "prj_example", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
 			return err
@@ -78,7 +80,7 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					row := viewstore.BoardRecord{OrganizationID: org, ProjectID: item.ProjectID, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("prj_example#%d", number)}, Dispatchable: true, CreatedAt: historyAt(), UpdatedAt: historyAt(), Payload: ref}
+					row := viewstore.BoardRecord{OrganizationID: org, ProjectID: item.ProjectID, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("prj_example#%d", number)}, Dispatchable: true, CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), Payload: ref}
 					if number%2 == 0 {
 						row.Labels = []string{"detent:workspace"}
 					}
@@ -130,7 +132,7 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 			}
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%04d", index))
 			probe := &boardQueryTracer{}
-			counted, err := postgres.NewRepository(ctx, tracedFeaturePool(t, pool, probe), smallPool())
+			counted, err := postgres.NewRepository(ctx, pgstoretest.TracedFeaturePool(t, pool, probe), pgstoretest.SmallPool())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -157,7 +159,7 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 				started := time.Now()
 				deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
 				defer cancel()
-				lanes, err := r.BoardLanes(deadline, viewstore.BoardSelection{ProjectID: "prj_example", Archived: new(false), ExcludeWorkspace: true}, historyAt())
+				lanes, err := r.BoardLanes(deadline, viewstore.BoardSelection{ProjectID: "prj_example", Archived: new(false), ExcludeWorkspace: true}, pgstoretest.HistoryAt())
 				if err != nil {
 					return err
 				}
@@ -273,7 +275,7 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 		checkTotals := func(want int64) {
 			t.Helper()
 			if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
-				lanes, err := r.BoardLanes(ctx, viewstore.BoardSelection{ProjectID: "prj_example", ExcludeWorkspace: true}, historyAt())
+				lanes, err := r.BoardLanes(ctx, viewstore.BoardSelection{ProjectID: "prj_example", ExcludeWorkspace: true}, pgstoretest.HistoryAt())
 				var total int64
 				for _, lane := range lanes {
 					total += lane.Total

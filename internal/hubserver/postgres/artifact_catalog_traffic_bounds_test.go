@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -218,15 +220,15 @@ SELECT organization_id,'',minute,sum(upload_bytes),sum(download_bytes),sum(reque
 					if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement.sql, statement.args...).Scan(&raw); err != nil {
 						t.Fatal(err)
 					}
-					var plans []struct{ Plan searchPlanNode }
+					var plans []struct{ Plan pgstoretest.SearchPlanNode }
 					if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 						t.Fatal("invalid PostgreSQL plan", err)
 					}
-					if strings.Contains(statement.sql, "-- name: PruneScopedCatalogTrafficReceipts") && !plans[0].Plan.usesIndex("artifact_catalog_traffic_receipts_project_expiry") {
+					if strings.Contains(statement.sql, "-- name: PruneScopedCatalogTrafficReceipts") && !plans[0].Plan.UsesIndex("artifact_catalog_traffic_receipts_project_expiry") {
 						t.Fatalf("receipt pruning did not seek its project/minute index: %s", raw)
 					}
-					var inspect func(searchPlanNode)
-					inspect = func(node searchPlanNode) {
+					var inspect func(pgstoretest.SearchPlanNode)
+					inspect = func(node pgstoretest.SearchPlanNode) {
 						work := (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
 						switch node.Relation {
 						case "artifact_catalog_traffic", "artifact_catalog_traffic_receipts", "artifact_catalog_service_traffic":

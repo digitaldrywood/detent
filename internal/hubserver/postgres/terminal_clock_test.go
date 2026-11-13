@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -15,12 +17,12 @@ import (
 
 func TestWorkItemTerminalStreakSurvivesEditsAndRestartsOnReopen(t *testing.T) {
 	t.Run("populated restore provenance", func(t *testing.T) {
-		db, fixture := migrationDatabaseAtVersion(t, 20261111225811)
-		seedCore(t, db)
+		db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261111225811)
+		pgstoretest.SeedCore(t, db)
 		if _, err := db.ExecContext(t.Context(), `INSERT INTO project_settings (organization_id,project_id) SELECT organization_id,id FROM projects ON CONFLICT DO NOTHING`); err != nil {
 			t.Fatal(err)
 		}
-		provider, err := migrationProvider(db)
+		provider, err := pgstoretest.MigrationProvider(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -31,8 +33,8 @@ func TestWorkItemTerminalStreakSurvivesEditsAndRestartsOnReopen(t *testing.T) {
 		if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM project_settings WHERE archive_completed_after_days IS NOT NULL OR archive_cancelled_after_days IS NOT NULL`).Scan(&enabled); err != nil || enabled != 0 {
 			t.Fatalf("upgrade enabled existing never periods=%d error=%v", enabled, err)
 		}
-		pool := rolePoolFromTemplate(t, fixture, db, "detent_runtime_v2", "")
-		repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+		pool := pgstoretest.RolePoolFromTemplate(t, fixture, db, "detent_runtime_v2", "")
+		repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,8 +100,8 @@ func TestWorkItemTerminalStreakSurvivesEditsAndRestartsOnReopen(t *testing.T) {
 
 	for _, constructor := range []string{"Open", "NewRepository"} {
 		t.Run(constructor, func(t *testing.T) {
-			admin := template.Database(t)
-			pool := rolePool(t, admin, "detent_runtime_v2", "")
+			admin := pgstoretest.Template.Database(t)
+			pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 			now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 			var repository *postgres.Repository
 			var err error
@@ -107,11 +109,11 @@ func TestWorkItemTerminalStreakSurvivesEditsAndRestartsOnReopen(t *testing.T) {
 				connection := pool.Config().ConnConfig
 				pool.Close()
 				repository, err = postgres.Open(t.Context(), postgres.Config{
-					Connection: template.Connection(t, admin, connection.User, connection.Password), Pool: smallPool(),
+					Connection: pgstoretest.Template.Connection(t, admin, connection.User, connection.Password), Pool: pgstoretest.SmallPool(),
 					LeaseClock: func() time.Time { return now },
 				}, os.DirFS("migrations"))
 			} else {
-				repository, err = postgres.NewRepository(t.Context(), pool, smallPool(), func() time.Time { return now })
+				repository, err = postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool(), func() time.Time { return now })
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -124,7 +126,7 @@ func TestWorkItemTerminalStreakSurvivesEditsAndRestartsOnReopen(t *testing.T) {
 			started := now
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-					if err := seedCoreOrganization(t.Context(), w, org); err != nil {
+					if err := pgstoretest.SeedCoreOrganization(t.Context(), w, org); err != nil {
 						return err
 					}
 					_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{

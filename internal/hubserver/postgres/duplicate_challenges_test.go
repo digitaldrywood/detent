@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -15,8 +17,8 @@ import (
 )
 
 func TestDuplicateChallengesAreScopedAndConsumedAtomically(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	admin.SetMaxOpenConns(2)
 	now := time.Date(2026, 11, 3, 18, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -25,7 +27,7 @@ func TestDuplicateChallengesAreScopedAndConsumedAtomically(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		for i, tokenPart := range []string{"a", "b"} {
 			created := now.Add(-2 * time.Hour)
 			if i == 1 {

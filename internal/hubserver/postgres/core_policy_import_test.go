@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -19,17 +21,17 @@ import (
 )
 
 func TestCorePolicyImportPreservesApprovalsPointersAndBudgetHistory(t *testing.T) {
-	db := template.Database(t)
-	repository, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	organizations := []tracker.OrganizationID{"org_policy_import_first", "org_policy_import_second"}
 	for _, organization := range organizations {
-		seedTenantAccess(t, repository, organization)
-		seedLeaseFamily(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
+		pgstoretest.SeedLeaseFamily(t, repository, organization)
 	}
 	now := time.Date(2026, 11, 1, 21, 0, 0, 0, time.UTC)
 	for _, organization := range organizations {
 		policyID := importedCurrentPolicyDescriptor().ID
-		source := postgres.CorePolicyImportSource{BundlePath: corePolicyCopy(t, organization, now), OrganizationID: organization, Objects: newHistoryObjects()}
+		source := postgres.CorePolicyImportSource{BundlePath: corePolicyCopy(t, organization, now), OrganizationID: organization, Objects: pgstoretest.NewHistoryObjects()}
 		for range 2 {
 			result, err := repository.ImportCorePolicies(t.Context(), source)
 			if err != nil {
@@ -42,7 +44,7 @@ func TestCorePolicyImportPreservesApprovalsPointersAndBudgetHistory(t *testing.T
 		if err := repository.Close(); err != nil {
 			t.Fatal(err)
 		}
-		repository, _ = repositoryFor(t, db, smallPool())
+		repository, _ = pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			current, err := reader.ProjectPolicy(t.Context(), "prj_2")
 			if err != nil {
@@ -183,8 +185,8 @@ func TestCorePolicyImportPreservesApprovalsPointersAndBudgetHistory(t *testing.T
 		if budgetRows != 4 {
 			t.Fatalf("organization %s monthly budget rows = %d, want 4", organization, budgetRows)
 		}
-		claimLease(t, repository, organization, leaseClaim(1))
-		claimLease(t, repository, organization, leaseClaim(2))
+		pgstoretest.ClaimLease(t, repository, organization, pgstoretest.LeaseClaim(1))
+		pgstoretest.ClaimLease(t, repository, organization, pgstoretest.LeaseClaim(2))
 		for range 2 {
 			facts, err := repository.ImportCoreMonthlyBudgetFacts(t.Context(), source)
 			if err != nil || facts != (postgres.CoreMonthlyBudgetFactsResult{Admissions: 2, Leases: 2}) {
@@ -194,7 +196,7 @@ func TestCorePolicyImportPreservesApprovalsPointersAndBudgetHistory(t *testing.T
 		if err := repository.Close(); err != nil {
 			t.Fatal(err)
 		}
-		repository, _ = repositoryFor(t, db, smallPool())
+		repository, _ = pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			second, err := reader.BillingMonthlyAdmission(t.Context(), 2)
 			if err != nil {

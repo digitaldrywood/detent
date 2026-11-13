@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -15,11 +17,11 @@ import (
 )
 
 func TestHealthPageSparseFiltersBoundHistoryReads(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	at := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 	}
 	for _, history := range []int{2000, 50000} {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -94,12 +96,12 @@ func TestHealthPageSparseFiltersBoundHistoryReads(t *testing.T) {
 						if err := admin.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, org, "prj_first", tc.state, tc.since, tc.after, tc.reporter, 2).Scan(&raw); err != nil {
 							t.Fatal(err)
 						}
-						var plans []struct{ Plan searchPlanNode }
+						var plans []struct{ Plan pgstoretest.SearchPlanNode }
 						if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 							t.Fatalf("decode plan: %v", err)
 						}
-						var visits func(searchPlanNode) float64
-						visits = func(p searchPlanNode) float64 {
+						var visits func(pgstoretest.SearchPlanNode) float64
+						visits = func(p pgstoretest.SearchPlanNode) float64 {
 							n := (p.Rows + p.Removed + p.IndexRemoved) * p.Loops
 							if p.Relation == "" {
 								n = 0

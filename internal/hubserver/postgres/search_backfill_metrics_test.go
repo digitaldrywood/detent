@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -93,7 +95,7 @@ func TestSearchBackfillWorkDoesNotGrowWithHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(pool.Close)
-			repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+			repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 			if err != nil {
 				t.Fatal(err)
 			}

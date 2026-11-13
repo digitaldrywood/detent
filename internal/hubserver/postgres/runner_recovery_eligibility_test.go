@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -14,13 +16,13 @@ import (
 )
 
 func TestRunnerRecoveryEligibilityIncludesHiddenDependencyAuthority(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Blocked"}, {Name: "In Progress"}, {Name: "Done", Terminal: true}}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		var ownedLease leasestore.Lease
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := seedCoreOrganization(t.Context(), w, organization); err != nil {
+			if err := pgstoretest.SeedCoreOrganization(t.Context(), w, organization); err != nil {
 				return err
 			}
 			if err := w.LockRelationshipGraph(t.Context()); err != nil {

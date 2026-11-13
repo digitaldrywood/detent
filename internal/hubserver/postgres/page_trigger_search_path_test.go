@@ -5,11 +5,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPageTriggersSurviveRestrictedCallerSearchPath(t *testing.T) {
-	admin, _ := migrationDatabaseAtVersion(t, 20261107062510)
+	admin, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261107062510)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO public.organizations(organization_id,name,local,created_at) VALUES($1,$1,false,now())`, org); err != nil {
 			t.Fatal(err)
@@ -26,7 +28,7 @@ func TestPageTriggersSurviveRestrictedCallerSearchPath(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}

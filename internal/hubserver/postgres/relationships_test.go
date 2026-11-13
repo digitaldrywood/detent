@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -19,14 +21,14 @@ import (
 )
 
 func TestRelationshipsAndLabelsAreTenantScopedAndAtomic(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), CreatedAt: historyAt()})
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), CreatedAt: pgstoretest.HistoryAt()})
 		}); err != nil {
 			t.Fatal(err)
 		}
-		seedRepository(t, repository, organization)
+		pgstoretest.SeedRepository(t, repository, organization)
 	}
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	writeRelationship := func(organization tracker.OrganizationID, project, item, relatedProject, related string, kind string) error {
@@ -323,14 +325,14 @@ func TestRelationshipsAndLabelsAreTenantScopedAndAtomic(t *testing.T) {
 }
 
 func TestHistoricalIssueVersionLabelsRoundTripIntoTypedMemberships(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_history")
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), Local: true, CreatedAt: historyAt()})
+		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), Local: true, CreatedAt: pgstoretest.HistoryAt()})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	seedRepository(t, repository, organization)
+	pgstoretest.SeedRepository(t, repository, organization)
 
 	var immutableIssueVersion tracker.NativeIssue
 	if err := json.Unmarshal([]byte(`{"labels":["legacy:imported","priority:critical"]}`), &immutableIssueVersion); err != nil {
@@ -373,14 +375,14 @@ func TestHistoricalIssueVersionLabelsRoundTripIntoTypedMemberships(t *testing.T)
 }
 
 func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
-	repository, runtimePool := repositoryFor(t, template.Database(t), smallPool())
+	repository, runtimePool := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), CreatedAt: historyAt()})
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), CreatedAt: pgstoretest.HistoryAt()})
 		}); err != nil {
 			t.Fatal(err)
 		}
-		seedRepository(t, repository, organization)
+		pgstoretest.SeedRepository(t, repository, organization)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			row, err := w.WorkItem(t.Context(), "prj_second", "wi_second_1")
 			if err != nil {
@@ -395,7 +397,7 @@ func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 				if pair[0] == "wi_first_1" && pair[1] == "wi_second_1" {
 					provenance = "progress_check"
 				}
-				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: organization, ProjectID: "prj_first", WorkItemID: pair[0], RelatedProjectID: "prj_second", RelatedWorkItemID: pair[1], Type: "dependency", Provenance: provenance}, "add", historyAt()); err != nil {
+				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: organization, ProjectID: "prj_first", WorkItemID: pair[0], RelatedProjectID: "prj_second", RelatedWorkItemID: pair[1], Type: "dependency", Provenance: provenance}, "add", pgstoretest.HistoryAt()); err != nil {
 					return err
 				}
 			}
@@ -464,11 +466,11 @@ func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 		}
 	}
 	t.Run("current provenance invalidates multiple edges and preserves manual links", func(t *testing.T) {
-		content := eventstore.NewContent(newHistoryObjects())
+		content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			var otherID int64
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: "wi_second_1", Type: "dependency"}, "add", historyAt()); err != nil {
+				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: "wi_second_1", Type: "dependency"}, "add", pgstoretest.HistoryAt()); err != nil {
 					return err
 				}
 				for index := range 201 {
@@ -476,7 +478,7 @@ func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 					if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "prj_second", NativeID: id, Number: int64(10 + index), Title: "Example progress dependency", NativeSourceKey: new("progress-check:" + string(id))}); err != nil {
 						return err
 					}
-					if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: id, Type: "dependency", Provenance: "progress_check"}, "add", historyAt()); err != nil {
+					if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: id, Type: "dependency", Provenance: "progress_check"}, "add", pgstoretest.HistoryAt()); err != nil {
 						return err
 					}
 				}
@@ -485,13 +487,13 @@ func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 					return err
 				}
 				otherID = other.ID
-				return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_2", RelatedProjectID: "prj_second", RelatedWorkItemID: "wi_progress_0", Type: "dependency", Provenance: "progress_check"}, "add", historyAt())
+				return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_2", RelatedProjectID: "prj_second", RelatedWorkItemID: "wi_progress_0", Type: "dependency", Provenance: "progress_check"}, "add", pgstoretest.HistoryAt())
 			}); err != nil {
 				t.Fatal(err)
 			}
 			prepare := func(id, kind, actorKind, agent string, sequence int64) eventstore.Event {
 				t.Helper()
-				raw, err := json.Marshal(tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateID: "wi_first_1", AggregateSequence: sequence, Type: kind, SchemaVersion: 1, RecordedAt: historyAt(), Actor: tracker.Actor{Kind: actorKind, PrincipalID: "example-owner", Agent: agent}})
+				raw, err := json.Marshal(tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateID: "wi_first_1", AggregateSequence: sequence, Type: kind, SchemaVersion: 1, RecordedAt: pgstoretest.HistoryAt(), Actor: tracker.Actor{Kind: actorKind, PrincipalID: "example-owner", Agent: agent}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -713,7 +715,7 @@ func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: "wi_progress_0", Type: "dependency", Provenance: "progress_check"}, "add", historyAt()); err != nil {
+				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: "wi_progress_0", Type: "dependency", Provenance: "progress_check"}, "add", pgstoretest.HistoryAt()); err != nil {
 					return err
 				}
 				_, err := w.AppendEvent(t.Context(), event)

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -26,22 +28,22 @@ import (
 type searchFixture struct {
 	repository *postgres.Repository
 	content    *searchstore.Content
-	objects    *historyObjects
+	objects    *pgstoretest.HistoryObjects
 	admin      *sql.DB
 	pool       *pgxpool.Pool
 }
 
 func newSearchFixture(t *testing.T) searchFixture {
 	t.Helper()
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
-	objects := newHistoryObjects()
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	objects := pgstoretest.NewHistoryObjects()
 	f := searchFixture{repository, searchstore.NewContent(objects), objects, admin, pool}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, historyAt()); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 	}
 	return f
 }
@@ -49,7 +51,7 @@ func newSearchFixture(t *testing.T) searchFixture {
 func (f searchFixture) put(t *testing.T, d searchstore.Document, text searchstore.Text, expected int64) searchstore.Document {
 	t.Helper()
 	if d.UpdatedAt.IsZero() {
-		d.UpdatedAt = historyAt()
+		d.UpdatedAt = pgstoretest.HistoryAt()
 	}
 	prepared, err := f.content.Prepare(t.Context(), d, text)
 	if err != nil {
@@ -424,9 +426,9 @@ func TestSearchRefreshBoundsAndIntegrity(t *testing.T) {
 	if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM search_documents WHERE organization_id='org_first' AND indexed_revision<>revision`).Scan(&pending); err != nil || pending != 1 {
 		t.Fatalf("one tick pending=%d err=%v", pending, err)
 	}
-	f.objects.mu.Lock()
-	delete(f.objects.objects, first.Payload.Key)
-	f.objects.mu.Unlock()
+	f.objects.Mu.Lock()
+	delete(f.objects.Objects, first.Payload.Key)
+	f.objects.Mu.Unlock()
 	if _, err := f.content.Find(t.Context(), f.repository, "org_first", searchstore.Query{Kind: "work", ProjectID: "prj_first", Text: "first", Limit: 10}); !errors.Is(err, artifact.ErrIntegrity) {
 		t.Fatalf("missing object error=%v", err)
 	}
@@ -512,10 +514,10 @@ func TestSearchFailedObjectDoesNotStarveRefresh(t *testing.T) {
 	f := newSearchFixture(t)
 	first := f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "firstmarker"}, 0)
 	f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: "secondmarker"}, 0)
-	f.objects.mu.Lock()
-	raw := f.objects.objects[first.Payload.Key]
-	delete(f.objects.objects, first.Payload.Key)
-	f.objects.mu.Unlock()
+	f.objects.Mu.Lock()
+	raw := f.objects.Objects[first.Payload.Key]
+	delete(f.objects.Objects, first.Payload.Key)
+	f.objects.Mu.Unlock()
 	if more, err := f.content.RefreshOne(t.Context(), f.repository, "org_first"); !more || !errors.Is(err, artifact.ErrIntegrity) {
 		t.Fatalf("failed object refresh more=%v error=%v", more, err)
 	}
@@ -526,9 +528,9 @@ func TestSearchFailedObjectDoesNotStarveRefresh(t *testing.T) {
 	if err := f.admin.QueryRowContext(t.Context(), `SELECT indexed_revision FROM search_documents WHERE organization_id='org_first' AND id='issue/wi_first_2'`).Scan(&revision); err != nil || revision != 1 {
 		t.Fatalf("next indexed revision=%d error=%v", revision, err)
 	}
-	f.objects.mu.Lock()
-	f.objects.objects[first.Payload.Key] = raw
-	f.objects.mu.Unlock()
+	f.objects.Mu.Lock()
+	f.objects.Objects[first.Payload.Key] = raw
+	f.objects.Mu.Unlock()
 	f.drain(t, "org_first")
 	for _, indexed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("scope refresh/indexed=%v", indexed), func(t *testing.T) {
@@ -540,10 +542,10 @@ func TestSearchFailedObjectDoesNotStarveRefresh(t *testing.T) {
 			if indexed {
 				g.drain(t, "org_first")
 			}
-			g.objects.mu.Lock()
-			raw := g.objects.objects[first.Payload.Key]
-			delete(g.objects.objects, first.Payload.Key)
-			g.objects.mu.Unlock()
+			g.objects.Mu.Lock()
+			raw := g.objects.Objects[first.Payload.Key]
+			delete(g.objects.Objects, first.Payload.Key)
+			g.objects.Mu.Unlock()
 			if _, err := g.admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='example-principal' WHERE organization_id='org_first' AND native_id='wi_first_1'`); err != nil {
 				t.Fatal(err)
 			}
@@ -561,9 +563,9 @@ func TestSearchFailedObjectDoesNotStarveRefresh(t *testing.T) {
 			if err := g.admin.QueryRowContext(t.Context(), `SELECT indexed_revision FROM search_documents WHERE organization_id='org_first' AND id='zzthread'`).Scan(&indexed); err != nil || indexed != 1 {
 				t.Fatalf("later indexed revision=%d error=%v", indexed, err)
 			}
-			g.objects.mu.Lock()
-			g.objects.objects[first.Payload.Key] = raw
-			g.objects.mu.Unlock()
+			g.objects.Mu.Lock()
+			g.objects.Objects[first.Payload.Key] = raw
+			g.objects.Mu.Unlock()
 			g.drain(t, "org_first")
 		})
 
@@ -615,7 +617,7 @@ func TestSearchPutRepairsMissingDocumentsWithoutOverwritingConflicts(t *testing.
 					}
 				})
 				d.Revision = 3
-				d.UpdatedAt = historyAt()
+				d.UpdatedAt = pgstoretest.HistoryAt()
 				if scenario != "missing" {
 					f.put(t, d, searchstore.Text{Title: "Original title"}, 0)
 				}

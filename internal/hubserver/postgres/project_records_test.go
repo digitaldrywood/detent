@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -18,14 +20,14 @@ import (
 )
 
 func TestProjectRecordsKeepTenantRevisionsAndClaims(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
 	records := make(map[tracker.OrganizationID]projectstore.Record)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := seedCoreOrganization(ctx, w, org); err != nil {
+			if err := pgstoretest.SeedCoreOrganization(ctx, w, org); err != nil {
 				return err
 			}
 			record, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "shared", Name: "Example", Profile: "native", RequireDependencies: true}, States: states})
@@ -266,12 +268,12 @@ func TestProjectRecordsKeepTenantRevisionsAndClaims(t *testing.T) {
 }
 
 func TestProjectAccessPageFiltersSelectedAndBlockedProjectsBeforeLimit(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	ids := []tracker.ProjectID{"project_a", "project_b", "project_c"}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, id := range ids {
 				if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: string(id), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo"}}}); err != nil {
@@ -281,7 +283,7 @@ func TestProjectAccessPageFiltersSelectedAndBlockedProjectsBeforeLimit(t *testin
 					return err
 				}
 			}
-			now := historyAt()
+			now := pgstoretest.HistoryAt()
 			if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: organization, ID: "selected_key", Name: "Selected key", Hash: "selected_hash", Scope: "operator", NativeOnly: true, UserID: "first", MembershipID: "membership_first", KeyScope: "read", ProjectAccess: "selected", Kind: "personal", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
@@ -393,7 +395,7 @@ func TestProjectAccessPageFiltersSelectedAndBlockedProjectsBeforeLimit(t *testin
 		t.Run(string(organization)+"/selected service credential", func(t *testing.T) {
 			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				for _, id := range []string{"service_selected", "service_empty"} {
-					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: id, Hash: "hash_" + id, Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: historyAt(), UpdatedAt: historyAt()}); err != nil {
+					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: id, Hash: "hash_" + id, Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt()}); err != nil {
 						return err
 					}
 				}
@@ -439,10 +441,10 @@ func TestProjectAccessPageFiltersSelectedAndBlockedProjectsBeforeLimit(t *testin
 }
 
 func TestProjectRecordMutationRollsBackRelationships(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
-	seedTenantAccess(t, repository, "org")
+	pgstoretest.SeedTenantAccess(t, repository, "org")
 	var record projectstore.Record
 	if err := repository.WriteTenant(ctx, "org", corestore.Serving, func(w tenantstore.Writer) error {
 		var err error
@@ -482,10 +484,10 @@ func TestProjectRecordMutationRollsBackRelationships(t *testing.T) {
 }
 
 func TestProjectWorkflowKeepsOccupiedStates(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
-	seedTenantAccess(t, repository, "org")
+	pgstoretest.SeedTenantAccess(t, repository, "org")
 	var record projectstore.Record
 	if err := repository.WriteTenant(ctx, "org", corestore.Serving, func(w tenantstore.Writer) error {
 		var err error
@@ -527,9 +529,9 @@ func TestProjectWorkflowKeepsOccupiedStates(t *testing.T) {
 }
 
 func TestProjectRecordMigrationKeepsExistingTenants(t *testing.T) {
-	admin, fixture := migrationDatabaseAtVersion(t, 20261101001936)
+	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261101001936)
 	admin.SetMaxOpenConns(1)
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,8 +549,8 @@ func TestProjectRecordMigrationKeepsExistingTenants(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "RESET ROLE"); err != nil {
 		t.Fatal(err)
 	}
-	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	pool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}

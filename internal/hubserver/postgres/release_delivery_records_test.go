@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -21,12 +23,12 @@ type releaseDeliveryWriter interface {
 }
 
 func TestRuntimeReleaseDeliveryIdentity(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
-		history := seedHistory(t, repository, org, string(org))
+		pgstoretest.SeedRepository(t, repository, org)
+		history := pgstoretest.SeedHistory(t, repository, org, string(org))
 		for number := 1; number <= 2; number++ {
-			record := eventstore.ReleaseDelivery{OrganizationID: org, ProjectID: "prj_first", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_first_%d", number)), ReleaseDelivery: tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{SourceIssueID: "wi_first_1", SourceChangeID: history.change.ID, SourceMergeSHA: "source", Repository: "https://github.com/owner/repository", PRNumber: number, HeadRef: "pick", HeadSHA: "head", BaseRef: "release/v1.0", BaseSHA: "base", FrozenSHA: "frozen"}, ChangeID: history.change.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example", ViaKey: "example-key"}, AssociatedAt: historyAt()}}
+			record := eventstore.ReleaseDelivery{OrganizationID: org, ProjectID: "prj_first", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_first_%d", number)), ReleaseDelivery: tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{SourceIssueID: "wi_first_1", SourceChangeID: history.Change.ID, SourceMergeSHA: "source", Repository: "https://github.com/owner/repository", PRNumber: number, HeadRef: "pick", HeadSHA: "head", BaseRef: "release/v1.0", BaseSHA: "base", FrozenSHA: "frozen"}, ChangeID: history.Change.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example", ViaKey: "example-key"}, AssociatedAt: pgstoretest.HistoryAt()}}
 			put := func(value eventstore.ReleaseDelivery) error {
 				return repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 					owner, ok := w.(releaseDeliveryWriter)

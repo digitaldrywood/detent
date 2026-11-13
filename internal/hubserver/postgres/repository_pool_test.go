@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -17,51 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type repositoryTask struct {
-	done   chan struct{}
-	err    error
-	cancel context.CancelFunc
-}
-
-func startRepositoryTask(t *testing.T, run func(context.Context) error) *repositoryTask {
-	t.Helper()
-	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
-	task := &repositoryTask{done: make(chan struct{}), cancel: cancel}
-	go func() { defer close(task.done); task.err = run(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		cleanup := testenv.WaitContext(t, context.WithoutCancel(t.Context()))
-		select {
-		case <-task.done:
-		case <-cleanup.Done():
-			t.Error("repository task did not exit during cleanup")
-		}
-	})
-	return task
-}
-
-func (task *repositoryTask) wait(t *testing.T) error {
-	t.Helper()
-	ctx := testenv.WaitContext(t, t.Context())
-	select {
-	case <-task.done:
-		return task.err
-	case <-ctx.Done():
-		t.Fatal("repository task did not finish")
-		return ctx.Err()
-	}
-}
-
-func waitRepositorySignal(t *testing.T, ready <-chan struct{}) {
-	t.Helper()
-	ctx := testenv.WaitContext(t, t.Context())
-	select {
-	case <-ready:
-	case <-ctx.Done():
-		t.Fatal("repository signal did not arrive")
-	}
-}
 
 type admissionContext struct {
 	context.Context
@@ -104,7 +61,7 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 		config  postgres.PoolConfig
 		serving int
 	}{
-		{smallPool(), 1},
+		{pgstoretest.SmallPool(), 1},
 		{postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}, 2},
 		{postgres.PoolConfig{MaxConnections: 4, ServingConnections: 1, BackgroundConnections: 2}, 1},
 		{postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1}, 1},
@@ -112,18 +69,18 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 	} {
 		config := test.config
 		t.Run(fmt.Sprintf("serving=%d/background=%d", config.ServingConnections, config.BackgroundConnections), func(t *testing.T) {
-			admin := template.Database(t)
-			repository, pool := repositoryFor(t, admin, config)
-			seedTenantAccess(t, repository, "org_first")
-			seedTenantAccess(t, repository, "org_second")
-			seedRepository(t, repository, "org_first")
-			seedRepository(t, repository, "org_second")
+			admin := pgstoretest.Template.Database(t)
+			repository, pool := pgstoretest.RepositoryFor(t, admin, config)
+			pgstoretest.SeedTenantAccess(t, repository, "org_first")
+			pgstoretest.SeedTenantAccess(t, repository, "org_second")
+			pgstoretest.SeedRepository(t, repository, "org_first")
+			pgstoretest.SeedRepository(t, repository, "org_second")
 			release := make(chan struct{})
 			var releaseOnce sync.Once
 			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-			hold := func(workload corestore.Workload, organization tracker.OrganizationID) *repositoryTask {
+			hold := func(workload corestore.Workload, organization tracker.OrganizationID) *pgstoretest.RepositoryTask {
 				ready := make(chan struct{})
-				task := startRepositoryTask(t, func(ctx context.Context) error {
+				task := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 					return repository.ReadTenant(ctx, organization, workload, func(r tenantstore.Reader) error {
 						projects, err := r.Projects(ctx, "", 2)
 						if err != nil {
@@ -143,14 +100,14 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 				})
 				select {
 				case <-ready:
-				case <-task.done:
-					t.Fatalf("held transaction exited before readiness: %v", task.err)
+				case <-task.Done:
+					t.Fatalf("held transaction exited before readiness: %v", task.Err)
 				case <-testenv.WaitContext(t, t.Context()).Done():
 					t.Fatal("held transaction did not start")
 				}
 				return task
 			}
-			var held []*repositoryTask
+			var held []*pgstoretest.RepositoryTask
 			for range config.BackgroundConnections {
 				held = append(held, hold(corestore.Background, "org_first"))
 			}
@@ -166,19 +123,19 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 			}
 			for _, workload := range []corestore.Workload{corestore.Serving, corestore.Background} {
 				waiting := make(chan struct{})
-				blocked := startRepositoryTask(t, func(ctx context.Context) error {
+				blocked := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 					observed := &admissionContext{Context: ctx, waiting: waiting}
 					return repository.Read(observed, "org_first", workload, func(corestore.Reader) error { return errors.New("exceeded configured workload budget") })
 				})
-				waitRepositorySignal(t, waiting)
-				blocked.cancel()
-				if err := blocked.wait(t); !errors.Is(err, context.Canceled) {
+				pgstoretest.WaitRepositorySignal(t, waiting)
+				blocked.Cancel()
+				if err := blocked.Wait(t); !errors.Is(err, context.Canceled) {
 					t.Fatalf("saturated admission error = %v", err)
 				}
 			}
 			releaseOnce.Do(func() { close(release) })
 			for _, task := range held {
-				if err := task.wait(t); err != nil {
+				if err := task.Wait(t); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -206,13 +163,13 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 }
 
 func TestRepositoryPoolConfiguration(t *testing.T) {
-	pool := rolePool(t, template.Database(t), "detent_runtime_v2", "")
+	pool := pgstoretest.RolePool(t, pgstoretest.Template.Database(t), "detent_runtime_v2", "")
 	for _, tc := range []struct {
 		name   string
 		config postgres.PoolConfig
 		pool   *pgxpool.Pool
 	}{
-		{"nil pool", smallPool(), nil},
+		{"nil pool", pgstoretest.SmallPool(), nil},
 		{"no health reserve", postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1}, pool},
 		{"background leaves no serving reserve", postgres.PoolConfig{MaxConnections: 4, ServingConnections: 1, BackgroundConnections: 3}, pool},
 		{"unbounded pool", postgres.PoolConfig{ServingConnections: 1, BackgroundConnections: 1}, pool},
@@ -228,7 +185,7 @@ func TestRepositoryPoolConfiguration(t *testing.T) {
 			}
 		})
 	}
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,9 +209,9 @@ func TestRepositoryPoolConfiguration(t *testing.T) {
 }
 
 func TestRepositoryReadCommittedAndReadOnly(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
-	seedRepository(t, repository, "org_first")
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	pgstoretest.SeedRepository(t, repository, "org_first")
 	if _, err := pool.Exec(t.Context(), `SET default_transaction_isolation='serializable'`); err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +260,7 @@ func TestRepositoryReadCommittedAndReadOnly(t *testing.T) {
 		return err
 	})
 	if writerAvailable {
-		requireSQLState(t, err, "25006")
+		pgstoretest.RequireSQLState(t, err, "25006")
 	} else if err != nil {
 		t.Fatal(err)
 	}

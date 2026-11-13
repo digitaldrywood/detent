@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -18,16 +20,16 @@ import (
 )
 
 func TestBillingCreditsKeepTenantBalancesAndReceipts(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: org, Mode: "live"})
 		}); err != nil {
 			t.Fatal(err)
 		}
-		payment := billingstore.CreditTransaction{OrganizationID: org, Mode: "live", Source: "payment_example", AmountMicros: 1500, Kind: "purchase", RecordedAt: historyAt()}
+		payment := billingstore.CreditTransaction{OrganizationID: org, Mode: "live", Source: "payment_example", AmountMicros: 1500, Kind: "purchase", RecordedAt: pgstoretest.HistoryAt()}
 		for _, test := range []struct {
 			name    string
 			amount  int64
@@ -80,10 +82,10 @@ func TestBillingCreditsKeepTenantBalancesAndReceipts(t *testing.T) {
 }
 
 func TestBillingCreditReasonUsesImmutableObjectReference(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_credit_reason")
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: org, Mode: "live"})
 	}); err != nil {
@@ -99,7 +101,7 @@ func TestBillingCreditReasonUsesImmutableObjectReference(t *testing.T) {
 		return billingstore.AuditReference{Key: key, SHA256: digestText, CompressedBytes: 1, ContentBytes: int64(len(value)), Codec: "gzip", FormatVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
 	}
 	reference := makeReference("Example credit adjustment reason")
-	row := billingstore.CreditTransaction{OrganizationID: org, Mode: "live", Source: "adjustment:example", AmountMicros: 500, Kind: "complimentary", Actor: "operator_example", ReasonReference: reference, RecordedAt: historyAt()}
+	row := billingstore.CreditTransaction{OrganizationID: org, Mode: "live", Source: "adjustment:example", AmountMicros: 500, Kind: "complimentary", Actor: "operator_example", ReasonReference: reference, RecordedAt: pgstoretest.HistoryAt()}
 	for _, test := range []struct {
 		row     billingstore.CreditTransaction
 		applied bool
@@ -145,23 +147,23 @@ func TestBillingCreditReasonUsesImmutableObjectReference(t *testing.T) {
 }
 
 func TestBillingIncludedCreditsSerializeSpending(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_first")
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: org, Mode: "live"})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	period := billingstore.CreditPeriod{OrganizationID: org, Mode: "live", StartsAt: historyAt(), EndsAt: historyAt().Add(24 * time.Hour), AllowanceMicros: 100}
+	period := billingstore.CreditPeriod{OrganizationID: org, Mode: "live", StartsAt: pgstoretest.HistoryAt(), EndsAt: pgstoretest.HistoryAt().Add(24 * time.Hour), AllowanceMicros: 100}
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.SpendBillingIncludedCredit(t.Context(), period, 0)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var second *repositoryTask
+	var second *pgstoretest.RepositoryTask
 	var firstUsed, secondUsed int64
 	err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		var err error
@@ -169,20 +171,20 @@ func TestBillingIncludedCreditsSerializeSpending(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		second = startRepositoryTask(t, func(ctx context.Context) error {
+		second = pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 			return repository.WriteTenant(ctx, org, corestore.Background, func(other tenantstore.Writer) error {
 				var err error
 				secondUsed, err = other.SpendBillingIncludedCredit(ctx, period, 80)
 				return err
 			})
 		})
-		waitLeaseLock(t, admin, 1, second)
+		pgstoretest.WaitLeaseLock(t, admin, 1, second)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := second.wait(t); err != nil {
+	if err := second.Wait(t); err != nil {
 		t.Fatal(err)
 	}
 	if firstUsed != 80 || secondUsed != 20 {
@@ -191,10 +193,10 @@ func TestBillingIncludedCreditsSerializeSpending(t *testing.T) {
 }
 
 func TestBillingUsageCreditReplayKeepsAllowanceAndLedgerAtomic(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_usage_receipts")
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		for _, mode := range []string{"live", "test"} {
 			if err := w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: org, Mode: mode, BalanceMicros: 1000}); err != nil {
@@ -205,7 +207,7 @@ func TestBillingUsageCreditReplayKeepsAllowanceAndLedgerAtomic(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	start := historyAt()
+	start := pgstoretest.HistoryAt()
 	period := billingstore.CreditPeriod{OrganizationID: org, Mode: "live", StartsAt: start, EndsAt: start.AddDate(0, 1, 0), AllowanceMicros: 100}
 	makeReasonReference := func(value string) billingstore.AuditReference {
 		digest := sha256.Sum256([]byte(value))
@@ -293,11 +295,11 @@ func TestBillingUsageCreditReplayKeepsAllowanceAndLedgerAtomic(t *testing.T) {
 }
 
 func TestBillingUsageReceiptAppliesAllowanceOnce(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_first")
-	seedTenantAccess(t, repository, org)
-	window := historyAt().Truncate(time.Hour)
+	pgstoretest.SeedTenantAccess(t, repository, org)
+	window := pgstoretest.HistoryAt().Truncate(time.Hour)
 	first := billingstore.UsageReceipt{OrganizationID: org, ID: "mutation_example", WindowStart: window, Metric: "api_mutations", Amount: 7}
 	denied := billingstore.UsageReceipt{OrganizationID: org, ID: "mutation_denied", WindowStart: window, Metric: "api_mutations", Amount: 4}
 	var result billingstore.UsageResult

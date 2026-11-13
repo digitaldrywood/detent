@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -18,12 +20,12 @@ import (
 )
 
 func TestReleaseAuditTypedOwner(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		var latest releaseaudit.Checkpoint
 		for _, sequence := range []int{2, 1} {
 			snapshot := releaseaudit.Snapshot{Identity: releaseaudit.Identity{ProjectID: "prj_shared", Repository: "example-org/" + string(org), Commit: strings.Repeat("a", 40), ReleaseSeries: "release/v1.0", RunID: "run", Attempt: "1", JobID: "audit", RunURL: "https://example.test/run"}, Sequence: sequence, Status: "incomplete", BundleCommit: releaseaudit.BundleCommit, BundleDigest: releaseaudit.BundleDigest, Allowance: releaseaudit.Allowance{Invocations: 20, Usage: releaseaudit.Usage{Input: 1000, Output: 1000, Cached: 1000}}, Ledger: []byte(`[]`)}
@@ -33,7 +35,7 @@ func TestReleaseAuditTypedOwner(t *testing.T) {
 			}
 			id := fmt.Sprintf("att_%d", sequence)
 			c.Parts = []releaseaudit.Part{{AttachmentID: id, Index: 0, Offset: 0, Bytes: len(raw), Digest: c.Digest}}
-			if _, err := admin.ExecContext(ctx, `INSERT INTO attachments(organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at) VALUES($1,'prj_shared',$2,'first','audit.txt','text/plain',$3,$4,$5)`, org, id, len(raw), c.Digest, historyAt()); err != nil {
+			if _, err := admin.ExecContext(ctx, `INSERT INTO attachments(organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at) VALUES($1,'prj_shared',$2,'first','audit.txt','text/plain',$3,$4,$5)`, org, id, len(raw), c.Digest, pgstoretest.HistoryAt()); err != nil {
 				t.Fatal(err)
 			}
 			put := func(checkpoint releaseaudit.Checkpoint) error {
@@ -42,7 +44,7 @@ func TestReleaseAuditTypedOwner(t *testing.T) {
 					if !ok {
 						t.Fatal("PostgreSQL release audit owner unavailable")
 					}
-					return owner.PutReleaseAudit(ctx, "prj_shared", checkpoint, historyAt())
+					return owner.PutReleaseAudit(ctx, "prj_shared", checkpoint, pgstoretest.HistoryAt())
 				})
 			}
 			invalid := c
@@ -62,7 +64,7 @@ func TestReleaseAuditTypedOwner(t *testing.T) {
 				t.Fatalf("changed replay=%v", err)
 			}
 			if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
-				expired, err := w.(attachmentstore.ExpiryWriter).ExpireAttachment(ctx, "prj_shared", id, historyAt().Add(time.Hour), historyAt().Add(2*time.Hour))
+				expired, err := w.(attachmentstore.ExpiryWriter).ExpireAttachment(ctx, "prj_shared", id, pgstoretest.HistoryAt().Add(time.Hour), pgstoretest.HistoryAt().Add(2*time.Hour))
 				if expired {
 					t.Error("checkpoint evidence expired")
 				}
@@ -71,7 +73,7 @@ func TestReleaseAuditTypedOwner(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
-				return w.(attachmentstore.DeletionWriter).DeleteAttachment(ctx, "prj_shared", id, historyAt())
+				return w.(attachmentstore.DeletionWriter).DeleteAttachment(ctx, "prj_shared", id, pgstoretest.HistoryAt())
 			}); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("checkpoint evidence deletion=%v", err)
 			}

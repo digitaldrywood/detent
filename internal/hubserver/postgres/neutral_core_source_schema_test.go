@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
@@ -72,8 +74,8 @@ func driftNeutralCoreSchema(t *testing.T, path, tableName, column, change string
 }
 
 func TestNeutralCoreImportsRejectWellFormedSchemaDriftBeforePin(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, target := range []struct{ table, column, family string }{
 		{"projects", "name", "project"},
 		{"repositories", "github_owner", "project"},
@@ -93,7 +95,7 @@ func TestNeutralCoreImportsRejectWellFormedSchemaDriftBeforePin(t *testing.T) {
 			t.Run(target.table+"_"+change, func(t *testing.T) {
 				org := tracker.OrganizationID("org_" + target.table + "_" + change)
 				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
-					return seedCoreOrganization(t.Context(), w, org)
+					return pgstoretest.SeedCoreOrganization(t.Context(), w, org)
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -109,11 +111,11 @@ func TestNeutralCoreImportsRejectWellFormedSchemaDriftBeforePin(t *testing.T) {
 				var err error
 				switch target.family {
 				case "project":
-					_, err = repository.ImportCoreProjects(t.Context(), postgres.CoreProjectImportSource{BundlePath: path, OrganizationID: org, Objects: newHistoryObjects()})
+					_, err = repository.ImportCoreProjects(t.Context(), postgres.CoreProjectImportSource{BundlePath: path, OrganizationID: org, Objects: pgstoretest.NewHistoryObjects()})
 				case "policy":
-					_, err = repository.ImportCorePolicies(t.Context(), postgres.CorePolicyImportSource{BundlePath: path, OrganizationID: org, Objects: newHistoryObjects()})
+					_, err = repository.ImportCorePolicies(t.Context(), postgres.CorePolicyImportSource{BundlePath: path, OrganizationID: org, Objects: pgstoretest.NewHistoryObjects()})
 				case "budget":
-					_, err = repository.ImportCoreMonthlyBudgetFacts(t.Context(), postgres.CorePolicyImportSource{BundlePath: path, OrganizationID: org, Objects: newHistoryObjects()})
+					_, err = repository.ImportCoreMonthlyBudgetFacts(t.Context(), postgres.CorePolicyImportSource{BundlePath: path, OrganizationID: org, Objects: pgstoretest.NewHistoryObjects()})
 				}
 				if !errors.Is(err, storagecatalog.ErrUnmapped) {
 					t.Fatalf("well-formed %s drift was not rejected: %v", change, err)

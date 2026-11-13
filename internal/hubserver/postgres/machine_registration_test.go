@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -12,11 +14,11 @@ import (
 )
 
 func TestOwnedMachineRegistrationRejectsCredentialTakeover(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		seedRunnerIdentity(t, repository, org, "owner", "enrolled", historyAt(), true)
-		seedRunnerIdentity(t, repository, org, "other", "other_enrolled", historyAt(), true)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedRunnerIdentity(t, repository, org, "owner", "enrolled", pgstoretest.HistoryAt(), true)
+		pgstoretest.SeedRunnerIdentity(t, repository, org, "other", "other_enrolled", pgstoretest.HistoryAt(), true)
 		for _, tc := range []struct {
 			name, machine, owner string
 			capacity             int64

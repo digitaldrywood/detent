@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -12,16 +14,16 @@ import (
 )
 
 func TestLeaseFamilyRowSecurity(t *testing.T) {
-	admin := template.Database(t)
-	r, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, r, org)
+		pgstoretest.SeedLeaseFamily(t, r, org)
 		for _, id := range []int64{1, 2} {
-			lease := claimLease(t, r, org, leaseClaim(id))
-			recordLeaseAttempt(t, r, org, attemptEvent(lease))
+			lease := pgstoretest.ClaimLease(t, r, org, pgstoretest.LeaseClaim(id))
+			pgstoretest.RecordLeaseAttempt(t, r, org, pgstoretest.AttemptEvent(lease))
 		}
 	}
-	runtime := runtimeFor(t, pool, pool)
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
 	for _, tc := range []struct{ table, columns string }{
 		{"machines", "id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at"},
 		{"leases", "lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at"},
@@ -32,7 +34,7 @@ func TestLeaseFamilyRowSecurity(t *testing.T) {
 		t.Run(tc.table, func(t *testing.T) {
 			for _, org := range []string{"", "org_unknown", "org_first", "org_second"} {
 				t.Run("scope_"+org, func(t *testing.T) {
-					tx := tenantTx(t, runtime, pool, org)
+					tx := pgstoretest.TenantTx(t, runtime, pool, org)
 					defer tx.Rollback(t.Context())
 					var count int
 					if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+tc.table).Scan(&count); err != nil {
@@ -62,13 +64,13 @@ func TestLeaseFamilyRowSecurity(t *testing.T) {
 			for _, operation := range []string{"insert", "move"} {
 				for _, target := range []string{"org_second", "org_foreign"} {
 					t.Run(operation+"/"+target, func(t *testing.T) {
-						tx := tenantTx(t, runtime, pool, "org_first")
+						tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
 						query := "UPDATE " + tc.table + " SET organization_id=$1"
 						if operation == "insert" {
 							query = fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT $1,%s FROM %s LIMIT 1", tc.table, tc.columns, tc.columns, tc.table)
 						}
 						_, err := tx.Exec(t.Context(), query, target)
-						requireSQLState(t, err, state)
+						pgstoretest.RequireSQLState(t, err, state)
 					})
 				}
 			}
@@ -114,13 +116,13 @@ func TestLeaseFamilyRowSecurity(t *testing.T) {
 }
 
 func TestLeaseFamilyConstraints(t *testing.T) {
-	admin := template.Database(t)
-	r, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, r, org)
+		pgstoretest.SeedLeaseFamily(t, r, org)
 		for _, id := range []int64{1, 2} {
-			lease := claimLease(t, r, org, leaseClaim(id))
-			recordLeaseAttempt(t, r, org, attemptEvent(lease))
+			lease := pgstoretest.ClaimLease(t, r, org, pgstoretest.LeaseClaim(id))
+			pgstoretest.RecordLeaseAttempt(t, r, org, pgstoretest.AttemptEvent(lease))
 		}
 	}
 	if err := r.WriteLeases(t.Context(), "org_second", corestore.Serving, func(w leasestore.Writer) error {
@@ -128,7 +130,7 @@ func TestLeaseFamilyConstraints(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runtime := runtimeFor(t, pool, pool)
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
 	for _, tc := range []struct{ name, query, state string }{
 		{"one active owner", `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at) SELECT organization_id,'duplicate',issue_id,machine_id,'duplicate',work_item_revision,acquired_at,renewed_at,expires_at FROM leases WHERE lease_id='lease_1'`, "23505"},
 		{"tenant required", `UPDATE machines SET organization_id=NULL`, "42501"},
@@ -149,10 +151,10 @@ func TestLeaseFamilyConstraints(t *testing.T) {
 		{"sequence reset forbidden", `SELECT setval('leases_fencing_token_seq',1)`, "42501"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tx := tenantTx(t, runtime, pool, "org_first")
+			tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
 			defer tx.Rollback(t.Context())
 			_, err := tx.Exec(t.Context(), tc.query)
-			requireSQLState(t, err, tc.state)
+			pgstoretest.RequireSQLState(t, err, tc.state)
 		})
 	}
 }

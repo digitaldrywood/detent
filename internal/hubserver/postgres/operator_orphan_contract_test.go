@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -32,22 +34,22 @@ func (p *operatorOrphanProbe) QueryRow(ctx context.Context, query string, args .
 }
 
 func TestOperatorOrphanScanAdvancesPastOtherRunners(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	objects := newHistoryObjects()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	objects := pgstoretest.NewHistoryObjects()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	wants := make(map[string][]int64)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		seedLeaseFamily(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedLeaseFamily(t, repository, org)
 		for id := int64(1); id <= 2; id++ {
-			seedRunnerIdentity(t, repository, org, fmt.Sprintf("runner_%d", id), fmt.Sprintf("machine_%d", id), now, false)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, fmt.Sprintf("runner_%d", id), fmt.Sprintf("machine_%d", id), now, false)
 		}
 		for id := int64(1); id <= 2; id++ {
 			project := tracker.ProjectID(fmt.Sprintf("prj_%d", id))
 			runner := fmt.Sprintf("runner_%d", id)
-			lease := claimLease(t, repository, org, leaseClaim(id))
-			event := attemptEvent(lease)
+			lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(id))
+			event := pgstoretest.AttemptEvent(lease)
 			if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
 				_, err := w.RecordAttempt(t.Context(), event)
 				return err
@@ -85,7 +87,7 @@ func TestOperatorOrphanScanAdvancesPastOtherRunners(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-				_, err := w.Release(t.Context(), leaseFence(lease), "complete")
+				_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "complete")
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -107,7 +109,7 @@ func TestOperatorOrphanScanAdvancesPastOtherRunners(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, pool := repositoryFor(t, admin, smallPool())
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for id := int64(1); id <= 2; id++ {
 			query := postgres.OperatorOrphanQuery{OrganizationID: org, ProjectID: tracker.ProjectID(fmt.Sprintf("prj_%d", id)), RunnerID: fmt.Sprintf("runner_%d", id), EnrollmentID: fmt.Sprintf("enrollment_runner_%d", id), MachineID: tracker.MachineID(fmt.Sprintf("machine_%d", id)), Now: now.Add(2 * time.Hour), Limit: 1}
@@ -177,7 +179,7 @@ func TestOperatorOrphanScanAdvancesPastOtherRunners(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), `ANALYZE runner_sessions`); err != nil {
 		t.Fatal(err)
 	}
-	tx := tenantTx(t, runtimeFor(t, pool, pool), pool, "org_first")
+	tx := pgstoretest.TenantTx(t, pgstoretest.RuntimeFor(t, pool, pool), pool, "org_first")
 	defer tx.Rollback(t.Context())
 	probe := &operatorOrphanProbe{DBTX: tx}
 	_, err := pgquery.New(probe).OperatorOrphanScanThrough(t.Context(), pgquery.OperatorOrphanScanThroughParams{OrganizationID: "org_first", ProjectID: "prj_1", BeforeTime: now.Add(time.Second), BeforeID: math.MaxInt64, PageLimit: 1})
@@ -188,15 +190,15 @@ func TestOperatorOrphanScanAdvancesPastOtherRunners(t *testing.T) {
 	if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.query, probe.args...).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	var plans []struct{ Plan searchPlanNode }
+	var plans []struct{ Plan pgstoretest.SearchPlanNode }
 	if err := json.Unmarshal(raw, &plans); err != nil {
 		t.Fatal(err)
 	}
-	if len(plans) != 1 || !plans[0].Plan.usesIndex("runner_sessions_orphan_scan") {
+	if len(plans) != 1 || !plans[0].Plan.UsesIndex("runner_sessions_orphan_scan") {
 		t.Fatalf("orphan discovery missed partial index: %s", raw)
 	}
-	var inspect func(searchPlanNode)
-	inspect = func(p searchPlanNode) {
+	var inspect func(pgstoretest.SearchPlanNode)
+	inspect = func(p pgstoretest.SearchPlanNode) {
 		if p.Relation == "runner_sessions" && (p.Rows+p.Removed+p.IndexRemoved)*p.Loops > 1 {
 			t.Errorf("orphan page scanned history: %s", raw)
 		}

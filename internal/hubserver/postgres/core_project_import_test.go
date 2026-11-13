@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -49,10 +51,10 @@ func coreProjectCopy(t *testing.T, org tracker.OrganizationID, extra ...map[stri
 }
 
 func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) {
-	db := template.Database(t)
+	db := pgstoretest.Template.Database(t)
 	for _, org := range []tracker.OrganizationID{"org_import_first", "org_import_second"} {
 		t.Run(string(org), func(t *testing.T) {
-			repository, _ := repositoryFor(t, db, smallPool())
+			repository, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 			if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,slug,local,created_at) VALUES($1,'Example',$1,false,now())`, org); err != nil {
 				t.Fatal(err)
 			}
@@ -103,7 +105,7 @@ func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) 
 				}
 				extra = append(extra, map[string]any{"id": test.id, "profile": test.profile, "states_json": string(raw), "workflow_markdown": test.workflow, "workflow_source": test.workflowSource})
 			}
-			source := postgres.CoreProjectImportSource{BundlePath: coreProjectCopy(t, org, extra...), OrganizationID: org, Objects: newHistoryObjects()}
+			source := postgres.CoreProjectImportSource{BundlePath: coreProjectCopy(t, org, extra...), OrganizationID: org, Objects: pgstoretest.NewHistoryObjects()}
 			if err := postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, org, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -124,7 +126,7 @@ func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) 
 			if err := repository.Close(); err != nil {
 				t.Fatal(err)
 			}
-			repository, _ = repositoryFor(t, db, smallPool())
+			repository, _ = pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 			manifestRaw, err := os.ReadFile(filepath.Join(source.BundlePath, "manifest.json"))
 			if err != nil {
 				t.Fatal(err)
@@ -277,12 +279,12 @@ func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) 
 }
 
 type changingCoreImportObjects struct {
-	*historyObjects
+	*pgstoretest.HistoryObjects
 	change func()
 }
 
 func (s *changingCoreImportObjects) StoreDetail(ctx context.Context, org string, raw []byte) (attachment.ArchiveReference, error) {
-	ref, err := s.historyObjects.StoreDetail(ctx, org, raw)
+	ref, err := s.HistoryObjects.StoreDetail(ctx, org, raw)
 	if err == nil && s.change != nil {
 		change := s.change
 		s.change = nil
@@ -292,8 +294,8 @@ func (s *changingCoreImportObjects) StoreDetail(ctx context.Context, org string,
 }
 
 func TestCoreProjectImportRejectsCopyChangedDuringImport(t *testing.T) {
-	db := template.Database(t)
-	repository, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_import_mutated")
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,slug,local,created_at) VALUES($1,'Example',$1,false,now())`, org); err != nil {
 		t.Fatal(err)
@@ -323,7 +325,7 @@ func TestCoreProjectImportRejectsCopyChangedDuringImport(t *testing.T) {
 	if err := os.Chmod(manifestPath, 0400); err != nil {
 		t.Fatal(err)
 	}
-	objects := &changingCoreImportObjects{historyObjects: newHistoryObjects(), change: func() {
+	objects := &changingCoreImportObjects{HistoryObjects: pgstoretest.NewHistoryObjects(), change: func() {
 		if err := os.Rename(manifestPath, filepath.Join(path, "manifest.json")); err != nil {
 			t.Fatal(err)
 		}

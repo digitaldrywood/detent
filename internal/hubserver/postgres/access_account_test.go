@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -18,9 +20,9 @@ import (
 
 func TestAccessAccountReceiptsAndProviderBindings(t *testing.T) {
 	t.Run("local release preferences retain current credential authority", func(t *testing.T) {
-		admin := template.Database(t)
-		repository, _ := repositoryFor(t, admin, smallPool())
-		now := historyAt()
+		admin := pgstoretest.Template.Database(t)
+		repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+		now := pgstoretest.HistoryAt()
 		for orgIndex, org := range []tracker.OrganizationID{"org_release_first", "org_release_second"} {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: now})
@@ -117,7 +119,7 @@ func TestAccessAccountReceiptsAndProviderBindings(t *testing.T) {
 					})
 				}
 			}
-			seedRunnerIdentity(t, repository, org, "bound_runner", "machine_release", now, true)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, "bound_runner", "machine_release", now, true)
 			if _, err := admin.ExecContext(t.Context(), "UPDATE api_tokens SET scope='admin',native_only=false WHERE organization_id=$1 AND id='bound_runner'", org); err != nil {
 				t.Fatal(err)
 			}
@@ -133,11 +135,11 @@ func TestAccessAccountReceiptsAndProviderBindings(t *testing.T) {
 			t.Fatalf("cross-tenant credential accepted: %v", err)
 		}
 	})
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: historyAt()}); err != nil {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: pgstoretest.HistoryAt()}); err != nil {
 				return err
 			}
 			owner := w
@@ -154,7 +156,7 @@ func TestAccessAccountReceiptsAndProviderBindings(t *testing.T) {
 				t.Error("provider binding overwritten")
 			}
 			for _, event := range []string{"pending", "succeeded"} {
-				if _, err := w.RecordAccessAudit(t.Context(), accessstore.Audit{OrganizationID: org, ActualActor: "actor", Event: event, AccountKind: "account_administration", AccountRetry: "retry", RecordedAt: historyAt()}); err != nil {
+				if _, err := w.RecordAccessAudit(t.Context(), accessstore.Audit{OrganizationID: org, ActualActor: "actor", Event: event, AccountKind: "account_administration", AccountRetry: "retry", RecordedAt: pgstoretest.HistoryAt()}); err != nil {
 					return err
 				}
 			}
@@ -175,10 +177,10 @@ func TestAccessAccountReceiptsAndProviderBindings(t *testing.T) {
 			if missing, err := w.AccessMissingUsageGrant(t.Context(), "actor"); err != nil || !missing {
 				t.Fatalf("missing grant=%v error=%v", missing, err)
 			}
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "actor", Name: "Actor", Hash: "actor-hash", Scope: "operator", NativeOnly: true, CreatedAt: historyAt(), UpdatedAt: historyAt(), ProjectAccess: "selected", Kind: "personal"}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "actor", Name: "Actor", Hash: "actor-hash", Scope: "operator", NativeOnly: true, CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), ProjectAccess: "selected", Kind: "personal"}); err != nil {
 				return err
 			}
-			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: "actor", Email: "actor@example.test", MembershipID: "membership", Role: "admin", Active: true, PrincipalID: "actor", CreatedAt: historyAt(), UpdatedAt: historyAt()}); err != nil {
+			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: "actor", Email: "actor@example.test", MembershipID: "membership", Role: "admin", Active: true, PrincipalID: "actor", CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt()}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: "actor", ProjectID: "prj_example"}); err != nil {

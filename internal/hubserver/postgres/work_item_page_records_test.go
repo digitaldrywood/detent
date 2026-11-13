@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -12,10 +14,10 @@ import (
 )
 
 func TestWorkItemPageModelFencesReplayAndTenants(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		seedRepository(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			_, err := r.(viewstore.WorkItemPageReader).CommentPageRecords(t.Context(), "prj_first", "wi_first_1", 0, false, 2)
@@ -34,7 +36,7 @@ func TestWorkItemPageModelFencesReplayAndTenants(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		original := viewstore.ItemPageRecord{Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: historyAt(), Value: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: candidate.ProjectID, WorkItemID: candidate.WorkItemID, Number: 1, Revision: 1, Profile: "native"}, Title: string(org), Body: "Current body", Actor: tracker.Actor{Kind: "human", PrincipalID: "first"}, Labels: []string{"example"}, Assignees: []string{}, CreatedAt: historyAt(), UpdatedAt: historyAt(), LastActivityAt: historyAt(), ReportContext: &tracker.ReportContext{URL: "https://example.test"}, Verification: &tracker.NativeVerification{State: "pending"}}}
+		original := viewstore.ItemPageRecord{Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: pgstoretest.HistoryAt(), Value: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: candidate.ProjectID, WorkItemID: candidate.WorkItemID, Number: 1, Revision: 1, Profile: "native"}, Title: string(org), Body: "Current body", Actor: tracker.Actor{Kind: "human", PrincipalID: "first"}, Labels: []string{"example"}, Assignees: []string{}, CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), LastActivityAt: pgstoretest.HistoryAt(), ReportContext: &tracker.ReportContext{URL: "https://example.test"}, Verification: &tracker.NativeVerification{State: "pending"}}}
 		publish := func(record viewstore.ItemPageRecord) error {
 			return repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.(viewstore.WorkItemPageWriter).PublishWorkItemPage(t.Context(), candidate, &record, nil)

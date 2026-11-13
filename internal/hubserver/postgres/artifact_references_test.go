@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -21,7 +23,7 @@ import (
 )
 
 func TestArtifactReferencesAreImmutableAndTenantScoped(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	organizations := make([]tracker.OrganizationID, 2)
 	references := make([]artifact.Reference, len(organizations))
@@ -31,7 +33,7 @@ func TestArtifactReferencesAreImmutableAndTenantScoped(t *testing.T) {
 		project := tracker.ProjectID("prj_" + fmt.Sprintf("%032x", index+101))
 		item := tracker.NativeWorkItemID("wi_" + fmt.Sprintf("%032x", index+201))
 		organizations[index] = organization
-		seedTenantAccess(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Slug: "example-project", Profile: "native", WorkflowSource: "example", WorkflowSourceRevision: "revision", WorkflowObjectKey: new("example/workflow"), StatesObjectKey: new("example/states"), ModelSelectionObjectKey: new("example/models")}); err != nil {
 				return err
@@ -105,19 +107,19 @@ func TestArtifactReferencesAreImmutableAndTenantScoped(t *testing.T) {
 }
 
 func TestViewedFilesUseTypedTenantRecords(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, organization := range organizations {
-		seedRepository(t, repository, organization)
+		pgstoretest.SeedRepository(t, repository, organization)
 	}
 	for index, organization := range organizations {
 		suffix := fmt.Sprintf("viewed_%d", index+1)
-		fixture := seedHistory(t, repository, organization, suffix)
+		fixture := pgstoretest.SeedHistory(t, repository, organization, suffix)
 		actor := "reviewer_" + suffix
 		record := eventstore.ViewedFile{
-			OrganizationID: organization, ProjectID: fixture.change.ProjectID, ChangeID: fixture.change.ID,
-			VersionID: fixture.version.ID, PrincipalID: actor, ManifestSHA256: artifact.Digest([]byte("manifest_" + suffix)),
-			FileSHA256: artifact.Digest([]byte("file_" + suffix)), Viewed: true, UpdatedAt: historyAt(),
+			OrganizationID: organization, ProjectID: fixture.Change.ProjectID, ChangeID: fixture.Change.ID,
+			VersionID: fixture.Version.ID, PrincipalID: actor, ManifestSHA256: artifact.Digest([]byte("manifest_" + suffix)),
+			FileSHA256: artifact.Digest([]byte("file_" + suffix)), Viewed: true, UpdatedAt: pgstoretest.HistoryAt(),
 		}
 		if err := repository.WriteRecords(t.Context(), organization, corestore.Serving, func(w eventstore.Writer) error {
 			stored, err := w.SetViewedFile(t.Context(), record)
@@ -130,7 +132,7 @@ func TestViewedFilesUseTypedTenantRecords(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := repository.ReadRecords(t.Context(), organization, corestore.Serving, func(r eventstore.Reader) error {
-			rows, err := r.ViewedFiles(t.Context(), fixture.version.ID, actor, 2)
+			rows, err := r.ViewedFiles(t.Context(), fixture.Version.ID, actor, 2)
 			if err != nil {
 				return err
 			}
@@ -148,10 +150,10 @@ func TestViewedFilesUseTypedTenantRecords(t *testing.T) {
 }
 
 func TestHostedArtifactUsageEnforcesTenantIsolation(t *testing.T) {
-	db := template.Database(t)
-	seedCore(t, db)
+	db := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, db)
 	organizations := []string{"org_first", "org_second"}
-	repository, _ := repositoryFor(t, db, smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	for _, org := range organizations {
 		if err := repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
 			_, err := r.HostedArtifactUsage(t.Context())
@@ -164,11 +166,11 @@ func TestHostedArtifactUsageEnforcesTenantIsolation(t *testing.T) {
 		}
 	}
 	for _, org := range organizations {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO hosted_artifact_usage(organization_id,service_id,observed_at,retained_bytes,reserved_bytes) VALUES($1,'service_example',$2,12,34)`, org, historyAt()); err != nil {
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO hosted_artifact_usage(organization_id,service_id,observed_at,retained_bytes,reserved_bytes) VALUES($1,'service_example',$2,12,34)`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	pool := rolePool(t, db, "detent_runtime_v2", "")
+	pool := pgstoretest.RolePool(t, db, "detent_runtime_v2", "")
 	for index, org := range organizations {
 		t.Run(org, func(t *testing.T) {
 			tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -194,7 +196,7 @@ func TestHostedArtifactUsageEnforcesTenantIsolation(t *testing.T) {
 			if count != 1 || owner != org || retained != 12 {
 				t.Fatalf("visible usage = %d/%s/%d", count, owner, retained)
 			}
-			_, err = tx.Exec(t.Context(), `INSERT INTO hosted_artifact_usage(organization_id,service_id,observed_at,retained_bytes,reserved_bytes) VALUES($1,'service_example',$2,12,34)`, organizations[1-index], historyAt())
+			_, err = tx.Exec(t.Context(), `INSERT INTO hosted_artifact_usage(organization_id,service_id,observed_at,retained_bytes,reserved_bytes) VALUES($1,'service_example',$2,12,34)`, organizations[1-index], pgstoretest.HistoryAt())
 			var denied *pgconn.PgError
 			if !errors.As(err, &denied) || denied.Code != "42501" {
 				t.Fatalf("foreign usage write error = %v", err)
@@ -207,8 +209,8 @@ func TestHostedArtifactUsageEnforcesTenantIsolation(t *testing.T) {
 		retained, reserved int64
 	}{
 		{"unobserved", time.Unix(0, 0).UTC(), 0, 0},
-		{"measured zero", historyAt(), 0, 0},
-		{"measured usage", historyAt().Add(time.Hour), 12, 34},
+		{"measured zero", pgstoretest.HistoryAt(), 0, 0},
+		{"measured usage", pgstoretest.HistoryAt().Add(time.Hour), 12, 34},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			usages := make([]artifact.Usage, len(organizations))
@@ -253,8 +255,8 @@ func (p *artifactPublisherQuery) QueryRow(ctx context.Context, query string, arg
 }
 
 func TestHostedArtifactPublisherLookupBoundsBindingReads(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
 	for _, organization := range []string{"org_first", "org_second"} {
 		for _, statement := range []string{
 			`INSERT INTO projects (organization_id,id,name,profile) SELECT $1,'prj_binding_'||n,'Binding '||n,'native' FROM generate_series(1,100) n`,
@@ -270,7 +272,7 @@ func TestHostedArtifactPublisherLookupBoundsBindingReads(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "ANALYZE artifact_services, token_grants, api_tokens"); err != nil {
 		t.Fatal(err)
 	}
-	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	for _, organization := range []string{"org_first", "org_second"} {
 		t.Run(organization, func(t *testing.T) {
 			tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})

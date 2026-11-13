@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -23,7 +25,7 @@ import (
 )
 
 type relayActionQueryTrace struct {
-	reportCountingTracer
+	pgstoretest.ReportCountingTracer
 	query string
 	args  []any
 }
@@ -32,12 +34,12 @@ func (trace *relayActionQueryTrace) TraceQueryStart(ctx context.Context, conn *p
 	if strings.HasPrefix(data.SQL, "-- name: RecentActionRuns") {
 		trace.query, trace.args = data.SQL, append([]any(nil), data.Args...)
 	}
-	return trace.reportCountingTracer.TraceQueryStart(ctx, conn, data)
+	return trace.ReportCountingTracer.TraceQueryStart(ctx, conn, data)
 }
 
 func TestRelayActionContractRedeemsOnceAndFencesOrderedReports(t *testing.T) {
 	admin, repository, pool, now := workspaceContractFixture(t)
-	objects := newHistoryObjects()
+	objects := pgstoretest.NewHistoryObjects()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		command, err := objects.StoreDetail(t.Context(), string(org), []byte("example command"))
 		if err != nil {
@@ -229,7 +231,7 @@ func TestRelayActionContractRedeemsOnceAndFencesOrderedReports(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, pool = repositoryFor(t, admin, smallPool())
+	repository, pool = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadRelayAction(t.Context(), org, corestore.Serving, func(r postgres.RelayActionReader) error {
 			for i := 1; i <= 2; i++ {
@@ -273,9 +275,9 @@ func TestRelayActionContractRedeemsOnceAndFencesOrderedReports(t *testing.T) {
 	t.Run("relay claims preserve original lease authority after rebind", func(t *testing.T) {
 		current := time.Now().UTC().Truncate(time.Microsecond)
 		trace := new(relayActionQueryTrace)
-		counter := &trace.reportCountingTracer
-		tracePool := tracedFeaturePool(t, pool, trace)
-		counted, err := postgres.NewRepository(t.Context(), tracePool, smallPool())
+		counter := &trace.ReportCountingTracer
+		tracePool := pgstoretest.TracedFeaturePool(t, pool, trace)
+		counted, err := postgres.NewRepository(t.Context(), tracePool, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -307,7 +309,7 @@ func TestRelayActionContractRedeemsOnceAndFencesOrderedReports(t *testing.T) {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			for i := 1; i <= 2; i++ {
 				v := target{organization: org, project: tracker.ProjectID(fmt.Sprintf("prj_%d", i)), runner: fmt.Sprintf("relay_runner_%d", i)}
-				seedRunnerIdentity(t, repository, org, v.runner, fmt.Sprintf("machine_%d", i), current, false)
+				pgstoretest.SeedRunnerIdentity(t, repository, org, v.runner, fmt.Sprintf("machine_%d", i), current, false)
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 					owner := w.(postgres.WorkspaceWriter)
 					var err error
@@ -385,9 +387,9 @@ FROM project_actions a CROSS JOIN generate_series(1,10000) n WHERE a.organizatio
 				if len(rows) != 2 || rows[0].ID != "recent_z" || rows[1].ID != "recent_a" {
 					t.Fatalf("newest-first ties=%+v", rows)
 				}
-				beforeSeek := counter.count.Load()
+				beforeSeek := counter.Count.Load()
 				rows, err = w.RecentActionRuns(t.Context(), v.project, "action", &postgres.ActionRunCursor{CreatedAt: current, ID: "recent_a"}, 1)
-				if got := counter.count.Load() - beforeSeek; got != 2 {
+				if got := counter.Count.Load() - beforeSeek; got != 2 {
 					t.Fatalf("recent-run seek and selected hydration statements=%d want2", got)
 				}
 				if err != nil {
@@ -409,7 +411,7 @@ FROM project_actions a CROSS JOIN generate_series(1,10000) n WHERE a.organizatio
 						t.Fatal(err)
 					}
 				}
-				tx := tenantTx(t, runtimeFor(t, tracePool, tracePool), tracePool, string(v.organization))
+				tx := pgstoretest.TenantTx(t, pgstoretest.RuntimeFor(t, tracePool, tracePool), tracePool, string(v.organization))
 				var raw []byte
 				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+trace.query, trace.args...).Scan(&raw); err != nil {
 					t.Fatal(err)
@@ -479,16 +481,16 @@ FROM project_actions a CROSS JOIN generate_series(1,10000) n WHERE a.organizatio
 			finish := func(t *testing.T, arg postgres.FinishRelayActionRunInput, want error) postgres.ActionRun {
 				t.Helper()
 				var row postgres.ActionRun
-				counter.count.Store(0)
+				counter.Count.Store(0)
 				err := counted.WriteRelayAction(t.Context(), v.organization, corestore.Serving, func(w postgres.RelayActionWriter) error {
 					var err error
-					before := counter.count.Load()
+					before := counter.Count.Load()
 					row, err = w.FinishRelayActionRun(t.Context(), arg)
 					wantStatements := int64(1)
 					if errors.Is(want, corestore.ErrInvalidPage) || errors.Is(want, corestore.ErrTenantMismatch) {
 						wantStatements = 0
 					}
-					if got := counter.count.Load() - before; got != wantStatements {
+					if got := counter.Count.Load() - before; got != wantStatements {
 						t.Fatalf("finish owner statements=%d want=%d", got, wantStatements)
 					}
 					return err
@@ -688,7 +690,7 @@ FROM project_actions a CROSS JOIN generate_series(1,10000) n WHERE a.organizatio
 			}
 			old := v
 			if err := repository.WriteTenant(t.Context(), v.organization, corestore.Serving, func(w tenantstore.Writer) error {
-				if _, err := w.Release(t.Context(), leaseFence(v.lease), "example"); err != nil {
+				if _, err := w.Release(t.Context(), pgstoretest.LeaseFence(v.lease), "example"); err != nil {
 					return err
 				}
 				item, err := w.WorkItemByID(t.Context(), v.project, v.lease.IssueID)
@@ -759,12 +761,12 @@ FROM project_actions a CROSS JOIN generate_series(1,10000) n WHERE a.organizatio
 			closed.Reason = "workspace_closed"
 			finish(t, closed, nil)
 			if err := repository.WriteTenant(t.Context(), v.organization, corestore.Serving, func(w tenantstore.Writer) error {
-				_, err := w.Release(t.Context(), leaseFence(v.lease), "example")
+				_, err := w.Release(t.Context(), pgstoretest.LeaseFence(v.lease), "example")
 				return err
 			}); err != nil {
 				t.Fatal(err)
 			}
-			requireSQLState(t, repository.WriteTenant(t.Context(), v.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			pgstoretest.RequireSQLState(t, repository.WriteTenant(t.Context(), v.organization, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.DeleteWorkItem(t.Context(), v.project, tracker.NativeWorkItemID(fmt.Sprintf("wi_%s", string(v.project)[4:])))
 			}), "23503")
 			deleted := input(readRun(t, v, "retained_dispatch"))
@@ -773,7 +775,7 @@ FROM project_actions a CROSS JOIN generate_series(1,10000) n WHERE a.organizatio
 			deleted.Reason = "lease_lost"
 			finish(t, deleted, nil)
 			_, err = admin.ExecContext(t.Context(), `DELETE FROM workspace_sessions WHERE organization_id=$1 AND project_id=$2 AND id=$3`, v.organization, v.project, v.workspace.ID)
-			requireSQLState(t, err, "23503")
+			pgstoretest.RequireSQLState(t, err, "23503")
 			assertNormal(t)
 		}
 	})

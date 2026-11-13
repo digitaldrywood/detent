@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -18,15 +20,15 @@ import (
 )
 
 func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	content := eventstore.NewContent(newHistoryObjects())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	filer := tracker.Actor{Kind: "human", PrincipalID: "example"}
 	marker := "<!-- detent:self-improvement proposal_id=example-lane -->"
 	identities := postgres.DeriveDoctorProposalIdentities(marker)
 	var requests []postgres.DoctorProposalInitialization
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error { return seedCoreOrganization(t.Context(), w, org) }); err != nil {
+		if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error { return pgstoretest.SeedCoreOrganization(t.Context(), w, org) }); err != nil {
 			t.Fatal(err)
 		}
 		for _, suffix := range []string{"first", "second"} {
@@ -41,7 +43,7 @@ func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			policy.ProjectID, policy.ApprovedBy, policy.ApprovedAt = project, "operator", historyAt()
+			policy.ProjectID, policy.ApprovedBy, policy.ApprovedAt = project, "operator", pgstoretest.HistoryAt()
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.ApproveProjectPolicy(t.Context(), policy, "") }); err != nil {
 				t.Fatal(err)
 			}
@@ -59,16 +61,16 @@ func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
 				if number == 2 {
 					state = "Todo"
 				}
-				before, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: string(item), Revision: 1}, historyJSON(t, map[string]any{"id": item, "project": project, "revision": 1, "state": state, "body": marker}))
+				before, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: string(item), Revision: 1}, pgstoretest.HistoryJSON(t, map[string]any{"id": item, "project": project, "revision": 1, "state": state, "body": marker}))
 				if err != nil {
 					t.Fatal(err)
 				}
-				after, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: string(item), Revision: 2}, historyJSON(t, map[string]any{"id": item, "project": project, "revision": 2, "state": "Todo", "body": marker}))
+				after, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: item, RecordID: string(item), Revision: 2}, pgstoretest.HistoryJSON(t, map[string]any{"id": item, "project": project, "revision": 2, "state": "Todo", "body": marker}))
 				if err != nil {
 					t.Fatal(err)
 				}
 				at := time.Now().UTC().Truncate(time.Microsecond)
-				event, err := content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: "init_" + string(item), OrganizationID: org, ProjectID: project, AggregateType: "issue", AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: filer, RecordedAt: at, Data: tracker.CollaborationData{Revision: 2, FromState: state, ToState: "Todo"}}))
+				event, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "init_" + string(item), OrganizationID: org, ProjectID: project, AggregateType: "issue", AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: filer, RecordedAt: at, Data: tracker.CollaborationData{Revision: 2, FromState: state, ToState: "Todo"}}))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -194,15 +196,15 @@ func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			lease := claimLease(t, repository, arg.OrganizationID, leasestore.Claim{IssueID: item.ID, ExpectedRevision: 1, MachineID: machine, SessionID: "session_" + string(arg.WorkItemID), LeaseID: "lease_" + string(arg.WorkItemID), TTL: time.Hour})
+			lease := pgstoretest.ClaimLease(t, repository, arg.OrganizationID, leasestore.Claim{IssueID: item.ID, ExpectedRevision: 1, MachineID: machine, SessionID: "session_" + string(arg.WorkItemID), LeaseID: "lease_" + string(arg.WorkItemID), TTL: time.Hour})
 			changed := arg
 			changed.TargetState = "Backlog"
 			var err error
-			changed.Version, err = content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: arg.OrganizationID, ProjectID: arg.ProjectID, WorkItemID: arg.WorkItemID, RecordID: string(arg.WorkItemID), Revision: 2}, historyJSON(t, map[string]any{"id": arg.WorkItemID, "project": arg.ProjectID, "revision": 2, "state": "Backlog"}))
+			changed.Version, err = content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: arg.OrganizationID, ProjectID: arg.ProjectID, WorkItemID: arg.WorkItemID, RecordID: string(arg.WorkItemID), Revision: 2}, pgstoretest.HistoryJSON(t, map[string]any{"id": arg.WorkItemID, "project": arg.ProjectID, "revision": 2, "state": "Backlog"}))
 			if err != nil {
 				t.Fatal(err)
 			}
-			changed.Event, err = content.PrepareEvent(t.Context(), arg.OrganizationID, historyJSON(t, tracker.CollaborationEvent{ID: arg.Event.ID, OrganizationID: arg.OrganizationID, ProjectID: arg.ProjectID, AggregateType: "issue", AggregateID: arg.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: filer, RecordedAt: arg.At, Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Backlog"}}))
+			changed.Event, err = content.PrepareEvent(t.Context(), arg.OrganizationID, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: arg.Event.ID, OrganizationID: arg.OrganizationID, ProjectID: arg.ProjectID, AggregateType: "issue", AggregateID: arg.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: filer, RecordedAt: arg.At, Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Backlog"}}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -212,7 +214,7 @@ func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
 				t.Fatalf("live lease initialized called=%v error=%v", called, err)
 			}
 			if err := repository.WriteLeases(t.Context(), arg.OrganizationID, corestore.Serving, func(w leasestore.Writer) error {
-				_, err := w.Release(t.Context(), leaseFence(lease), "released")
+				_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "released")
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -233,7 +235,7 @@ func TestDoctorProposalContractInitializesWithAtomicOutcome(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, _ = repositoryFor(t, admin, smallPool())
+	repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, arg := range requests {
 		if err := repository.ReadTenant(t.Context(), arg.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			row, err := r.WorkItem(t.Context(), arg.ProjectID, arg.WorkItemID)

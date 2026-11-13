@@ -8,6 +8,8 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -16,11 +18,11 @@ import (
 )
 
 func TestPageBackfillResumesWithoutSourceWriteLocks(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		seedRepository(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		if _, err := admin.ExecContext(t.Context(), `DELETE FROM native_work_item_page_dirty WHERE organization_id=$1`, org); err != nil {
 			t.Fatal(err)
 		}

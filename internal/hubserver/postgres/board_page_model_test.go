@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -19,12 +21,12 @@ import (
 )
 
 func TestBoardPageRetainsTypedIssueContract(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	at := time.Date(2026, 11, 6, 12, 0, 0, 123000000, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
 			_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "prj_example", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "*"}}})
 			return err
@@ -57,7 +59,7 @@ func TestBoardPageRetainsTypedIssueContract(t *testing.T) {
 			if index == 2 {
 				issue = nil
 			}
-			ref, err := newHistoryObjects().StoreDetail(ctx, string(org), []byte(`{}`))
+			ref, err := pgstoretest.NewHistoryObjects().StoreDetail(ctx, string(org), []byte(`{}`))
 			if err != nil {
 				t.Fatal(err)
 			}

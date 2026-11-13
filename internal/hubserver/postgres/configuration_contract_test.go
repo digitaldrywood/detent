@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -15,19 +17,19 @@ import (
 )
 
 func TestConfigurationContractFencesProjectionPolicyAndCurrentGrants(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	now := historyAt()
-	objects := newHistoryObjects()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
+	objects := pgstoretest.NewHistoryObjects()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		for _, id := range []string{"first", "second"} {
-			seedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
 		}
 		for _, id := range []string{"first", "second"} {
 			project := tracker.ProjectID("prj_" + id)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				return w.ApproveProjectPolicy(t.Context(), policyTestRevision(org, project, "policy_"+id, now), "")
+				return w.ApproveProjectPolicy(t.Context(), pgstoretest.PolicyTestRevision(org, project, "policy_"+id, now), "")
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -119,7 +121,7 @@ func TestConfigurationContractFencesProjectionPolicyAndCurrentGrants(t *testing.
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, _ = repositoryFor(t, admin, smallPool())
+	repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadConfiguration(t.Context(), org, corestore.Serving, func(r postgres.ConfigurationReader) error {
 			ranks, err := r.OrganizationRankProjects(t.Context(), 3)

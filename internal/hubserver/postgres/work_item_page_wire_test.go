@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -114,7 +116,7 @@ func pageMeasuredRepository(t *testing.T, source *pgxpool.Pool, counts *pageWire
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}

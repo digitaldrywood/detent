@@ -12,6 +12,8 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pressly/goose/v3"
@@ -31,7 +33,7 @@ import (
 func TestLocalBoardBillingActivityIndexesRecoverInterruptedBuild(t *testing.T) {
 	const version = 20261110042737
 	const name = "20261110042737_billing_activity_timestamp_indexes.sql"
-	admin, _ := migrationDatabaseAtVersion(t, version-1)
+	admin, _ := pgstoretest.MigrationDatabaseAtVersion(t, version-1)
 	admin.SetMaxOpenConns(1)
 	admin.SetMaxIdleConns(1)
 	body, err := os.ReadFile("migrations/" + name)
@@ -59,7 +61,7 @@ func TestLocalBoardBillingActivityIndexesRecoverInterruptedBuild(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), `CREATE UNIQUE INDEX CONCURRENTLY hosted_sessions_tenant_created_idx ON fixture_activity_index_retry(value)`); err == nil {
 		t.Fatal("invalid index fixture did not fail")
 	}
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,8 +82,8 @@ func TestLocalBoardBillingActivityIndexesRecoverInterruptedBuild(t *testing.T) {
 func TestLocalBoardRetainedEventsInitializeSnapshotDelta(t *testing.T) {
 	const activationVersion = 20261110042748
 	const initializationVersion = 20261110042758
-	admin, fixture := migrationDatabaseAtVersion(t, 20261110042736)
-	seedCore(t, admin)
+	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261110042736)
+	pgstoretest.SeedCore(t, admin)
 	insert := `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,schema_version,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
 VALUES($1,'prj_shared','wi_shared',$2,$3,1,'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1)`
 	for index, org := range []string{"org_first", "org_second"} {
@@ -96,7 +98,7 @@ VALUES($1,'prj_shared','wi_shared',$2,$3,1,'orgs/'||$1||'/blobs/sha256/aa/'||rep
 	}
 	admin.SetMaxOpenConns(1)
 	admin.SetMaxIdleConns(1)
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +125,7 @@ VALUES($1,'prj_shared','wi_shared',$2,$3,1,'orgs/'||$1||'/blobs/sha256/aa/'||rep
 	if _, err := admin.ExecContext(t.Context(), `ALTER DATABASE `+pgx.Identifier{database}.Sanitize()+` CONNECTION LIMIT 10`); err != nil {
 		t.Fatal(err)
 	}
-	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	pool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
 	admin.SetMaxIdleConns(1)
 	listener, err := pgx.ConnectConfig(t.Context(), pool.Config().ConnConfig.Copy())
 	if err != nil {
@@ -265,8 +267,8 @@ VALUES($1,'prj_shared','wi_shared',$2,$3,1,'orgs/'||$1||'/blobs/sha256/aa/'||rep
 }
 
 func TestLocalBoardPopulationResumesWithoutLosingConcurrentSource(t *testing.T) {
-	admin, fixture := migrationDatabaseAtVersion(t, 20261109030623)
-	seedCore(t, admin)
+	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109030623)
+	pgstoretest.SeedCore(t, admin)
 	for _, org := range []string{"org_first", "org_second"} {
 		for _, statement := range []string{
 			`INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,board_rank) SELECT $1,id,'Done',true,false,1 FROM projects WHERE organization_id=$1`,
@@ -280,7 +282,7 @@ func TestLocalBoardPopulationResumesWithoutLosingConcurrentSource(t *testing.T) 
 		}
 	}
 	admin.SetMaxOpenConns(1)
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,8 +334,8 @@ func TestLocalBoardPopulationResumesWithoutLosingConcurrentSource(t *testing.T) 
 	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+" CONNECTION LIMIT 4"); err != nil {
 		t.Fatal(err)
 	}
-	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	pool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,12 +400,12 @@ func TestLocalBoardPopulationResumesWithoutLosingConcurrentSource(t *testing.T) 
 		}
 	}
 	for _, org := range []tracker.OrganizationID{"org_attempt_first", "org_attempt_second"} {
-		seedLeaseFamily(t, repository, org)
+		pgstoretest.SeedLeaseFamily(t, repository, org)
 		assert(t, string(org), 2, 0)
 		for _, id := range []int64{1, 2} {
-			lease := claimLease(t, repository, org, leaseClaim(id))
+			lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(id))
 			for range 2 {
-				recordLeaseAttempt(t, repository, org, attemptEvent(lease))
+				pgstoretest.RecordLeaseAttempt(t, repository, org, pgstoretest.AttemptEvent(lease))
 				assert(t, string(org), 2, id)
 			}
 		}
@@ -435,8 +437,8 @@ func TestLocalBoardPopulationResumesWithoutLosingConcurrentSource(t *testing.T) 
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	pool = rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
-	repository, err = postgres.NewRepository(t.Context(), pool, smallPool())
+	pool = pgstoretest.RolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	repository, err = postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,8 +456,8 @@ func TestLocalBoardPopulationResumesWithoutLosingConcurrentSource(t *testing.T) 
 }
 
 func TestLocalBoardHistoryPopulationBatchesCounterWrites(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
 	if _, err := admin.ExecContext(t.Context(), `
 CREATE TABLE fixture_history_counter_updates(organization_id text PRIMARY KEY,writes bigint NOT NULL);
 CREATE FUNCTION record_fixture_history_counter_update() RETURNS trigger
@@ -512,8 +514,8 @@ FROM issues CROSS JOIN generate_series(1,2) n`, 40, 2, "23505"},
 }
 
 func TestLocalBoardIssuePopulationBatchesCounterWrites(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
 	if _, err := admin.ExecContext(t.Context(), `
 INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,board_rank)
 SELECT organization_id,id,s.name,s.terminal,NOT s.terminal,s.rank FROM projects CROSS JOIN (VALUES('Todo',false,1),('Done',true,2)) s(name,terminal,rank);
@@ -797,13 +799,13 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"issue delete while archive holder checks keys", extra, archive, converseOn("wi_first_3"), noop, remove("wi_first_3"), false, 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			admin := template.Database(t)
-			repository, _ := repositoryFor(t, admin, smallPool())
+			admin := pgstoretest.Template.Database(t)
+			repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 			admin.SetMaxOpenConns(2)
 			raw.db = admin
 			organizations := []tracker.OrganizationID{"org_first", "org_second"}
 			for _, organization := range organizations {
-				seedRepository(t, repository, organization)
+				pgstoretest.SeedRepository(t, repository, organization)
 				if _, err := admin.ExecContext(t.Context(), `INSERT INTO api_tokens (organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES ($1,'owner','owner','hash_'||$1,'fingerprint_'||$1,'operator',true,now(),now())`, organization); err != nil {
 					t.Fatal(err)
 				}
@@ -831,7 +833,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 						return ctx.Err()
 					}
 				}
-				first := startRepositoryTask(t, func(ctx context.Context) error {
+				first := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 					return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 						if err := test.holdFirst(ctx, w); err != nil {
 							return err
@@ -843,10 +845,10 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 						return test.finishFirst(ctx, w)
 					})
 				})
-				next := startRepositoryTask(t, func(ctx context.Context) error {
+				next := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 					select {
 					case <-firstHeld:
-					case <-first.done:
+					case <-first.Done:
 						return nil
 					case <-ctx.Done():
 						return ctx.Err()
@@ -862,12 +864,12 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 				testenv.WaitUntil(t, t.Context(), func() error {
 					ready := nextHeld
 					if test.exclusive {
-						ready = next.done
+						ready = next.Done
 					}
 					select {
 					case <-ready:
 						return nil
-					case <-first.done:
+					case <-first.Done:
 						return nil
 					default:
 					}
@@ -882,14 +884,14 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 				})
 				if test.exclusive {
 					select {
-					case <-next.done:
-						t.Errorf("%s next transaction committed while the first held its locks: %v", organization, next.err)
+					case <-next.Done:
+						t.Errorf("%s next transaction committed while the first held its locks: %v", organization, next.Err)
 					default:
 					}
 				}
 				close(proceed)
-				for name, task := range map[string]*repositoryTask{"first": first, "next": next} {
-					if err := task.wait(t); err != nil {
+				for name, task := range map[string]*pgstoretest.RepositoryTask{"first": first, "next": next} {
+					if err := task.Wait(t); err != nil {
 						t.Errorf("%s %s transaction: %v", organization, name, err)
 					}
 				}

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/diffbody"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
@@ -16,17 +18,17 @@ import (
 )
 
 func TestAttemptDiffBodyReferencesPreserveUnknownHistory(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, organization)
+		pgstoretest.SeedRepository(t, repository, organization)
 		ref, _, err := attachment.PrepareArchive(string(organization), 1, strings.NewReader("[]"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		for index := 0; index < 2; index++ {
 			err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-				archive, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: "archive_example", Reference: ref, CreatedAt: historyAt()})
+				archive, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: "archive_example", Reference: ref, CreatedAt: pgstoretest.HistoryAt()})
 				if err != nil {
 					return err
 				}
@@ -34,7 +36,7 @@ func TestAttemptDiffBodyReferencesPreserveUnknownHistory(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				return w.CreateAttemptDiff(t.Context(), leasestore.AttemptDiff{OrganizationID: organization, ID: fmt.Sprintf("diff_%d", index), AttemptID: fmt.Sprintf("attempt_%d", index), IssueID: item.ID, ProjectID: "prj_first", WorkItemID: item.NativeID, Generation: tracker.DiffGeneration{Source: "attempt", Seq: 1}, Producer: tracker.DiffProducer{Kind: "attempt", ID: "attempt", RunnerID: "runner", LeaseID: "lease", FencingToken: 1}, ArchiveID: archive.ID, CreatedAt: historyAt()})
+				return w.CreateAttemptDiff(t.Context(), leasestore.AttemptDiff{OrganizationID: organization, ID: fmt.Sprintf("diff_%d", index), AttemptID: fmt.Sprintf("attempt_%d", index), IssueID: item.ID, ProjectID: "prj_first", WorkItemID: item.NativeID, Generation: tracker.DiffGeneration{Source: "attempt", Seq: 1}, Producer: tracker.DiffProducer{Kind: "attempt", ID: "attempt", RunnerID: "runner", LeaseID: "lease", FencingToken: 1}, ArchiveID: archive.ID, CreatedAt: pgstoretest.HistoryAt()})
 			})
 			if err != nil {
 				t.Fatal(err)

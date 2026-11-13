@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -24,29 +26,29 @@ import (
 )
 
 func TestRunnerEventDoesNotDeadlockMachineHeartbeat(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	var login string
 	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
-			seedLeaseFamily(t, repository, org)
+			pgstoretest.SeedLeaseFamily(t, repository, org)
 			now := time.Now().UTC()
-			seedRunnerIdentity(t, repository, org, "runner_shared", "machine_1", now, true)
-			lease := claimLease(t, repository, org, leaseClaim(1))
+			pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_shared", "machine_1", now, true)
+			lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: org, RunnerID: "runner_shared", LeaseID: lease.LeaseID, AssignedAt: now})
 			}); err != nil {
 				t.Fatal(err)
 			}
-			event := attemptEvent(lease)
-			recordLeaseAttempt(t, repository, org, event)
+			event := pgstoretest.AttemptEvent(lease)
+			pgstoretest.RecordLeaseAttempt(t, repository, org, event)
 			event.Sequence, event.PayloadObjectKey = 2, "example/next"
 			locked, release := make(chan struct{}), make(chan struct{})
 			var releaseOnce sync.Once
-			heartbeat := startRepositoryTask(t, func(ctx context.Context) error {
+			heartbeat := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return repository.WriteRunnerHeartbeat(ctx, org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
 					if err := w.HeartbeatMachine(ctx, leasestore.Machine{OrganizationID: org, ID: "machine_1", DisplayName: "updated", Capacity: 1, Version: "test"}, now); err != nil {
 						return err
@@ -61,12 +63,12 @@ func TestRunnerEventDoesNotDeadlockMachineHeartbeat(t *testing.T) {
 				})
 			})
 			defer releaseOnce.Do(func() { close(release) })
-			waitRepositorySignal(t, locked)
+			pgstoretest.WaitRepositorySignal(t, locked)
 			var heartbeatPID int
 			if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE 'UPDATE machines SET%'`, login).Scan(&heartbeatPID); err != nil {
 				t.Fatal(err)
 			}
-			appendEvent := startRepositoryTask(t, func(ctx context.Context) error {
+			appendEvent := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 					facts := w.(interface {
 						WithRunnerEventFacts(context.Context, eventstore.RunCommand, func(tenantstore.Writer) error) error
@@ -82,8 +84,8 @@ func TestRunnerEventDoesNotDeadlockMachineHeartbeat(t *testing.T) {
 			})
 			testenv.WaitUntil(t, t.Context(), func() error {
 				select {
-				case <-appendEvent.done:
-					return fmt.Errorf("event ended before lock observation: %v", appendEvent.err)
+				case <-appendEvent.Done:
+					return fmt.Errorf("event ended before lock observation: %v", appendEvent.Err)
 				default:
 				}
 				var waiting bool
@@ -96,10 +98,10 @@ func TestRunnerEventDoesNotDeadlockMachineHeartbeat(t *testing.T) {
 				return nil
 			})
 			releaseOnce.Do(func() { close(release) })
-			if err := heartbeat.wait(t); err != nil {
+			if err := heartbeat.Wait(t); err != nil {
 				t.Errorf("heartbeat (SQLSTATE=%s): %v", pgtransport.SQLState(err), err)
 			}
-			if err := appendEvent.wait(t); err != nil {
+			if err := appendEvent.Wait(t); err != nil {
 				t.Errorf("append event (SQLSTATE=%s): %v", pgtransport.SQLState(err), err)
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -123,12 +125,12 @@ func TestRunnerEventDoesNotDeadlockMachineHeartbeat(t *testing.T) {
 }
 
 func TestRunnerCompletionAcquiresProjectLockBeforePublication(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, repository, org)
-		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_1", historyAt(), true)
-		lease := claimLease(t, repository, org, leaseClaim(1))
+		pgstoretest.SeedLeaseFamily(t, repository, org)
+		pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_shared", "machine_1", pgstoretest.HistoryAt(), true)
+		lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
 		if err := repository.WriteRunnerEventCommand(t.Context(), org, "runner_shared", "runner_shared", eventstore.RunCommand{Project: "prj_1", WorkItem: "wi_1", LeaseID: lease.LeaseID}, func(ctx context.Context, w tenantstore.Writer) error {
 			var id string
 			if err := admin.QueryRowContext(ctx, `SELECT id FROM api_tokens WHERE organization_id=$1 AND id='runner_shared' FOR SHARE NOWAIT`, org).Scan(&id); err != nil {
@@ -167,15 +169,15 @@ func TestRunnerCompletionAcquiresProjectLockBeforePublication(t *testing.T) {
 }
 
 func TestRunnerEventQueuedFenceDiagnostics(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION expire_queued_run_lease() RETURNS trigger LANGUAGE plpgsql AS $$DECLARE changed integer;BEGIN IF NEW.id='queue_expiry' THEN UPDATE public.leases SET acquired_at=clock_timestamp()-interval '3 hours',renewed_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE organization_id=NEW.organization_id AND issue_id=(SELECT id FROM public.issues WHERE organization_id=NEW.organization_id AND project_id='prj_1' AND native_id='wi_1') AND released_at IS NULL; GET DIAGNOSTICS changed=ROW_COUNT; IF changed<>1 THEN RAISE EXCEPTION 'queue expiry scope mismatch'; END IF; END IF; RETURN NEW; END$$; CREATE TRIGGER expire_queued_run_lease BEFORE INSERT ON archive_objects FOR EACH ROW EXECUTE FUNCTION expire_queued_run_lease()`); err != nil {
 		t.Fatal(err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, repository, org)
-		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_1", historyAt(), true)
-		lease := claimLease(t, repository, org, leaseClaim(1))
+		pgstoretest.SeedLeaseFamily(t, repository, org)
+		pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_shared", "machine_1", pgstoretest.HistoryAt(), true)
+		lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
 		for _, test := range []struct {
 			name                          string
 			wrongToken, released, expired bool
@@ -213,7 +215,7 @@ func TestRunnerEventQueuedFenceDiagnostics(t *testing.T) {
 			if n, err := result.RowsAffected(); err != nil || n != 1 {
 				t.Fatalf("live lease rows=%d error=%v", n, err)
 			}
-			ref, err := newHistoryObjects().StoreDetail(t.Context(), string(org), []byte(`{"fence":"queued"}`))
+			ref, err := pgstoretest.NewHistoryObjects().StoreDetail(t.Context(), string(org), []byte(`{"fence":"queued"}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -222,7 +224,7 @@ func TestRunnerEventQueuedFenceDiagnostics(t *testing.T) {
 					WithRunnerEventFacts(context.Context, eventstore.RunCommand, func(tenantstore.Writer) error) error
 				})
 				return facts.WithRunnerEventFacts(ctx, eventstore.RunCommand{Project: "prj_1", WorkItem: "wi_1", LeaseID: lease.LeaseID}, func(w tenantstore.Writer) error {
-					if _, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: org, ID: "queue_expiry", Reference: ref, CreatedAt: historyAt()}); err != nil {
+					if _, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: org, ID: "queue_expiry", Reference: ref, CreatedAt: pgstoretest.HistoryAt()}); err != nil {
 						return err
 					}
 					_, _, err := w.RecordAttemptEvent(ctx, leasestore.AttemptEvent{ID: "queued_expiry_attempt", RunID: "queued_expiry_run", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, Sequence: 1, Status: "running", PayloadObjectKey: ref.Key, PayloadReference: ref})
@@ -263,8 +265,8 @@ func testRunnerEventActivityDelivery(t *testing.T, repository *postgres.Reposito
 
 	ctx := t.Context()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	seedRunnerIdentity(t, repository, org, runner, "machine_2", now, false)
-	lease := claimLease(t, repository, org, leaseClaim(2))
+	pgstoretest.SeedRunnerIdentity(t, repository, org, runner, "machine_2", now, false)
+	lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(2))
 	if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.AssignRunnerLease(ctx, runnerstore.LeaseAssignment{OrganizationID: org, RunnerID: runner, LeaseID: lease.LeaseID, AssignedAt: now})
 	}); err != nil {
@@ -280,11 +282,11 @@ func testRunnerEventActivityDelivery(t *testing.T, repository *postgres.Reposito
 		t.Fatal(err)
 	}
 
-	content := eventstore.NewContent(newHistoryObjects())
-	attempt := attemptEvent(lease)
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
+	attempt := pgstoretest.AttemptEvent(lease)
 	prepare := func(id, kind string, sequence int64) eventstore.Event {
 		t.Helper()
-		row, err := content.PrepareEvent(ctx, org, historyJSON(t, tracker.CollaborationEvent{
+		row, err := content.PrepareEvent(ctx, org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{
 			OrganizationID: org, ProjectID: project, AggregateID: item, AggregateType: "issue",
 			ID: id, Type: kind, SchemaVersion: 1, RecordedAt: now,
 			Actor: tracker.Actor{Kind: "runner", PrincipalID: runner},
@@ -340,7 +342,7 @@ func testRunnerEventActivityDelivery(t *testing.T, repository *postgres.Reposito
 				return errors.New("runner event woke delivery before commit")
 			}
 			if reject {
-				stale := leaseFence(lease)
+				stale := pgstoretest.LeaseFence(lease)
 				stale.FencingToken++
 				_, err = w.Release(ctx, stale, "stale fence")
 			}

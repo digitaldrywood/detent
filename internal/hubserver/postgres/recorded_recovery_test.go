@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -15,9 +17,9 @@ import (
 )
 
 func TestRecordedRecoveryRejectsChangedSourceAndDependencies(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	content := eventstore.NewContent(newHistoryObjects())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		recovery := seedRecordedRecovery(t, repository, admin, content, organization)
 		for _, test := range []struct {
@@ -60,8 +62,8 @@ func TestRecordedRecoveryRejectsChangedSourceAndDependencies(t *testing.T) {
 						return err
 					}
 					if test.edit {
-						value := tracker.CollaborationEvent{ID: "later_edit", OrganizationID: organization, ProjectID: recovery.ProjectID, AggregateID: recovery.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: historyActor(), RecordedAt: recovery.Now, Data: tracker.CollaborationData{Revision: 3}}
-						event, err := content.PrepareEvent(t.Context(), organization, historyJSON(t, value))
+						value := tracker.CollaborationEvent{ID: "later_edit", OrganizationID: organization, ProjectID: recovery.ProjectID, AggregateID: recovery.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: recovery.Now, Data: tracker.CollaborationData{Revision: 3}}
+						event, err := content.PrepareEvent(t.Context(), organization, pgstoretest.HistoryJSON(t, value))
 						if err != nil {
 							return err
 						}
@@ -70,19 +72,19 @@ func TestRecordedRecoveryRejectsChangedSourceAndDependencies(t *testing.T) {
 						}
 					}
 					if test.claim {
-						request := leaseClaim(1)
+						request := pgstoretest.LeaseClaim(1)
 						request.LeaseID, request.SessionID = "new_lease", "new_session"
 						lease, err := w.Claim(t.Context(), request)
 						if err != nil {
 							return err
 						}
 						if test.newer {
-							data := attemptEvent(lease)
+							data := pgstoretest.AttemptEvent(lease)
 							data.Status = "succeeded"
 							if _, err := w.RecordAttempt(t.Context(), data); err != nil {
 								return err
 							}
-							if _, err := w.Release(t.Context(), leaseFence(lease), "completed"); err != nil {
+							if _, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "completed"); err != nil {
 								return err
 							}
 						}
@@ -99,8 +101,8 @@ func TestRecordedRecoveryRejectsChangedSourceAndDependencies(t *testing.T) {
 
 func seedRecordedRecovery(t *testing.T, repository *postgres.Repository, admin *sql.DB, content *eventstore.Content, organization tracker.OrganizationID) leasestore.RecordedRecovery {
 	t.Helper()
-	seedLeaseFamily(t, repository, organization)
-	lease := claimLease(t, repository, organization, leaseClaim(1))
+	pgstoretest.SeedLeaseFamily(t, repository, organization)
+	lease := pgstoretest.ClaimLease(t, repository, organization, pgstoretest.LeaseClaim(1))
 	for _, statement := range []string{
 		`INSERT INTO project_workflow_states(organization_id,project_id,name,board_rank,terminal,dispatchable,operator_only) VALUES($1,'prj_1','Done',0,true,false,false)`,
 		`INSERT INTO issues(organization_id,id,native_id,project_id,number,title,workflow_state_name) VALUES($1,3,'wi_dependency','prj_1',2,'Example prerequisite','Done')`,
@@ -111,7 +113,7 @@ func seedRecordedRecovery(t *testing.T, repository *postgres.Repository, admin *
 		}
 	}
 	checkpoint := &tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "local_only", WorktreeState: "clean", ExternalEffect: "none", EffectState: "none"}
-	checkpointRef, err := content.PreparePayload(t.Context(), organization, historyJSON(t, struct {
+	checkpointRef, err := content.PreparePayload(t.Context(), organization, pgstoretest.HistoryJSON(t, struct {
 		Checkpoint *tracker.NativeCheckpoint `json:"checkpoint"`
 	}{Checkpoint: checkpoint}))
 	if err != nil {
@@ -120,7 +122,7 @@ func seedRecordedRecovery(t *testing.T, repository *postgres.Repository, admin *
 	var attempt leasestore.Attempt
 	var report, lane eventstore.Event
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		data := attemptEvent(lease)
+		data := pgstoretest.AttemptEvent(lease)
 		data.Status, data.CheckpointObjectKey = "succeeded", &checkpointRef.Key
 		data.CheckpointReference = checkpointRef
 		data.CheckpointPreservesSource = new(checkpoint.PreservesSource())
@@ -134,7 +136,7 @@ func seedRecordedRecovery(t *testing.T, repository *postgres.Repository, admin *
 			if index == 0 {
 				value.Data.Run = &tracker.NativeRunData{AttemptID: attempt.ID}
 			}
-			event, err := content.PrepareEvent(t.Context(), organization, historyJSON(t, value))
+			event, err := content.PrepareEvent(t.Context(), organization, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				return err
 			}
@@ -148,7 +150,7 @@ func seedRecordedRecovery(t *testing.T, repository *postgres.Repository, admin *
 				lane = event
 			}
 		}
-		_, err = w.Release(t.Context(), leaseFence(lease), "completed")
+		_, err = w.Release(t.Context(), pgstoretest.LeaseFence(lease), "completed")
 		return err
 	}); err != nil {
 		t.Fatal(err)

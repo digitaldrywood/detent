@@ -4,11 +4,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestDailySummaryTimestampMigrationPreservesOrdering(t *testing.T) {
-	admin := template.Database(t)
+	admin := pgstoretest.Template.Database(t)
 	for table, columns := range map[string][]string{"daily_summary_preferences": {"window_end", "due_at"}, "daily_summary_receipts": {"window_end", "recorded_at"}} {
 		for _, column := range columns {
 			var kind string
@@ -20,11 +22,11 @@ func TestDailySummaryTimestampMigrationPreservesOrdering(t *testing.T) {
 			}
 		}
 	}
-	repository, _ := repositoryFor(t, admin, smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 	}
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}

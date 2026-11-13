@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -34,8 +36,8 @@ import (
 )
 
 func TestRunnerProviderAccountLockScopesCurrentReports(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
-	now := historyAt()
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		count := 1
 		if organization == "org_first" {
@@ -44,7 +46,7 @@ func TestRunnerProviderAccountLockScopesCurrentReports(t *testing.T) {
 		for index := 1; index <= count; index++ {
 			runnerID := fmt.Sprintf("runner_%d", index)
 			machineID := fmt.Sprintf("machine_%d", index)
-			seedRunnerIdentity(t, repository, organization, runnerID, machineID, now, true)
+			pgstoretest.SeedRunnerIdentity(t, repository, organization, runnerID, machineID, now, true)
 			maxConcurrent := 6
 			if organization == "org_second" {
 				maxConcurrent = 2
@@ -130,10 +132,10 @@ func TestRunnerProviderAccountLockScopesCurrentReports(t *testing.T) {
 }
 
 func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	const organization tracker.OrganizationID = "org_usage"
-	seedLeaseFamily(t, repository, organization)
+	pgstoretest.SeedLeaseFamily(t, repository, organization)
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 2, Title: "Example"})
 		if err != nil {
@@ -149,13 +151,13 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	leases := []leasestore.Lease{
-		claimLease(t, repository, organization, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "usage_1", LeaseID: "lease_usage_1", TTL: time.Hour}),
-		claimLease(t, repository, organization, leasestore.Claim{IssueID: 3, ExpectedRevision: 1, MachineID: "machine_2", SessionID: "usage_2", LeaseID: "lease_usage_2", TTL: time.Hour}),
-		claimLease(t, repository, organization, leasestore.Claim{IssueID: 4, ExpectedRevision: 1, MachineID: "machine_3", SessionID: "usage_3", LeaseID: "lease_usage_3", TTL: time.Hour}),
+		pgstoretest.ClaimLease(t, repository, organization, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "usage_1", LeaseID: "lease_usage_1", TTL: time.Hour}),
+		pgstoretest.ClaimLease(t, repository, organization, leasestore.Claim{IssueID: 3, ExpectedRevision: 1, MachineID: "machine_2", SessionID: "usage_2", LeaseID: "lease_usage_2", TTL: time.Hour}),
+		pgstoretest.ClaimLease(t, repository, organization, leasestore.Claim{IssueID: 4, ExpectedRevision: 1, MachineID: "machine_3", SessionID: "usage_3", LeaseID: "lease_usage_3", TTL: time.Hour}),
 	}
 	for index, lease := range leases {
 		runnerID := fmt.Sprintf("runner_%d", index+1)
-		seedRunnerIdentity(t, repository, organization, runnerID, string(lease.MachineID), now, false)
+		pgstoretest.SeedRunnerIdentity(t, repository, organization, runnerID, string(lease.MachineID), now, false)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now})
 		}); err != nil {
@@ -187,13 +189,13 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 		}
 	}
 	t.Run("unreleased membership examines pages before runner filtering", func(t *testing.T) {
-		at := historyAt()
+		at := pgstoretest.HistoryAt()
 		for _, org := range []tracker.OrganizationID{"org_page_first", "org_page_second"} {
-			seedLeaseFamily(t, repository, org)
-			seedRunnerIdentity(t, repository, org, "runner_page", "machine_1", at, false)
-			seedRunnerIdentity(t, repository, org, "runner_other", "machine_1", at, false)
-			seedRunnerIdentity(t, repository, org, "runner_cross_only", "machine_1", at, false)
-			seedRunnerIdentity(t, repository, org, "runner_released_only", "machine_1", at, false)
+			pgstoretest.SeedLeaseFamily(t, repository, org)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_page", "machine_1", at, false)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_other", "machine_1", at, false)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_cross_only", "machine_1", at, false)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_released_only", "machine_1", at, false)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: "prj_cross", Name: "Example cross-machine", Profile: "native"}); err != nil {
 					return err
@@ -247,9 +249,9 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) SELECT organization_id,lease_id,runner_id,acquired_at FROM leases WHERE organization_id=$1 AND lease_id IN ('cross_only','released_only')`, org); err != nil {
 				t.Fatal(err)
 			}
-			seedRunnerIdentity(t, repository, org, "runner_bound", "machine_bound", at, true)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_bound", "machine_bound", at, true)
 			boundRequest := leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_bound", SessionID: "bound_session", LeaseID: "bound_lease", RunnerID: "runner_bound", TTL: time.Hour}
-			boundLease := claimLease(t, repository, org, boundRequest)
+			boundLease := pgstoretest.ClaimLease(t, repository, org, boundRequest)
 			if boundLease.RunnerID == nil || *boundLease.RunnerID != "runner_bound" || boundLease.ProjectID == nil || *boundLease.ProjectID != "prj_1" {
 				t.Fatalf("claim did not derive canonical bindings: %+v", boundLease)
 			}
@@ -262,7 +264,7 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			replayed := claimLease(t, repository, org, boundRequest)
+			replayed := pgstoretest.ClaimLease(t, repository, org, boundRequest)
 			if replayed.LeaseID != boundLease.LeaseID || replayed.FencingToken != boundLease.FencingToken {
 				t.Fatalf("bound claim replay changed fence: %+v", replayed)
 			}
@@ -278,7 +280,7 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 			var renewed leasestore.Lease
 			if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
 				var err error
-				renewed, err = w.Renew(t.Context(), leaseFence(boundLease), 2*time.Hour)
+				renewed, err = w.Renew(t.Context(), pgstoretest.LeaseFence(boundLease), 2*time.Hour)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -293,8 +295,8 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 				t.Fatal(err)
 			}
 			boundLease = renewed
-			seedRunnerIdentity(t, repository, org, "runner_bound_other", "machine_bound", at, false)
-			seedRunnerIdentity(t, repository, org, "runner_removed", "machine_bound", at, false)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_bound_other", "machine_bound", at, false)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_removed", "machine_bound", at, false)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.RemoveRunnerIdentity(t.Context(), "runner_removed", at)
 			}); err != nil {
@@ -330,7 +332,7 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 			if !errors.Is(err, tracker.ErrLeaseConflict) {
 				t.Fatalf("different runner replay accepted: %v", err)
 			}
-			unbound := claimLease(t, repository, org, leasestore.Claim{IssueID: 4001, ExpectedRevision: 1, MachineID: "machine_bound", SessionID: "unbound_session", LeaseID: "unbound_lease", TTL: time.Hour})
+			unbound := pgstoretest.ClaimLease(t, repository, org, leasestore.Claim{IssueID: 4001, ExpectedRevision: 1, MachineID: "machine_bound", SessionID: "unbound_session", LeaseID: "unbound_lease", TTL: time.Hour})
 			if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET project_id=NULL WHERE organization_id=$1 AND lease_id=$2`, org, unbound.LeaseID); err != nil {
 				t.Fatal(err)
 			}
@@ -346,7 +348,7 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 			var renewedUnbound leasestore.Lease
 			if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
 				var err error
-				renewedUnbound, err = w.Renew(t.Context(), leaseFence(unbound), 2*time.Hour)
+				renewedUnbound, err = w.Renew(t.Context(), pgstoretest.LeaseFence(unbound), 2*time.Hour)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -393,7 +395,7 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 			if !errors.Is(err, corestore.ErrUniqueViolation) {
 				t.Fatalf("different bound assignment accepted: %v", err)
 			}
-			content := eventstore.NewContent(newHistoryObjects())
+			content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 			receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "production-import", Operation: "core-runner-lease-assignment", CommandKey: unbound.LeaseID, RequestHash: artifact.Digest([]byte(string(org) + "/conflicting-binding")), CreatedAt: at}, []byte(`{}`))
 			if err != nil {
 				t.Fatal(err)
@@ -418,7 +420,7 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 			})
 			if err := repository.WriteRunnerEventCommand(releaseCtx, org, "runner_bound", "runner_bound", eventstore.RunCommand{Project: "prj_1", WorkItem: "wi_1", LeaseID: boundLease.LeaseID}, func(ctx context.Context, w tenantstore.Writer) error {
 				releaseReader = w
-				released, err := w.Release(ctx, leaseFence(boundLease), "example release")
+				released, err := w.Release(ctx, pgstoretest.LeaseFence(boundLease), "example release")
 				if err == nil && (released.ProjectID == nil || *released.ProjectID != "prj_1" || released.RunnerID == nil || *released.RunnerID != "runner_bound") {
 					return fmt.Errorf("release lost canonical binding: %+v", released)
 				}
@@ -562,12 +564,12 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 			}(); err != nil {
 				t.Fatal(err)
 			}
-			var plans []struct{ Plan searchPlanNode }
+			var plans []struct{ Plan pgstoretest.SearchPlanNode }
 			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 				t.Fatalf("decode membership plan: %v", err)
 			}
-			var visits func(searchPlanNode) float64
-			visits = func(node searchPlanNode) float64 {
+			var visits func(pgstoretest.SearchPlanNode) float64
+			visits = func(node pgstoretest.SearchPlanNode) float64 {
 				count := float64(0)
 				if node.Relation != "" {
 					count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
@@ -613,14 +615,14 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 }
 
 func TestRunnerHasActiveLeaseIsBoundedAndTenantScoped(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	first := tracker.OrganizationID("org_active_lease_first")
 	second := tracker.OrganizationID("org_active_lease_second")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, organization := range []tracker.OrganizationID{first, second} {
-		seedTenantAccess(t, repository, organization)
-		seedLeaseFamily(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
+		pgstoretest.SeedLeaseFamily(t, repository, organization)
 	}
 	for _, runner := range []struct {
 		organization tracker.OrganizationID
@@ -632,7 +634,7 @@ func TestRunnerHasActiveLeaseIsBoundedAndTenantScoped(t *testing.T) {
 		{organization: second, runner: "runner_cross", machine: "machine_1"},
 		{organization: second, runner: "runner_expired", machine: "machine_2"},
 	} {
-		seedRunnerIdentity(t, repository, runner.organization, runner.runner, runner.machine, now, false)
+		pgstoretest.SeedRunnerIdentity(t, repository, runner.organization, runner.runner, runner.machine, now, false)
 	}
 	assign := func(organization tracker.OrganizationID, lease leasestore.Lease, runner string) {
 		t.Helper()
@@ -642,21 +644,21 @@ func TestRunnerHasActiveLeaseIsBoundedAndTenantScoped(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	released := claimLease(t, repository, first, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_2", SessionID: "released_session", LeaseID: "lease_released", TTL: time.Hour})
+	released := pgstoretest.ClaimLease(t, repository, first, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_2", SessionID: "released_session", LeaseID: "lease_released", TTL: time.Hour})
 	assign(first, released, "runner_released")
 	if err := repository.WriteLeases(t.Context(), first, corestore.Serving, func(w leasestore.Writer) error {
-		_, err := w.Release(t.Context(), leaseFence(released), "example release")
+		_, err := w.Release(t.Context(), pgstoretest.LeaseFence(released), "example release")
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	activeFirst := claimLease(t, repository, first, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "active_session_1", LeaseID: "lease_active_1", TTL: time.Hour})
-	activeSecond := claimLease(t, repository, first, leasestore.Claim{IssueID: 2, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "active_session_2", LeaseID: "lease_active_2", TTL: time.Hour})
+	activeFirst := pgstoretest.ClaimLease(t, repository, first, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "active_session_1", LeaseID: "lease_active_1", TTL: time.Hour})
+	activeSecond := pgstoretest.ClaimLease(t, repository, first, leasestore.Claim{IssueID: 2, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "active_session_2", LeaseID: "lease_active_2", TTL: time.Hour})
 	assign(first, activeFirst, "runner_active")
 	assign(first, activeSecond, "runner_active")
-	crossTenant := claimLease(t, repository, second, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "cross_session", LeaseID: "lease_cross", TTL: time.Hour})
+	crossTenant := pgstoretest.ClaimLease(t, repository, second, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "cross_session", LeaseID: "lease_cross", TTL: time.Hour})
 	assign(second, crossTenant, "runner_cross")
-	expired := claimLease(t, repository, second, leasestore.Claim{IssueID: 2, ExpectedRevision: 1, MachineID: "machine_2", SessionID: "expired_session", LeaseID: "lease_expired", TTL: time.Hour})
+	expired := pgstoretest.ClaimLease(t, repository, second, leasestore.Claim{IssueID: 2, ExpectedRevision: 1, MachineID: "machine_2", SessionID: "expired_session", LeaseID: "lease_expired", TTL: time.Hour})
 	assign(second, expired, "runner_expired")
 	expireLeaseFixture(t, admin, second, expired.LeaseID)
 	for _, check := range []struct {
@@ -689,12 +691,12 @@ func TestRunnerHasActiveLeaseIsBoundedAndTenantScoped(t *testing.T) {
 }
 
 func TestRunnerSharedProviderAccountSerializesFirstReportJoin(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	const organization tracker.OrganizationID = "org_shared_account"
 	now := time.Now().UTC()
-	seedRunnerIdentity(t, repository, organization, "runner_first", "machine_first", now, true)
-	seedRunnerIdentity(t, repository, organization, "runner_second", "machine_second", now, true)
+	pgstoretest.SeedRunnerIdentity(t, repository, organization, "runner_first", "machine_first", now, true)
+	pgstoretest.SeedRunnerIdentity(t, repository, organization, "runner_second", "machine_second", now, true)
 	report := providercapacity.Report{Backend: "example", Provider: "example-provider", AccountAlias: "account_shared", SharedAccountAlias: "shared_account", Billing: "api_key", MaxConcurrent: 4, Availability: "available", ObservedAt: now, Models: []string{"example-model"}}
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.ReplaceRunnerProviderReports(t.Context(), "runner_first", []providercapacity.Report{report})
@@ -704,7 +706,7 @@ func TestRunnerSharedProviderAccountSerializesFirstReportJoin(t *testing.T) {
 
 	locked := make(chan struct{})
 	release := make(chan struct{})
-	lookup := startRepositoryTask(t, func(ctx context.Context) error {
+	lookup := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.LockRunnerProviderAccount(ctx, runnerstore.ProviderAccountKey{RunnerID: "runner_second", Provider: report.Provider, Backend: report.Backend, AccountAlias: report.AccountAlias, SharedAccountAlias: report.SharedAccountAlias}, now); err != nil {
 				return err
@@ -725,16 +727,16 @@ func TestRunnerSharedProviderAccountSerializesFirstReportJoin(t *testing.T) {
 			close(release)
 		}
 	})
-	waitRepositorySignal(t, locked)
-	update := startRepositoryTask(t, func(ctx context.Context) error {
+	pgstoretest.WaitRepositorySignal(t, locked)
+	update := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.ReplaceRunnerProviderReports(ctx, "runner_second", []providercapacity.Report{report})
 		})
 	})
 	testenv.WaitUntil(t, t.Context(), func() error {
 		select {
-		case <-update.done:
-			t.Fatalf("shared account report update completed before acquiring the claim's account lock: %v", update.err)
+		case <-update.Done:
+			t.Fatalf("shared account report update completed before acquiring the claim's account lock: %v", update.Err)
 		default:
 		}
 		var waiting int
@@ -747,10 +749,10 @@ func TestRunnerSharedProviderAccountSerializesFirstReportJoin(t *testing.T) {
 		return nil
 	})
 	close(release)
-	if err := lookup.wait(t); err != nil {
+	if err := lookup.Wait(t); err != nil {
 		t.Fatal(err)
 	}
-	if err := update.wait(t); err != nil {
+	if err := update.Wait(t); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -767,37 +769,12 @@ func TestRunnerSharedProviderAccountSerializesFirstReportJoin(t *testing.T) {
 	}
 }
 
-func seedRunnerIdentity(t *testing.T, repository *postgres.Repository, organization tracker.OrganizationID, runnerID, machineID string, now time.Time, registerMachine bool) {
-	t.Helper()
-	err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if registerMachine {
-			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: machineID, Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
-				return err
-			}
-		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: runnerID, Name: runnerID, Hash: apikey.HashToken("credential_" + string(organization) + "_" + runnerID), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: timePointer(now.Add(time.Hour)), ProjectAccess: "all", Kind: "service"}); err != nil {
-			return err
-		}
-		enrollment := runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_" + runnerID, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenHash: apikey.HashToken("enrollment_" + string(organization) + "_" + runnerID), Scope: "organization", Operations: []string{"read", "claim"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "admin"}
-		if err := w.CreateRunnerEnrollment(t.Context(), enrollment); err != nil {
-			return err
-		}
-		if err := w.RedeemRunnerEnrollment(t.Context(), enrollment.ID, runnerID, tracker.MachineID(machineID), now); err != nil {
-			return err
-		}
-		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenID: runnerID, EnrollmentID: enrollment.ID, Scope: "organization", Operations: enrollment.Operations, CapacityLimit: 1, ReportedCapacity: 1, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now})
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestSetRunnerUrgentUpdateRejectsNonzeroRevisionWithoutCurrentRow(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_urgent_cas")
-	now := historyAt()
-	seedTenantAccess(t, repository, organization)
-	seedRunnerIdentity(t, repository, organization, "runner_urgent_cas", "machine_urgent_cas", now, true)
+	now := pgstoretest.HistoryAt()
+	pgstoretest.SeedTenantAccess(t, repository, organization)
+	pgstoretest.SeedRunnerIdentity(t, repository, organization, "runner_urgent_cas", "machine_urgent_cas", now, true)
 	request := runnerauth.UpdateRequest{ID: "urgent_request", RequestedAt: now, Service: "detent", Version: "1.2.3", Release: true, Urgent: true}
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateRunnerUpdateRequest(t.Context(), runnerstore.UpdateRequestRecord{OrganizationID: organization, Request: request})
@@ -839,10 +816,10 @@ func TestSetRunnerUrgentUpdateRejectsNonzeroRevisionWithoutCurrentRow(t *testing
 }
 
 func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
-	now := historyAt()
+	now := pgstoretest.HistoryAt()
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, organization := range organizations {
 		if _, err := admin.ExecContext(ctx, `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, organization, now); err != nil {
@@ -856,7 +833,7 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 			if _, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: organization, ID: 1, ProjectID: "project_shared", NativeID: "wi_shared", Number: 1, Title: "Example"}); err != nil {
 				return err
 			}
-			if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: organization, ID: "runner_shared", Name: "runner_shared", Hash: apikey.HashToken("credential_" + string(organization)), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: timePointer(now.Add(24 * time.Hour)), ProjectAccess: "selected", Kind: "service"}); err != nil {
+			if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: organization, ID: "runner_shared", Name: "runner_shared", Hash: apikey.HashToken("credential_" + string(organization)), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: pgstoretest.TimePointer(now.Add(24 * time.Hour)), ProjectAccess: "selected", Kind: "service"}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: organization, TokenID: "runner_shared", ProjectID: "project_shared"}); err != nil {
@@ -906,9 +883,9 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 		}
 	}
 
-	counter := &reportCountingTracer{}
-	countedPool := tracedFeaturePool(t, pool, counter)
-	counted, err := postgres.NewRepository(ctx, countedPool, smallPool())
+	counter := &pgstoretest.ReportCountingTracer{}
+	countedPool := pgstoretest.TracedFeaturePool(t, pool, counter)
+	counted, err := postgres.NewRepository(ctx, countedPool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -957,9 +934,9 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 						}
 					}
 					checkProjects := func(r tenantstore.Reader) error {
-						counter.count.Store(0)
+						counter.Count.Store(0)
 						projects, err := r.RunnerProjects(ctx, check.runner, check.limit)
-						queries := counter.count.Load()
+						queries := counter.Count.Load()
 						if check.wantError == corestore.ErrInvalidPage && check.limit == 1 || check.wantError == runnerstore.ErrInvalidRecord {
 							if _, identityErr := r.RunnerIdentity(ctx, check.runner); !errors.Is(identityErr, check.wantError) {
 								t.Errorf("identity error=%v, want %v", identityErr, check.wantError)
@@ -969,11 +946,11 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 							t.Errorf("projects=%v error=%v, want %v error=%v", projects, err, check.want, check.wantError)
 						}
 						if check.wantError == nil {
-							counter.count.Store(0)
+							counter.Count.Store(0)
 							if _, err := r.RunnerIdentity(ctx, check.runner); err != nil {
 								return err
 							}
-							if got := counter.count.Load(); got > 2 {
+							if got := counter.Count.Load(); got > 2 {
 								t.Errorf("RunnerIdentity queries=%d, want at most 2", got)
 							}
 							t.Logf("RunnerProjects actual PostgreSQL queries=%d", queries)
@@ -1071,15 +1048,11 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 	}
 }
 
-func timePointer(value time.Time) *time.Time {
-	return &value
-}
-
 func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	ctx := t.Context()
-	now := historyAt()
+	now := pgstoretest.HistoryAt()
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), CreatedAt: now}); err != nil {
@@ -1088,7 +1061,7 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project_shared", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
 				return err
 			}
-			if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: organization, ID: "runner_shared", Name: "runner_shared", Hash: apikey.HashToken("credential_" + string(organization)), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: timePointer(now.Add(time.Hour)), ProjectAccess: "selected", Kind: "service"}); err != nil {
+			if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: organization, ID: "runner_shared", Name: "runner_shared", Hash: apikey.HashToken("credential_" + string(organization)), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: pgstoretest.TimePointer(now.Add(time.Hour)), ProjectAccess: "selected", Kind: "service"}); err != nil {
 				return err
 			}
 			if err := w.RegisterMachine(ctx, leasestore.Machine{OrganizationID: organization, ID: "machine_shared", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
@@ -1245,8 +1218,8 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 			})
 		}
 	}
-	olderTask := startRepositoryTask(t, writeObservation(olderAt))
-	newerTask := startRepositoryTask(t, writeObservation(newerAt))
+	olderTask := pgstoretest.StartRepositoryTask(t, writeObservation(olderAt))
+	newerTask := pgstoretest.StartRepositoryTask(t, writeObservation(newerAt))
 	testenv.WaitUntil(t, ctx, func() error {
 		var waiting int
 		if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'INSERT INTO runner_project_observations%'`).Scan(&waiting); err != nil {
@@ -1260,13 +1233,13 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 	if _, err := lockConnection.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, newerAt.Unix()); err != nil {
 		t.Fatal(err)
 	}
-	if err := newerTask.wait(t); err != nil {
+	if err := newerTask.Wait(t); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := lockConnection.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, olderAt.Unix()); err != nil {
 		t.Fatal(err)
 	}
-	if err := olderTask.wait(t); err != nil {
+	if err := olderTask.Wait(t); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
@@ -1344,14 +1317,14 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 }
 
 func TestRunnerHeartbeatObservationsAreTenantScoped(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	ctx := t.Context()
-	now := historyAt()
+	now := pgstoretest.HistoryAt()
 	hour := now.UTC().Truncate(time.Hour)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRunnerIdentity(t, repository, organization, "runner_shared", "machine_shared", now, true)
+		pgstoretest.SeedRunnerIdentity(t, repository, organization, "runner_shared", "machine_shared", now, true)
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := seedCoreOrganization(ctx, w, organization); err != nil {
+			if err := pgstoretest.SeedCoreOrganization(ctx, w, organization); err != nil {
 				return err
 			}
 			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project_shared", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
@@ -1402,13 +1375,13 @@ func TestRunnerHeartbeatObservationsAreTenantScoped(t *testing.T) {
 }
 
 func TestRunnerHostMetricRetentionUsesBoundedTenantBatch(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
-	now := historyAt()
+	now := pgstoretest.HistoryAt()
 	firstHour := now.UTC().Truncate(time.Hour).Add(-2 * time.Hour)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRunnerIdentity(t, repository, organization, "runner_shared", "machine_shared", now, true)
+		pgstoretest.SeedRunnerIdentity(t, repository, organization, "runner_shared", "machine_shared", now, true)
 		segments := make([]hostmetrics.Summary, 0, 3)
 		for offset := range 3 {
 			hour := firstHour.Add(time.Duration(offset) * time.Hour)

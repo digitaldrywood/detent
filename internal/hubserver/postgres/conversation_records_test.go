@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -29,14 +31,14 @@ import (
 )
 
 func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	now := time.Date(2026, 11, 1, 18, 0, 0, 0, time.UTC)
 	contentIDs := make(map[tracker.OrganizationID]string)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
 		ref, _, err := attachment.PrepareArchive(string(organization), 1, bytes.NewReader([]byte(`{"example":true}`)))
 		if err != nil {
 			t.Fatal(err)
@@ -443,7 +445,7 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 			at := historical.UpdatedAt.Format(time.RFC3339Nano)
 			sourceCopy.add(t, "conversations", map[string]any{"id": importedID, "organization_id": organization, "project_id": "prj_shared", "owner_principal_id": "owner", "origin": "user", "title": "Historical receipt", "visibility": "private", "status": "active", "execution_json": "{}", "created_at": at, "updated_at": at})
 			sourceCopy.add(t, "conversation_commands", map[string]any{"conversation_id": importedID, "key": "historical-command", "kind": string(conversation.CommandMessage), "request_hash": "historical-request", "receipt_json": string(raw), "receipt_status": string(historical.Status), "created_at": at, "updated_at": at})
-			source := postgres.ConversationHistoryImportSource{BundlePath: sourceCopy.seal(t), Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: newHistoryObjects(), Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
+			source := postgres.ConversationHistoryImportSource{BundlePath: sourceCopy.seal(t), Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: pgstoretest.NewHistoryObjects(), Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
 			for range 2 {
 				result, err := repository.ImportConversationHistory(ctx, source)
 				if err != nil {
@@ -503,8 +505,8 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 
 func TestConversationMessageCountBackfillsAllTenants(t *testing.T) {
 	const version = 20261108204849
-	admin, _ := migrationDatabaseAtVersion(t, version-1)
-	seedCore(t, admin)
+	admin, _ := pgstoretest.MigrationDatabaseAtVersion(t, version-1)
+	pgstoretest.SeedCore(t, admin)
 	for index, organization := range []string{"org_first", "org_second"} {
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES($1,'count_owner','Count owner',$1,$1,'operator',true,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, organization); err != nil {
 			t.Fatal(err)
@@ -523,7 +525,7 @@ func TestConversationMessageCountBackfillsAllTenants(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), `SET detent.organization_id=''`); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,12 +548,12 @@ func TestConversationMessageCountBackfillsAllTenants(t *testing.T) {
 }
 
 func TestMessageReadsReportUnknownLegacyStoredSize(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, organization := range organizations {
-		seedTenantAccess(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversations (organization_id,id,project_id,owner_principal_id,origin,visibility,status) VALUES ($1,'conv_sizes','prj_shared','first','user','private','active')`, organization); err != nil {
 			t.Fatal(err)
 		}
@@ -638,9 +640,9 @@ func (*pendingConversationQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, 
 }
 
 func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	base := rolePool(t, admin, "detent_runtime_v2", "")
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	base := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	config := base.Config()
 	base.Close()
 	trace := &pendingConversationQueryTrace{}
@@ -650,7 +652,7 @@ func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +665,7 @@ func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
 	id := func(number int) string { return fmt.Sprintf("conv_%032x", number) }
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for index, organization := range organizations {
-		seedTenantAccess(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO conversations (organization_id,id,project_id,owner_principal_id,origin,visibility,status,execution_status,execution_settled,deleted_at) SELECT $1,'conv_'||lpad(to_hex(n),32,'0'),'prj_shared','first','user','private','active','idle',true,CASE WHEN n%3=0 AND n<=$2 THEN CURRENT_TIMESTAMP END FROM generate_series(1,$2+2) n`, organization, history); err != nil {
 			t.Fatal(err)
 		}
@@ -680,7 +682,7 @@ func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			now := historyAt()
+			now := pgstoretest.HistoryAt()
 			_, _, err := w.ReserveCommand(t.Context(), conversationstore.Command{OrganizationID: organization, ConversationID: id(history + index + 1), Key: "cancel", Kind: conversation.CommandCancel, TargetTurnID: "turn_" + string(organization), RequestHash: "cancel_" + string(organization), Receipt: conversation.Receipt{Key: "cancel", Kind: conversation.CommandCancel, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now})
 			return err
 		}); err != nil {
@@ -717,13 +719,13 @@ func TestPendingConversationsBoundsSparseTenantHistory(t *testing.T) {
 			if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+trace.statement, trace.args...).Scan(&raw); err != nil {
 				t.Fatal(err)
 			}
-			var plans []struct{ Plan searchPlanNode }
+			var plans []struct{ Plan pgstoretest.SearchPlanNode }
 			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 				t.Fatalf("decode pending scan plan: %v", err)
 			}
 			work := make(map[string]float64)
-			var visit func(searchPlanNode)
-			visit = func(node searchPlanNode) {
+			var visit func(pgstoretest.SearchPlanNode)
+			visit = func(node pgstoretest.SearchPlanNode) {
 				work[node.Relation] += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
 				for _, child := range node.Plans {
 					visit(child)

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -19,10 +21,10 @@ import (
 func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 	for _, queued := range []bool{false, true} {
 		t.Run(fmt.Sprintf("queued=%t", queued), func(t *testing.T) {
-			admin := template.Database(t)
-			repository, pool := repositoryFor(t, admin, smallPool())
+			admin := pgstoretest.Template.Database(t)
+			repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-				seedLeaseFamily(t, repository, org)
+				pgstoretest.SeedLeaseFamily(t, repository, org)
 				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
 					_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 2, Title: "Other example"})
 					return err
@@ -30,7 +32,7 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, item := range []int64{1, 2, 3} {
-					claim := leaseClaim(item)
+					claim := pgstoretest.LeaseClaim(item)
 					project := tracker.ProjectID("prj_1")
 					if item == 2 {
 						project = "prj_2"
@@ -38,8 +40,8 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 					if item == 3 {
 						claim.MachineID = "machine_1"
 					}
-					lease := claimLease(t, repository, org, claim)
-					event := attemptEvent(lease)
+					lease := pgstoretest.ClaimLease(t, repository, org, claim)
+					event := pgstoretest.AttemptEvent(lease)
 					event.CheckpointObjectKey = new("example/source-checkpoint")
 					event.CheckpointPreservesSource = new(true)
 					beat := func(offset time.Duration) *time.Time {
@@ -220,7 +222,7 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 						t.Fatalf("checkpoint-free finish lost retained key/fact: %+v err=%v", got, err)
 					}
 					if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-						_, err := w.Release(t.Context(), leaseFence(lease), "finished")
+						_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "finished")
 						return err
 					}); err != nil {
 						t.Fatal(err)
@@ -272,10 +274,10 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				claim := leaseClaim(1)
+				claim := pgstoretest.LeaseClaim(1)
 				claim.LeaseID, claim.SessionID = "lease_next", "session_next"
-				lease := claimLease(t, repository, org, claim)
-				event := attemptEvent(lease)
+				lease := pgstoretest.ClaimLease(t, repository, org, claim)
+				event := pgstoretest.AttemptEvent(lease)
 				event.LocalAttemptID = 42
 				if queued {
 					event.CheckpointObjectKey = new("example/next-checkpoint")
@@ -284,16 +286,16 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 					event.RuntimeOrdered = true
 					event.RuntimeHeartbeatAt = new(lease.RenewedAt.Truncate(time.Microsecond))
 				}
-				recordLeaseAttempt(t, repository, org, event)
+				pgstoretest.RecordLeaseAttempt(t, repository, org, event)
 				if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-					_, err := w.Release(t.Context(), leaseFence(lease), "finished")
+					_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "finished")
 					return err
 				}); err != nil {
 					t.Fatal(err)
 				}
 				claim.LeaseID, claim.SessionID = "lease_third", "session_third"
-				thirdLease := claimLease(t, repository, org, claim)
-				third := attemptEvent(thirdLease)
+				thirdLease := pgstoretest.ClaimLease(t, repository, org, claim)
+				third := pgstoretest.AttemptEvent(thirdLease)
 				third.LocalAttemptID = 42
 				if queued {
 					third.CheckpointObjectKey = new("example/third-checkpoint")
@@ -302,7 +304,7 @@ func TestLocalAttemptCorrelationOwnsFencedReceipt(t *testing.T) {
 					third.RuntimeOrdered = true
 					third.RuntimeHeartbeatAt = new(thirdLease.RenewedAt.Truncate(time.Microsecond))
 				}
-				recordLeaseAttempt(t, repository, org, third)
+				pgstoretest.RecordLeaseAttempt(t, repository, org, third)
 				if queued {
 					var expected, expectedLatest leasestore.Attempt
 					if err := repository.ReadLeases(t.Context(), org, corestore.Serving, func(r leasestore.Reader) error {

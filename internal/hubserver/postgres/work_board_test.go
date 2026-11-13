@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -25,14 +27,14 @@ import (
 )
 
 func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
-	admin := template.Database(t)
-	original, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	if err := original.Close(); err != nil {
 		t.Fatal(err)
 	}
 	probe := &boardRetentionQueries{}
-	runtimePool := tracedFeaturePool(t, pool, probe)
-	repository, err := postgres.NewRepository(t.Context(), runtimePool, smallPool())
+	runtimePool := pgstoretest.TracedFeaturePool(t, pool, probe)
+	repository, err := postgres.NewRepository(t.Context(), runtimePool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,11 +43,11 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	objects := newHistoryObjects()
+	objects := pgstoretest.NewHistoryObjects()
 	content := viewstore.NewContent(objects)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		t.Run(string(org)+"/nested request snapshot", func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
@@ -409,8 +411,8 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 							return err
 						}
 						if project == projects[0] && i == 19 {
-							first := policyTestRevision(org, project, "retention_first", now)
-							second := policyTestRevision(org, project, "retention_second", now.Add(time.Second))
+							first := pgstoretest.PolicyTestRevision(org, project, "retention_first", now)
+							second := pgstoretest.PolicyTestRevision(org, project, "retention_second", now.Add(time.Second))
 							if err := w.ApproveProjectPolicy(t.Context(), first, ""); err != nil {
 								return err
 							}
@@ -699,10 +701,10 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 }
 
 func TestConcurrentProjectGrantsDoNotDeadlockRevisionUpdates(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	organization := tracker.OrganizationID("org_first")
-	seedTenantAccess(t, repository, organization)
+	pgstoretest.SeedTenantAccess(t, repository, organization)
 	for _, project := range []tracker.ProjectID{"prj_example", "prj_other"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: string(project), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})

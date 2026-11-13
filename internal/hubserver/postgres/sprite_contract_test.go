@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -18,13 +20,13 @@ import (
 )
 
 func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		for _, id := range []string{"first", "second"} {
-			seedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
 		}
 		err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
 			settings := postgres.SpritePool{OrganizationID: org, MaxRunners: 10, IdleSeconds: 300, ConfiguredBy: "admin", IsolationTier: "native-trusted", PlacementMode: "blended", BootstrapObjectKey: new("objects/bootstrap/" + string(org))}
@@ -136,7 +138,7 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, _ = repositoryFor(t, admin, smallPool())
+	repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.ReadSprite(t.Context(), org, corestore.Serving, func(r postgres.SpriteReader) error {
 			settings, err := r.SpritePool(t.Context())
@@ -271,7 +273,7 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 		t.Run(string(org)+"/current_and_recent_deleted_members", func(t *testing.T) {
 			for index := range 21 {
 				id := fmt.Sprintf("retired_%02d", index)
-				seedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
+				pgstoretest.SeedRunnerIdentity(t, repository, org, id, "machine_"+id, now, true)
 				if err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
 					return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: org, Name: id, ProviderOrganization: "example", EnrollmentID: "enrollment_" + id, State: "deleted", BootstrapLog: "log_" + id, IdleSince: now, CreatedAt: now.Add(time.Second), AllocationProjectID: "prj_first", AllocationRevision: 1})
 				}); err != nil {
@@ -313,13 +315,13 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 }
 
 func TestSpriteWakeFactsPreserveNullsAndFenceMachineBinding(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
-	now := historyAt()
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_wake_first", "org_wake_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		for _, id := range []string{"first", "second"} {
 			machineID := "machine_" + id
-			seedRunnerIdentity(t, repository, org, id, machineID, now, true)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, id, machineID, now, true)
 			err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				machine, err := w.Machine(t.Context(), machineID)
 				if err != nil {
@@ -379,9 +381,9 @@ func TestSpriteWakeFactsPreserveNullsAndFenceMachineBinding(t *testing.T) {
 }
 
 func TestSpriteLeaseUsageCountsUnassignedLeasesAndExpiryBoundary(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_usage_first", "org_usage_second"} {
-		seedLeaseFamily(t, repository, org)
+		pgstoretest.SeedLeaseFamily(t, repository, org)
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, id := range []string{"machine_1", "machine_2"} {
 				machine, err := w.Machine(t.Context(), id)
@@ -397,8 +399,8 @@ func TestSpriteLeaseUsageCountsUnassignedLeasesAndExpiryBoundary(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		first := claimLease(t, repository, org, leaseClaim(1))
-		second := claimLease(t, repository, org, leaseClaim(2))
+		first := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
+		second := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(2))
 		expired := first.ExpiresAt
 		if second.ExpiresAt.After(expired) {
 			expired = second.ExpiresAt

@@ -3,15 +3,15 @@ package postgres_test
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -19,114 +19,15 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 
-	"github.com/google/uuid"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func rolePool(t *testing.T, admin *sql.DB, group, attributes string) *pgxpool.Pool {
-	t.Helper()
-	return rolePoolFromTemplate(t, template, admin, group, attributes)
-}
-
-func rolePoolFromTemplate(t *testing.T, owner *pgtest.Template, admin *sql.DB, group, attributes string) *pgxpool.Pool {
-	t.Helper()
-	admin.SetMaxIdleConns(1)
-	var database string
-	var limit int
-	if err := admin.QueryRowContext(t.Context(), `SELECT datname,datconnlimit FROM pg_database WHERE datname=current_database()`).Scan(&database, &limit); err != nil {
-		t.Fatal(err)
-	}
-	if limit >= 0 && limit < 3 {
-		if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+" CONNECTION LIMIT 3"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	name := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	password := uuid.NewString()
-	quoted := pgx.Identifier{name}.Sanitize()
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)+" "+attributes); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		deadline, ok := t.Deadline()
-		if !ok {
-			t.Error("PostgreSQL tests require a process deadline")
-			return
-		}
-		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
-		defer cancel()
-		if _, err := admin.ExecContext(ctx, "DROP OWNED BY "+quoted); err != nil {
-			t.Error(err)
-		}
-		if _, err := admin.ExecContext(ctx, "DROP ROLE "+quoted); err != nil {
-			t.Error(err)
-		}
-	})
-	if group != "" {
-		if _, err := admin.ExecContext(t.Context(), "GRANT "+pgx.Identifier{group}.Sanitize()+" TO "+quoted); err != nil {
-			t.Fatal(err)
-		}
-	}
-	config := owner.NativeConfig(t, admin, name, password)
-	config.MaxConns = 3
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-func runtimeFor(t *testing.T, reader, writer *pgxpool.Pool) *postgres.Runtime {
-	t.Helper()
-	runtime, err := postgres.NewRuntime(t.Context(), reader, writer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return runtime
-}
-
-type testTenantTx interface {
-	pgtransport.Executor
-	Commit(context.Context) error
-	Rollback(context.Context) error
-}
-type unboundTransaction struct{ pgx.Tx }
-
-func (t unboundTransaction) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
-	return t.Tx.Exec(pgtest.UnboundProbe(ctx), query, args...)
-}
-func (t unboundTransaction) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
-	return t.Tx.Query(pgtest.UnboundProbe(ctx), query, args...)
-}
-func (t unboundTransaction) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
-	return t.Tx.QueryRow(pgtest.UnboundProbe(ctx), query, args...)
-}
-func tenantTx(t *testing.T, runtime *postgres.Runtime, pool *pgxpool.Pool, organization string) testTenantTx {
-	t.Helper()
-	var tx testTenantTx
-	var err error
-	if organization == "" {
-		var raw pgx.Tx
-		raw, err = pool.BeginTx(t.Context(), pgx.TxOptions{})
-		tx = unboundTransaction{raw}
-	} else {
-		tx, err = runtime.Begin(t.Context(), tracker.OrganizationID(organization), pgtransport.Options{})
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { tx.Rollback(t.Context()) })
-	return tx
-}
-
 func TestCoreRowSecurity(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	for _, scope := range []struct {
 		name         string
 		organization string
@@ -193,8 +94,8 @@ func TestCoreRowSecurity(t *testing.T) {
 }
 
 func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
 	for _, organization := range []string{"org_first", "org_second"} {
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues (organization_id,id,native_id,project_id,number,title) VALUES ($1,43,'wi_retained','prj_shared',3,'Example')`, organization); err != nil {
 			t.Fatal(err)
@@ -203,8 +104,8 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	pool := rolePool(t, admin, "detent_runtime_v2", "")
-	runtime := runtimeFor(t, pool, pool)
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
 	for _, organization := range []string{"", "org_unknown", "org_first", "org_second"} {
 		for _, identity := range []struct {
 			name     string
@@ -222,9 +123,9 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 				if organization == target {
 					target = "org_second"
 				}
-				tx := tenantTx(t, runtime, pool, organization)
+				tx := pgstoretest.TenantTx(t, runtime, pool, organization)
 				_, err := tx.Exec(t.Context(), `INSERT INTO issues (organization_id,id,native_id,project_id,number,title) VALUES ($1,$2,$3,'prj_shared',99,'Example')`, target, identity.id, identity.nativeID)
-				requireSQLState(t, err, "42501")
+				pgstoretest.RequireSQLState(t, err, "42501")
 			})
 		}
 	}
@@ -239,7 +140,7 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 			{"conflict updated", `INSERT INTO issues (organization_id,id,native_id,project_id,number,title) VALUES ($1,41,'wi_shared','prj_shared',1,'Example') ON CONFLICT (organization_id,id) DO UPDATE SET title=EXCLUDED.title`, 3},
 		} {
 			t.Run("authorized identity/"+organization+"/"+tc.name, func(t *testing.T) {
-				tx := tenantTx(t, runtime, pool, organization)
+				tx := pgstoretest.TenantTx(t, runtime, pool, organization)
 				if _, err := tx.Exec(t.Context(), tc.query, organization); err != nil {
 					t.Fatal(err)
 				}
@@ -263,7 +164,7 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 			t.Run(tc.table+"/"+organization, func(t *testing.T) {
 				if organization == "org_first" || organization == "org_second" {
 					t.Run("insert own tenant", func(t *testing.T) {
-						tx := tenantTx(t, runtime, pool, organization)
+						tx := pgstoretest.TenantTx(t, runtime, pool, organization)
 						if _, err := tx.Exec(t.Context(), tc.insert, organization); err != nil {
 							t.Fatal(err)
 						}
@@ -274,7 +175,7 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 					})
 				}
 				t.Run("unfiltered update", func(t *testing.T) {
-					tx := tenantTx(t, runtime, pool, organization)
+					tx := pgstoretest.TenantTx(t, runtime, pool, organization)
 					result, err := tx.Exec(t.Context(), tc.update)
 					if err != nil {
 						t.Fatal(err)
@@ -293,11 +194,11 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 				}
 				for _, operation := range []string{"insert", "move tenant", "delete wrong tenant"} {
 					t.Run(operation, func(t *testing.T) {
-						tx := tenantTx(t, runtime, pool, organization)
+						tx := pgstoretest.TenantTx(t, runtime, pool, organization)
 						switch operation {
 						case "insert":
 							_, err := tx.Exec(t.Context(), tc.insert, target)
-							requireSQLState(t, err, "42501")
+							pgstoretest.RequireSQLState(t, err, "42501")
 						case "move tenant":
 							result, err := tx.Exec(t.Context(), "UPDATE "+pgx.Identifier{tc.table}.Sanitize()+" SET organization_id=$1", target)
 							if organization == "org_first" || organization == "org_second" {
@@ -305,7 +206,7 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 								if tc.table == "issues" {
 									state = "23514"
 								}
-								requireSQLState(t, err, state)
+								pgstoretest.RequireSQLState(t, err, state)
 							} else if err != nil {
 								t.Fatal(err)
 							} else if affected := result.RowsAffected(); affected != 0 {
@@ -331,11 +232,11 @@ func TestTenantTransactionsDoNotLeakContext(t *testing.T) {
 	for _, readOnly := range []bool{false, true} {
 		for _, completion := range []string{"commit", "rollback", "statement error"} {
 			t.Run(fmt.Sprintf("readOnly=%v/%s", readOnly, completion), func(t *testing.T) {
-				admin := template.Database(t)
-				seedCore(t, admin)
-				writer := rolePool(t, admin, "detent_runtime_v2", "")
-				reader := rolePool(t, admin, "detent_runtime_v2", "")
-				runtime := runtimeFor(t, reader, writer)
+				admin := pgstoretest.Template.Database(t)
+				pgstoretest.SeedCore(t, admin)
+				writer := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
+				reader := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
+				runtime := pgstoretest.RuntimeFor(t, reader, writer)
 				pool := writer
 				if readOnly {
 					pool = reader
@@ -373,7 +274,7 @@ func TestTenantTransactionsDoNotLeakContext(t *testing.T) {
 						err = tx.Rollback(t.Context())
 					case "statement error":
 						_, statementErr := tx.Exec(t.Context(), `SELECT 1/0`)
-						requireSQLState(t, statementErr, "22012")
+						pgstoretest.RequireSQLState(t, statementErr, "22012")
 						err = tx.Rollback(t.Context())
 					}
 					if err != nil {
@@ -408,8 +309,8 @@ func TestTenantTransactionsDoNotLeakContext(t *testing.T) {
 }
 
 func TestRuntimeRejectsPrivilegedPools(t *testing.T) {
-	admin := template.Database(t)
-	valid := rolePool(t, admin, "detent_runtime_v2", "")
+	admin := pgstoretest.Template.Database(t)
+	valid := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	for _, tc := range []struct{ name, group, attributes string }{
 		{"migration", "detent_migration_v2", ""},
 		{"platform", "detent_platform_v2", ""},
@@ -420,7 +321,7 @@ func TestRuntimeRejectsPrivilegedPools(t *testing.T) {
 		{"table owner", "detent_runtime_v2", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := rolePool(t, admin, tc.group, tc.attributes)
+			pool := pgstoretest.RolePool(t, admin, tc.group, tc.attributes)
 			if tc.name == "table owner" {
 				var login string
 				if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
@@ -449,7 +350,7 @@ func TestRuntimeRejectsPrivilegedPools(t *testing.T) {
 			}
 		})
 	}
-	adminPool := template.OpenNativeRole(t, admin, "", "")
+	adminPool := pgstoretest.Template.OpenNativeRole(t, admin, "", "")
 	for _, pool := range []*pgxpool.Pool{nil, adminPool} {
 		if runtime, err := postgres.NewRuntime(t.Context(), pool, valid); !errors.Is(err, postgres.ErrRuntimeRole) || runtime != nil {
 			t.Fatalf("invalid pool accepted: runtime=%v error=%v", runtime, err)

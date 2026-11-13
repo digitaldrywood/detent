@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -21,7 +23,7 @@ import (
 )
 
 type costImportObjects struct {
-	*historyObjects
+	*pgstoretest.HistoryObjects
 	fail bool
 }
 
@@ -44,12 +46,12 @@ func (s *costImportObjects) StoreDetail(ctx context.Context, organization string
 	if s.fail {
 		return attachment.ArchiveReference{}, errors.New("archive unavailable")
 	}
-	return s.historyObjects.StoreDetail(ctx, organization, raw)
+	return s.HistoryObjects.StoreDetail(ctx, organization, raw)
 }
 
 func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	admin.SetMaxOpenConns(6)
 	from := time.Date(2026, 1, 1, 0, 0, 0, 1, time.UTC)
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
@@ -77,14 +79,14 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 		copies[organization] = sourceCopy.seal(t, 1)
 	}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			_, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: "project_example", Name: "Example", Profile: "native"})
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
-		objects := &costImportObjects{historyObjects: newHistoryObjects()}
+		objects := &costImportObjects{HistoryObjects: pgstoretest.NewHistoryObjects()}
 		source := postgres.CostImportSource{BundlePath: copies[organization], Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: objects, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
 		objects.fail = true
 		if _, err := repository.ImportCostCopy(t.Context(), source); err == nil {
@@ -102,7 +104,7 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 		if err := repository.Close(); err != nil {
 			t.Fatal(err)
 		}
-		repository, _ = repositoryFor(t, admin, smallPool())
+		repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		if replay, err := repository.ImportCostCopy(t.Context(), source); err != nil || replay != want {
 			t.Fatalf("completed replay=%+v %v", replay, err)
 		}

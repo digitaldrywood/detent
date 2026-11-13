@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
@@ -33,8 +35,8 @@ func TestDeploymentRejectsUnsupportedRuntimeCapabilities(t *testing.T) {
 		{"unforced RLS", `ALTER TABLE leases NO FORCE ROW LEVEL SECURITY`, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			admin := template.Database(t)
-			pool := rolePool(t, admin, "detent_runtime_v2", "")
+			admin := pgstoretest.Template.Database(t)
+			pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 			statement := test.statement
 			if test.name == "database creation" {
 				var database string

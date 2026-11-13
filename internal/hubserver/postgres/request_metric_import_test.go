@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -111,8 +113,8 @@ func finishMetricImport(t *testing.T, r *postgres.Repository, source postgres.Me
 }
 
 func TestRequestMetricImportRetainsHistoryAcrossRestart(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	for index, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		source := metricImportSource(t, db, fmt.Sprintf("raw_metrics_%d", index), organization)
 		now := source.RetainAt
@@ -175,8 +177,8 @@ func TestRequestMetricImportRetainsHistoryAcrossRestart(t *testing.T) {
 }
 
 func TestRequestMetricImportRollsBackPageAndCheckpoint(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	source := metricImportSource(t, db, "raw_metrics", "org_first")
 	for _, route := range []string{"GET /first", "GET /second"} {
 		insertImportMetric(t, source, metricsstore.Minute, metricSample(source.RetainAt.Truncate(time.Minute), route, "same-caller"))
@@ -226,8 +228,8 @@ func TestRequestMetricImportRollsBackPageAndCheckpoint(t *testing.T) {
 }
 
 func TestRequestMetricImportConcurrentReplay(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 1, BackgroundConnections: 3})
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 1, BackgroundConnections: 3})
 	source := metricImportSource(t, db, "raw_metrics", "org_first")
 	for n := range metricsstore.CallerLimit + 2 {
 		insertImportMetric(t, source, metricsstore.Minute, metricSample(source.RetainAt.Truncate(time.Minute), "GET /example", fmt.Sprintf("caller_%03d", n)))
@@ -322,8 +324,8 @@ func TestRequestMetricImportRejectsChangedSource(t *testing.T) {
 		}, postgres.ErrMetricImport},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := template.Database(t)
-			r, _ := repositoryFor(t, db, smallPool())
+			db := pgstoretest.Template.Database(t)
+			r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 			source := metricImportSource(t, db, "raw_metrics", "org_first")
 			importer, err := r.NewMetricsImporter(t.Context(), source)
 			if err != nil {
@@ -356,8 +358,8 @@ func TestRequestMetricImportRejectsMalformedPage(t *testing.T) {
 		{"status out of range", "status_class", "10"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := template.Database(t)
-			r, _ := repositoryFor(t, db, smallPool())
+			db := pgstoretest.Template.Database(t)
+			r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 			source := metricImportSource(t, db, "raw_metrics", "org_first")
 			insertImportMetric(t, source, metricsstore.Minute, metricSample(source.RetainAt.Truncate(time.Minute), "GET /example", "caller"))
 			var value any = tc.value
@@ -386,19 +388,19 @@ func TestRequestMetricImportRejectsMalformedPage(t *testing.T) {
 }
 
 func TestRequestMetricImportCheckpointIsolation(t *testing.T) {
-	db := template.Database(t)
-	r, pool := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, pool := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		source := metricImportSource(t, db, "raw_"+string(organization), organization)
 		finishMetricImport(t, r, source, 1)
 	}
-	runtime := runtimeFor(t, pool, pool)
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
 	for _, tc := range []struct {
 		organization string
 		want         int
 	}{{"", 0}, {"org_first", 1}, {"org_second", 1}, {"org_unknown", 0}} {
 		t.Run(tc.organization, func(t *testing.T) {
-			tx := tenantTx(t, runtime, pool, tc.organization)
+			tx := pgstoretest.TenantTx(t, runtime, pool, tc.organization)
 			var count int
 			if err := tx.QueryRow(t.Context(), `SELECT count(*) FROM request_metric_imports`).Scan(&count); err != nil || count != tc.want {
 				t.Fatalf("checkpoint scope=%d err=%v", count, err)
@@ -408,7 +410,7 @@ func TestRequestMetricImportCheckpointIsolation(t *testing.T) {
 			}
 		})
 	}
-	tx := tenantTx(t, runtime, pool, "org_first")
+	tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
 	result, err := tx.Exec(t.Context(), `UPDATE request_metric_imports SET processed=99 WHERE organization_id='org_second'`)
 	if err != nil {
 		t.Fatal(err)
@@ -417,15 +419,15 @@ func TestRequestMetricImportCheckpointIsolation(t *testing.T) {
 		t.Fatalf("foreign checkpoint changed=%d err=%v", changed, err)
 	}
 	_, err = tx.Exec(t.Context(), `UPDATE request_metric_imports SET organization_id='org_foreign'`)
-	requireSQLState(t, err, "42501")
+	pgstoretest.RequireSQLState(t, err, "42501")
 	if err := tx.Rollback(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestRequestMetricImportRejectsExistingHistoryAndInvalidPage(t *testing.T) {
-	db := template.Database(t)
-	r, _ := repositoryFor(t, db, smallPool())
+	db := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, db, pgstoretest.SmallPool())
 	source := metricImportSource(t, db, "raw_metrics", "org_first")
 	importer, err := r.NewMetricsImporter(t.Context(), source)
 	if err != nil {

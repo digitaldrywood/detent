@@ -2,19 +2,18 @@ package postgres_test
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -37,170 +36,30 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type historyObjects struct {
-	mu      sync.Mutex
-	objects map[string][]byte
-	encoder attachment.ArchiveEncoder
-}
-
-func newHistoryObjects() *historyObjects { return &historyObjects{objects: make(map[string][]byte)} }
-func (s *historyObjects) StoreDetail(_ context.Context, org string, raw []byte) (attachment.ArchiveReference, error) {
-	ref, compressed, err := s.encoder.Prepare(org, 1, bytes.NewReader(raw))
-	if err != nil {
-		return ref, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.objects[ref.Key] = bytes.Clone(compressed)
-	return ref, nil
-}
-func (s *historyObjects) ReadDetail(_ context.Context, org string, ref attachment.ArchiveReference) ([]byte, error) {
-	if ref.Validate(org) != nil {
-		return nil, artifact.ErrIntegrity
-	}
-	s.mu.Lock()
-	compressed, ok := s.objects[ref.Key]
-	compressed = bytes.Clone(compressed)
-	s.mu.Unlock()
-	if !ok {
-		return nil, os.ErrNotExist
-	}
-	if int64(len(compressed)) != ref.CompressedSize || artifact.Digest(compressed) != ref.SHA256 {
-		return nil, artifact.ErrIntegrity
-	}
-	r, err := gzip.NewReader(bytes.NewReader(compressed))
-	if err != nil {
-		return nil, err
-	}
-	raw, err := io.ReadAll(r)
-	return raw, errors.Join(err, r.Close())
-}
-
-func historyJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	raw, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return raw
-}
-func historyActor() tracker.Actor {
-	return tracker.Actor{Kind: "human", PrincipalID: "example", DisplayName: "Example actor", ViaKey: "example-key"}
-}
-func historyAt() time.Time { return time.Date(2026, 10, 31, 12, 0, 0, 123456000, time.UTC) }
-func historyEvent(t *testing.T, c *eventstore.Content, org tracker.OrganizationID, id string) eventstore.Event {
-	t.Helper()
-	value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "issue.edited", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Revision: 2, Fields: []string{"title"}, Reason: "Example reason"}}
-	row, err := c.PrepareEvent(t.Context(), org, historyJSON(t, value))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return row
-}
-
 func historyEventForItem(t *testing.T, c *eventstore.Content, org tracker.OrganizationID, id string, item tracker.NativeWorkItemID) eventstore.Event {
 	t.Helper()
-	value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: item, Type: "issue.edited", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Revision: 2, Fields: []string{"title"}, Reason: "Example reason"}}
-	row, err := c.PrepareEvent(t.Context(), org, historyJSON(t, value))
+	value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: item, Type: "issue.edited", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{Revision: 2, Fields: []string{"title"}, Reason: "Example reason"}}
+	row, err := c.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return row
-}
-
-type historyFixture struct {
-	content  *eventstore.Content
-	objects  *historyObjects
-	event    eventstore.Event
-	snapshot eventstore.CollaborationVersion
-	change   eventstore.Change
-	version  eventstore.Version
-	evidence eventstore.Evidence
-	link     eventstore.Link
-	receipt  eventstore.Receipt
-}
-
-func seedHistory(t *testing.T, r *postgres.Repository, org tracker.OrganizationID, suffix string) historyFixture {
-	t.Helper()
-	f := historyFixture{objects: newHistoryObjects()}
-	f.content = eventstore.NewContent(f.objects)
-	f.event = historyEvent(t, f.content, org, "event_"+suffix)
-	f.event.Sequence = 0
-	change := tracker.ChangeRequest{ID: "change_" + suffix, OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", LinkedIssues: []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"}, Title: "Example change", Body: "Change body", Revision: 1, CreatedAt: historyAt(), UpdatedAt: historyAt()}
-	var err error
-	f.change, err = f.content.PrepareChange(t.Context(), org, historyJSON(t, change))
-	if err != nil {
-		t.Fatal(err)
-	}
-	version := tracker.ChangeVersion{ID: "version_" + suffix, ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", BaseSHA: "base", MergeBaseSHA: "merge-base", Repository: "owner/repository", PolicyID: "policy", AttemptID: "attempt", External: &tracker.ChangeExternalReference{Provider: "example", ID: "external", URL: "https://example.com/change"}}, Actor: historyActor(), CreatedAt: historyAt()}
-	version.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: "base", HeadSHA: "head", BundleSHA256: artifact.Digest(bytes.Repeat([]byte(string(org)+suffix), 123)[:123]), DiffSHA256: artifact.Digest([]byte("diff")), Bytes: 123}
-	f.version, err = f.content.PrepareVersion(t.Context(), org, historyJSON(t, version))
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := f.content.PrepareSourceBundle(t.Context(), org, bytes.Repeat([]byte(string(org)+suffix), 123)[:123])
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.version.SourceObjectKey, f.version.SourceSHA256 = source.Key, source.SHA256
-	f.version.SourceBytes, f.version.SourceContentBytes = source.CompressedSize, source.UncompressedSize
-	discussion := tracker.ChangeDiscussion{ID: "discussion_" + suffix, VersionID: version.ID, Body: "Evidence body", Actor: historyActor(), CreatedAt: historyAt(), Provenance: &tracker.Provenance{Provider: "example", ExternalID: "source_" + suffix, AuthorID: "author"}}
-	f.evidence, err = f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: change.ID, Kind: "discussion"}, historyJSON(t, discussion))
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.snapshot, err = f.content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: change.ProjectID, WorkItemID: change.WorkItemID, RecordID: "snapshot_" + suffix, Revision: 2}, historyJSON(t, change))
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.receipt, err = f.content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "example", Operation: "create_change", CommandKey: suffix, RequestHash: artifact.Digest([]byte("request")), CreatedAt: historyAt()}, []byte(`{"change_id":"`+change.ID+`"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.link = eventstore.Link{OrganizationID: org, ProjectID: change.ProjectID, WorkItemID: "wi_first_2", ChangeID: change.ID}
-	f.link.CreatedAt = f.change.CreatedAt
-	if err := r.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error {
-		if f.event, err = w.AppendEvent(t.Context(), f.event); err != nil {
-			return err
-		}
-		if f.snapshot, err = w.CreateCollaborationVersion(t.Context(), f.snapshot); err != nil {
-			return err
-		}
-		if f.change, err = w.CreateChange(t.Context(), f.change); err != nil {
-			return err
-		}
-		if f.version, err = w.CreateVersion(t.Context(), f.version); err != nil {
-			return err
-		}
-		if f.evidence, err = w.AppendEvidence(t.Context(), f.evidence); err != nil {
-			return err
-		}
-		if err := w.LinkIssue(t.Context(), f.link); err != nil {
-			return err
-		}
-		f.receipt, err = w.PutReceipt(t.Context(), f.receipt)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	f.change.EvidenceSequence = 1
-	return f
 }
 
 func TestEventChangeTenantRoundTrip(t *testing.T) {
 	t.Run("frozen version landing survives later current source and replay", func(t *testing.T) {
-		admin := template.Database(t)
-		repository, _ := repositoryFor(t, admin, smallPool())
+		admin := pgstoretest.Template.Database(t)
+		repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		for _, org := range []tracker.OrganizationID{"org_frozen_first", "org_frozen_second"} {
-			seedRepository(t, repository, org)
-			f := seedHistory(t, repository, org, "first")
-			value, err := f.content.Change(t.Context(), f.change)
+			pgstoretest.SeedRepository(t, repository, org)
+			f := pgstoretest.SeedHistory(t, repository, org, "first")
+			value, err := f.Content.Change(t.Context(), f.Change)
 			if err != nil {
 				t.Fatal(err)
 			}
-			value.CurrentVersion = f.version.ID
-			value.Landed = &tracker.ChangeLanding{VersionID: f.version.ID, HeadSHA: f.version.HeadSHA, MergeSHA: strings.Repeat("a", 40), BaseRef: "main", Method: "merge", Actor: historyActor(), LandedAt: historyAt().Add(time.Minute), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 1, IssueBody: "Original frozen contract", Criteria: []string{"Original criterion"}}}
-			prepared, err := f.content.PrepareChange(t.Context(), org, historyJSON(t, value))
+			value.CurrentVersion = f.Version.ID
+			value.Landed = &tracker.ChangeLanding{VersionID: f.Version.ID, HeadSHA: f.Version.HeadSHA, MergeSHA: strings.Repeat("a", 40), BaseRef: "main", Method: "merge", Actor: pgstoretest.HistoryActor(), LandedAt: pgstoretest.HistoryAt().Add(time.Minute), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 1, IssueBody: "Original frozen contract", Criteria: []string{"Original criterion"}}}
+			prepared, err := f.Content.PrepareChange(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -216,20 +75,20 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			later, err := f.content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: "version_later", ChangeID: f.change.ID, Number: 2, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "later-head", BaseSHA: "base", Repository: "owner/repository", PolicyID: f.version.PolicyRevisionID}, Actor: historyActor(), CreatedAt: historyAt().Add(2 * time.Minute)}))
+			later, err := f.Content.PrepareVersion(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.ChangeVersion{ID: "version_later", ChangeID: f.Change.ID, Number: 2, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "later-head", BaseSHA: "base", Repository: "owner/repository", PolicyID: f.Version.PolicyRevisionID}, Actor: pgstoretest.HistoryActor(), CreatedAt: pgstoretest.HistoryAt().Add(2 * time.Minute)}))
 			if err != nil {
 				t.Fatal(err)
 			}
-			laterLanding := tracker.ChangeLanding{VersionID: later.ID, HeadSHA: later.HeadSHA, MergeSHA: strings.Repeat("b", 40), BaseRef: "main", Method: "merge", Actor: historyActor(), LandedAt: historyAt().Add(3 * time.Minute), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 2, IssueBody: "Later frozen contract", Criteria: []string{"Later criterion"}}}
-			laterFrozen, err := f.content.PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", ChangeID: f.change.ID, VersionID: later.ID}, laterLanding)
+			laterLanding := tracker.ChangeLanding{VersionID: later.ID, HeadSHA: later.HeadSHA, MergeSHA: strings.Repeat("b", 40), BaseRef: "main", Method: "merge", Actor: pgstoretest.HistoryActor(), LandedAt: pgstoretest.HistoryAt().Add(3 * time.Minute), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 2, IssueBody: "Later frozen contract", Criteria: []string{"Later criterion"}}}
+			laterFrozen, err := f.Content.PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", ChangeID: f.Change.ID, VersionID: later.ID}, laterLanding)
 			if err != nil {
 				t.Fatal(err)
 			}
 			value.CurrentVersion = later.ID
 			value.Landed = &laterLanding
 			value.Revision = 2
-			value.UpdatedAt = historyAt().Add(3 * time.Minute)
-			next, err := f.content.PrepareChange(t.Context(), org, historyJSON(t, value))
+			value.UpdatedAt = pgstoretest.HistoryAt().Add(3 * time.Minute)
+			next, err := f.Content.PrepareChange(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -248,23 +107,23 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
 				owner := r.(eventstore.VersionLandingReader)
 				var err error
-				firstRow, err = owner.VersionLanding(t.Context(), f.change.ID, f.version.ID)
+				firstRow, err = owner.VersionLanding(t.Context(), f.Change.ID, f.Version.ID)
 				if err != nil {
 					return err
 				}
-				lastRow, err = owner.VersionLanding(t.Context(), f.change.ID, later.ID)
+				lastRow, err = owner.VersionLanding(t.Context(), f.Change.ID, later.ID)
 				return err
 			}); err != nil {
 				t.Fatal(err)
 			}
-			probe := reportObjectReadProbe{DetailStore: f.objects, check: func() {
+			probe := pgstoretest.ReportObjectReadProbe{DetailStore: f.Objects, Check: func() {
 				if held := repository.Stats().AcquiredConns(); held != 0 {
 					t.Fatalf("frozen landing object read held %d database connections", held)
 				}
 			}}
 			content := eventstore.NewContent(probe)
 			original, err := content.VersionLanding(t.Context(), firstRow)
-			if err != nil || original.VersionID != f.version.ID || original.Quality == nil || original.Quality.IssueBody != "Original frozen contract" || len(original.Quality.Criteria) != 1 || original.Quality.Criteria[0] != "Original criterion" {
+			if err != nil || original.VersionID != f.Version.ID || original.Quality == nil || original.Quality.IssueBody != "Original frozen contract" || len(original.Quality.Criteria) != 1 || original.Quality.Criteria[0] != "Original criterion" {
 				t.Fatalf("original version landing=%+v error=%v", original, err)
 			}
 			newer, err := content.VersionLanding(t.Context(), lastRow)
@@ -272,7 +131,7 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 				t.Fatalf("later version landing=%+v error=%v", newer, err)
 			}
 			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error {
-				replayed, err := w.CreateVersion(t.Context(), f.version)
+				replayed, err := w.CreateVersion(t.Context(), f.Version)
 				if err != nil {
 					return err
 				}
@@ -283,7 +142,7 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			unlanded, err := f.content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: "version_unlanded", ChangeID: f.change.ID, Number: 3, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "unlanded-head", BaseSHA: "base", Repository: "owner/repository", PolicyID: f.version.PolicyRevisionID}, Actor: historyActor(), CreatedAt: historyAt().Add(4 * time.Minute)}))
+			unlanded, err := f.Content.PrepareVersion(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.ChangeVersion{ID: "version_unlanded", ChangeID: f.Change.ID, Number: 3, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "unlanded-head", BaseSHA: "base", Repository: "owner/repository", PolicyID: f.Version.PolicyRevisionID}, Actor: pgstoretest.HistoryActor(), CreatedAt: pgstoretest.HistoryAt().Add(4 * time.Minute)}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -311,7 +170,7 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 			var historicalHead, historicalTail, currentPage eventstore.AnalyticsLandingPage
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				owner := r.(eventstore.AnalyticsLandingReader)
-				query := eventstore.AnalyticsLandingQuery{ProjectID: "prj_first", Principal: "example", From: historyAt(), To: historyAt().Add(time.Hour), Limit: 1, AllVersions: true}
+				query := eventstore.AnalyticsLandingQuery{ProjectID: "prj_first", Principal: "example", From: pgstoretest.HistoryAt(), To: pgstoretest.HistoryAt().Add(time.Hour), Limit: 1, AllVersions: true}
 				var err error
 				historicalHead, err = owner.ReadAnalyticsLandingPage(t.Context(), query)
 				if err != nil {
@@ -329,7 +188,7 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if len(historicalHead.Items) != 1 || historicalHead.Items[0].VersionID != f.version.ID || historicalHead.Next.VersionID != f.version.ID || !historicalHead.Partial || historicalHead.HistoryUnknown || len(historicalTail.Items) != 1 || historicalTail.Items[0].VersionID != later.ID || historicalTail.Next.ChangeID != "" || !historicalTail.Partial {
+			if len(historicalHead.Items) != 1 || historicalHead.Items[0].VersionID != f.Version.ID || historicalHead.Next.VersionID != f.Version.ID || !historicalHead.Partial || historicalHead.HistoryUnknown || len(historicalTail.Items) != 1 || historicalTail.Items[0].VersionID != later.ID || historicalTail.Next.ChangeID != "" || !historicalTail.Partial {
 				t.Fatalf("historical landed population head=%+v tail=%+v", historicalHead, historicalTail)
 			}
 			if len(currentPage.Items) != 1 || currentPage.Items[0].VersionID != later.ID || currentPage.Partial || currentPage.Next.ChangeID != "" {
@@ -340,7 +199,7 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { return w.RecordVersionLanding(t.Context(), changed) }); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Fatalf("frozen landing replacement=%v", err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_versions(organization_id,id,change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id) SELECT organization_id,'version_wrong_project',change_id,9999,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,'prj_second' FROM change_versions WHERE organization_id=$1 AND id=$2`, org, f.version.ID); err == nil {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_versions(organization_id,id,change_id,number,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,project_id) SELECT organization_id,'version_wrong_project',change_id,9999,head_sha,base_sha,merge_base_sha,repository,policy_revision_id,actor_kind,actor_principal_id,external_provider,external_id,external_url,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,'prj_second' FROM change_versions WHERE organization_id=$1 AND id=$2`, org, f.Version.ID); err == nil {
 				t.Fatal("version accepted mismatched project")
 			} else {
 				var failure *pgconn.PgError
@@ -349,7 +208,7 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 				}
 			}
 			for _, statement := range []string{`UPDATE change_versions SET landed_merge_sha=repeat('c',40) WHERE organization_id=$1 AND id=$2`, `UPDATE change_versions SET landing_history_known=false WHERE organization_id=$1 AND id=$2`, `UPDATE change_versions SET project_id='prj_second' WHERE organization_id=$1 AND id=$2`} {
-				if _, err := admin.ExecContext(t.Context(), statement, org, f.version.ID); err == nil {
+				if _, err := admin.ExecContext(t.Context(), statement, org, f.Version.ID); err == nil {
 					t.Fatal("frozen landing projection accepted mutation")
 				} else {
 					var failure *pgconn.PgError
@@ -365,14 +224,14 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 			}
 		}
 	})
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, r, org)
+		pgstoretest.SeedRepository(t, r, org)
 		for _, suffix := range []string{"first", "second"} {
 			t.Run(string(org)+"/"+suffix, func(t *testing.T) {
-				f := seedHistory(t, r, org, suffix)
-				if f.event.Sequence < 1 || f.evidence.Sequence != 1 {
-					t.Fatalf("missing sequences: event=%d evidence=%d", f.event.Sequence, f.evidence.Sequence)
+				f := pgstoretest.SeedHistory(t, r, org, suffix)
+				if f.Event.Sequence < 1 || f.Evidence.Sequence != 1 {
+					t.Fatalf("missing sequences: event=%d evidence=%d", f.Event.Sequence, f.Evidence.Sequence)
 				}
 				var events []eventstore.Event
 				var snapshots eventstore.CollaborationVersion
@@ -384,32 +243,32 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 				var receipt eventstore.Receipt
 				err := r.ReadRecords(t.Context(), org, corestore.Serving, func(reader eventstore.Reader) error {
 					var err error
-					if events, err = reader.Events(t.Context(), "prj_first", "wi_first_1", f.event.Sequence-1, 1); err != nil {
+					if events, err = reader.Events(t.Context(), "prj_first", "wi_first_1", f.Event.Sequence-1, 1); err != nil {
 						return err
 					}
-					if snapshots, err = reader.CollaborationVersion(t.Context(), f.snapshot.RecordID, 2); err != nil {
+					if snapshots, err = reader.CollaborationVersion(t.Context(), f.Snapshot.RecordID, 2); err != nil {
 						return err
 					}
-					if change, err = reader.Change(t.Context(), f.change.ID); err != nil {
+					if change, err = reader.Change(t.Context(), f.Change.ID); err != nil {
 						return err
 					}
 					after := ""
 					if suffix == "second" {
 						after = "change_first"
 					}
-					if changes, err = reader.Changes(t.Context(), "prj_first", f.link.WorkItemID, after, 1); err != nil {
+					if changes, err = reader.Changes(t.Context(), "prj_first", f.Link.WorkItemID, after, 1); err != nil {
 						return err
 					}
-					if versions, err = reader.Versions(t.Context(), f.change.ID, 0, 1); err != nil {
+					if versions, err = reader.Versions(t.Context(), f.Change.ID, 0, 1); err != nil {
 						return err
 					}
-					if evidence, err = reader.Evidence(t.Context(), f.change.ID, 0, 1); err != nil {
+					if evidence, err = reader.Evidence(t.Context(), f.Change.ID, 0, 1); err != nil {
 						return err
 					}
-					if receipt, err = reader.Receipt(t.Context(), f.receipt.ActorID, f.receipt.Operation, f.receipt.CommandKey); err != nil {
+					if receipt, err = reader.Receipt(t.Context(), f.Receipt.ActorID, f.Receipt.Operation, f.Receipt.CommandKey); err != nil {
 						return err
 					}
-					links, err = reader.Links(t.Context(), f.change.ID, "", 1)
+					links, err = reader.Links(t.Context(), f.Change.ID, "", 1)
 					return err
 				})
 				if err != nil {
@@ -419,14 +278,14 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 					name      string
 					got, want any
 				}{
-					{"events", events, []eventstore.Event{f.event}},
-					{"snapshot", snapshots, f.snapshot},
-					{"change", change, f.change},
-					{"changes", changes, []eventstore.Change{f.change}},
-					{"versions", versions, []eventstore.Version{f.version}},
-					{"evidence", evidence, []eventstore.Evidence{f.evidence}},
-					{"links", links, []eventstore.Link{f.link}},
-					{"receipt", receipt, f.receipt},
+					{"events", events, []eventstore.Event{f.Event}},
+					{"snapshot", snapshots, f.Snapshot},
+					{"change", change, f.Change},
+					{"changes", changes, []eventstore.Change{f.Change}},
+					{"versions", versions, []eventstore.Version{f.Version}},
+					{"evidence", evidence, []eventstore.Evidence{f.Evidence}},
+					{"links", links, []eventstore.Link{f.Link}},
+					{"receipt", receipt, f.Receipt},
 				} {
 					t.Run(tc.name, func(t *testing.T) {
 						if !reflect.DeepEqual(tc.got, tc.want) {
@@ -434,19 +293,19 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 						}
 					})
 				}
-				response, err := f.content.Receipt(t.Context(), receipt)
-				if err != nil || string(response) != `{"change_id":"`+f.change.ID+`"}` {
+				response, err := f.Content.Receipt(t.Context(), receipt)
+				if err != nil || string(response) != `{"change_id":"`+f.Change.ID+`"}` {
 					t.Fatalf("receipt response=%s error=%v", response, err)
 				}
-				event, err := f.content.Event(t.Context(), events[0])
-				if err != nil || event.Data.Reason != "Example reason" || event.Actor.DisplayName != "Example actor" || event.AggregateSequence != f.event.Sequence {
+				event, err := f.Content.Event(t.Context(), events[0])
+				if err != nil || event.Data.Reason != "Example reason" || event.Actor.DisplayName != "Example actor" || event.AggregateSequence != f.Event.Sequence {
 					t.Fatalf("event payload=%+v error=%v", event, err)
 				}
-				hydrated, err := f.content.Change(t.Context(), change)
+				hydrated, err := f.Content.Change(t.Context(), change)
 				if err != nil || hydrated.Body != "Change body" || len(hydrated.LinkedIssues) != 2 {
 					t.Fatalf("change payload=%+v error=%v", hydrated, err)
 				}
-				version, err := f.content.Version(t.Context(), versions[0])
+				version, err := f.Content.Version(t.Context(), versions[0])
 				if err != nil || version.External == nil || version.External.ID != "external" || version.AttemptID != "attempt" {
 					t.Fatalf("version payload=%+v error=%v", version, err)
 				}
@@ -454,12 +313,12 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 				if version.Source == nil || *version.Source != wantSource {
 					t.Fatalf("portable source manifest=%+v want=%+v", version.Source, wantSource)
 				}
-				raw, err := f.content.Evidence(t.Context(), evidence[0])
+				raw, err := f.Content.Evidence(t.Context(), evidence[0])
 				var discussion tracker.ChangeDiscussion
 				if err != nil || json.Unmarshal(raw, &discussion) != nil || discussion.Body != "Evidence body" || discussion.Provenance.AuthorID != "author" {
 					t.Fatalf("evidence payload=%s error=%v", raw, err)
 				}
-				raw, err = f.content.CollaborationVersion(t.Context(), snapshots)
+				raw, err = f.Content.CollaborationVersion(t.Context(), snapshots)
 				var snapshot tracker.ChangeRequest
 				if err != nil || json.Unmarshal(raw, &snapshot) != nil || snapshot.Body != "Change body" {
 					t.Fatalf("snapshot payload=%s error=%v", raw, err)
@@ -470,19 +329,19 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 }
 
 func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, r, org)
-		f := seedHistory(t, r, org, "latest-run-event")
-		content := eventstore.NewContent(f.objects)
+		pgstoretest.SeedRepository(t, r, org)
+		f := pgstoretest.SeedHistory(t, r, org, "latest-run-event")
+		content := eventstore.NewContent(f.Objects)
 		appendRunEvent := func(id, attempt string) eventstore.Event {
 			t.Helper()
 			run := tracker.NativeRunData{AttemptID: attempt, RunID: "run_" + attempt, LeaseID: tracker.LeaseID("lease_" + attempt), FencingToken: 1, Sequence: 1}
 			if attempt == "attempt_target" {
 				run.Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Waiting: true, ChangeID: "change_target", VersionID: "version_target", HeadSHA: "head_target"}}
 			}
-			value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "run.observed", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Run: &run}}
-			record, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+			value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "run.observed", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{Run: &run}}
+			record, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -517,14 +376,14 @@ func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
 
 func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 	t.Run("analytics workflow and evidence seek before residuals", func(t *testing.T) {
-		admin := template.Database(t)
-		original, pool := repositoryFor(t, admin, smallPool())
+		admin := pgstoretest.Template.Database(t)
+		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		if err := original.Close(); err != nil {
 			t.Fatal(err)
 		}
 		capture := &analyticsQualityQueryCapture{}
-		observed := tracedFeaturePool(t, pool, capture)
-		repository, err := postgres.NewRepository(t.Context(), observed, smallPool())
+		observed := pgstoretest.TracedFeaturePool(t, pool, capture)
+		repository, err := postgres.NewRepository(t.Context(), observed, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -538,9 +397,9 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, org := range []tracker.OrganizationID{"org_quality_first", "org_quality_second"} {
-			seedRepository(t, repository, org)
-			f := seedHistory(t, repository, org, "analytics_quality")
-			base := historyAt()
+			pgstoretest.SeedRepository(t, repository, org)
+			f := pgstoretest.SeedHistory(t, repository, org, "analytics_quality")
+			base := pgstoretest.HistoryAt()
 			for _, statement := range []string{
 				`INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,from_state,to_state,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_first','wi_first_1','workflow-'||lpad(n::text,4,'0'),n+2,'workflow.transitioned',1,'human','example','Todo','In Progress',$2,'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1 FROM generate_series(0,1000)n`,
 				`INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_first','wi_first_1','run-noise-'||lpad(n::text,5,'0'),n+1003,'run.observed',1,'runner','example',$2,'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1 FROM generate_series(0,9999)n`,
@@ -549,24 +408,24 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			review := tracker.ChangeReview{ID: "review", VersionID: f.version.ID, Actor: historyActor(), Decision: "changes_requested", CreatedAt: base.Add(time.Minute)}
-			evidence, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "review"}, historyJSON(t, review))
+			review := tracker.ChangeReview{ID: "review", VersionID: f.Version.ID, Actor: pgstoretest.HistoryActor(), Decision: "changes_requested", CreatedAt: base.Add(time.Minute)}
+			evidence, err := f.Content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.Change.ID, Kind: "review"}, pgstoretest.HistoryJSON(t, review))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(quality_at,organization_id,project_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known) SELECT $4::timestamptz,$1,'prj_first',$2,n+2,$3,'review','human','example','changes_requested',$4,$5,$6,$7,$8,'human',true FROM generate_series(0,1000)n`, org, f.change.ID, f.version.ID, review.CreatedAt, evidence.PayloadObjectKey, evidence.PayloadSHA256, evidence.PayloadBytes, evidence.PayloadContentBytes); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(quality_at,organization_id,project_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known) SELECT $4::timestamptz,$1,'prj_first',$2,n+2,$3,'review','human','example','changes_requested',$4,$5,$6,$7,$8,'human',true FROM generate_series(0,1000)n`, org, f.Change.ID, f.Version.ID, review.CreatedAt, evidence.PayloadObjectKey, evidence.PayloadSHA256, evidence.PayloadBytes, evidence.PayloadContentBytes); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(organization_id,project_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_first',$2,n+1003,$3,'check','human','example',$4,$5,$6,$7,$8 FROM generate_series(0,9999)n`, org, f.change.ID, f.version.ID, base, evidence.PayloadObjectKey, evidence.PayloadSHA256, evidence.PayloadBytes, evidence.PayloadContentBytes); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(organization_id,project_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_first',$2,n+1003,$3,'check','human','example',$4,$5,$6,$7,$8 FROM generate_series(0,9999)n`, org, f.Change.ID, f.Version.ID, base, evidence.PayloadObjectKey, evidence.PayloadSHA256, evidence.PayloadBytes, evidence.PayloadContentBytes); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(quality_at,organization_id,project_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known) SELECT $4::timestamptz-interval '1 day',$1,'prj_first',$2,n+20000,$3,'review','human','example','changes_requested',$4::timestamptz-interval '1 day',$5,$6,$7,$8,'human',true FROM generate_series(0,9999)n`, org, f.change.ID, f.version.ID, base, evidence.PayloadObjectKey, evidence.PayloadSHA256, evidence.PayloadBytes, evidence.PayloadContentBytes); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(quality_at,organization_id,project_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known) SELECT $4::timestamptz-interval '1 day',$1,'prj_first',$2,n+20000,$3,'review','human','example','changes_requested',$4::timestamptz-interval '1 day',$5,$6,$7,$8,'human',true FROM generate_series(0,9999)n`, org, f.Change.ID, f.Version.ID, base, evidence.PayloadObjectKey, evidence.PayloadSHA256, evidence.PayloadBytes, evidence.PayloadContentBytes); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues(organization_id,project_id,native_id,number,title) SELECT $1,'prj_second','quality-noise-'||n,n+1000,'Unrelated item' FROM generate_series(1,10000)n`, org); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_requests(organization_id,project_id,work_item_id,id,title,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_second','wi_second_1','quality-noise-change-'||n,'Unrelated change',$2,$3,$4,$5 FROM generate_series(1,10000)n`, org, f.change.PayloadObjectKey, f.change.PayloadSHA256, f.change.PayloadBytes, f.change.PayloadContentBytes); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_requests(organization_id,project_id,work_item_id,id,title,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT $1,'prj_second','wi_second_1','quality-noise-change-'||n,'Unrelated change',$2,$3,$4,$5 FROM generate_series(1,10000)n`, org, f.Change.PayloadObjectKey, f.Change.PayloadSHA256, f.Change.PayloadBytes, f.Change.PayloadContentBytes); err != nil {
 				t.Fatal(err)
 			}
 			for _, table := range []string{"collaboration_events", "change_evidence", "issues", "change_requests"} {
@@ -591,14 +450,14 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
 					t.Fatal(err)
 				}
-				var plans []struct{ Plan searchPlanNode }
+				var plans []struct{ Plan pgstoretest.SearchPlanNode }
 				if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 					t.Fatalf("%s plan error=%v", family, err)
 				}
 				visits := float64(0)
 				indexed := false
-				var servedIndex func(searchPlanNode) bool
-				servedIndex = func(node searchPlanNode) bool {
+				var servedIndex func(pgstoretest.SearchPlanNode) bool
+				servedIndex = func(node pgstoretest.SearchPlanNode) bool {
 					if node.Index != "" && node.Loops > 0 {
 						return true
 					}
@@ -610,8 +469,8 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 					return false
 				}
 				metadata := map[string]float64{}
-				var inspect func(searchPlanNode)
-				inspect = func(node searchPlanNode) {
+				var inspect func(pgstoretest.SearchPlanNode)
+				inspect = func(node pgstoretest.SearchPlanNode) {
 					if node.Relation == relation {
 						visits += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
 						indexed = indexed || servedIndex(node)
@@ -708,7 +567,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				if number == 1003 {
 					created = base.Add(10 * time.Second)
 				}
-				version, err := f.content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: fmt.Sprintf("asof-%04d", number), ChangeID: f.change.ID, Number: number, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: fmt.Sprintf("head-%d", number), PolicyID: f.version.PolicyRevisionID}, Actor: historyActor(), CreatedAt: created}))
+				version, err := f.Content.PrepareVersion(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.ChangeVersion{ID: fmt.Sprintf("asof-%04d", number), ChangeID: f.Change.ID, Number: number, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: fmt.Sprintf("head-%d", number), PolicyID: f.Version.PolicyRevisionID}, Actor: pgstoretest.HistoryActor(), CreatedAt: created}))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -726,7 +585,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			}
 			pendingReview := review
 			pendingReview.ID = "nonmonotonic-asof"
-			pendingEvidence, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "review", Sequence: 11003}, historyJSON(t, pendingReview))
+			pendingEvidence, err := f.Content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.Change.ID, Kind: "review", Sequence: 11003}, pgstoretest.HistoryJSON(t, pendingReview))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -734,7 +593,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				t.Fatal(err)
 			}
 			query.Principal = "example"
-			query.After = eventstore.AnalyticsEvidenceCursor{At: review.CreatedAt, Sequence: 11002, ChangeID: f.change.ID}
+			query.After = eventstore.AnalyticsEvidenceCursor{At: review.CreatedAt, Sequence: 11002, ChangeID: f.Change.ID}
 			pending := readEvidence()
 			if len(pending.Items) != 0 || !pending.Partial || pending.Next.Sequence != 11003 || pending.Next.VersionAfter != 1002 || pending.Next.VersionThrough != 1003 {
 				t.Fatalf("as-of version frontier=%+v", pending)
@@ -744,7 +603,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			if len(resolved.Items) != 0 || !resolved.Partial || resolved.Next.ChangeID != "" {
 				t.Fatalf("later-number earlier-time version was included=%+v", resolved)
 			}
-			drift, err := f.content.PrepareVersion(t.Context(), org, historyJSON(t, tracker.ChangeVersion{ID: "asof-drift", ChangeID: f.change.ID, Number: 1004, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "drift", PolicyID: f.version.PolicyRevisionID}, Actor: historyActor(), CreatedAt: base.Add(40 * time.Minute)}))
+			drift, err := f.Content.PrepareVersion(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.ChangeVersion{ID: "asof-drift", ChangeID: f.Change.ID, Number: 1004, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "drift", PolicyID: f.Version.PolicyRevisionID}, Actor: pgstoretest.HistoryActor(), CreatedAt: base.Add(40 * time.Minute)}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -758,8 +617,8 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				t.Fatalf("changed version frontier error=%v", err)
 			}
 
-			discussion := tracker.ChangeDiscussion{ID: "observed-time", VersionID: f.version.ID, Actor: historyActor(), CreatedAt: base.Add(4 * time.Minute), Escape: &tracker.QualityEscape{OccurrenceID: strings.Repeat("d", 40), Kind: "revert", Cause: "missing_criterion", ObservedAt: base.Add(3 * time.Minute), EvidenceReference: "record", EvidenceQuote: "failure", BasisQuote: "contract"}}
-			escapeRow, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "discussion", Sequence: 30001}, historyJSON(t, discussion))
+			discussion := tracker.ChangeDiscussion{ID: "observed-time", VersionID: f.Version.ID, Actor: pgstoretest.HistoryActor(), CreatedAt: base.Add(4 * time.Minute), Escape: &tracker.QualityEscape{OccurrenceID: strings.Repeat("d", 40), Kind: "revert", Cause: "missing_criterion", ObservedAt: base.Add(3 * time.Minute), EvidenceReference: "record", EvidenceQuote: "failure", BasisQuote: "contract"}}
+			escapeRow, err := f.Content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.Change.ID, Kind: "discussion", Sequence: 30001}, pgstoretest.HistoryJSON(t, discussion))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -786,14 +645,14 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 		}
 	})
 	t.Run("scheduler seek bounds outcomes and batches immediate predecessors", func(t *testing.T) {
-		admin := template.Database(t)
-		original, pool := repositoryFor(t, admin, smallPool())
+		admin := pgstoretest.Template.Database(t)
+		original, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		if err := original.Close(); err != nil {
 			t.Fatal(err)
 		}
 		capture := &diagnosticsQueryCapture{}
-		observedPool := tracedFeaturePool(t, pool, capture)
-		repository, err := postgres.NewRepository(t.Context(), observedPool, smallPool())
+		observedPool := pgstoretest.TracedFeaturePool(t, pool, capture)
+		repository, err := postgres.NewRepository(t.Context(), observedPool, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -808,7 +667,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 		}
 		base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 		for _, org := range []tracker.OrganizationID{"org_scheduler_first", "org_scheduler_second"} {
-			seedRepository(t, repository, org)
+			pgstoretest.SeedRepository(t, repository, org)
 			for _, source := range []struct {
 				project, item, prefix, outcome string
 				count, sequence, step          int
@@ -853,13 +712,13 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement, args...).Scan(&raw); err != nil {
 					t.Fatal(err)
 				}
-				var nodes []struct{ Plan searchPlanNode }
+				var nodes []struct{ Plan pgstoretest.SearchPlanNode }
 				if err := json.Unmarshal(raw, &nodes); err != nil || len(nodes) != 1 {
 					t.Fatalf("scheduler plan error=%v", err)
 				}
 				visits, indexed := float64(0), false
-				var inspect func(searchPlanNode)
-				inspect = func(node searchPlanNode) {
+				var inspect func(pgstoretest.SearchPlanNode)
+				inspect = func(node pgstoretest.SearchPlanNode) {
 					if node.Relation == "collaboration_events" {
 						visits += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
 						indexed = indexed || node.Index != "" && node.Loops > 0
@@ -873,7 +732,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 					if !indexed || visits > 1000 {
 						t.Fatalf("scheduler predecessor history visits=%.0f plan=%s", visits, raw)
 					}
-				} else if !nodes[0].Plan.usesIndex("collaboration_events_analytics_scheduler_seek") || visits > 1001 {
+				} else if !nodes[0].Plan.UsesIndex("collaboration_events_analytics_scheduler_seek") || visits > 1001 {
 					t.Fatalf("scheduler source visits=%.0f plan=%s", visits, raw)
 				}
 			}
@@ -911,14 +770,14 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			}
 		}
 	})
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	attempts := make([]string, 17)
 	for i := range attempts {
 		attempts[i] = fmt.Sprintf("attempt_%d", i+1)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, r, org)
+		pgstoretest.SeedRepository(t, r, org)
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events
 			(organization_id,project_id,work_item_id,id,sequence,schema_version,actor_kind,actor_principal_id,actor_envelope_known,actor_via_key,actor_display_name,actor_agent,run_id,landing_waiting,landing_change_id,landing_version_id,landing_head_sha,attempt_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
 			SELECT $1,'prj_first','wi_first_1','event_'||n,n,1,
@@ -936,7 +795,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			CASE WHEN n<=1700 THEN 'attempt_'||((n-1)%17+1) ELSE 'unrelated_'||n END,
 			$2::timestamptz-n*interval '1 second',
 			'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1
-			FROM generate_series(1,30000) n`, org, historyAt()); err != nil {
+			FROM generate_series(1,30000) n`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -945,22 +804,22 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		f := seedHistory(t, r, org, "diagnostics-wait")
-		event, err := f.content.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{ID: "diagnostics-merge-entry", OrganizationID: org, ProjectID: "prj_first", AggregateID: "wi_first_1", Type: "workflow.transitioned", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt().Add(-2 * time.Hour), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Merging"}}))
+		f := pgstoretest.SeedHistory(t, r, org, "diagnostics-wait")
+		event, err := f.Content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{ID: "diagnostics-merge-entry", OrganizationID: org, ProjectID: "prj_first", AggregateID: "wi_first_1", Type: "workflow.transitioned", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt().Add(-2 * time.Hour), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Merging"}}))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := r.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET landed_version_id=$2,landed_at=$3,landed_head_sha=$4,landed_merge_sha=$5,landed_base_ref='main' WHERE organization_id=$1 AND id=$6`, org, f.version.ID, historyAt().Add(time.Hour), f.version.HeadSHA, strings.Repeat("a", 40), f.change.ID); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET landed_version_id=$2,landed_at=$3,landed_head_sha=$4,landed_merge_sha=$5,landed_base_ref='main' WHERE organization_id=$1 AND id=$6`, org, f.Version.ID, pgstoretest.HistoryAt().Add(time.Hour), f.Version.HeadSHA, strings.Repeat("a", 40), f.Change.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if _, err := admin.ExecContext(t.Context(), `ANALYZE collaboration_events`); err != nil {
 		t.Fatal(err)
 	}
-	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
 			if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -1006,7 +865,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 				t.Fatal(err)
 			}
-			probe := &searchPlanProbe{DBTX: tx}
+			probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
 			queries := pgquery.New(probe)
 			params := pgquery.RecordLatestRunEventsByAttemptsParams{OrganizationID: org, ProjectID: "prj_first", AttemptIds: attempts}
 			rows, err := queries.RecordLatestRunEventsByAttempts(t.Context(), params)
@@ -1032,15 +891,15 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				seen[row.AttemptID] = true
 			}
 			var raw []byte
-			if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+			if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw); err != nil {
 				t.Fatal(err)
 			}
-			var plan []struct{ Plan searchPlanNode }
+			var plan []struct{ Plan pgstoretest.SearchPlanNode }
 			if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
 				t.Fatalf("decode plan: %v", err)
 			}
-			var visits func(searchPlanNode) float64
-			visits = func(node searchPlanNode) float64 {
+			var visits func(pgstoretest.SearchPlanNode) float64
+			visits = func(node pgstoretest.SearchPlanNode) float64 {
 				var count float64
 				if node.Relation == "collaboration_events" {
 					count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
@@ -1063,7 +922,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			observed, err := postgres.NewRepository(t.Context(), observedPool, smallPool())
+			observed, err := postgres.NewRepository(t.Context(), observedPool, pgstoretest.SmallPool())
 			if err != nil {
 				observedPool.Close()
 				t.Fatal(err)
@@ -1076,12 +935,12 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			var snapshot diagnosticstore.Snapshot
 			if err := observed.ReadTenantSnapshot(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
 				var err error
-				snapshot, err = reader.(diagnosticstore.Reader).DiagnosticsSnapshot(t.Context(), []tracker.ProjectID{"prj_first"}, historyAt().Add(-time.Hour), historyAt().Add(2*time.Hour), historyAt().Add(2*time.Hour), "")
+				snapshot, err = reader.(diagnosticstore.Reader).DiagnosticsSnapshot(t.Context(), []tracker.ProjectID{"prj_first"}, pgstoretest.HistoryAt().Add(-time.Hour), pgstoretest.HistoryAt().Add(2*time.Hour), pgstoretest.HistoryAt().Add(2*time.Hour), "")
 				return err
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if len(snapshot.Landings) != 1 || snapshot.Landings[0].EnteredAt == nil || !snapshot.Landings[0].EnteredAt.Equal(historyAt().Add(-2*time.Hour)) || !snapshot.Landings[0].At.Equal(historyAt().Add(time.Hour)) {
+			if len(snapshot.Landings) != 1 || snapshot.Landings[0].EnteredAt == nil || !snapshot.Landings[0].EnteredAt.Equal(pgstoretest.HistoryAt().Add(-2*time.Hour)) || !snapshot.Landings[0].At.Equal(pgstoretest.HistoryAt().Add(time.Hour)) {
 				t.Fatalf("diagnostics lost exact pre-window merge entry or landing receipt: %+v", snapshot.Landings)
 			}
 			capture.mu.Lock()
@@ -1094,13 +953,13 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 			if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, args...).Scan(&landingPlan); err != nil {
 				t.Fatal(err)
 			}
-			var landingNodes []struct{ Plan searchPlanNode }
+			var landingNodes []struct{ Plan pgstoretest.SearchPlanNode }
 			if err := json.Unmarshal(landingPlan, &landingNodes); err != nil || len(landingNodes) != 1 {
 				t.Fatalf("decode diagnostic landing plan: %v", err)
 			}
 			indexed := false
-			var inspect func(searchPlanNode)
-			inspect = func(node searchPlanNode) {
+			var inspect func(pgstoretest.SearchPlanNode)
+			inspect = func(node pgstoretest.SearchPlanNode) {
 				if node.Index == "collaboration_events_diagnostics_merge_entry_idx" {
 					indexed = true
 				}
@@ -1127,31 +986,31 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 }
 
 func TestEventChangeReceipts(t *testing.T) {
-	admin := template.Database(t)
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, "org_first", historyAt()); err != nil {
+	admin := pgstoretest.Template.Database(t)
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, "org_first", pgstoretest.HistoryAt()); err != nil {
 		t.Fatal(err)
 	}
-	r, _ := repositoryFor(t, admin, smallPool())
-	seedRepository(t, r, "org_first")
-	f := seedHistory(t, r, "org_first", "first")
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	pgstoretest.SeedRepository(t, r, "org_first")
+	f := pgstoretest.SeedHistory(t, r, "org_first", "first")
 	for _, tc := range []struct {
 		name   string
 		replay func(eventstore.Writer, bool) error
 	}{
 		{"event", func(w eventstore.Writer, changed bool) error {
-			record := f.event
+			record := f.Event
 			record.Sequence = 0
 			if changed {
 				record.HeadSHA = "other"
 			}
 			got, err := w.AppendEvent(t.Context(), record)
-			if err == nil && !reflect.DeepEqual(got, f.event) {
+			if err == nil && !reflect.DeepEqual(got, f.Event) {
 				t.Error("event receipt changed")
 			}
 			return err
 		}},
 		{"snapshot", func(w eventstore.Writer, changed bool) error {
-			record := f.snapshot
+			record := f.Snapshot
 			if changed {
 				record.WorkItemID = "wi_first_2"
 			}
@@ -1159,7 +1018,7 @@ func TestEventChangeReceipts(t *testing.T) {
 			return err
 		}},
 		{"change", func(w eventstore.Writer, changed bool) error {
-			record := f.change
+			record := f.Change
 			if changed {
 				record.Title = "other"
 			}
@@ -1167,7 +1026,7 @@ func TestEventChangeReceipts(t *testing.T) {
 			return err
 		}},
 		{"version", func(w eventstore.Writer, changed bool) error {
-			record := f.version
+			record := f.Version
 			if changed {
 				record.HeadSHA = "other"
 			}
@@ -1175,19 +1034,19 @@ func TestEventChangeReceipts(t *testing.T) {
 			return err
 		}},
 		{"evidence", func(w eventstore.Writer, changed bool) error {
-			record := f.evidence
+			record := f.Evidence
 			record.Sequence = 0
 			if changed {
 				record.Decision = "other"
 			}
 			got, err := w.AppendEvidence(t.Context(), record)
-			if err == nil && !reflect.DeepEqual(got, f.evidence) {
+			if err == nil && !reflect.DeepEqual(got, f.Evidence) {
 				t.Error("evidence receipt changed")
 			}
 			return err
 		}},
 		{"link", func(w eventstore.Writer, changed bool) error {
-			record := f.link
+			record := f.Link
 			if changed {
 				record.ProjectID = "prj_second"
 			}
@@ -1203,7 +1062,7 @@ func TestEventChangeReceipts(t *testing.T) {
 			}
 		})
 	}
-	next := historyEvent(t, f.content, "org_first", "event_next")
+	next := pgstoretest.HistoryEvent(t, f.Content, "org_first", "event_next")
 	if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
 		got, err := w.AppendEvent(t.Context(), next)
 		if err == nil && got.Sequence != 2 {
@@ -1216,28 +1075,28 @@ func TestEventChangeReceipts(t *testing.T) {
 }
 
 func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
-	admin := template.Database(t)
+	admin := pgstoretest.Template.Database(t)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, organization, historyAt()); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, organization, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	r, pool := repositoryFor(t, admin, smallPool())
+	r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, r, organization)
+		pgstoretest.SeedRepository(t, r, organization)
 	}
 	if err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error {
 		return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_first", ID: "machine_1", Hostname: "example", Capacity: 1, Version: "example"})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	f := seedHistory(t, r, "org_first", "first")
-	lease := claimLease(t, r, "org_first", leaseClaim(1))
-	attempt := attemptEvent(lease)
-	attempt.ID = f.version.AttemptID
-	storedAttempt := recordLeaseAttempt(t, r, "org_first", attempt)
-	value := tracker.NativeLandingReceipt{VersionID: f.version.ID, MergeSHA: strings.Repeat("a", 40), BaseRef: "main", Landed: true}
-	record, err := f.content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: "org_first", AttemptID: storedAttempt.ID, VersionID: f.version.ID, Repository: f.version.Repository, BaseRef: value.BaseRef}, value)
+	f := pgstoretest.SeedHistory(t, r, "org_first", "first")
+	lease := pgstoretest.ClaimLease(t, r, "org_first", pgstoretest.LeaseClaim(1))
+	attempt := pgstoretest.AttemptEvent(lease)
+	attempt.ID = f.Version.AttemptID
+	storedAttempt := pgstoretest.RecordLeaseAttempt(t, r, "org_first", attempt)
+	value := tracker.NativeLandingReceipt{VersionID: f.Version.ID, MergeSHA: strings.Repeat("a", 40), BaseRef: "main", Landed: true}
+	record, err := f.Content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: "org_first", AttemptID: storedAttempt.ID, VersionID: f.Version.ID, Repository: f.Version.Repository, BaseRef: value.BaseRef}, value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1250,13 +1109,13 @@ func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runtime := runtimeFor(t, pool, pool)
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
 	for _, statement := range []string{"UPDATE change_landing_receipts SET merge_sha=merge_sha", "DELETE FROM change_landing_receipts"} {
-		tx := tenantTx(t, runtime, pool, "org_first")
+		tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
 		if _, err := tx.Exec(t.Context(), statement); err == nil {
 			t.Fatalf("immutable landing receipt accepted %q", statement)
 		} else {
-			requireSQLState(t, err, "23514")
+			pgstoretest.RequireSQLState(t, err, "23514")
 		}
 		if err := tx.Rollback(t.Context()); err != nil {
 			t.Fatal(err)
@@ -1311,29 +1170,29 @@ func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
 	var latest eventstore.LandingReceipt
 	if err := r.ReadRecords(t.Context(), "org_first", corestore.Serving, func(reader eventstore.Reader) error {
 		var err error
-		latest, err = reader.LatestLandingReceipt(t.Context(), f.change.ProjectID, f.change.WorkItemID)
+		latest, err = reader.LatestLandingReceipt(t.Context(), f.Change.ProjectID, f.Change.WorkItemID)
 		return err
 	}); err != nil || latest != record {
 		t.Fatalf("latest landing receipt = %+v, %v; want %+v", latest, err, record)
 	}
 	if err := r.ReadRecords(t.Context(), "org_second", corestore.Serving, func(reader eventstore.Reader) error {
-		_, err := reader.LatestLandingReceipt(t.Context(), f.change.ProjectID, f.change.WorkItemID)
+		_, err := reader.LatestLandingReceipt(t.Context(), f.Change.ProjectID, f.Change.WorkItemID)
 		return err
 	}); !errors.Is(err, corestore.ErrNotFound) {
 		t.Fatalf("cross-tenant latest landing receipt error = %v, want not found", err)
 	}
-	hydrated, err := f.content.LandingReceipt(t.Context(), got)
+	hydrated, err := f.Content.LandingReceipt(t.Context(), got)
 	if err != nil || !reflect.DeepEqual(hydrated, value) {
 		t.Fatalf("landing payload = %+v, %v; want %+v", hydrated, err, value)
 	}
 }
 
 func TestLatestChangeUsesLinkCreationChronology(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, r, organization)
-		content := eventstore.NewContent(newHistoryObjects())
-		olderAt := historyAt()
+		pgstoretest.SeedRepository(t, r, organization)
+		content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
+		olderAt := pgstoretest.HistoryAt()
 		entries := make([]struct {
 			id string
 			at time.Time
@@ -1356,7 +1215,7 @@ func TestLatestChangeUsesLinkCreationChronology(t *testing.T) {
 		rows := make([]eventstore.Change, 0, len(entries))
 		for _, entry := range entries {
 			value := tracker.ChangeRequest{ID: entry.id, OrganizationID: organization, ProjectID: "prj_first", WorkItemID: "wi_first_1", LinkedIssues: []tracker.NativeWorkItemID{"wi_first_1"}, Title: entry.id, Body: "Example", Revision: 1, CreatedAt: entry.at, UpdatedAt: entry.at}
-			record, err := content.PrepareChange(t.Context(), organization, historyJSON(t, value))
+			record, err := content.PrepareChange(t.Context(), organization, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1390,11 +1249,11 @@ func TestLatestChangeUsesLinkCreationChronology(t *testing.T) {
 		t.Run(string(organization)+"/retained PR versions", func(t *testing.T) {
 			makeVersion := func(change string, number int64, external string) eventstore.Version {
 				t.Helper()
-				value := tracker.ChangeVersion{ID: fmt.Sprintf("version_%s_%d", change, number), ChangeID: change, Number: number, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: fmt.Sprintf("head_%s_%d", change, number), BaseSHA: "base", MergeBaseSHA: "merge", Repository: "https://github.com/example/repo", PolicyID: "policy"}, Actor: historyActor(), CreatedAt: newerAt.Add(time.Duration(number) * time.Second)}
+				value := tracker.ChangeVersion{ID: fmt.Sprintf("version_%s_%d", change, number), ChangeID: change, Number: number, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: fmt.Sprintf("head_%s_%d", change, number), BaseSHA: "base", MergeBaseSHA: "merge", Repository: "https://github.com/example/repo", PolicyID: "policy"}, Actor: pgstoretest.HistoryActor(), CreatedAt: newerAt.Add(time.Duration(number) * time.Second)}
 				if external != "" {
 					value.External = &tracker.ChangeExternalReference{Provider: "github", ID: external, URL: "https://github.com/example/repo/pull/" + external}
 				}
-				record, err := content.PrepareVersion(t.Context(), organization, historyJSON(t, value))
+				record, err := content.PrepareVersion(t.Context(), organization, pgstoretest.HistoryJSON(t, value))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1480,21 +1339,21 @@ func TestLatestChangeUsesLinkCreationChronology(t *testing.T) {
 }
 
 func TestEventChangeImmutableHistory(t *testing.T) {
-	admin := template.Database(t)
-	r, pool := repositoryFor(t, admin, smallPool())
-	seedRepository(t, r, "org_first")
-	seedHistory(t, r, "org_first", "first")
-	runtime := runtimeFor(t, pool, pool)
+	admin := pgstoretest.Template.Database(t)
+	r, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	pgstoretest.SeedRepository(t, r, "org_first")
+	pgstoretest.SeedHistory(t, r, "org_first", "first")
+	runtime := pgstoretest.RuntimeFor(t, pool, pool)
 	for _, table := range []string{"collaboration_events", "collaboration_versions", "change_versions", "change_evidence", "native_commands"} {
 		for _, op := range []string{"update", "delete"} {
 			t.Run(table+"/"+op, func(t *testing.T) {
-				tx := tenantTx(t, runtime, pool, "org_first")
+				tx := pgstoretest.TenantTx(t, runtime, pool, "org_first")
 				statement := "DELETE FROM " + table
 				if op == "update" {
 					statement = "UPDATE " + table + " SET payload_object_key=payload_object_key"
 				}
 				_, err := tx.Exec(t.Context(), statement)
-				requireSQLState(t, err, "23514")
+				pgstoretest.RequireSQLState(t, err, "23514")
 				if err := tx.Rollback(t.Context()); err != nil {
 					t.Fatal(err)
 				}
@@ -1506,11 +1365,11 @@ func TestEventChangeImmutableHistory(t *testing.T) {
 func TestEventChangeSequenceContention(t *testing.T) {
 	for _, kind := range []string{"event", "event replay", "evidence", "evidence replay"} {
 		t.Run(kind, func(t *testing.T) {
-			admin := template.Database(t)
-			r, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
-			seedRepository(t, r, "org_first")
-			f := seedHistory(t, r, "org_first", "first")
-			preparedEvents := []eventstore.Event{historyEvent(t, f.content, "org_first", "contended1"), historyEvent(t, f.content, "org_first", "contended2")}
+			admin := pgstoretest.Template.Database(t)
+			r, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
+			pgstoretest.SeedRepository(t, r, "org_first")
+			f := pgstoretest.SeedHistory(t, r, "org_first", "first")
+			preparedEvents := []eventstore.Event{pgstoretest.HistoryEvent(t, f.Content, "org_first", "contended1"), pgstoretest.HistoryEvent(t, f.Content, "org_first", "contended2")}
 			if kind == "event replay" {
 				preparedEvents[1] = preparedEvents[0]
 			}
@@ -1526,7 +1385,7 @@ func TestEventChangeSequenceContention(t *testing.T) {
 					got, err := w.AppendEvent(ctx, event)
 					return got.Sequence, err
 				default:
-					evidence := f.evidence
+					evidence := f.Evidence
 					evidence.Sequence = 0
 					evidence.SourceKey = new("contended")
 					if kind == "evidence" {
@@ -1536,7 +1395,7 @@ func TestEventChangeSequenceContention(t *testing.T) {
 					return got.Sequence, err
 				}
 			}
-			first := startRepositoryTask(t, func(ctx context.Context) error {
+			first := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return r.WriteRecords(ctx, "org_first", corestore.Serving, func(w eventstore.Writer) error {
 					var err error
 					firstSequence, err = appendRecord(ctx, w, 1)
@@ -1552,8 +1411,8 @@ func TestEventChangeSequenceContention(t *testing.T) {
 					}
 				})
 			})
-			waitRepositorySignal(t, ready)
-			second := startRepositoryTask(t, func(ctx context.Context) error {
+			pgstoretest.WaitRepositorySignal(t, ready)
+			second := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return r.WriteRecords(ctx, "org_first", corestore.Serving, func(w eventstore.Writer) error {
 					var err error
 					secondSequence, err = appendRecord(ctx, w, 2)
@@ -1571,10 +1430,10 @@ func TestEventChangeSequenceContention(t *testing.T) {
 				return nil
 			})
 			releaseOnce.Do(func() { close(release) })
-			if err := first.wait(t); err != nil {
+			if err := first.Wait(t); err != nil {
 				t.Fatal(err)
 			}
-			if err := second.wait(t); err != nil {
+			if err := second.Wait(t); err != nil {
 				t.Fatal(err)
 			}
 			want := firstSequence + 1
@@ -1593,7 +1452,7 @@ func TestEventChangeSequenceContention(t *testing.T) {
 					}
 					return err
 				default:
-					records, err := reader.Evidence(t.Context(), f.change.ID, 1, 10)
+					records, err := reader.Evidence(t.Context(), f.Change.ID, 1, 10)
 					if err == nil && (len(records) != int(want-1) || records[0].Sequence != 2 || records[len(records)-1].Sequence != want) {
 						t.Errorf("evidence order=%+v", records)
 					}
@@ -1607,18 +1466,18 @@ func TestEventChangeSequenceContention(t *testing.T) {
 }
 
 func TestProjectEventCursorSerializesDifferentIssuesWithoutReplayGaps(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
-	seedAccessTarget(t, admin, r, "org_first")
-	f := seedHistory(t, r, "org_first", "project_cursor")
-	firstEvent := historyEventForItem(t, f.content, "org_first", "project_cursor_first", "wi_first_1")
-	secondEvent := historyEventForItem(t, f.content, "org_first", "project_cursor_second", "wi_first_2")
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
+	pgstoretest.SeedAccessTarget(t, admin, r, "org_first")
+	f := pgstoretest.SeedHistory(t, r, "org_first", "project_cursor")
+	firstEvent := historyEventForItem(t, f.Content, "org_first", "project_cursor_first", "wi_first_1")
+	secondEvent := historyEventForItem(t, f.Content, "org_first", "project_cursor_second", "wi_first_2")
 	firstSequence, secondSequence := int64(0), int64(0)
 	ready := make(chan struct{})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
-	first := startRepositoryTask(t, func(ctx context.Context) error {
+	first := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return r.WriteRecords(ctx, "org_first", corestore.Serving, func(w eventstore.Writer) error {
 			stored, err := w.AppendEvent(ctx, firstEvent)
 			if err != nil {
@@ -1634,8 +1493,8 @@ func TestProjectEventCursorSerializesDifferentIssuesWithoutReplayGaps(t *testing
 			}
 		})
 	})
-	waitRepositorySignal(t, ready)
-	second := startRepositoryTask(t, func(ctx context.Context) error {
+	pgstoretest.WaitRepositorySignal(t, ready)
+	second := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return r.WriteRecords(ctx, "org_first", corestore.Serving, func(w eventstore.Writer) error {
 			stored, err := w.AppendEvent(ctx, secondEvent)
 			if err != nil {
@@ -1656,10 +1515,10 @@ func TestProjectEventCursorSerializesDifferentIssuesWithoutReplayGaps(t *testing
 		return nil
 	})
 	releaseOnce.Do(func() { close(release) })
-	if err := first.wait(t); err != nil {
+	if err := first.Wait(t); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.wait(t); err != nil {
+	if err := second.Wait(t); err != nil {
 		t.Fatal(err)
 	}
 	if firstSequence != 2 || secondSequence != 3 {
@@ -1673,7 +1532,7 @@ func TestProjectEventCursorSerializesDifferentIssuesWithoutReplayGaps(t *testing
 		if err != nil {
 			return err
 		}
-		changes, err = reader.ProjectChanges(t.Context(), "prj_first", 1, highwater, historyAt().Add(time.Hour), 201)
+		changes, err = reader.ProjectChanges(t.Context(), "prj_first", 1, highwater, pgstoretest.HistoryAt().Add(time.Hour), 201)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -1681,8 +1540,8 @@ func TestProjectEventCursorSerializesDifferentIssuesWithoutReplayGaps(t *testing
 	if highwater != 3 || len(changes) != 2 || changes[0].WorkItemID != "wi_first_1" || changes[1].WorkItemID != "wi_first_2" {
 		t.Fatalf("project change page highwater=%d changes=%+v", highwater, changes)
 	}
-	seedAccessTarget(t, admin, r, "org_second")
-	seedHistory(t, r, "org_second", "project_cursor_other")
+	pgstoretest.SeedAccessTarget(t, admin, r, "org_second")
+	pgstoretest.SeedHistory(t, r, "org_second", "project_cursor_other")
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := r.ReadRecords(t.Context(), org, corestore.Serving, func(reader eventstore.Reader) error {
 			owner := reader.(eventstore.ProjectEventPageReader)
@@ -1733,11 +1592,11 @@ func TestProjectEventCursorSerializesDifferentIssuesWithoutReplayGaps(t *testing
 func TestEventChangeImportedSequenceContinuation(t *testing.T) {
 	for _, kind := range []string{"event", "evidence"} {
 		t.Run(kind, func(t *testing.T) {
-			r, _ := repositoryFor(t, template.Database(t), smallPool())
-			seedRepository(t, r, "org_first")
-			f := seedHistory(t, r, "org_first", "first")
+			r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+			pgstoretest.SeedRepository(t, r, "org_first")
+			f := pgstoretest.SeedHistory(t, r, "org_first", "first")
 			for index, sequence := range []int64{40, 12, 0} {
-				record := historyEvent(t, f.content, "org_first", fmt.Sprintf("import_%d", index))
+				record := pgstoretest.HistoryEvent(t, f.Content, "org_first", fmt.Sprintf("import_%d", index))
 				record.Sequence = sequence
 				err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
 					var got int64
@@ -1755,7 +1614,7 @@ func TestEventChangeImportedSequenceContinuation(t *testing.T) {
 							t.Error("import replay changed event sequence")
 						}
 					} else {
-						record := f.evidence
+						record := f.Evidence
 						record.Sequence = sequence
 						record.SourceKey = nil
 						stored, err := w.AppendEvidence(t.Context(), record)
@@ -1797,7 +1656,7 @@ func TestEventChangeImportedSequenceContinuation(t *testing.T) {
 						sequences = append(sequences, row.Sequence)
 					}
 				} else {
-					rows, err := reader.Evidence(t.Context(), f.change.ID, 1, 10)
+					rows, err := reader.Evidence(t.Context(), f.Change.ID, 1, 10)
 					if err != nil {
 						return err
 					}
@@ -1819,9 +1678,9 @@ func TestEventChangeImportedSequenceContinuation(t *testing.T) {
 func TestEventChangeCommandReceiptContention(t *testing.T) {
 	for _, changed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("changed_request_%v", changed), func(t *testing.T) {
-			admin := template.Database(t)
-			r, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
-			content := eventstore.NewContent(newHistoryObjects())
+			admin := pgstoretest.Template.Database(t)
+			r, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
+			content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 			first, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: "org_first", ActorID: "example", Operation: "create_change", CommandKey: "concurrent", RequestHash: artifact.Digest([]byte("first"))}, []byte(`{"result":"original"}`))
 			if err != nil {
 				t.Fatal(err)
@@ -1837,7 +1696,7 @@ func TestEventChangeCommandReceiptContention(t *testing.T) {
 			var releaseOnce sync.Once
 			defer releaseOnce.Do(func() { close(release) })
 			var receipt eventstore.Receipt
-			holder := startRepositoryTask(t, func(ctx context.Context) error {
+			holder := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return r.WriteRecords(ctx, "org_first", corestore.Serving, func(w eventstore.Writer) error {
 					var err error
 					first, err = w.PutReceipt(ctx, first)
@@ -1853,8 +1712,8 @@ func TestEventChangeCommandReceiptContention(t *testing.T) {
 					}
 				})
 			})
-			waitRepositorySignal(t, ready)
-			waiter := startRepositoryTask(t, func(ctx context.Context) error {
+			pgstoretest.WaitRepositorySignal(t, ready)
+			waiter := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return r.WriteRecords(ctx, "org_first", corestore.Serving, func(w eventstore.Writer) error { var err error; receipt, err = w.PutReceipt(ctx, next); return err })
 			})
 			testenv.WaitUntil(t, t.Context(), func() error {
@@ -1868,10 +1727,10 @@ func TestEventChangeCommandReceiptContention(t *testing.T) {
 				return nil
 			})
 			releaseOnce.Do(func() { close(release) })
-			if err := holder.wait(t); err != nil {
+			if err := holder.Wait(t); err != nil {
 				t.Fatal(err)
 			}
-			err = waiter.wait(t)
+			err = waiter.Wait(t)
 			if changed {
 				if !errors.Is(err, corestore.ErrRevisionConflict) {
 					t.Fatalf("changed hash error=%v", err)
@@ -1895,8 +1754,8 @@ func TestEventChangeCommandReceiptContention(t *testing.T) {
 }
 
 func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	if _, err := admin.ExecContext(t.Context(), `ALTER TABLE change_evidence SET (autovacuum_enabled=false); ALTER TABLE current_change_reviews SET (autovacuum_enabled=false)`); err != nil {
 		t.Fatal(err)
 	}
@@ -1906,29 +1765,29 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		for _, actors := range []int{17, 10000} {
 			key := fmt.Sprintf("current_%d", actors)
-			fixture := seedHistory(t, repository, org, key)
+			fixture := pgstoretest.SeedHistory(t, repository, org, key)
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence
     (quality_at,project_id,organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known)
     SELECT $4::timestamptz,(SELECT project_id FROM change_requests WHERE organization_id=$1 AND id=$2),$1,$2,n+1,$3,'review','human','actor_'||lpad(((n-1)%$7)::text,5,'0'),
     CASE WHEN n%37=0 THEN 'commented' WHEN ((n-1)%$7)%2=0 THEN 'changes_requested' ELSE 'approved' END,
-    $4::timestamptz,$5,$6,1,1,'human',true FROM generate_series(1,30000) n`, org, fixture.change.ID, fixture.version.ID, historyAt(), fixture.evidence.PayloadObjectKey, fixture.evidence.PayloadSHA256, actors); err != nil {
+    $4::timestamptz,$5,$6,1,1,'human',true FROM generate_series(1,30000) n`, org, fixture.Change.ID, fixture.Version.ID, pgstoretest.HistoryAt(), fixture.Evidence.PayloadObjectKey, fixture.Evidence.PayloadSHA256, actors); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO current_change_reviews(organization_id,change_id,version_id,review_kind,actor_key,decision,evidence_sequence)
     SELECT DISTINCT ON (actor_principal_id) organization_id,change_id,version_id,'human',actor_principal_id,decision,sequence FROM change_evidence
     WHERE organization_id=$1 AND change_id=$2 AND kind='review' AND decision<>'commented'
-    ORDER BY actor_principal_id,sequence DESC`, org, fixture.change.ID); err != nil {
+    ORDER BY actor_principal_id,sequence DESC`, org, fixture.Change.ID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET evidence_sequence=30001,review_summary_sequence=30001,current_version_id=$3,review_evidence_revision=review_evidence_revision+1 WHERE organization_id=$1 AND id=$2`, org, fixture.change.ID, fixture.version.ID); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET evidence_sequence=30001,review_summary_sequence=30001,current_version_id=$3,review_evidence_revision=review_evidence_revision+1 WHERE organization_id=$1 AND id=$2`, org, fixture.Change.ID, fixture.Version.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	for _, analyzed := range []bool{false, true} {
 		if analyzed {
 			if _, err := admin.ExecContext(t.Context(), `ANALYZE change_evidence; ANALYZE current_change_reviews`); err != nil {
@@ -1951,14 +1810,14 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 						if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 							t.Fatal(err)
 						}
-						probe := &searchPlanProbe{DBTX: tx}
+						probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
 						queries := pgquery.New(probe)
 						args := pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: fmt.Sprintf("change_current_%d", actors), VersionID: fmt.Sprintf("version_current_%d", actors), ReviewingActor: actor, Through: 30001}
 						sequences, err := queries.RecordCurrentChangeReviewSequences(t.Context(), args)
 						if err != nil {
 							t.Fatal(err)
 						}
-						headSQL, headArgs := probe.statement, append([]any(nil), probe.args...)
+						headSQL, headArgs := probe.Statement, append([]any(nil), probe.Args...)
 						rows, err := queries.RecordCurrentChangeEvidenceBySequences(t.Context(), pgquery.RecordCurrentChangeEvidenceBySequencesParams{OrganizationID: string(org), ChangeID: args.ChangeID, Sequences: sequences})
 						if err != nil {
 							t.Fatal(err)
@@ -1979,12 +1838,12 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 						for _, statement := range []struct {
 							sql  string
 							args []any
-						}{{headSQL, headArgs}, {probe.statement, append([]any(nil), probe.args...)}} {
+						}{{headSQL, headArgs}, {probe.Statement, append([]any(nil), probe.Args...)}} {
 							var raw []byte
 							if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement.sql, statement.args...).Scan(&raw); err != nil {
 								t.Fatal(err)
 							}
-							var plans []struct{ Plan searchPlanNode }
+							var plans []struct{ Plan pgstoretest.SearchPlanNode }
 							if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 								t.Fatalf("decode review lookup plan: %v", err)
 							}
@@ -2016,13 +1875,13 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 	t.Run("recovery sparse evidence seeks", func(t *testing.T) {
 		ctx := t.Context()
 		const org tracker.OrganizationID = "org_first"
-		fixture := seedHistory(t, repository, org, "recovery_seek")
-		current, err := fixture.content.Version(ctx, fixture.version)
+		fixture := pgstoretest.SeedHistory(t, repository, org, "recovery_seek")
+		current, err := fixture.Content.Version(ctx, fixture.Version)
 		if err != nil {
 			t.Fatal(err)
 		}
 		current.ID, current.Number = "version_recovery_seek_current", 2
-		currentRow, err := fixture.content.PrepareVersion(ctx, org, historyJSON(t, current))
+		currentRow, err := fixture.Content.PrepareVersion(ctx, org, pgstoretest.HistoryJSON(t, current))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2047,7 +1906,7 @@ WITH seeded(sequence,version_id,kind,review_kind,review_landing,decision) AS (
 INSERT INTO change_evidence (quality_at,project_id,organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,
  payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_landing)
 SELECT CASE WHEN kind='review' THEN $5::timestamptz END,(SELECT project_id FROM change_requests WHERE organization_id=$1 AND id=$2),$1,$2,sequence,version_id,kind,'human','example',decision,$5,$6,$7,1,1,review_kind,review_landing FROM seeded`,
-			org, fixture.change.ID, currentRow.ID, fixture.version.ID, historyAt(), fixture.evidence.PayloadObjectKey, fixture.evidence.PayloadSHA256); err != nil {
+			org, fixture.Change.ID, currentRow.ID, fixture.Version.ID, pgstoretest.HistoryAt(), fixture.Evidence.PayloadObjectKey, fixture.Evidence.PayloadSHA256); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := admin.ExecContext(ctx, "ANALYZE change_evidence"); err != nil {
@@ -2096,7 +1955,7 @@ SELECT CASE WHEN kind='review' THEN $5::timestamptz END,(SELECT project_id FROM 
 					t.Fatalf("missing bounded subplan %q: %s", subplan, raw)
 				}
 			}
-			var node searchPlanNode
+			var node pgstoretest.SearchPlanNode
 			if err := json.Unmarshal(plan, &node); err != nil {
 				t.Fatal(err)
 			}
@@ -2106,18 +1965,18 @@ SELECT CASE WHEN kind='review' THEN $5::timestamptz END,(SELECT project_id FROM 
 			}
 		}
 		const through = 14000
-		priorProbe := &searchPublicationProbe{Tx: tx}
+		priorProbe := &pgstoretest.SearchPublicationProbe{Tx: tx}
 		prior, err := pgquery.New(priorProbe).RecordChangePriorApproval(ctx, pgquery.RecordChangePriorApprovalParams{
-			OrganizationID: org, ChangeID: fixture.change.ID, VersionID: new(currentRow.ID), Through: through,
+			OrganizationID: org, ChangeID: fixture.Change.ID, VersionID: new(currentRow.ID), Through: through,
 		})
 		if err != nil || prior.Approved || !prior.Unprojected {
 			t.Fatalf("prior approval classification: %+v, %v", prior, err)
 		}
-		checkVisits(priorProbe.statement, priorProbe.args, "CTE unknown_approvals", 201)
+		checkVisits(priorProbe.Statement, priorProbe.Args, "CTE unknown_approvals", 201)
 
-		probe := &searchPlanProbe{DBTX: tx}
+		probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
 		rows, err := pgquery.New(probe).RecordRecoveryChangeEvidence(ctx, pgquery.RecordRecoveryChangeEvidenceParams{
-			OrganizationID: org, ChangeID: fixture.change.ID, VersionID: new(currentRow.ID), Through: through, IncludePriorUnprojected: true,
+			OrganizationID: org, ChangeID: fixture.Change.ID, VersionID: new(currentRow.ID), Through: through, IncludePriorUnprojected: true,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -2130,7 +1989,7 @@ SELECT CASE WHEN kind='review' THEN $5::timestamptz END,(SELECT project_id FROM 
 				discussions = append(discussions, row.Sequence)
 			case row.ReviewLanding:
 				landing = row.Sequence
-			case row.ReviewKind == "" && row.VersionID != nil && *row.VersionID == fixture.version.ID:
+			case row.ReviewKind == "" && row.VersionID != nil && *row.VersionID == fixture.Version.ID:
 				unknownPrior = row.Sequence
 			}
 		}
@@ -2141,11 +2000,11 @@ SELECT CASE WHEN kind='review' THEN $5::timestamptz END,(SELECT project_id FROM 
 		if !slices.Equal(discussions, want) || landing != 66 || unknownPrior != 67 {
 			t.Fatalf("recovery seek lost older matching evidence: discussions=%v landing=%d prior=%d", discussions, landing, unknownPrior)
 		}
-		checkVisits(probe.statement, probe.args, "", 32+1+64+201)
+		checkVisits(probe.Statement, probe.Args, "", 32+1+64+201)
 	})
 }
 
-func currentReviewLookupVisits(node searchPlanNode) float64 {
+func currentReviewLookupVisits(node pgstoretest.SearchPlanNode) float64 {
 	var count float64
 	if node.Relation == "change_evidence" || node.Relation == "current_change_reviews" {
 		count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
@@ -2157,21 +2016,21 @@ func currentReviewLookupVisits(node searchPlanNode) float64 {
 }
 
 func TestMachineReviewLookupsSeekPastHistoryAndLandingRows(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
-		f := seedHistory(t, repository, org, "machine_plan")
+		pgstoretest.SeedRepository(t, repository, org)
+		f := pgstoretest.SeedHistory(t, repository, org, "machine_plan")
 		for index, kind := range []string{"validator", "implementation", "security_audit"} {
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence
 (quality_at,project_id,organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_landing,review_session_known)
 SELECT $6::timestamptz,(SELECT project_id FROM change_requests WHERE organization_id=$1 AND id=$2),$1,$2,$4+n+1,$3,'review','worker',$5||'_'||n::text,CASE WHEN n%2=0 THEN 'commented' ELSE 'approved' END,
-$6::timestamptz,$7,$8,1,1,$5,($5='security_audit' AND n>20000),true FROM generate_series(1,30000)n`, org, f.change.ID, f.version.ID, index*30000, kind, historyAt(), f.evidence.PayloadObjectKey, f.evidence.PayloadSHA256); err != nil {
+$6::timestamptz,$7,$8,1,1,$5,($5='security_audit' AND n>20000),true FROM generate_series(1,30000)n`, org, f.Change.ID, f.Version.ID, index*30000, kind, pgstoretest.HistoryAt(), f.Evidence.PayloadObjectKey, f.Evidence.PayloadSHA256); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	for _, analyzed := range []bool{false, true} {
 		if analyzed {
 			if _, err := admin.ExecContext(t.Context(), `ANALYZE change_evidence; ANALYZE current_change_reviews`); err != nil {
@@ -2196,7 +2055,7 @@ $6::timestamptz,$7,$8,1,1,$5,($5='security_audit' AND n>20000),true FROM generat
 					if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 						t.Fatal(err)
 					}
-					probe := &searchPlanProbe{DBTX: tx}
+					probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
 					change := "change_machine_plan"
 					if test.missing {
 						change = "change_missing"
@@ -2206,10 +2065,10 @@ $6::timestamptz,$7,$8,1,1,$5,($5='security_audit' AND n>20000),true FROM generat
 						t.Fatalf("machine prefix=%v want=%v error=%v", got, test.want, err)
 					}
 					var raw []byte
-					if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+					if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw); err != nil {
 						t.Fatal(err)
 					}
-					var plans []struct{ Plan searchPlanNode }
+					var plans []struct{ Plan pgstoretest.SearchPlanNode }
 					if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 						t.Fatalf("decode machine head plan: %v", err)
 					}
@@ -2237,15 +2096,15 @@ func (p currentReviewReadProbe) ReadDetail(ctx context.Context, organization str
 }
 
 func TestCurrentMachineWaitSupersedesAnAlreadyCertifiedPass(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	pool := pgstoretest.RolePool(t, admin, "detent_runtime_v2", "")
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		for _, kind := range []string{"validator", "implementation", "security_audit"} {
 			t.Run(string(org)+"/"+kind, func(t *testing.T) {
-				f := seedHistory(t, repository, org, kind)
-				if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET current_version_id=$3 WHERE organization_id=$1 AND id=$2`, org, f.change.ID, f.version.ID); err != nil {
+				f := pgstoretest.SeedHistory(t, repository, org, kind)
+				if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET current_version_id=$3 WHERE organization_id=$1 AND id=$2`, org, f.Change.ID, f.Version.ID); err != nil {
 					t.Fatal(err)
 				}
 				reviewNumber := int64(0)
@@ -2256,24 +2115,24 @@ func TestCurrentMachineWaitSupersedesAnAlreadyCertifiedPass(t *testing.T) {
 					if decision == "commented" {
 						verdict = "wait"
 					}
-					review := tracker.ChangeReview{ID: fmt.Sprintf("review_%s_%d", kind, reviewNumber), VersionID: f.version.ID, Decision: decision, Actor: historyActor(), CreatedAt: historyAt()}
-					result := &gate.ValidatorResult{VersionID: f.version.ID, SessionID: 1, Verdict: verdict}
+					review := tracker.ChangeReview{ID: fmt.Sprintf("review_%s_%d", kind, reviewNumber), VersionID: f.Version.ID, Decision: decision, Actor: pgstoretest.HistoryActor(), CreatedAt: pgstoretest.HistoryAt()}
+					result := &gate.ValidatorResult{VersionID: f.Version.ID, SessionID: 1, Verdict: verdict}
 					switch kind {
 					case "validator":
 						review.Validator = result
 					case "implementation":
 						review.ImplementationReview = result
 					case "security_audit":
-						review.SecurityAudit = &tracker.SecurityAuditReview{VersionID: f.version.ID, SessionID: 1, Landing: landing}
+						review.SecurityAudit = &tracker.SecurityAuditReview{VersionID: f.Version.ID, SessionID: 1, Landing: landing}
 					}
-					row, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "review"}, historyJSON(t, review))
+					row, err := f.Content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.Change.ID, Kind: "review"}, pgstoretest.HistoryJSON(t, review))
 					if err != nil {
 						t.Fatal(err)
 					}
 					if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvidence(t.Context(), row); return err }); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil {
+					if _, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.Content, 200); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -2287,7 +2146,7 @@ func TestCurrentMachineWaitSupersedesAnAlreadyCertifiedPass(t *testing.T) {
 					if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 						t.Fatal(err)
 					}
-					sequences, err := pgquery.New(tx).RecordCurrentChangeReviewSequences(t.Context(), pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: f.change.ID, VersionID: f.version.ID, ReviewingActor: "example-owner", Through: reviewNumber + 1})
+					sequences, err := pgquery.New(tx).RecordCurrentChangeReviewSequences(t.Context(), pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: f.Change.ID, VersionID: f.Version.ID, ReviewingActor: "example-owner", Through: reviewNumber + 1})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -2300,20 +2159,20 @@ func TestCurrentMachineWaitSupersedesAnAlreadyCertifiedPass(t *testing.T) {
 					var evidence []eventstore.Evidence
 					if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
 						var err error
-						evidence, _, err = r.(eventstore.ChangeReviewEvidenceReader).ChangeReviewEvidence(t.Context(), f.change.ID, f.version.ID, sequence, nil, "example-owner")
+						evidence, _, err = r.(eventstore.ChangeReviewEvidenceReader).ChangeReviewEvidence(t.Context(), f.Change.ID, f.Version.ID, sequence, nil, "example-owner")
 						return err
 					}); err != nil {
 						t.Fatal(err)
 					}
-					version := tracker.ChangeVersion{ID: f.version.ID, ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: "example-policy"}, Policy: policy.Descriptor{ID: "example-policy"}, ReviewPolicy: tracker.ChangeReviewPolicy{ID: "example-review-policy"}}
+					version := tracker.ChangeVersion{ID: f.Version.ID, ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: "example-policy"}, Policy: policy.Descriptor{ID: "example-policy"}, ReviewPolicy: tracker.ChangeReviewPolicy{ID: "example-review-policy"}}
 					if kind == "validator" {
 						version.Policy.Gates.Validator = true
 					} else {
 						version.Policy.Gates.AutomatedReview = gate.AutomatedReviewRequired
 					}
-					detail := tracker.ChangeDetail{Change: tracker.ChangeRequest{CurrentVersion: f.version.ID}, Versions: []tracker.ChangeVersion{version}}
+					detail := tracker.ChangeDetail{Change: tracker.ChangeRequest{CurrentVersion: f.Version.ID}, Versions: []tracker.ChangeVersion{version}}
 					for _, row := range evidence {
-						raw, err := f.content.Evidence(t.Context(), row)
+						raw, err := f.Content.Evidence(t.Context(), row)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -2323,7 +2182,7 @@ func TestCurrentMachineWaitSupersedesAnAlreadyCertifiedPass(t *testing.T) {
 						}
 						detail.Reviews = append(detail.Reviews, review)
 					}
-					summary := changerequest.SummarizeCurrentVersion(detail, version.PolicyID, version.ReviewPolicy.ID, historyAt(), false)
+					summary := changerequest.SummarizeCurrentVersion(detail, version.PolicyID, version.ReviewPolicy.ID, pgstoretest.HistoryAt(), false)
 					if (summary.Status == "reviewed") != (decision == "approved") {
 						t.Fatalf("%s %s inherited wrong approval: %+v", kind, decision, summary)
 					}
@@ -2344,18 +2203,18 @@ func TestCurrentMachineWaitSupersedesAnAlreadyCertifiedPass(t *testing.T) {
 }
 
 func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	fixtures := map[tracker.OrganizationID]historyFixture{}
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	fixtures := map[tracker.OrganizationID]pgstoretest.HistoryFixture{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
-		f := seedHistory(t, repository, org, "backfill")
-		change, err := f.content.Change(t.Context(), f.change)
+		pgstoretest.SeedRepository(t, repository, org)
+		f := pgstoretest.SeedHistory(t, repository, org, "backfill")
+		change, err := f.Content.Change(t.Context(), f.Change)
 		if err != nil {
 			t.Fatal(err)
 		}
-		change.CurrentVersion, change.Revision = f.version.ID, 2
-		updated, err := f.content.PrepareChange(t.Context(), org, historyJSON(t, change))
+		change.CurrentVersion, change.Revision = f.Version.ID, 2
+		updated, err := f.Content.PrepareChange(t.Context(), org, pgstoretest.HistoryJSON(t, change))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2368,8 +2227,8 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			if i%2 == 1 {
 				decision = "changes_requested"
 			}
-			review := tracker.ChangeReview{ID: fmt.Sprintf("review_%d", i), VersionID: f.version.ID, Decision: decision, Actor: tracker.Actor{Kind: "human", PrincipalID: fmt.Sprintf("reviewer_%d", i%2)}, CreatedAt: historyAt()}
-			row, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "review"}, historyJSON(t, review))
+			review := tracker.ChangeReview{ID: fmt.Sprintf("review_%d", i), VersionID: f.Version.ID, Decision: decision, Actor: tracker.Actor{Kind: "human", PrincipalID: fmt.Sprintf("reviewer_%d", i%2)}, CreatedAt: pgstoretest.HistoryAt()}
+			row, err := f.Content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.Change.ID, Kind: "review"}, pgstoretest.HistoryJSON(t, review))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2382,7 +2241,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			}
 		}
 		var derived int
-		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM current_change_reviews WHERE organization_id=$1 AND change_id=$2`, org, f.change.ID).Scan(&derived); err != nil || derived != 0 {
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM current_change_reviews WHERE organization_id=$1 AND change_id=$2`, org, f.Change.ID).Scan(&derived); err != nil || derived != 0 {
 			t.Fatalf("request maintained derived current reviews: count=%d error=%v", derived, err)
 		}
 		fixtures[org] = f
@@ -2394,7 +2253,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 				var rows []eventstore.Evidence
 				err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
 					var err error
-					rows, _, err = r.(eventstore.ChangeReviewEvidenceReader).ChangeReviewEvidence(t.Context(), f.change.ID, f.version.ID, through, nil, "new_reviewer")
+					rows, _, err = r.(eventstore.ChangeReviewEvidenceReader).ChangeReviewEvidence(t.Context(), f.Change.ID, f.Version.ID, through, nil, "new_reviewer")
 					return err
 				})
 				return rows, err
@@ -2404,7 +2263,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			}
 			prepare := func(id, actor, decision string, sequence int64, known bool) eventstore.Evidence {
 				t.Helper()
-				row, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "review", Sequence: sequence, SourceKey: new(id)}, historyJSON(t, tracker.ChangeReview{ID: id, VersionID: f.version.ID, Decision: decision, Actor: tracker.Actor{Kind: "human", PrincipalID: actor}, CreatedAt: historyAt()}))
+				row, err := f.Content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.Change.ID, Kind: "review", Sequence: sequence, SourceKey: new(id)}, pgstoretest.HistoryJSON(t, tracker.ChangeReview{ID: id, VersionID: f.Version.ID, Decision: decision, Actor: tracker.Actor{Kind: "human", PrincipalID: actor}, CreatedAt: pgstoretest.HistoryAt()}))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2420,13 +2279,13 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			future := prepare("review_future", "reviewer_1", "changes_requested", 0, true)
 			var once sync.Once
 			var appendErr error
-			probe := currentReviewReadProbe{DetailStore: f.objects, before: func(ctx context.Context) error {
+			probe := currentReviewReadProbe{DetailStore: f.Objects, before: func(ctx context.Context) error {
 				tx, err := admin.BeginTx(ctx, nil)
 				if err != nil {
 					return err
 				}
 				var id string
-				err = tx.QueryRowContext(ctx, `SELECT id FROM change_requests WHERE organization_id=$1 AND id=$2 FOR UPDATE NOWAIT`, org, f.change.ID).Scan(&id)
+				err = tx.QueryRowContext(ctx, `SELECT id FROM change_requests WHERE organization_id=$1 AND id=$2 FOR UPDATE NOWAIT`, org, f.Change.ID).Scan(&id)
 				err = errors.Join(err, tx.Rollback())
 				if err != nil {
 					return fmt.Errorf("archive hydration held Change lock: %w", err)
@@ -2440,7 +2299,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			if _, err := read(303); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Fatalf("partial current reviews accepted: %v", err)
 			}
-			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 103 {
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.Content, 200); err != nil || n != 103 {
 				t.Fatalf("final current review page=%d error=%v", n, err)
 			}
 			rows, err := read(303)
@@ -2450,7 +2309,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			var before, after eventstore.Change
 			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
 				var err error
-				before, err = r.Change(t.Context(), f.change.ID)
+				before, err = r.Change(t.Context(), f.Change.ID)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -2460,7 +2319,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			}
 			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
 				var err error
-				after, err = r.Change(t.Context(), f.change.ID)
+				after, err = r.Change(t.Context(), f.Change.ID)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -2476,7 +2335,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			if err := appendRow(t.Context(), sparse); err != nil {
 				t.Fatal(err)
 			}
-			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 1 {
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.Content, 200); err != nil || n != 1 {
 				t.Fatalf("sparse source page=%d error=%v", n, err)
 			}
 			late := prepare("review_late", "reviewer_0", "approved", 400, true)
@@ -2485,7 +2344,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			}
 			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
 				var err error
-				after, err = r.Change(t.Context(), f.change.ID)
+				after, err = r.Change(t.Context(), f.Change.ID)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -2496,7 +2355,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			if _, err := read(500); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Fatalf("late known review was treated as complete: %v", err)
 			}
-			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 2 {
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.Content, 200); err != nil || n != 2 {
 				t.Fatalf("late known source page=%d error=%v", n, err)
 			}
 			rows, err = read(500)
@@ -2510,20 +2369,20 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			if _, err := read(500); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Fatalf("late unprojected review was treated as complete: %v", err)
 			}
-			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 1 {
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.Content, 200); err != nil || n != 1 {
 				t.Fatalf("legacy source page=%d error=%v", n, err)
 			}
 			if _, err := read(500); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Fatalf("unfinished suffix accepted: %v", err)
 			}
-			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 1 {
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.Content, 200); err != nil || n != 1 {
 				t.Fatalf("legacy suffix page=%d error=%v", n, err)
 			}
 			rows, err = read(500)
 			if err != nil || len(rows) != 2 || rows[0].Sequence != 450 || rows[1].Sequence != 500 {
 				t.Fatalf("legacy review not recovered: rows=%+v error=%v", rows, err)
 			}
-			discussion, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "discussion"}, historyJSON(t, tracker.ChangeDiscussion{ID: "current_discussion", VersionID: f.version.ID, Body: "Current feedback", Actor: historyActor(), CreatedAt: historyAt()}))
+			discussion, err := f.Content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.Change.ID, Kind: "discussion"}, pgstoretest.HistoryJSON(t, tracker.ChangeDiscussion{ID: "current_discussion", VersionID: f.Version.ID, Body: "Current feedback", Actor: pgstoretest.HistoryActor(), CreatedAt: pgstoretest.HistoryAt()}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2549,7 +2408,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 						t.Fatal(err)
 					}
 					interleaved := false
-					probe := currentReviewReadProbe{DetailStore: f.objects, before: func(ctx context.Context) error {
+					probe := currentReviewReadProbe{DetailStore: f.Objects, before: func(ctx context.Context) error {
 						if interleaved {
 							return nil
 						}
@@ -2557,7 +2416,7 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 						if test.late != 0 {
 							return appendRow(ctx, prepare(fmt.Sprintf("late_%d", test.late), "reviewer_1", "changes_requested", test.late, test.known))
 						}
-						_, err := repository.BackfillCurrentChangeReviews(ctx, org, f.content, 200)
+						_, err := repository.BackfillCurrentChangeReviews(ctx, org, f.Content, 200)
 						return err
 					}}
 					if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, eventstore.NewContent(probe), 200); n != 0 || !errors.Is(err, corestore.ErrRevisionConflict) || !interleaved {
@@ -2567,11 +2426,11 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 						if _, err := read(test.tip); !errors.Is(err, corestore.ErrRevisionConflict) {
 							t.Fatalf("late insertion left stale coverage certified: %v", err)
 						}
-						if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != map[bool]int{true: 2, false: 1}[test.known] {
+						if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.Content, 200); err != nil || n != map[bool]int{true: 2, false: 1}[test.known] {
 							t.Fatalf("late insertion rebuild rows=%d error=%v", n, err)
 						}
 						if !test.known {
-							if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 1 {
+							if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.Content, 200); err != nil || n != 1 {
 								t.Fatalf("late insertion suffix rows=%d error=%v", n, err)
 							}
 						}
@@ -2587,9 +2446,9 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 }
 
 func TestMachineReviewMigrationRejectsAnIndexThatIncludesLandingRows(t *testing.T) {
-	admin := template.Database(t)
+	admin := pgstoretest.Template.Database(t)
 	admin.SetMaxOpenConns(1)
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2626,14 +2485,14 @@ func TestMachineReviewMigrationRejectsAnIndexThatIncludesLandingRows(t *testing.
 }
 
 func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
-	admin := template.Database(t)
+	admin := pgstoretest.Template.Database(t)
 	admin.SetMaxOpenConns(1)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
-		seedHistory(t, repository, org, "migration")
+		pgstoretest.SeedRepository(t, repository, org)
+		pgstoretest.SeedHistory(t, repository, org, "migration")
 	}
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}

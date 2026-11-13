@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -14,7 +16,7 @@ import (
 )
 
 func TestGitHubOutboundVerificationKeepsLatestScopedFacts(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	now := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
 	for _, organization := range []tracker.OrganizationID{"first", "second"} {
 		key, err := attachment.ArchiveKey(string(organization), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")

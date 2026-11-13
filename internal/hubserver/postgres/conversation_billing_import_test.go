@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -16,9 +18,9 @@ import (
 )
 
 func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	admin.SetMaxOpenConns(6)
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
@@ -43,7 +45,7 @@ func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T
 		copies[organization] = copy.seal(t)
 	}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
 		for _, query := range []string{
 			`INSERT INTO api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES($1,'owner','owner','hash','fingerprint','operator',true,now(),now())`,
 			`INSERT INTO conversations(organization_id,id,project_id,owner_principal_id,origin,visibility,status) VALUES($1,'conversation','prj_shared','owner','user','private','active')`,
@@ -52,7 +54,7 @@ func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T
 				t.Fatal(err)
 			}
 		}
-		source := postgres.ConversationBillingImportSource{BundlePath: copies[organization], Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: &costImportObjects{historyObjects: newHistoryObjects()}, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
+		source := postgres.ConversationBillingImportSource{BundlePath: copies[organization], Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: &costImportObjects{HistoryObjects: pgstoretest.NewHistoryObjects()}, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
 		if _, err := repository.ImportConversationBilling(t.Context(), source); err == nil {
 			t.Fatal("missing conversation accepted")
 		}
@@ -89,7 +91,7 @@ func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T
 		if err := repository.Close(); err != nil {
 			t.Fatal(err)
 		}
-		repository, _ = repositoryFor(t, admin, smallPool())
+		repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		var prices int
 		if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_prices WHERE organization_id=$1", organization).Scan(&prices); err != nil || prices != 2 {
 			t.Fatalf("tenant prices=%d: %v", prices, err)

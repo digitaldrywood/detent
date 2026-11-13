@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -21,19 +23,19 @@ func TestNotificationRelatedRecipientPagingResumesWithoutDuplicates(t *testing.T
 	if _, ok := any(candidate).(accountstore.NotificationCollector); !ok {
 		t.Fatal("PostgreSQL notification collector is missing")
 	}
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	delivery := any(repository).(accountstore.NotificationCollector)
 	org := tracker.OrganizationID("org_paging")
 	seedNotificationMembers(t, repository, org)
-	content := eventstore.NewContent(newHistoryObjects())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		for index := range 256 {
 			user := fmt.Sprintf("participant_%03d", index)
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: user, Name: user, Hash: "hash_" + user, Scope: "operator", NativeOnly: true, CreatedAt: historyAt(), UpdatedAt: historyAt(), ProjectAccess: "selected", Kind: "personal"}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: user, Name: user, Hash: "hash_" + user, Scope: "operator", NativeOnly: true, CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), ProjectAccess: "selected", Kind: "personal"}); err != nil {
 				return err
 			}
-			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: user, Email: user + "@example.test", MembershipID: "membership_" + user, Role: "member", Active: true, PrincipalID: user, NotifyIssues: true, CreatedAt: historyAt(), UpdatedAt: historyAt()}); err != nil {
+			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: user, Email: user + "@example.test", MembershipID: "membership_" + user, Role: "member", Active: true, PrincipalID: user, NotifyIssues: true, CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt()}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: user, ProjectID: "prj_first"}); err != nil {
@@ -46,8 +48,8 @@ func TestNotificationRelatedRecipientPagingResumesWithoutDuplicates(t *testing.T
 	}
 	for index := range 256 {
 		user := fmt.Sprintf("participant_%03d", index)
-		value := tracker.CollaborationEvent{ID: "event_" + user, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_2", Type: "comment.created", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: user}, RecordedAt: historyAt(), Data: tracker.CollaborationData{CommentID: "comment_" + user}}
-		record, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+		value := tracker.CollaborationEvent{ID: "event_" + user, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_2", Type: "comment.created", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: user}, RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{CommentID: "comment_" + user}}
+		record, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,8 +69,8 @@ func TestNotificationRelatedRecipientPagingResumesWithoutDuplicates(t *testing.T
 	if events, err := delivery.NotificationEvents(t.Context(), org); err != nil || len(events) != 0 {
 		t.Fatalf("consumed participants=%d error=%v", len(events), err)
 	}
-	value := tracker.CollaborationEvent{ID: "event_related", OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "issue.edited", SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: "worker"}, RecordedAt: historyAt().Add(time.Second), Data: tracker.CollaborationData{Operation: "add", Fields: []string{"related"}, RelatedWorkItemID: "wi_first_2"}}
-	record, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+	value := tracker.CollaborationEvent{ID: "event_related", OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "issue.edited", SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: "worker"}, RecordedAt: pgstoretest.HistoryAt().Add(time.Second), Data: tracker.CollaborationData{Operation: "add", Fields: []string{"related"}, RelatedWorkItemID: "wi_first_2"}}
+	record, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 	if err != nil {
 		t.Fatal(err)
 	}

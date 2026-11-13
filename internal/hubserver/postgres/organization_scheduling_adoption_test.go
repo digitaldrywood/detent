@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -12,11 +14,11 @@ import (
 )
 
 func TestOrganizationSchedulingAdoptionPreservesSourceRevision(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 			for i, id := range []tracker.ProjectID{"first", "second"} {
 				if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: id, Name: string(id), Profile: "native", SchedulingRank: int64(i + 7)}, States: []tracker.NativeState{{Name: "Todo"}}}); err != nil {
@@ -155,8 +157,8 @@ func TestOrganizationSchedulingAdoptionPreservesSourceRevision(t *testing.T) {
 }
 
 func TestOrganizationSchedulingRollbackRetainsAdoptedStateAcrossTenantRLS(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	tenants := []struct {
 		org      tracker.OrganizationID
@@ -167,7 +169,7 @@ func TestOrganizationSchedulingRollbackRetainsAdoptedStateAcrossTenantRLS(t *tes
 		{"org_second", 10, []projectstore.OrganizationSchedulingRank{{ProjectID: "first", Rank: 12}, {ProjectID: "second", Rank: 19}}},
 	}
 	for _, tenant := range tenants {
-		seedTenantAccess(t, repository, tenant.org)
+		pgstoretest.SeedTenantAccess(t, repository, tenant.org)
 		if err := repository.WriteTenant(ctx, tenant.org, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, project := range tenant.ranks {
 				if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: tenant.org, ID: project.ProjectID, Name: string(project.ProjectID), Profile: "native", SchedulingRank: project.Rank}, States: []tracker.NativeState{{Name: "Todo"}}}); err != nil {
@@ -193,7 +195,7 @@ func TestOrganizationSchedulingRollbackRetainsAdoptedStateAcrossTenantRLS(t *tes
 	if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM organizations`).Scan(&hidden); err != nil || hidden != 0 {
 		t.Fatalf("unscoped migration role did not exercise tenant RLS: count=%d error=%v", hidden, err)
 	}
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}

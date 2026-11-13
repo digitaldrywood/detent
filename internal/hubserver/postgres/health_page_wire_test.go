@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -12,12 +14,12 @@ import (
 )
 
 func TestHealthPageFixedWireBudget(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	counts := &pageWireCounts{}
 	measured := pageMeasuredRepository(t, pool, counts)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 	}
 	for _, size := range []int{2, 50} {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

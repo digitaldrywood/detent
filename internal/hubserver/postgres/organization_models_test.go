@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -16,14 +18,14 @@ import (
 )
 
 func TestOrganizationModelUpdatesWaitForProjectModelValidation(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	org := tracker.OrganizationID("org_models_lock")
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	locked, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	first := startRepositoryTask(t, func(ctx context.Context) error {
+	first := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.RequireOrganizationModels(ctx, 0); err != nil {
 				return err
@@ -37,23 +39,23 @@ func TestOrganizationModelUpdatesWaitForProjectModelValidation(t *testing.T) {
 			}
 		})
 	})
-	waitRepositorySignal(t, locked)
+	pgstoretest.WaitRepositorySignal(t, locked)
 	started := make(chan struct{})
-	policy := policyTestRevision(org, "prj_first", "models", time.Now())
+	policy := pgstoretest.PolicyTestRevision(org, "prj_first", "models", time.Now())
 	row := policystore.OrganizationModels{OrganizationID: org, Revision: 1, Payload: eventstore.Reference(policy.PayloadObjectKey, policy.PayloadSHA256, 1, 1)}
-	second := startRepositoryTask(t, func(ctx context.Context) error {
+	second := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 		return repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 			close(started)
 			return w.SetOrganizationModels(ctx, row, 0)
 		})
 	})
-	waitRepositorySignal(t, started)
-	waitLeaseLock(t, admin, 1, second)
+	pgstoretest.WaitRepositorySignal(t, started)
+	pgstoretest.WaitLeaseLock(t, admin, 1, second)
 	releaseOnce.Do(func() { close(release) })
-	if err := first.wait(t); err != nil {
+	if err := first.Wait(t); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.wait(t); err != nil {
+	if err := second.Wait(t); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.RequireOrganizationModels(t.Context(), 0) }); !errors.Is(err, corestore.ErrRevisionConflict) {
@@ -62,11 +64,11 @@ func TestOrganizationModelUpdatesWaitForProjectModelValidation(t *testing.T) {
 }
 
 func TestOrganizationModelsEnforceTenantRevisionAndRollback(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		policy := policyTestRevision(org, "prj_first", "models", time.Now())
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		policy := pgstoretest.PolicyTestRevision(org, "prj_first", "models", time.Now())
 		row := policystore.OrganizationModels{OrganizationID: org, Revision: 1, Payload: eventstore.Reference(policy.PayloadObjectKey, policy.PayloadSHA256, 1, 1)}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.SetOrganizationModels(t.Context(), row, 0)

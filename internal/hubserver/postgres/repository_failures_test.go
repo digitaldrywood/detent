@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -22,7 +24,7 @@ import (
 )
 
 type featureAcquireTracer struct {
-	reportCountingTracer
+	pgstoretest.ReportCountingTracer
 	armed   atomic.Bool
 	waiting chan struct{}
 }
@@ -37,9 +39,9 @@ func (*featureAcquireTracer) TraceAcquireEnd(context.Context, *pgxpool.Pool, pgx
 }
 
 func TestRepositorySerializationFailure(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	seedRepository(t, repository, "org_first")
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	pgstoretest.SeedRepository(t, repository, "org_first")
 	admin.SetMaxOpenConns(2)
 	err := repository.Write(t.Context(), "org_first", corestore.Serving, func(corestore.Writer) error {
 		first, err := admin.BeginTx(t.Context(), &sql.TxOptions{Isolation: sql.LevelSerializable})
@@ -70,13 +72,13 @@ func TestRepositorySerializationFailure(t *testing.T) {
 	if !errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, mutation.ErrConflict) {
 		t.Fatalf("serialization error = %v", err)
 	}
-	requireSQLState(t, err, "40001")
+	pgstoretest.RequireSQLState(t, err, "40001")
 }
 
 func TestRepositoryDeadlockFailure(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
-	seedRepository(t, repository, "org_first")
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	pgstoretest.SeedRepository(t, repository, "org_first")
 	var login string
 	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
@@ -119,13 +121,13 @@ func TestRepositoryDeadlockFailure(t *testing.T) {
 	}
 	ready := make(chan struct{})
 	close(ready)
-	first := startRepositoryTask(t, run("first", "second", secondLocked, ready, firstLocked))
-	waitRepositorySignal(t, firstLocked)
+	first := pgstoretest.StartRepositoryTask(t, run("first", "second", secondLocked, ready, firstLocked))
+	pgstoretest.WaitRepositorySignal(t, firstLocked)
 	if _, err := admin.ExecContext(t.Context(), `SELECT 1 FROM archive_usage_counters WHERE organization_id='org_first' FOR UPDATE NOWAIT`); err != nil {
 		t.Fatalf("title-only update locked organization population accounting: %v", err)
 	}
-	second := startRepositoryTask(t, run("second", "first", firstLocked, finishSecond, secondLocked))
-	waitRepositorySignal(t, secondLocked)
+	second := pgstoretest.StartRepositoryTask(t, run("second", "first", firstLocked, finishSecond, secondLocked))
+	pgstoretest.WaitRepositorySignal(t, secondLocked)
 	testenv.WaitUntil(t, t.Context(), func() error {
 		var waiting bool
 		err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock')`, login).Scan(&waiting)
@@ -139,13 +141,13 @@ func TestRepositoryDeadlockFailure(t *testing.T) {
 	})
 	releaseOnce.Do(func() { close(finishSecond) })
 	failures := 0
-	for _, task := range []*repositoryTask{first, second} {
-		if err := task.wait(t); err != nil {
+	for _, task := range []*pgstoretest.RepositoryTask{first, second} {
+		if err := task.Wait(t); err != nil {
 			failures++
 			if !errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, mutation.ErrConflict) {
 				t.Errorf("deadlock error = %v", err)
 			}
-			requireSQLState(t, err, "40P01")
+			pgstoretest.RequireSQLState(t, err, "40P01")
 		}
 	}
 	if failures != 1 {
@@ -156,9 +158,9 @@ func TestRepositoryDeadlockFailure(t *testing.T) {
 func TestRepositoryCancellation(t *testing.T) {
 	for _, mode := range []string{"before request", "expired deadline", "waiting for pool", "running statement", "server cancellation"} {
 		t.Run(mode, func(t *testing.T) {
-			admin := template.Database(t)
-			repository, pool := repositoryFor(t, admin, smallPool())
-			seedRepository(t, repository, "org_first")
+			admin := pgstoretest.Template.Database(t)
+			repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+			pgstoretest.SeedRepository(t, repository, "org_first")
 			ctx, cancel := context.WithCancel(t.Context())
 			t.Cleanup(cancel)
 			want := error(context.Canceled)
@@ -175,16 +177,16 @@ func TestRepositoryCancellation(t *testing.T) {
 				}
 				return
 			}
-			var task *repositoryTask
+			var task *pgstoretest.RepositoryTask
 			if mode == "waiting for pool" {
 				acquisition := &featureAcquireTracer{waiting: make(chan struct{})}
-				observedPool := tracedFeaturePool(t, pool, acquisition)
+				observedPool := pgstoretest.TracedFeaturePool(t, pool, acquisition)
 				if err := repository.Close(); err != nil {
 					t.Fatal(err)
 				}
 				pool = observedPool
 				var err error
-				repository, err = postgres.NewRepository(t.Context(), pool, smallPool())
+				repository, err = postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -203,12 +205,12 @@ func TestRepositoryCancellation(t *testing.T) {
 					t.Cleanup(conn.Release)
 				}
 				acquisition.armed.Store(true)
-				task = startRepositoryTask(t, func(taskCtx context.Context) error {
+				task = pgstoretest.StartRepositoryTask(t, func(taskCtx context.Context) error {
 					return repository.Read(taskCtx, "org_first", corestore.Serving, func(corestore.Reader) error { return errors.New("canceled pool wait invoked callback") })
 				})
-				waitRepositorySignal(t, acquisition.waiting)
-				task.cancel()
-				if err := task.wait(t); !errors.Is(err, want) {
+				pgstoretest.WaitRepositorySignal(t, acquisition.waiting)
+				task.Cancel()
+				if err := task.Wait(t); !errors.Is(err, want) {
 					t.Fatalf("pool cancellation error = %v", err)
 				}
 				for _, conn := range held {
@@ -228,7 +230,7 @@ func TestRepositoryCancellation(t *testing.T) {
 				if _, err := blocker.ExecContext(t.Context(), `UPDATE projects SET name=name WHERE organization_id='org_first' AND id='prj_first'`); err != nil {
 					t.Fatal(err)
 				}
-				task = startRepositoryTask(t, func(ctx context.Context) error {
+				task = pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 					return repository.Write(ctx, "org_first", corestore.Serving, func(w corestore.Writer) error {
 						p, err := w.Project(ctx, "prj_first")
 						if err != nil {
@@ -253,9 +255,9 @@ func TestRepositoryCancellation(t *testing.T) {
 						t.Fatalf("cancel fixture backend = %v: %v", canceled, err)
 					}
 				} else {
-					task.cancel()
+					task.Cancel()
 				}
-				if err := task.wait(t); !errors.Is(err, want) {
+				if err := task.Wait(t); !errors.Is(err, want) {
 					t.Fatalf("statement cancellation error = %v", err)
 				}
 				if err := blocker.Rollback(); err != nil {

@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
@@ -30,9 +32,9 @@ import (
 )
 
 func TestConversationHistoryImportPreservesContinuationOwnership(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +42,7 @@ func TestConversationHistoryImportPreservesContinuationOwnership(t *testing.T) {
 	tables := []string{"conversations", "conversation_messages", "conversation_questions", "conversation_commands", "conversation_events", "conversation_starts", "conversation_audience_events", "conversation_turn_batches", "conversation_tool_revisions", "message_references", "conversation_attachments", "conversation_attachment_blobs", "attachments"}
 	copies := make(map[tracker.OrganizationID]*neutralBillingFixture)
 	paths := make(map[tracker.OrganizationID]string)
-	objects := &countingHistoryObjects{base: newHistoryObjects(), storedPayloads: make(map[string]int)}
+	objects := &countingHistoryObjects{base: pgstoretest.NewHistoryObjects(), storedPayloads: make(map[string]int)}
 	failKeys := make(map[tracker.OrganizationID]string)
 	now := "2026-11-01T18:00:00.123456Z"
 	cases := []struct {
@@ -58,7 +60,7 @@ func TestConversationHistoryImportPreservesContinuationOwnership(t *testing.T) {
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		copy := newNeutralBillingFixture(t, organization, tables...)
 		copies[organization] = copy
-		seedTenantAccess(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
 		for index, tc := range cases {
 			id := "continuation_" + string(organization) + "_" + tc.name
 			itemID := tracker.NativeWorkItemID(fmt.Sprintf("wi_continue_%s_%d", organization, index))
@@ -404,7 +406,7 @@ func TestConversationHistoryImportPreservesContinuationOwnership(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		upgraded, err := postgres.Open(t.Context(), postgres.Config{Connection: historical.Connection(t, admin, runtime, runtimePassword), Pool: smallPool()}, os.DirFS("migrations"))
+		upgraded, err := postgres.Open(t.Context(), postgres.Config{Connection: historical.Connection(t, admin, runtime, runtimePassword), Pool: pgstoretest.SmallPool()}, os.DirFS("migrations"))
 		if err != nil {
 			t.Fatalf("open upgraded schema: %v", err)
 		}
@@ -468,7 +470,7 @@ func TestConversationHistoryImportPreservesContinuationOwnership(t *testing.T) {
 	}
 	for _, start := range []continuationUpgradeStart{
 		{name: "upgrade imported compacted history and later PostgreSQL events", continuation: true, refusals: true, database: func(t *testing.T) (*sql.DB, *pgtest.Template) {
-			return migrationDatabaseAtVersion(t, 20261108224926)
+			return pgstoretest.MigrationDatabaseAtVersion(t, 20261108224926)
 		}},
 		{name: "upgrade imported history from populated head", head: true, refusals: true, database: continuationPopulatedHead},
 		{name: "upgrade populated head with verified sources supplied first", head: true, database: continuationPopulatedHead},

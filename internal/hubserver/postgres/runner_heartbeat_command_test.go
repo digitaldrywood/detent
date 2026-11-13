@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -73,14 +75,14 @@ type heartbeatCommand interface {
 }
 
 func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
-	now := historyAt()
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return seedCoreOrganization(t.Context(), w, org) }); err != nil {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return pgstoretest.SeedCoreOrganization(t.Context(), w, org) }); err != nil {
 			t.Fatal(err)
 		}
-		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
+		pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
 	}
 	wire := new(heartbeatWire)
 	config := pool.Config()
@@ -96,7 +98,7 @@ func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(countedPool.Close)
-	counted, err := postgres.NewRepository(t.Context(), countedPool, smallPool())
+	counted, err := postgres.NewRepository(t.Context(), countedPool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,13 +210,13 @@ func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
 }
 
 func TestRunnerHeartbeatReturnsCommittedUpdateRevision(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
-	now := historyAt()
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return seedCoreOrganization(t.Context(), w, org) }); err != nil {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return pgstoretest.SeedCoreOrganization(t.Context(), w, org) }); err != nil {
 			t.Fatal(err)
 		}
-		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
+		pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
 		if err := repository.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
 			identity, err := w.RunnerIdentity(ctx, "runner_shared")
 			if err != nil {
@@ -257,13 +259,13 @@ func TestRunnerHeartbeatReturnsCommittedUpdateRevision(t *testing.T) {
 }
 
 func TestRunnerHeartbeatCapacityConfigIsVisibleToLaterWritersAndResponse(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
-	now := historyAt()
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
 	for index, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return seedCoreOrganization(t.Context(), w, org) }); err != nil {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return pgstoretest.SeedCoreOrganization(t.Context(), w, org) }); err != nil {
 			t.Fatal(err)
 		}
-		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
+		pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
 		previous := runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: now}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.UpdateRunnerCapacityConfig(t.Context(), "runner_shared", previous)
@@ -331,13 +333,13 @@ func TestRunnerHeartbeatCapacityConfigIsVisibleToLaterWritersAndResponse(t *test
 }
 
 func TestRunnerHeartbeatOtherCachedWritesStayCoherent(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
-	now := historyAt()
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	now := pgstoretest.HistoryAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return seedCoreOrganization(t.Context(), w, org) }); err != nil {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return pgstoretest.SeedCoreOrganization(t.Context(), w, org) }); err != nil {
 			t.Fatal(err)
 		}
-		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
+		pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
 		if err := repository.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
 			problem := runnerauth.Problem{Code: "backend_missing", Message: "Example", FixHint: "Retry", ReportedAt: now, FirstSeen: now}
 			if err := w.ReplaceRunnerProblems(ctx, "runner_shared", []runnerauth.Problem{problem}); err != nil {

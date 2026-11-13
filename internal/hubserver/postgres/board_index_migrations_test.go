@@ -7,12 +7,14 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/pressly/goose/v3"
 )
 
 func TestBoardIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
-	db, _ := migrationDatabaseAtVersion(t, 20261107004841)
-	seedCore(t, db)
+	db, _ := pgstoretest.MigrationDatabaseAtVersion(t, 20261107004841)
+	pgstoretest.SeedCore(t, db)
 	for _, org := range []string{"org_first", "org_second"} {
 		for _, statement := range []string{
 			`INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES($1,'prj_shared',1,0)`,
@@ -38,7 +40,7 @@ func TestBoardIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider, err := migrationProvider(db)
+	provider, err := pgstoretest.MigrationProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}

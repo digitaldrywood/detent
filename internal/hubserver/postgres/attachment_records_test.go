@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -14,13 +16,13 @@ import (
 )
 
 func TestAttachmentReferenceBound(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(organization), func(t *testing.T) {
-			seedTenantAccess(t, repository, organization)
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attachments (organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at) VALUES ($1,'prj_shared','attachment_shared','first','example.txt','text/plain',1,$2,$3)`, organization, strings.Repeat("a", 64), historyAt()); err != nil {
+			pgstoretest.SeedTenantAccess(t, repository, organization)
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attachments (organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at) VALUES ($1,'prj_shared','attachment_shared','first','example.txt','text/plain',1,$2,$3)`, organization, strings.Repeat("a", 64), pgstoretest.HistoryAt()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_comments (organization_id,id,project_id,work_item_id,sequence,body_object_key,actor_kind,actor_principal_id,source_key) SELECT $1,'comment_' || n,'prj_shared','wi_shared',n+1,$1 || '/body/' || n,'human','second','source_' || n FROM generate_series(1,201) AS n`, organization); err != nil {
@@ -74,12 +76,12 @@ func TestAttachmentReferenceBound(t *testing.T) {
 }
 
 func TestAttachmentObjectLookupProtectsTenantHistory(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	keys := map[tracker.OrganizationID]string{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, r, org)
-		f := seedHistory(t, r, org, "lookup")
-		keys[org] = f.event.PayloadObjectKey
+		pgstoretest.SeedRepository(t, r, org)
+		f := pgstoretest.SeedHistory(t, r, org, "lookup")
+		keys[org] = f.Event.PayloadObjectKey
 	}
 	for org, key := range keys {
 		if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {

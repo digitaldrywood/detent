@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -13,20 +15,20 @@ import (
 )
 
 func TestOrganizationSecretCreateIfAbsent(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
-	keys := accessTestKeys(t, true)
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	keys := pgstoretest.AccessTestKeys(t, true)
 	rollback := errors.New("rollback cursor key creation")
 	for i, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
-			organization := accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: historyAt()}
+			organization := accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: pgstoretest.HistoryAt()}
 			key := bytes.Repeat([]byte{byte(i + 1)}, 32)
 			envelope, err := keys.Seal(key, accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
 			if err != nil {
 				t.Fatal(err)
 			}
-			secret := accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: historyAt()}
-			audit := accessstore.SecretAudit{OrganizationID: org, Kind: secret.Kind, Actor: "example", Event: "create", KeyVersion: envelope.Version, RecordedAt: historyAt()}
+			secret := accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: pgstoretest.HistoryAt()}
+			audit := accessstore.SecretAudit{OrganizationID: org, Kind: secret.Kind, Actor: "example", Event: "create", KeyVersion: envelope.Version, RecordedAt: pgstoretest.HistoryAt()}
 			err = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.CreateAccessOrganization(t.Context(), organization); err != nil {
 					return err

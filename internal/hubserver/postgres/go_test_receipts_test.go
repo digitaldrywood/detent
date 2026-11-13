@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/gotestreceiptstore"
@@ -14,7 +16,7 @@ import (
 )
 
 func TestGoTestReceiptsAreBoundedAndTenantScoped(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	type scope struct {
 		organization tracker.OrganizationID
@@ -27,7 +29,7 @@ func TestGoTestReceiptsAreBoundedAndTenantScoped(t *testing.T) {
 		suffix := fmt.Sprintf("%032x", index+1)
 		organization := tracker.OrganizationID("org_" + suffix)
 		project := tracker.ProjectID("prj_shared")
-		seedTenantAccess(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			_, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Slug: "example-project", Profile: "native"})
 			return err

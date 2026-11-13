@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -17,12 +19,12 @@ import (
 )
 
 func TestReceiptImportPreservesUncertainAndExpiredOutcomes(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, smallPool())
-	content := eventstore.NewContent(newHistoryObjects())
-	observed := historyAt().Add(48 * time.Hour)
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
+	observed := pgstoretest.HistoryAt().Add(48 * time.Hour)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, historyAt()); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
 		for _, tc := range []struct {
@@ -49,7 +51,7 @@ func TestReceiptImportPreservesUncertainAndExpiredOutcomes(t *testing.T) {
 				if tc.old {
 					deadline = observed.Add(-time.Hour)
 				}
-				record := receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: operation, CommandKey: tc.name, RequestHash: artifact.Digest([]byte(tc.name)), CreatedAt: historyAt(), ResponseClaimed: tc.claimed, ResponsePending: tc.pending, ResponseExpired: tc.expired, ResponseReplayUntilNs: deadline.UnixNano()}
+				record := receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: operation, CommandKey: tc.name, RequestHash: artifact.Digest([]byte(tc.name)), CreatedAt: pgstoretest.HistoryAt(), ResponseClaimed: tc.claimed, ResponsePending: tc.pending, ResponseExpired: tc.expired, ResponseReplayUntilNs: deadline.UnixNano()}
 				if tc.pending && !tc.claimed {
 					record.ResponseRequestID = "example-request"
 				}
@@ -130,19 +132,19 @@ func TestReceiptImportPreservesUncertainAndExpiredOutcomes(t *testing.T) {
 }
 
 func TestReceiptMetadataBatchIsAtomicAndPreservesCompletion(t *testing.T) {
-	admin := template.Database(t)
-	pool := smallPool()
+	admin := pgstoretest.Template.Database(t)
+	pool := pgstoretest.SmallPool()
 	pool.MaxConnections, pool.ServingConnections = 4, 2
-	r, _ := repositoryFor(t, admin, pool)
-	content := eventstore.NewContent(newHistoryObjects())
+	r, _ := pgstoretest.RepositoryFor(t, admin, pool)
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, historyAt()); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
 		sources := make([]receiptstore.Import, 0, receiptstore.MaxImportBatch)
 		for index := range receiptstore.MaxImportBatch {
 			key := fmt.Sprintf("example-%04d", index)
-			sources = append(sources, receiptstore.Import{Record: receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: key, RequestHash: artifact.Digest([]byte(key)), CreatedAt: historyAt(), ResponseClaimed: index == 0, ResponsePending: index == 0, ResponseExpired: index != 0, ResponseReplayUntilNs: historyAt().Add(receiptstore.ReplayRetention).UnixNano()}, SnapshotID: "example-snapshot", SourceHash: artifact.Digest([]byte(string(org) + key)), ObservedAt: historyAt()})
+			sources = append(sources, receiptstore.Import{Record: receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: key, RequestHash: artifact.Digest([]byte(key)), CreatedAt: pgstoretest.HistoryAt(), ResponseClaimed: index == 0, ResponsePending: index == 0, ResponseExpired: index != 0, ResponseReplayUntilNs: pgstoretest.HistoryAt().Add(receiptstore.ReplayRetention).UnixNano()}, SnapshotID: "example-snapshot", SourceHash: artifact.Digest([]byte(string(org) + key)), ObservedAt: pgstoretest.HistoryAt()})
 		}
 		apply := func(page []receiptstore.Import) error {
 			return r.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -222,18 +224,18 @@ func TestReceiptMetadataBatchIsAtomicAndPreservesCompletion(t *testing.T) {
 }
 
 func TestReceiptMetadataBatchCannotMaskGenericMutation(t *testing.T) {
-	admin := template.Database(t)
-	pool := smallPool()
+	admin := pgstoretest.Template.Database(t)
+	pool := pgstoretest.SmallPool()
 	pool.MaxConnections, pool.ServingConnections = 4, 2
-	r, _ := repositoryFor(t, admin, pool)
-	content := eventstore.NewContent(newHistoryObjects())
+	r, _ := pgstoretest.RepositoryFor(t, admin, pool)
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, historyAt()); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
 		for _, order := range []string{"generic_first", "import_first", "concurrent"} {
 			t.Run(string(org)+"/"+order, func(t *testing.T) {
-				metadata := receiptstore.Import{Record: receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: order, RequestHash: artifact.Digest([]byte(order)), CreatedAt: historyAt(), ResponseExpired: true, ResponseReplayUntilNs: historyAt().Add(receiptstore.ReplayRetention).UnixNano()}, SnapshotID: "example-snapshot", SourceHash: artifact.Digest([]byte(string(org) + order)), ObservedAt: historyAt().Add(48 * time.Hour)}
+				metadata := receiptstore.Import{Record: receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: order, RequestHash: artifact.Digest([]byte(order)), CreatedAt: pgstoretest.HistoryAt(), ResponseExpired: true, ResponseReplayUntilNs: pgstoretest.HistoryAt().Add(receiptstore.ReplayRetention).UnixNano()}, SnapshotID: "example-snapshot", SourceHash: artifact.Digest([]byte(string(org) + order)), ObservedAt: pgstoretest.HistoryAt().Add(48 * time.Hour)}
 				live := metadata.Record
 				live.ResponseExpired = false
 				live.ResponseReplayUntilNs = 0
@@ -303,11 +305,11 @@ func TestReceiptMetadataBatchCannotMaskGenericMutation(t *testing.T) {
 }
 
 func TestReceiptStateRollbackRefusesAcrossTenantRLS(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := r.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			_, _, err := w.(receiptstore.Writer).ClaimReceipt(t.Context(), receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: "example-key", RequestHash: artifact.Digest([]byte("request")), CreatedAt: historyAt(), ResponseClaimed: true, ResponsePending: true})
+			_, _, err := w.(receiptstore.Writer).ClaimReceipt(t.Context(), receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: "example-key", RequestHash: artifact.Digest([]byte("request")), CreatedAt: pgstoretest.HistoryAt(), ResponseClaimed: true, ResponsePending: true})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -326,7 +328,7 @@ func TestReceiptStateRollbackRefusesAcrossTenantRLS(t *testing.T) {
 	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_command_states`).Scan(&hidden); err != nil || hidden != 0 {
 		t.Fatalf("unscoped migration role did not exercise tenant RLS: count=%d error=%v", hidden, err)
 	}
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,16 +349,16 @@ func TestReceiptStateRollbackRefusesAcrossTenantRLS(t *testing.T) {
 }
 
 func TestReceiptImportCannotReplacePreStateCompletion(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, smallPool())
-	content := eventstore.NewContent(newHistoryObjects())
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, historyAt()); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
 		for _, mode := range []string{"claimed", "expired", "completed"} {
 			t.Run(string(org)+"/"+mode, func(t *testing.T) {
-				live, err := content.PrepareReceipt(t.Context(), receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: mode, RequestHash: artifact.Digest([]byte(mode)), CreatedAt: historyAt()}, []byte(`{"complete":true}`))
+				live, err := content.PrepareReceipt(t.Context(), receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: mode, RequestHash: artifact.Digest([]byte(mode)), CreatedAt: pgstoretest.HistoryAt()}, []byte(`{"complete":true}`))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -377,7 +379,7 @@ func TestReceiptImportCannotReplacePreStateCompletion(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				source := receiptstore.Import{Record: live, SnapshotID: "example-snapshot", SourceHash: artifact.Digest([]byte("source")), ObservedAt: historyAt()}
+				source := receiptstore.Import{Record: live, SnapshotID: "example-snapshot", SourceHash: artifact.Digest([]byte("source")), ObservedAt: pgstoretest.HistoryAt()}
 				if mode != "completed" {
 					source.Record.PayloadObjectKey, source.Record.PayloadSHA256, source.Record.PayloadBytes, source.Record.PayloadContentBytes = "", "", 0, 0
 					source.Record.ResponseClaimed = mode == "claimed"
@@ -412,16 +414,16 @@ func TestReceiptImportCannotReplacePreStateCompletion(t *testing.T) {
 }
 
 func TestReceiptClaimHasOneOwnerAndExpiryReleasesPayload(t *testing.T) {
-	admin := template.Database(t)
-	pool := smallPool()
+	admin := pgstoretest.Template.Database(t)
+	pool := pgstoretest.SmallPool()
 	pool.MaxConnections, pool.ServingConnections = 4, 2
-	r, _ := repositoryFor(t, admin, pool)
-	content := eventstore.NewContent(newHistoryObjects())
+	r, _ := pgstoretest.RepositoryFor(t, admin, pool)
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	org := tracker.OrganizationID("org_first")
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, historyAt()); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
 		t.Fatal(err)
 	}
-	claim := receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: "example-key", RequestHash: artifact.Digest([]byte("request")), CreatedAt: historyAt(), ResponseClaimed: true, ResponsePending: true}
+	claim := receiptstore.Record{OrganizationID: org, ActorID: "example-actor", Operation: "example.operation", CommandKey: "example-key", RequestHash: artifact.Digest([]byte("request")), CreatedAt: pgstoretest.HistoryAt(), ResponseClaimed: true, ResponsePending: true}
 	start := make(chan struct{})
 	results := make(chan bool, 2)
 	errors := make(chan error, 2)
@@ -453,7 +455,7 @@ func TestReceiptClaimHasOneOwnerAndExpiryReleasesPayload(t *testing.T) {
 	if owners != 1 {
 		t.Fatalf("concurrent claim owners=%d, want one", owners)
 	}
-	complete, err := content.PrepareReceipt(t.Context(), receiptstore.Record{OrganizationID: org, ActorID: claim.ActorID, Operation: claim.Operation, CommandKey: claim.CommandKey, RequestHash: claim.RequestHash, CreatedAt: historyAt()}, []byte(`{"complete":true}`))
+	complete, err := content.PrepareReceipt(t.Context(), receiptstore.Record{OrganizationID: org, ActorID: claim.ActorID, Operation: claim.Operation, CommandKey: claim.CommandKey, RequestHash: claim.RequestHash, CreatedAt: pgstoretest.HistoryAt()}, []byte(`{"complete":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +465,7 @@ func TestReceiptClaimHasOneOwnerAndExpiryReleasesPayload(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cutoff := historyAt().Add(receiptstore.ReplayRetention + time.Second)
+	cutoff := pgstoretest.HistoryAt().Add(receiptstore.ReplayRetention + time.Second)
 	var page []receiptstore.Record
 	var charged int64
 	if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {

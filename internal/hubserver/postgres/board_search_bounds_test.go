@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -50,13 +52,13 @@ func (*boardSearchSessionTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.Tr
 
 func newBoardSearchFixture(t *testing.T) searchFixture {
 	t.Helper()
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
-	objects := newHistoryObjects()
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	objects := pgstoretest.NewHistoryObjects()
 	f := searchFixture{repository: repository, pool: pool, admin: admin, objects: objects, content: searchstore.NewContent(objects)}
 
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		seedBoardSearchProject(t, f, org, "prj_first", "example", []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"})
 	}
 	return f
@@ -88,8 +90,8 @@ func seedBoardSearchProject(t *testing.T, f searchFixture, org tracker.Organizat
 			t.Fatal(err)
 		}
 		err = f.repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
-			issue := &tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: id, Revision: 1, Number: index + 1}, Title: "Example", State: "Todo", CreatedAt: historyAt(), UpdatedAt: historyAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: principal}}
-			row := viewstore.BoardRecord{OrganizationID: org, ProjectID: project, WorkItemID: id, SourceRevision: 1, ActorPrincipalID: principal, Position: viewstore.BoardPosition{State: "Todo", Identifier: string(id)}, CreatedAt: historyAt(), UpdatedAt: historyAt(), Payload: ref, PageIssue: issue, ListIssue: issue, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Actor: issue.Actor}}
+			issue := &tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: id, Revision: 1, Number: index + 1}, Title: "Example", State: "Todo", CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: principal}}
+			row := viewstore.BoardRecord{OrganizationID: org, ProjectID: project, WorkItemID: id, SourceRevision: 1, ActorPrincipalID: principal, Position: viewstore.BoardPosition{State: "Todo", Identifier: string(id)}, CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), Payload: ref, PageIssue: issue, ListIssue: issue, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Actor: issue.Actor}}
 			if err := w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{ProjectID: project, WorkItemID: id, ExpectedRevision: 1, Current: &row}); err != nil {
 				return err
 			}
@@ -109,15 +111,15 @@ func publishSearchBody(ctx context.Context, f searchFixture, w tenantstore.Write
 	if err := f.admin.QueryRowContext(ctx, "SELECT record_id,generation,source_at FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND kind='item'", issue.OrganizationID, issue.ProjectID, issue.WorkItemID).Scan(&candidate.RecordID, &candidate.Generation, &candidate.SourceAt); err != nil {
 		return err
 	}
-	return w.(viewstore.WorkItemPageWriter).PublishWorkItemPage(ctx, candidate, &viewstore.ItemPageRecord{Value: issue, Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: historyAt()}, nil)
+	return w.(viewstore.WorkItemPageWriter).PublishWorkItemPage(ctx, candidate, &viewstore.ItemPageRecord{Value: issue, Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: pgstoretest.HistoryAt()}, nil)
 }
 
 func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
 	trace := &boardSearchSessionTrace{}
-	f.pool = tracedFeaturePool(t, f.pool, trace)
-	counted, err := postgres.NewRepository(ctx, f.pool, smallPool())
+	f.pool = pgstoretest.TracedFeaturePool(t, f.pool, trace)
+	counted, err := postgres.NewRepository(ctx, f.pool, pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +163,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			t.Fatal(err)
 		}
 		probe := &boardQueryTracer{}
-		counted, err := postgres.NewRepository(ctx, tracedFeaturePool(t, f.pool, probe), smallPool())
+		counted, err := postgres.NewRepository(ctx, pgstoretest.TracedFeaturePool(t, f.pool, probe), pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -272,9 +274,9 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 						BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
 					}).BoardModelPages(ctx, selection, nil, accessstore.Authority{})
 				case "lanes":
-					_, err = r.BoardLanes(ctx, selection, historyAt())
+					_, err = r.BoardLanes(ctx, selection, pgstoretest.HistoryAt())
 				case "closed":
-					_, err = r.BoardClosedWindows(ctx, selection, []time.Time{historyAt().Add(-time.Hour)}, historyAt())
+					_, err = r.BoardClosedWindows(ctx, selection, []time.Time{pgstoretest.HistoryAt().Add(-time.Hour)}, pgstoretest.HistoryAt())
 				}
 				return err
 			}
@@ -426,7 +428,7 @@ func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
 							t.Fatal("fallback leaked an unauthorized issue")
 						}
 					}
-					lanes, err := r.BoardLanes(ctx, selection, historyAt())
+					lanes, err := r.BoardLanes(ctx, selection, pgstoretest.HistoryAt())
 					if err == nil {
 						total := int64(0)
 						for _, lane := range lanes {
@@ -480,7 +482,7 @@ func TestBoardSearchEmptyIndexUsesTenantIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	counts := new(pageWireCounts)
-	measured := pageMeasuredRepository(t, tracedFeaturePool(t, f.pool, &boardQueryTracer{}), counts)
+	measured := pageMeasuredRepository(t, pgstoretest.TracedFeaturePool(t, f.pool, &boardQueryTracer{}), counts)
 	previous := 0
 	for _, scale := range []int{2, 50} {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -496,7 +498,7 @@ FROM native_board_items CROSS JOIN generate_series($2::integer,$3::integer) n WH
 			}
 			if err := f.repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
 				n := previous + 1
-				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", n)), Revision: 1, Number: n + 10}, Title: "Unrelated title", Body: "Unrelated body", State: "Todo", CreatedAt: historyAt(), UpdatedAt: historyAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}}
+				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", n)), Revision: 1, Number: n + 10}, Title: "Unrelated title", Body: "Unrelated body", State: "Todo", CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}}
 				return publishSearchBody(ctx, f, w, issue)
 			}); err != nil {
 				t.Fatal(err)
@@ -563,7 +565,7 @@ FROM native_board_items CROSS JOIN generate_series($2::integer,$3::integer) n WH
 		previous = scale * 24
 	}
 	probe := &boardQueryTracer{}
-	counted, err := postgres.NewRepository(ctx, tracedFeaturePool(t, f.pool, probe), smallPool())
+	counted, err := postgres.NewRepository(ctx, pgstoretest.TracedFeaturePool(t, f.pool, probe), pgstoretest.SmallPool())
 	if err != nil {
 		t.Fatal(err)
 	}

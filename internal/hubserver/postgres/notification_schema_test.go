@@ -3,6 +3,8 @@ package postgres_test
 import (
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -14,8 +16,8 @@ import (
 )
 
 func TestNotificationSchemaKeepsTwoRecipientsPerTenant(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedNotificationMembers(t, repository, org)
 		tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -31,7 +33,7 @@ func TestNotificationSchemaKeepsTwoRecipientsPerTenant(t *testing.T) {
 			if err := q.EnsureIssueSubscription(t.Context(), pgquery.EnsureIssueSubscriptionParams{OrganizationID: org, WorkItemID: "wi_first_1", UserID: user, Token: "token_" + user}); err != nil {
 				t.Fatal(err)
 			}
-			if err := q.AppendIssueNotification(t.Context(), pgquery.AppendIssueNotificationParams{OrganizationID: org, WorkItemID: "wi_first_1", UserID: user, EventID: "event_example", SourceItem: "wi_first_1", DueAt: historyAt(), StateTo: "Done"}); err != nil {
+			if err := q.AppendIssueNotification(t.Context(), pgquery.AppendIssueNotificationParams{OrganizationID: org, WorkItemID: "wi_first_1", UserID: user, EventID: "event_example", SourceItem: "wi_first_1", DueAt: pgstoretest.HistoryAt(), StateTo: "Done"}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -49,8 +51,8 @@ func TestNotificationSchemaKeepsTwoRecipientsPerTenant(t *testing.T) {
 
 func seedNotificationMembers(t *testing.T, repository *postgres.Repository, org tracker.OrganizationID) {
 	t.Helper()
-	seedRepository(t, repository, org)
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedRepository(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		for _, user := range []string{"first", "second"} {
 			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: user, ProjectID: "prj_first"}); err != nil {

@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
 
 func TestSourceCatalogTargetsMatchPostgres(t *testing.T) {
-	db := template.Database(t)
+	db := pgstoretest.Template.Database(t)
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +48,7 @@ func TestSourceCatalogTargetsMatchPostgres(t *testing.T) {
 }
 
 func TestSourceCatalogSyntheticRawSchemas(t *testing.T) {
-	db := template.Database(t)
+	db := pgstoretest.Template.Database(t)
 	for _, statement := range []string{
 		`CREATE SCHEMA raw_legacy_fixture`,
 		`CREATE SCHEMA raw_current_fixture`,

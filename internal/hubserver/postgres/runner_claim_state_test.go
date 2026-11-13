@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -14,12 +16,12 @@ import (
 )
 
 func TestRunnerClaimStateScopesSlotsAndPagesReleasedAttempts(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, repository, org)
-		seedTenantAccess(t, repository, org)
-		seedRunnerIdentity(t, repository, org, "runner", "machine_1", historyAt(), false)
+		pgstoretest.SeedLeaseFamily(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedRunnerIdentity(t, repository, org, "runner", "machine_1", pgstoretest.HistoryAt(), false)
 		capacity := int64(1)
 		if org == "org_second" {
 			capacity = 2
@@ -29,11 +31,11 @@ func TestRunnerClaimStateScopesSlotsAndPagesReleasedAttempts(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		first := claimLease(t, repository, org, leaseClaim(1))
-		secondRequest := leaseClaim(2)
+		first := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
+		secondRequest := pgstoretest.LeaseClaim(2)
 		secondRequest.MachineID = "machine_1"
-		second := claimLease(t, repository, org, secondRequest)
-		objects := eventstore.NewContent(newHistoryObjects())
+		second := pgstoretest.ClaimLease(t, repository, org, secondRequest)
+		objects := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 		workerRun := func(lease leasestore.Lease, runner string) tracker.NativeRunData {
 			return tracker.NativeRunData{
 				AttemptID: "attempt_" + lease.LeaseID, RunID: "run_" + lease.LeaseID,
@@ -47,12 +49,12 @@ func TestRunnerClaimStateScopesSlotsAndPagesReleasedAttempts(t *testing.T) {
 		}
 		prepareAttempt := func(t *testing.T, lease leasestore.Lease, run tracker.NativeRunData) leasestore.AttemptEvent {
 			t.Helper()
-			payload, err := objects.PreparePayload(t.Context(), org, historyJSON(t, run))
+			payload, err := objects.PreparePayload(t.Context(), org, pgstoretest.HistoryJSON(t, run))
 			if err != nil {
 				t.Fatal(err)
 			}
 			cleanupRequired := run.Identity != nil && run.Identity.Role != "" && run.Runtime != nil && run.Runtime.WorkerLaunch != nil && run.Runtime.WorkerLaunch.PID > 0 && !run.Runtime.WorkerLaunch.ProcessStart.IsZero()
-			event := attemptEvent(lease)
+			event := pgstoretest.AttemptEvent(lease)
 			event.Sequence = run.Sequence
 			if run.Outcome != "" {
 				event.Status = run.Outcome
@@ -69,7 +71,7 @@ func TestRunnerClaimStateScopesSlotsAndPagesReleasedAttempts(t *testing.T) {
 			cancelled.Outcome = "cancelled"
 			cancelled.TerminalFailure = &tracker.NativeTerminalFailure{ErrorClass: "lease_released", Stage: "lease_release", ObservedAt: lease.AcquiredAt, Error: failure}
 			attempt := prepareAttempt(t, lease, cancelled)
-			history, err := objects.PrepareEvent(t.Context(), org, historyJSON(t, tracker.CollaborationEvent{
+			history, err := objects.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, tracker.CollaborationEvent{
 				ID: "evt_cancel_" + run.AttemptID, OrganizationID: org, ProjectID: tracker.ProjectID(fmt.Sprintf("prj_%d", lease.IssueID)),
 				AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", lease.IssueID)), Type: "run.finished", SchemaVersion: 1,
 				RecordedAt: lease.AcquiredAt, Actor: tracker.Actor{Kind: "integration", PrincipalID: "lease_release"}, Data: tracker.CollaborationData{Run: &cancelled},
@@ -95,7 +97,7 @@ func TestRunnerClaimStateScopesSlotsAndPagesReleasedAttempts(t *testing.T) {
 			if _, err := w.AppendEvent(t.Context(), firstCancellation.History); err != nil {
 				return err
 			}
-			_, err := w.Release(t.Context(), leaseFence(first), "example")
+			_, err := w.Release(t.Context(), pgstoretest.LeaseFence(first), "example")
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -139,7 +141,7 @@ func TestRunnerClaimStateScopesSlotsAndPagesReleasedAttempts(t *testing.T) {
 		}
 		t.Run(string(org)+"/peer cleanup authority", func(t *testing.T) {
 			const peer = "peer"
-			seedRunnerIdentity(t, repository, org, peer, second.MachineID, historyAt(), false)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, peer, second.MachineID, pgstoretest.HistoryAt(), false)
 			run := workerRun(second, peer)
 			event := prepareAttempt(t, second, run)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -164,7 +166,7 @@ func TestRunnerClaimStateScopesSlotsAndPagesReleasedAttempts(t *testing.T) {
 						expireLeaseFixture(t, admin, org, second.LeaseID)
 						cancellation := prepareCancellation(t, second, run, "Example lease expired")
 						if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-							_, err := w.ExpireWithCancellation(t.Context(), leaseFence(second), cancellation)
+							_, err := w.ExpireWithCancellation(t.Context(), pgstoretest.LeaseFence(second), cancellation)
 							return err
 						}); err != nil {
 							t.Fatal(err)

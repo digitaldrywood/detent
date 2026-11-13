@@ -6,6 +6,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -13,10 +15,10 @@ import (
 )
 
 func TestSavedWorkViewsRetainTenantAndOwnerScope(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	selection := viewstore.Selection{UserID: "first"}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		for _, id := range []string{"view_first", "view_second"} {
 			v := viewstore.Record{OrganizationID: org, ID: id, OwnerID: "first", Name: string(org) + id, Scope: "personal", ProjectIDs: []tracker.ProjectID{}, Favorite: true, State: viewstore.State{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h", Label: []string{"one", "two"}}}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -25,13 +27,13 @@ import (
 )
 
 func TestWorkspaceClaimAssociationIsTenantScopedAndPermanent(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	tenantRepository := tenantstore.Repository(repository)
 	now := time.Date(2026, time.November, 1, 20, 0, 0, 0, time.UTC)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.Write(t.Context(), organization, corestore.Serving, func(w corestore.Writer) error {
-			if err := seedCoreOrganization(t.Context(), w, organization); err != nil {
+			if err := pgstoretest.SeedCoreOrganization(t.Context(), w, organization); err != nil {
 				return err
 			}
 			project, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: "prj_shared", Name: "Example", Profile: "native"})
@@ -104,13 +106,13 @@ func TestWorkspaceClaimAssociationIsTenantScopedAndPermanent(t *testing.T) {
 }
 
 func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	tenantRepository := tenantstore.Repository(repository)
 	now := time.Date(2026, time.November, 1, 21, 0, 0, 0, time.UTC)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := tenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := seedCoreOrganization(t.Context(), w, organization); err != nil {
+			if err := pgstoretest.SeedCoreOrganization(t.Context(), w, organization); err != nil {
 				return err
 			}
 			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
@@ -357,7 +359,7 @@ func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing
 			t.Fatal(err)
 		}
 		t.Cleanup(tracedPool.Close)
-		reader, err := postgres.NewRepository(t.Context(), tracedPool, smallPool())
+		reader, err := postgres.NewRepository(t.Context(), tracedPool, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -471,8 +473,8 @@ SELECT organization_id,project_id,native_id,'queue-list','Todo',$1||lpad(number:
 }
 
 func TestProviderReservationSnapshotIsTypedAndTenantScoped(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	tenantRepository := tenantstore.Repository(repository)
 	now := time.Date(2026, time.November, 1, 22, 0, 0, 0, time.UTC)
 	percent := 34.5
@@ -485,7 +487,7 @@ func TestProviderReservationSnapshotIsTypedAndTenantScoped(t *testing.T) {
 	reservation := providercapacity.Reservation{Requirement: providercapacity.Requirement{Role: "code", Backend: "example-backend", Model: "example-model"}, Report: report, Reason: "Current account capacity is available"}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := tenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := seedCoreOrganization(t.Context(), w, organization); err != nil {
+			if err := pgstoretest.SeedCoreOrganization(t.Context(), w, organization); err != nil {
 				return err
 			}
 			project, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: "prj_provider", Name: "Example", Profile: "native"})
@@ -560,13 +562,13 @@ type queueListPlan struct {
 }
 
 func TestClaimCandidatePageSkipsUnclassifiedSourceCheckpoint(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	tenantRepository := tenantstore.Repository(repository)
 	now := time.Date(2026, time.November, 1, 21, 0, 0, 0, time.UTC)
 	items := []tracker.NativeWorkItemID{"wi_unknown", "wi_clean", "wi_dirty"}
 	if err := tenantRepository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
-		if err := seedCoreOrganization(t.Context(), w, "org_first"); err != nil {
+		if err := pgstoretest.SeedCoreOrganization(t.Context(), w, "org_first"); err != nil {
 			return err
 		}
 		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{

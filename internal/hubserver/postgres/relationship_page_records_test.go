@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -12,13 +14,13 @@ import (
 )
 
 func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	counts := new(pageWireCounts)
 	measured := pageMeasuredRepository(t, pool, counts)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
-		seedRepository(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
+		pgstoretest.SeedRepository(t, repository, org)
 		backfillPageFixture(t, repository, org)
 		for _, size := range []int{2, 50} {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -28,7 +30,7 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: id, Type: "dependency"}, "add", historyAt()); err != nil {
+					if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "prj_first", WorkItemID: "wi_first_1", RelatedProjectID: "prj_second", RelatedWorkItemID: id, Type: "dependency"}, "add", pgstoretest.HistoryAt()); err != nil {
 						return err
 					}
 				}

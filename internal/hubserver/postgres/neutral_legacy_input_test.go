@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
@@ -22,7 +24,7 @@ func TestNeutralImportFamiliesRefuseLegacyCopySelector(t *testing.T) {
 		t.Fatal(err)
 	}
 	repository := new(postgres.Repository)
-	objects := newHistoryObjects()
+	objects := pgstoretest.NewHistoryObjects()
 	for _, bundle := range []string{"", t.TempDir()} {
 		suffix := "_copy"
 		if bundle != "" {

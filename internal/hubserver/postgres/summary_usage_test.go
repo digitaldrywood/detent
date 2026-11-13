@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -17,14 +19,14 @@ import (
 )
 
 func TestSummaryUsageRestrictsHistoryBeforePopulationLimit(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, repository, org)
-		lease := claimLease(t, repository, org, leaseClaim(1))
+		pgstoretest.SeedLeaseFamily(t, repository, org)
+		lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt_summary", Fence: leaseFence(lease), RunID: "run_summary", Sequence: 1, Status: "running", StartedAt: at.AddDate(-1, 0, 0), PayloadObjectKey: "example/attempt"})
+			_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt_summary", Fence: pgstoretest.LeaseFence(lease), RunID: "run_summary", Sequence: 1, Status: "running", StartedAt: at.AddDate(-1, 0, 0), PayloadObjectKey: "example/attempt"})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -82,12 +84,12 @@ func TestSummaryUsageRestrictsHistoryBeforePopulationLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Run(string(org)+"/zero billing authority", func(t *testing.T) {
-			objects := newHistoryObjects()
+			objects := pgstoretest.NewHistoryObjects()
 			content := eventstore.NewContent(objects)
-			lease := claimLease(t, repository, org, leaseClaim(2))
-			fence := leaseFence(lease)
+			lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(2))
+			fence := pgstoretest.LeaseFence(lease)
 			run := tracker.NativeRunData{AttemptID: "attempt_summary_zero", RunID: "run_summary_zero", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "failed", TerminalFailure: &tracker.NativeTerminalFailure{Error: "Example setup failure"}}
-			ref, err := content.PreparePayload(t.Context(), org, historyJSON(t, run))
+			ref, err := content.PreparePayload(t.Context(), org, pgstoretest.HistoryJSON(t, run))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +122,7 @@ FROM native_attempts a WHERE a.organization_id=$1 AND a.id=$2`, org, run.Attempt
 				t.Run(check.name, func(t *testing.T) {
 					if check.known {
 						observation := usagecost.Observation{Provider: "example", ProviderAccount: "runner", SourceID: "attempt_summary_zero:model", ResourceID: run.AttemptID, AttemptID: run.AttemptID, WorkItemID: "wi_2", Model: "example-model", Bucket: "runner_api", Metric: "example-model", Unit: "token", Currency: "USD", Revision: 1, From: at.Add(-time.Minute), To: at, AmountMicros: new(int64(0)), Coverage: "complete"}
-						ref, err := objects.StoreDetail(t.Context(), string(org), historyJSON(t, observation))
+						ref, err := objects.StoreDetail(t.Context(), string(org), pgstoretest.HistoryJSON(t, observation))
 						if err != nil {
 							t.Fatal(err)
 						}

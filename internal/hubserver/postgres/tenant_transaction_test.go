@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -23,11 +25,11 @@ type tenantMutation struct {
 
 func prepareTenantMutation(t *testing.T, organization tracker.OrganizationID, key string) tenantMutation {
 	t.Helper()
-	content := eventstore.NewContent(newHistoryObjects())
-	event := historyEvent(t, content, organization, "event_"+key)
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
+	event := pgstoretest.HistoryEvent(t, content, organization, "event_"+key)
 	receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{
 		OrganizationID: organization, ActorID: "example", Operation: "update_item", CommandKey: key,
-		RequestHash: artifact.Digest([]byte(string(organization) + key)), CreatedAt: historyAt(),
+		RequestHash: artifact.Digest([]byte(string(organization) + key)), CreatedAt: pgstoretest.HistoryAt(),
 	}, []byte(`{"updated":true}`))
 	if err != nil {
 		t.Fatal(err)
@@ -101,8 +103,8 @@ func TestTenantTransactionClaimAndCompletionAtomicity(t *testing.T) {
 	for _, phase := range []string{"claim", "completion"} {
 		for _, stop := range []string{"item", "event", "receipt", "cancellation", "canceled failure", "stale fence", "commit"} {
 			t.Run(phase+"/"+stop, func(t *testing.T) {
-				r, _ := repositoryFor(t, template.Database(t), smallPool())
-				seedRepository(t, r, "org_first")
+				r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+				pgstoretest.SeedRepository(t, r, "org_first")
 				m := prepareTenantMutation(t, "org_first", "command")
 				var claim leasestore.Claim
 				if err := r.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
@@ -117,8 +119,8 @@ func TestTenantTransactionClaimAndCompletionAtomicity(t *testing.T) {
 				}
 				var lease leasestore.Lease
 				if phase == "completion" {
-					lease = claimLease(t, r, "org_first", claim)
-					recordLeaseAttempt(t, r, "org_first", attemptEvent(lease))
+					lease = pgstoretest.ClaimLease(t, r, "org_first", claim)
+					pgstoretest.RecordLeaseAttempt(t, r, "org_first", pgstoretest.AttemptEvent(lease))
 				}
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
@@ -131,7 +133,7 @@ func TestTenantTransactionClaimAndCompletionAtomicity(t *testing.T) {
 							return err
 						}
 					}
-					event := attemptEvent(lease)
+					event := pgstoretest.AttemptEvent(lease)
 					if stop == "stale fence" {
 						event.Fence.FencingToken++
 					}
@@ -142,7 +144,7 @@ func TestTenantTransactionClaimAndCompletionAtomicity(t *testing.T) {
 						return err
 					}
 					if phase == "completion" {
-						if _, err := w.Release(ctx, leaseFence(lease), "completed"); err != nil {
+						if _, err := w.Release(ctx, pgstoretest.LeaseFence(lease), "completed"); err != nil {
 							return err
 						}
 					}
@@ -175,7 +177,7 @@ func TestTenantTransactionClaimAndCompletionAtomicity(t *testing.T) {
 				m.check(t, r, committed)
 				if err := r.ReadTenant(t.Context(), "org_first", corestore.Serving, func(reader tenantstore.Reader) error {
 					stored, leaseErr := reader.Lease(t.Context(), claim.LeaseID)
-					attempt, attemptErr := reader.Attempt(t.Context(), attemptEvent(lease).ID)
+					attempt, attemptErr := reader.Attempt(t.Context(), pgstoretest.AttemptEvent(lease).ID)
 					usage, err := reader.Usage(t.Context(), claim.MachineID)
 					if err != nil {
 						return err
@@ -206,9 +208,9 @@ func TestTenantTransactionClaimAndCompletionAtomicity(t *testing.T) {
 }
 
 func TestTenantTransactionIsolation(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedRepository(t, r, org)
+		pgstoretest.SeedRepository(t, r, org)
 		m := prepareTenantMutation(t, org, "shared_command")
 		if err := r.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return m.write(t.Context(), w, func(string) error { return nil })
@@ -254,9 +256,9 @@ func TestTenantTransactionPrimaryFailure(t *testing.T) {
 	for _, code := range []string{"40001", "40P01"} {
 		for _, stage := range []string{"statement", "commit"} {
 			t.Run(code+"/"+stage, func(t *testing.T) {
-				admin := template.Database(t)
-				r, _ := repositoryFor(t, admin, smallPool())
-				seedRepository(t, r, "org_first")
+				admin := pgstoretest.Template.Database(t)
+				r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+				pgstoretest.SeedRepository(t, r, "org_first")
 				m := prepareTenantMutation(t, "org_first", "rejected")
 				if _, err := admin.ExecContext(t.Context(), fmt.Sprintf(`CREATE FUNCTION reject_tenant_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected failure' USING ERRCODE='%s'; END $$`, code)); err != nil {
 					t.Fatal(err)
@@ -276,7 +278,7 @@ func TestTenantTransactionPrimaryFailure(t *testing.T) {
 				if !errors.Is(err, corestore.ErrSerializationFailure) || calls != 1 {
 					t.Fatalf("primary error=%v calls=%d", err, calls)
 				}
-				requireSQLState(t, err, code)
+				pgstoretest.RequireSQLState(t, err, code)
 				m.check(t, r, false)
 			})
 		}

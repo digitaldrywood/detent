@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -53,8 +55,8 @@ func (c *capacityQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d
 func (*capacityQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestRunnerCapacityFactsClipLeaseWindowsAndExcludeOldHistory(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	cfg := pool.Config()
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
@@ -66,7 +68,7 @@ func TestRunnerCapacityFactsClipLeaseWindowsAndExcludeOldHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err = postgres.NewRepository(t.Context(), pool, smallPool())
+	repository, err = postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {
 		pool.Close()
 		t.Fatal(err)
@@ -76,14 +78,14 @@ func TestRunnerCapacityFactsClipLeaseWindowsAndExcludeOldHistory(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	from := historyAt().UTC().Truncate(time.Hour)
-	content := eventstore.NewContent(newHistoryObjects())
+	from := pgstoretest.HistoryAt().UTC().Truncate(time.Hour)
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, repository, org)
+		pgstoretest.SeedLeaseFamily(t, repository, org)
 		for index := int64(1); index <= 2; index++ {
 			runner := fmt.Sprintf("runner_%d", index)
 			machine := fmt.Sprintf("machine_%d", index)
-			seedRunnerIdentity(t, repository, org, runner, machine, from, false)
+			pgstoretest.SeedRunnerIdentity(t, repository, org, runner, machine, from, false)
 			receipt := func(operation, key string) eventstore.Receipt {
 				t.Helper()
 				value, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "production-import", Operation: operation, CommandKey: key, RequestHash: artifact.Digest([]byte(operation + key)), CreatedAt: from}, []byte(`{}`))
@@ -104,8 +106,8 @@ func TestRunnerCapacityFactsClipLeaseWindowsAndExcludeOldHistory(t *testing.T) {
 					t.Fatal(err)
 				}
 				data := tracker.NativeRunData{AttemptID: key, RunID: key, LeaseID: tracker.LeaseID(key), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, RunnerID: runner, MachineID: tracker.MachineID(machine), Outcome: "succeeded", ProcessUsage: &procgroup.Usage{PeakMemoryBytes: 4096, WallSeconds: 10, UserCPUSeconds: 8, SystemCPUSeconds: 2}}
-				value := tracker.CollaborationEvent{ID: key, OrganizationID: org, ProjectID: tracker.ProjectID(fmt.Sprintf("prj_%d", index)), AggregateID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", index)), Type: "run.finished", SchemaVersion: 1, Actor: historyActor(), RecordedAt: expires, Data: tracker.CollaborationData{Run: &data}}
-				event, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+				value := tracker.CollaborationEvent{ID: key, OrganizationID: org, ProjectID: tracker.ProjectID(fmt.Sprintf("prj_%d", index)), AggregateID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", index)), Type: "run.finished", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: expires, Data: tracker.CollaborationData{Run: &data}}
+				event, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -202,12 +204,12 @@ func TestRunnerCapacityFactsClipLeaseWindowsAndExcludeOldHistory(t *testing.T) {
 						if err := tx.Rollback(t.Context()); err != nil {
 							t.Fatal(err)
 						}
-						var plan []struct{ Plan searchPlanNode }
+						var plan []struct{ Plan pgstoretest.SearchPlanNode }
 						if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
 							t.Fatalf("decode plan: %v", err)
 						}
-						var visits func(searchPlanNode) float64
-						visits = func(n searchPlanNode) float64 {
+						var visits func(pgstoretest.SearchPlanNode) float64
+						visits = func(n pgstoretest.SearchPlanNode) float64 {
 							v := float64(0)
 							if n.Relation == query.relation {
 								v = (n.Rows + n.Removed + n.IndexRemoved) * n.Loops
@@ -228,8 +230,8 @@ func TestRunnerCapacityFactsClipLeaseWindowsAndExcludeOldHistory(t *testing.T) {
 						}
 						if history == 256 && query.name == "process" {
 							for relation, limit := range map[string]float64{"report_attempt_facts": 6, "report_event_facts": 2, "collaboration_events": 2, "work_item_identities": 4} {
-								var visited func(searchPlanNode) float64
-								visited = func(n searchPlanNode) float64 {
+								var visited func(pgstoretest.SearchPlanNode) float64
+								visited = func(n pgstoretest.SearchPlanNode) float64 {
 									v := float64(0)
 									if n.Relation == relation {
 										v = (n.Rows + n.Removed + n.IndexRemoved) * n.Loops

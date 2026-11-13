@@ -6,13 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/multitracer"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -24,64 +21,24 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type reportCountingTracer struct {
-	count atomic.Int64
-}
-
-func (c *reportCountingTracer) record(query string) {
-	command := strings.ToUpper(strings.Fields(query)[0])
-	if command != "BEGIN" && command != "COMMIT" && command != "ROLLBACK" {
-		c.count.Add(1)
-	}
-}
-func (c *reportCountingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	c.record(data.SQL)
-	return ctx
-}
-func (c *reportCountingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-func (c *reportCountingTracer) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
-	return ctx
-}
-func (c *reportCountingTracer) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	c.record(data.SQL)
-}
-func (c *reportCountingTracer) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
-
-func tracedFeaturePool(t *testing.T, source *pgxpool.Pool, tracer pgx.QueryTracer) *pgxpool.Pool {
-	t.Helper()
-	config := source.Config()
-	config.MaxConns = int32(smallPool().MaxConnections)
-	if config.ConnConfig.Tracer == nil {
-		config.ConnConfig.Tracer = tracer
-	} else {
-		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, tracer)
-	}
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
 func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
 	for _, org := range []tracker.OrganizationID{"org_bulk_first", "org_bulk_second"} {
-		if _, err := admin.ExecContext(ctx, `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, historyAt()); err != nil {
+		if _, err := admin.ExecContext(ctx, `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
 		}
-		seedLeaseFamily(t, repository, org)
-		lease := claimLease(t, repository, org, leaseClaim(1))
-		objects := newHistoryObjects()
+		pgstoretest.SeedLeaseFamily(t, repository, org)
+		lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
+		objects := pgstoretest.NewHistoryObjects()
 		content := eventstore.NewContent(objects)
 		ref, err := objects.StoreDetail(ctx, string(org), []byte(`{}`))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.RecordAttempt(ctx, leasestore.AttemptEvent{ID: "attempt_bulk", Fence: leaseFence(lease), RunID: "run_bulk", Sequence: 1, Status: "running", StartedAt: historyAt(), PayloadObjectKey: ref.Key})
+			_, err := w.RecordAttempt(ctx, leasestore.AttemptEvent{ID: "attempt_bulk", Fence: pgstoretest.LeaseFence(lease), RunID: "run_bulk", Sequence: 1, Status: "running", StartedAt: pgstoretest.HistoryAt(), PayloadObjectKey: ref.Key})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -89,13 +46,13 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 		events := make([]postgres.ReportEventProjectionImport, 100)
 		usage := make([]reportstore.UsageRecord, 100)
 		for i := range 100 {
-			value := tracker.CollaborationEvent{ID: fmt.Sprintf("bulk_event_%03d", i), OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: "run.finished", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt().Add(time.Duration(i) * time.Second), Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_bulk", RunID: "run_bulk", Sequence: int64(i + 1), Outcome: "failed"}}}
-			event, err := content.PrepareEvent(ctx, org, historyJSON(t, value))
+			value := tracker.CollaborationEvent{ID: fmt.Sprintf("bulk_event_%03d", i), OrganizationID: org, ProjectID: "prj_1", AggregateID: "wi_1", Type: "run.finished", SchemaVersion: 1, Actor: pgstoretest.HistoryActor(), RecordedAt: pgstoretest.HistoryAt().Add(time.Duration(i) * time.Second), Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_bulk", RunID: "run_bulk", Sequence: int64(i + 1), Outcome: "failed"}}}
+			event, err := content.PrepareEvent(ctx, org, pgstoretest.HistoryJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}
 			events[i].Event = event
-			usage[i] = reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: historyAt().Add(time.Duration(i) * time.Hour), Provider: "example", Model: "example-model", Input: int64(i + 1), CachedInput: 2, Output: 3, Cost: 1.25, Currency: "usd"}, UpdatedAt: historyAt()}
+			usage[i] = reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: pgstoretest.HistoryAt().Add(time.Duration(i) * time.Hour), Provider: "example", Model: "example-model", Input: int64(i + 1), CachedInput: 2, Output: 3, Cost: 1.25, Currency: "usd"}, UpdatedAt: pgstoretest.HistoryAt()}
 		}
 		if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, e := range events {
@@ -113,11 +70,11 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 		if _, err := admin.ExecContext(ctx, `DELETE FROM report_event_facts WHERE organization_id=$1`, org); err != nil {
 			t.Fatal(err)
 		}
-		change, err := content.PrepareChange(ctx, org, historyJSON(t, tracker.ChangeRequest{ID: "change_bulk", OrganizationID: org, ProjectID: "prj_1", WorkItemID: "wi_1", Revision: 1, Title: "Example", CreatedAt: historyAt(), UpdatedAt: historyAt()}))
+		change, err := content.PrepareChange(ctx, org, pgstoretest.HistoryJSON(t, tracker.ChangeRequest{ID: "change_bulk", OrganizationID: org, ProjectID: "prj_1", WorkItemID: "wi_1", Revision: 1, Title: "Example", CreatedAt: pgstoretest.HistoryAt(), UpdatedAt: pgstoretest.HistoryAt()}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		version, err := content.PrepareVersion(ctx, org, historyJSON(t, tracker.ChangeVersion{ID: "version_bulk", ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", BaseSHA: "base", Repository: "owner/repository", PolicyID: "example", AttemptID: "attempt_bulk"}, Actor: historyActor(), CreatedAt: historyAt()}))
+		version, err := content.PrepareVersion(ctx, org, pgstoretest.HistoryJSON(t, tracker.ChangeVersion{ID: "version_bulk", ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", BaseSHA: "base", Repository: "owner/repository", PolicyID: "example", AttemptID: "attempt_bulk"}, Actor: pgstoretest.HistoryActor(), CreatedAt: pgstoretest.HistoryAt()}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -128,18 +85,18 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 		escapes := make([]eventstore.Evidence, 100)
 		current := make([]billingstore.CostObservation, 100)
 		for i := range 100 {
-			e, err := content.PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: org, ChangeID: change.ID, Kind: "discussion"}, historyJSON(t, tracker.ChangeDiscussion{ID: fmt.Sprintf("discussion_%d", i), Actor: historyActor(), CreatedAt: historyAt(), Escape: &tracker.QualityEscape{OccurrenceID: fmt.Sprintf("occurrence_%d", i), Kind: "scheduled_failure", Cause: "validator_miss", ObservedAt: historyAt().Add(time.Duration(i) * time.Second)}}))
+			e, err := content.PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: org, ChangeID: change.ID, Kind: "discussion"}, pgstoretest.HistoryJSON(t, tracker.ChangeDiscussion{ID: fmt.Sprintf("discussion_%d", i), Actor: pgstoretest.HistoryActor(), CreatedAt: pgstoretest.HistoryAt(), Escape: &tracker.QualityEscape{OccurrenceID: fmt.Sprintf("occurrence_%d", i), Kind: "scheduled_failure", Cause: "validator_miss", ObservedAt: pgstoretest.HistoryAt().Add(time.Duration(i) * time.Second)}}))
 			if err != nil {
 				t.Fatal(err)
 			}
 			escapes[i] = e
-			c := billingCostObservation(t, org, "prj_1", fmt.Sprintf("bulk_source_%d", i), "attempt_bulk", "runner_api", historyAt().Add(time.Duration(i)*time.Hour), historyAt().Add(time.Duration(i+1)*time.Hour), 1000000)
+			c := billingCostObservation(t, org, "prj_1", fmt.Sprintf("bulk_source_%d", i), "attempt_bulk", "runner_api", pgstoretest.HistoryAt().Add(time.Duration(i)*time.Hour), pgstoretest.HistoryAt().Add(time.Duration(i+1)*time.Hour), 1000000)
 			c.Observation.AttemptID = "attempt_bulk"
 			c.Observation.WorkItemID = "wi_1"
 			c.Observation.Model = "example-model"
 			c.Observation.Input = int64(i + 1)
 			c.Observation.Coverage = "complete"
-			c.ReceivedAt = historyAt()
+			c.ReceivedAt = pgstoretest.HistoryAt()
 			raw, err := json.Marshal(c.Observation)
 			if err != nil {
 				t.Fatal(err)
@@ -184,19 +141,19 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 			t.Fatal(err)
 		}
 		change.LandedVersionID = &version.ID
-		change.LandedAt = new(historyAt())
+		change.LandedAt = new(pgstoretest.HistoryAt())
 		change.LandedHeadSHA = &version.HeadSHA
 		change.LandedMergeSHA = &receipt.MergeSHA
 		change.LandedBaseRef = &receipt.BaseRef
-		frozen, err := content.PrepareVersionLanding(ctx, eventstore.VersionLanding{OrganizationID: org, ProjectID: "prj_1", WorkItemID: "wi_1", ChangeID: change.ID, VersionID: version.ID}, tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: receipt.MergeSHA, BaseRef: receipt.BaseRef, Method: "merge", Actor: historyActor(), LandedAt: historyAt(), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 1, IssueBody: "Frozen batch contract", Criteria: []string{"Preserved criterion"}}})
+		frozen, err := content.PrepareVersionLanding(ctx, eventstore.VersionLanding{OrganizationID: org, ProjectID: "prj_1", WorkItemID: "wi_1", ChangeID: change.ID, VersionID: version.ID}, tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: receipt.MergeSHA, BaseRef: receipt.BaseRef, Method: "merge", Actor: pgstoretest.HistoryActor(), LandedAt: pgstoretest.HistoryAt(), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 1, IssueBody: "Frozen batch contract", Criteria: []string{"Preserved criterion"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		landings := []postgres.ReportLandingImport{{Change: change, Receipt: receipt, Frozen: frozen}}
 
-		counter := &reportCountingTracer{}
-		countedPool := tracedFeaturePool(t, pool, counter)
-		counted, err := postgres.NewRepository(ctx, countedPool, smallPool())
+		counter := &pgstoretest.ReportCountingTracer{}
+		countedPool := pgstoretest.TracedFeaturePool(t, pool, counter)
+		counted, err := postgres.NewRepository(ctx, countedPool, pgstoretest.SmallPool())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -207,12 +164,12 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 		})
 		check := func(name string, limit int64, run func() error) {
 			t.Helper()
-			counter.count.Store(0)
+			counter.Count.Store(0)
 			if err := run(); err != nil {
 				t.Fatalf("%s: %v", name, err)
 			}
-			t.Logf("%s: %d statements", name, counter.count.Load())
-			if got := counter.count.Load(); got > limit {
+			t.Logf("%s: %d statements", name, counter.Count.Load())
+			if got := counter.Count.Load(); got > limit {
 				t.Fatalf("%s used %d statements, limit %d", name, got, limit)
 			}
 		}
@@ -233,7 +190,7 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 		if err := counted.ImportReportUsageFacts(ctx, conflict); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("usage conflict=%v", err)
 		}
-		conflict[0].Period = historyAt().Add(1000 * time.Hour)
+		conflict[0].Period = pgstoretest.HistoryAt().Add(1000 * time.Hour)
 		if err := counted.ImportReportUsageFacts(ctx, conflict); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("partial usage conflict=%v", err)
 		}
@@ -303,9 +260,9 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 			t.Fatalf("attempt order=%s/%s/%s", first, latest, outcome)
 		}
 		t.Run(string(org)+"/same hour current writes preserve immutable import replay", func(t *testing.T) {
-			lease := claimLease(t, repository, org, leaseClaim(2))
+			lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(2))
 			if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
-				_, err := w.RecordAttempt(ctx, leasestore.AttemptEvent{ID: "attempt_same_hour", Fence: leaseFence(lease), RunID: "run_same_hour", Sequence: 1, Status: "running", StartedAt: historyAt(), PayloadObjectKey: ref.Key})
+				_, err := w.RecordAttempt(ctx, leasestore.AttemptEvent{ID: "attempt_same_hour", Fence: pgstoretest.LeaseFence(lease), RunID: "run_same_hour", Sequence: 1, Status: "running", StartedAt: pgstoretest.HistoryAt(), PayloadObjectKey: ref.Key})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -372,9 +329,9 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 			}
 		})
 		t.Run(string(org)+"/currency ties retain the usage continuation", func(t *testing.T) {
-			period := historyAt().Add(200 * time.Hour)
+			period := pgstoretest.HistoryAt().Add(200 * time.Hour)
 			for _, currency := range []string{"EUR", "USD"} {
-				record := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: period, Provider: "example", Model: "currency-seek", Input: 7, Cost: 2, Currency: currency}, UpdatedAt: historyAt()}
+				record := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: period, Provider: "example", Model: "currency-seek", Input: 7, Cost: 2, Currency: currency}, UpdatedAt: pgstoretest.HistoryAt()}
 				if err := repository.ImportReportUsageFact(ctx, record); err != nil {
 					t.Fatal(err)
 				}
@@ -386,7 +343,7 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 			if count, err := result.RowsAffected(); err != nil || count != 1 {
 				t.Fatalf("legacy currency rows=%d error=%v", count, err)
 			}
-			last := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: period, Provider: "example", Model: "currency-tail", Input: 11, Cost: 3, Currency: "USD"}, UpdatedAt: historyAt()}
+			last := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: period, Provider: "example", Model: "currency-tail", Input: 11, Cost: 3, Currency: "USD"}, UpdatedAt: pgstoretest.HistoryAt()}
 			if err := repository.ImportReportUsageFact(ctx, last); err != nil {
 				t.Fatal(err)
 			}
@@ -419,7 +376,7 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 			}
 		})
 		t.Run(string(org)+"/current usage preserves historical totals", func(t *testing.T) {
-			historical := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: usage[0].Period, Provider: "example", Model: "example-model", Input: 50, CachedInput: 4, Output: 5, Cost: 2, Currency: "EUR"}, UpdatedAt: historyAt()}
+			historical := reportstore.UsageRecord{OrganizationID: org, UsageFact: reportstore.UsageFact{ProjectID: "prj_1", WorkItemID: "wi_1", AttemptID: "attempt_bulk", Period: usage[0].Period, Provider: "example", Model: "example-model", Input: 50, CachedInput: 4, Output: 5, Cost: 2, Currency: "EUR"}, UpdatedAt: pgstoretest.HistoryAt()}
 			for range 2 {
 				if err := repository.ImportReportUsageFact(ctx, historical); err != nil {
 					t.Fatal(err)

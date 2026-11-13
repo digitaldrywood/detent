@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -26,7 +28,7 @@ type recordIdentity struct {
 func TestRecordPagesAndScansRevisitLateCommits(t *testing.T) {
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
-			repository, _ := repositoryFor(t, template.Database(t), postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+			repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 			prepareRecords(t, repository, "org_first", family.name == "comments")
 			created := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 			create := func(name string, sequence int64) recordIdentity {
@@ -169,7 +171,7 @@ func recordFamilies() []recordFamily {
 func prepareRecords(t *testing.T, repository corestore.Repository, org tracker.OrganizationID, comments bool) {
 	t.Helper()
 	if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
-		if err := seedCoreOrganization(t.Context(), w, org); err != nil {
+		if err := pgstoretest.SeedCoreOrganization(t.Context(), w, org); err != nil {
 			return err
 		}
 		if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: "prj_records", Name: "Records", Profile: "native"}); err != nil {
@@ -189,7 +191,7 @@ func TestRecordPagesPreserveImportsAndCursorOrdering(t *testing.T) {
 	created := time.Date(2020, 1, 2, 3, 4, 5, 123456000, time.UTC)
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
-			repository, _ := repositoryFor(t, template.Database(t), smallPool())
+			repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 				prepareRecords(t, repository, org, family.name == "comments")
 				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
@@ -306,7 +308,7 @@ func TestImportedIDsDoNotCollideWithAutomaticInserts(t *testing.T) {
 		t.Run(family.name, func(t *testing.T) {
 			for _, imports := range [][]int64{{1}, {100, 2}} {
 				t.Run(fmt.Sprint(imports), func(t *testing.T) {
-					repository, _ := repositoryFor(t, template.Database(t), smallPool())
+					repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 					prepareRecords(t, repository, "org_first", family.name == "comments")
 					var maximum int64
 					for i, id := range imports {
@@ -343,7 +345,7 @@ func TestLegacyPagesKeepNumberOrdering(t *testing.T) {
 	created := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
-			repository, _ := repositoryFor(t, template.Database(t), smallPool())
+			repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 				prepareRecords(t, repository, org, family.name == "comments")
 				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
@@ -411,8 +413,8 @@ func TestLegacyPagesKeepNumberOrdering(t *testing.T) {
 func TestImportedIDsWaitForConcurrentAllocations(t *testing.T) {
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
-			admin := template.Database(t)
-			repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+			admin := pgstoretest.Template.Database(t)
+			repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 			prepareRecords(t, repository, "org_first", family.name == "comments")
 			ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			release := make(chan struct{})

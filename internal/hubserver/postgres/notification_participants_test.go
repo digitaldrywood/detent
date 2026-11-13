@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -14,10 +16,10 @@ import (
 )
 
 func TestNotificationRecipientsRespectParticipationAndOptOut(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	delivery := any(repository).(accountstore.NotificationRepository)
-	content := eventstore.NewContent(newHistoryObjects())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for index, test := range []struct {
 		name, actorKind, actor, commentKind string
 		disabled, revoked                   bool
@@ -33,8 +35,8 @@ func TestNotificationRecipientsRespectParticipationAndOptOut(t *testing.T) {
 			org := tracker.OrganizationID(fmt.Sprintf("org_notice_%d", index))
 			seedNotificationMembers(t, repository, org)
 			appendEvent := func(id, kind, actorKind, actor string) eventstore.Event {
-				value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: actorKind, PrincipalID: actor}, RecordedAt: historyAt(), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Done", CommentID: "comment_example"}}
-				record, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+				value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: actorKind, PrincipalID: actor}, RecordedAt: pgstoretest.HistoryAt(), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Done", CommentID: "comment_example"}}
+				record, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -74,7 +76,7 @@ func TestNotificationRecipientsRespectParticipationAndOptOut(t *testing.T) {
 			}
 			got := []string{}
 			for range 3 {
-				notice, found, err := claimDueNotification(t, delivery, org, historyAt().Add(2*time.Minute))
+				notice, found, err := claimDueNotification(t, delivery, org, pgstoretest.HistoryAt().Add(2*time.Minute))
 				if err != nil {
 					t.Fatal(err)
 				}

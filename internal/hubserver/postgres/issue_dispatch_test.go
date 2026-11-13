@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -15,10 +17,10 @@ import (
 )
 
 func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, r, org)
+		pgstoretest.SeedLeaseFamily(t, r, org)
 		at := time.Now().UTC().Truncate(time.Microsecond)
 		request := func(fence leasestore.Fence) error {
 			return r.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -40,18 +42,18 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 		if err := request(leasestore.Fence{}); err != nil {
 			t.Fatal(err)
 		}
-		lease := claimLease(t, r, org, leaseClaim(1))
-		event := attemptEvent(lease)
+		lease := pgstoretest.ClaimLease(t, r, org, pgstoretest.LeaseClaim(1))
+		event := pgstoretest.AttemptEvent(lease)
 		event.DispatchGeneration = 1
-		recordLeaseAttempt(t, r, org, event)
-		if err := request(leaseFence(lease)); !errors.Is(err, tracker.ErrLeaseConflict) {
+		pgstoretest.RecordLeaseAttempt(t, r, org, event)
+		if err := request(pgstoretest.LeaseFence(lease)); !errors.Is(err, tracker.ErrLeaseConflict) {
 			t.Fatalf("live lease request = %v", err)
 		}
 		event.Sequence = 2
 		event.Status = "succeeded"
-		recordLeaseAttempt(t, r, org, event)
+		pgstoretest.RecordLeaseAttempt(t, r, org, event)
 		if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-			_, err := w.Release(t.Context(), leaseFence(lease), "completed")
+			_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "completed")
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -59,7 +61,7 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 		if err := request(leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken + 1}); !errors.Is(err, tracker.ErrStaleFencingToken) {
 			t.Fatalf("stale request = %v", err)
 		}
-		if err := request(leaseFence(lease)); err != nil {
+		if err := request(pgstoretest.LeaseFence(lease)); err != nil {
 			t.Fatal(err)
 		}
 		if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -81,7 +83,7 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 		if _, err := admin.ExecContext(context.Background(), `UPDATE issues SET revision=revision+1 WHERE organization_id=$1 AND native_id='wi_1'`, org); err != nil {
 			t.Fatal(err)
 		}
-		if err := request(leaseFence(lease)); err != nil {
+		if err := request(pgstoretest.LeaseFence(lease)); err != nil {
 			t.Fatalf("new source request = %v", err)
 		}
 		if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -93,22 +95,22 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		nextRequest := leaseClaim(1)
+		nextRequest := pgstoretest.LeaseClaim(1)
 		nextRequest.ExpectedRevision = 2
 		nextRequest.SessionID = "session_next"
 		nextRequest.LeaseID = "lease_next"
-		next := claimLease(t, r, org, nextRequest)
-		nextEvent := attemptEvent(next)
+		next := pgstoretest.ClaimLease(t, r, org, nextRequest)
+		nextEvent := pgstoretest.AttemptEvent(next)
 		nextEvent.DispatchGeneration = 7
-		recordLeaseAttempt(t, r, org, nextEvent)
-		if err := request(leaseFence(lease)); !errors.Is(err, tracker.ErrStaleFencingToken) {
+		pgstoretest.RecordLeaseAttempt(t, r, org, nextEvent)
+		if err := request(pgstoretest.LeaseFence(lease)); !errors.Is(err, tracker.ErrStaleFencingToken) {
 			t.Fatalf("superseded attempt request = %v", err)
 		}
 		nextEvent.Sequence = 2
 		nextEvent.Status = "succeeded"
-		recordLeaseAttempt(t, r, org, nextEvent)
+		pgstoretest.RecordLeaseAttempt(t, r, org, nextEvent)
 		if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-			_, err := w.Release(t.Context(), leaseFence(next), "completed")
+			_, err := w.Release(t.Context(), pgstoretest.LeaseFence(next), "completed")
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -124,7 +126,7 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 		if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET dispatch_generation=0,dispatch_requested_at=NULL WHERE organization_id=$1 AND project_id='prj_1' AND native_id='wi_1'`, org); err != nil {
 			t.Fatal(err)
 		}
-		if err := request(leaseFence(next)); err != nil {
+		if err := request(pgstoretest.LeaseFence(next)); err != nil {
 			t.Fatal(err)
 		}
 		if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -151,18 +153,18 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 		if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET archived=true WHERE organization_id=$1 AND project_id='prj_1' AND native_id='wi_1'`, org); err != nil {
 			t.Fatal(err)
 		}
-		if err := request(leaseFence(next)); !errors.Is(err, corestore.ErrRevisionConflict) {
+		if err := request(pgstoretest.LeaseFence(next)); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("archived request = %v", err)
 		}
 	}
 	t.Run("queued intent preserves the current fenced lease", func(t *testing.T) {
 		for _, org := range []tracker.OrganizationID{"org_queue_first", "org_queue_second"} {
-			seedLeaseFamily(t, r, org)
+			pgstoretest.SeedLeaseFamily(t, r, org)
 			at := time.Now().UTC().Truncate(time.Microsecond)
-			lease := claimLease(t, r, org, leaseClaim(1))
-			event := attemptEvent(lease)
+			lease := pgstoretest.ClaimLease(t, r, org, pgstoretest.LeaseClaim(1))
+			event := pgstoretest.AttemptEvent(lease)
 			event.DispatchGeneration = 0
-			recordLeaseAttempt(t, r, org, event)
+			pgstoretest.RecordLeaseAttempt(t, r, org, event)
 			queue := func(fence leasestore.Fence) error {
 				return r.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 					return w.(tenantstore.DispatchWriter).QueueIssueDispatch(t.Context(), "prj_1", "wi_1", fence, at)
@@ -173,10 +175,10 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 					t.Fatalf("stale queued request = %v", err)
 				}
 			}
-			if err := queue(leaseFence(lease)); err != nil {
+			if err := queue(pgstoretest.LeaseFence(lease)); err != nil {
 				t.Fatal(err)
 			}
-			nextRequest := leaseClaim(1)
+			nextRequest := pgstoretest.LeaseClaim(1)
 			nextRequest.LeaseID, nextRequest.SessionID = "lease_queued_next", "session_queued_next"
 			if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
 				_, err := w.Claim(t.Context(), nextRequest)
@@ -201,16 +203,16 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-				_, err := w.Release(t.Context(), leaseFence(lease), "completed")
+				_, err := w.Release(t.Context(), pgstoretest.LeaseFence(lease), "completed")
 				return err
 			}); err != nil {
 				t.Fatal(err)
 			}
-			next := claimLease(t, r, org, nextRequest)
-			nextEvent := attemptEvent(next)
+			next := pgstoretest.ClaimLease(t, r, org, nextRequest)
+			nextEvent := pgstoretest.AttemptEvent(next)
 			nextEvent.DispatchGeneration = 1
-			recordLeaseAttempt(t, r, org, nextEvent)
-			if err := queue(leaseFence(lease)); !errors.Is(err, tracker.ErrStaleFencingToken) {
+			pgstoretest.RecordLeaseAttempt(t, r, org, nextEvent)
+			if err := queue(pgstoretest.LeaseFence(lease)); !errors.Is(err, tracker.ErrStaleFencingToken) {
 				t.Fatalf("superseded owner queued dispatch = %v", err)
 			}
 		}
@@ -218,12 +220,12 @@ func TestIssueDispatchPersistsAndFencesCurrentAttempt(t *testing.T) {
 }
 
 func TestIssueDispatchRollbackRefusesAcrossTenantRLS(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	r, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, org := range organizations {
-		seedLeaseFamily(t, r, org)
+		pgstoretest.SeedLeaseFamily(t, r, org)
 		if err := r.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.(tenantstore.DispatchWriter).RequestIssueDispatch(t.Context(), "prj_1", "wi_1", leasestore.Fence{}, at)
 		}); err != nil {
@@ -243,7 +245,7 @@ func TestIssueDispatchRollbackRefusesAcrossTenantRLS(t *testing.T) {
 	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM issues`).Scan(&hidden); err != nil || hidden != 0 {
 		t.Fatalf("unscoped migration role did not exercise tenant RLS: count=%d error=%v", hidden, err)
 	}
-	provider, err := migrationProvider(admin)
+	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}

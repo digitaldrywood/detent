@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -49,7 +51,7 @@ func (s *postgresShutdownScheduling) ReleaseClaim(ctx context.Context, _ string,
 		return errors.New("shutdown release has no deadline")
 	}
 	return s.repository.WriteLeases(ctx, s.org, corestore.Serving, func(w leasestore.Writer) error {
-		_, err := w.Release(ctx, leaseFence(s.lease), reason)
+		_, err := w.Release(ctx, pgstoretest.LeaseFence(s.lease), reason)
 		return err
 	})
 }
@@ -88,12 +90,12 @@ func (r *postgresShutdownRunner) Run(ctx context.Context, _ orchestrator.RunRequ
 }
 
 func TestRunnerShutdownReleasesPostgresLeaseBeforeExpiry(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	leases := make(map[tracker.OrganizationID]leasestore.Lease)
 	for _, org := range organizations {
-		seedLeaseFamily(t, repository, org)
-		leases[org] = claimLease(t, repository, org, leaseClaim(1))
+		pgstoretest.SeedLeaseFamily(t, repository, org)
+		leases[org] = pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
 	}
 	for _, org := range organizations {
 		t.Run(string(org), func(t *testing.T) {
@@ -137,9 +139,9 @@ func TestRunnerShutdownReleasesPostgresLeaseBeforeExpiry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			replacement := leaseClaim(1)
+			replacement := pgstoretest.LeaseClaim(1)
 			replacement.LeaseID, replacement.SessionID = "lease_replacement", "session_replacement"
-			claimLease(t, repository, org, replacement)
+			pgstoretest.ClaimLease(t, repository, org, replacement)
 			if org == organizations[0] {
 				err = repository.ReadLeases(t.Context(), organizations[1], corestore.Serving, func(r leasestore.Reader) error {
 					lease, err := r.ActiveLeaseForIssue(t.Context(), 1)

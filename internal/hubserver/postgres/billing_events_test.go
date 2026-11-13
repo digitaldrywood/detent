@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -12,10 +14,10 @@ import (
 )
 
 func TestBillingEventOwnersAdvancePastCompletedPage(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	org := tracker.OrganizationID("org_billing_events")
-	seedTenantAccess(t, repository, org)
+	pgstoretest.SeedTenantAccess(t, repository, org)
 	pendingID := "event_pending_after_page"
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(writer tenantstore.Writer) error {
 		for index := range corestore.MaxPageSize {

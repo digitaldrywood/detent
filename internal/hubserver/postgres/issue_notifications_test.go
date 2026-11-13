@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -24,17 +26,17 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 	if _, ok := any(candidate).(accountstore.NotificationRepository); !ok {
 		t.Fatal("PostgreSQL notification owner is missing")
 	}
-	admin := template.Database(t)
-	repository, pool := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	delivery := any(repository).(accountstore.NotificationRepository)
-	now := historyAt()
-	content := eventstore.NewContent(newHistoryObjects())
+	now := pgstoretest.HistoryAt()
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedNotificationMembers(t, repository, org)
 		for repeat := range 2 {
 			for index, item := range []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"} {
 				event := tracker.CollaborationEvent{ID: fmt.Sprintf("event_%s_%d", item, repeat), OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: "worker"}, RecordedAt: now.Add(time.Duration(index+repeat*2) * time.Second), Data: tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}}
-				row, err := content.PrepareEvent(t.Context(), org, historyJSON(t, event))
+				row, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, event))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -227,20 +229,20 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 			t.Fatal(err)
 		}
-		probe := &searchPlanProbe{DBTX: tx}
+		probe := &pgstoretest.SearchPlanProbe{DBTX: tx}
 		if _, err := pgquery.New(probe).NotificationEvents(t.Context(), pgquery.NotificationEventsParams{OrganizationID: org, ProjectID: "prj_first", ProjectSequence: 4}); err != nil {
 			t.Fatal(err)
 		}
 		var raw []byte
-		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw); err != nil {
 			t.Fatal(err)
 		}
-		var plan []struct{ Plan searchPlanNode }
+		var plan []struct{ Plan pgstoretest.SearchPlanNode }
 		if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
 			t.Fatalf("plan: %v", err)
 		}
-		var visits func(searchPlanNode) float64
-		visits = func(node searchPlanNode) float64 {
+		var visits func(pgstoretest.SearchPlanNode) float64
+		visits = func(node pgstoretest.SearchPlanNode) float64 {
 			var count float64
 			if node.Relation == "collaboration_events" {
 				count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
@@ -284,12 +286,12 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 			t.Fatal(err)
 		}
-		probe = &searchPlanProbe{DBTX: tx}
+		probe = &pgstoretest.SearchPlanProbe{DBTX: tx}
 		projects, err := pgquery.New(probe).LockNotificationProject(t.Context(), org)
 		if err != nil || len(projects) != 0 {
 			t.Fatalf("idle projects=%d error=%v", len(projects), err)
 		}
-		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw); err != nil {
 			t.Fatal(err)
 		}
 		if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
@@ -303,7 +305,7 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 			t.Fatal(err)
 		}
 		value := tracker.CollaborationEvent{ID: "event_after_seek", OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_2", Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: "worker"}, RecordedAt: now.Add(time.Hour), Data: tracker.CollaborationData{FromState: "In Progress", ToState: "Done"}}
-		record, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+		record, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -330,15 +332,15 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 }
 
 func TestReviewNotificationCrossProjectStarvation(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	delivery := any(repository).(accountstore.NotificationRepository)
-	content := eventstore.NewContent(newHistoryObjects())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	org := tracker.OrganizationID("org_first")
 	seedNotificationMembers(t, repository, org)
 	appendEvent := func(id string, project tracker.ProjectID, item tracker.NativeWorkItemID, offset int) {
-		value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: project, AggregateType: "issue", AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: "worker"}, RecordedAt: historyAt().Add(time.Duration(offset) * time.Second), Data: tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}}
-		row, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+		value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: project, AggregateType: "issue", AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: "worker"}, RecordedAt: pgstoretest.HistoryAt().Add(time.Duration(offset) * time.Second), Data: tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}}
+		row, err := content.PrepareEvent(t.Context(), org, pgstoretest.HistoryJSON(t, value))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -400,7 +402,7 @@ func claimDueNotification(t *testing.T, delivery accountstore.NotificationReposi
 
 func notificationPlan(t *testing.T, pool *pgxpool.Pool, org tracker.OrganizationID, run func(*pgquery.Queries) error) (float64, bool) {
 	t.Helper()
-	probe := &searchPlanProbe{}
+	probe := &pgstoretest.SearchPlanProbe{}
 	var raw []byte
 	for _, explain := range []bool{false, true} {
 		tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -412,7 +414,7 @@ func notificationPlan(t *testing.T, pool *pgxpool.Pool, org tracker.Organization
 			t.Fatal(err)
 		}
 		if explain {
-			err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw)
+			err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.Statement, probe.Args...).Scan(&raw)
 		} else {
 			probe.DBTX = tx
 			err = run(pgquery.New(probe))
@@ -424,13 +426,13 @@ func notificationPlan(t *testing.T, pool *pgxpool.Pool, org tracker.Organization
 			t.Fatal(err)
 		}
 	}
-	var plan []struct{ Plan searchPlanNode }
+	var plan []struct{ Plan pgstoretest.SearchPlanNode }
 	if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
 		t.Fatalf("plan: %v", err)
 	}
 	examined, subscriptions := 0.0, false
-	var visit func(searchPlanNode)
-	visit = func(node searchPlanNode) {
+	var visit func(pgstoretest.SearchPlanNode)
+	visit = func(node pgstoretest.SearchPlanNode) {
 		subscriptions = subscriptions || node.Relation == "issue_subscriptions"
 		if node.Relation == "issue_notification_notices" {
 			examined += (node.Rows + node.Removed + node.IndexRemoved) * node.Loops

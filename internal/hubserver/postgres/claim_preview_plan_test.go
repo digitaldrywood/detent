@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -13,11 +15,11 @@ import (
 )
 
 func TestClaimPreviewPlanDistinguishesProvenanceFromLinkedSources(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	organization := tracker.OrganizationID("org_example")
 	project := tracker.ProjectID("prj_example")
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := seedCoreOrganization(t.Context(), w, organization); err != nil {
+		if err := pgstoretest.SeedCoreOrganization(t.Context(), w, organization); err != nil {
 			return err
 		}
 		_, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: project, Name: "Example", Profile: "native"})
@@ -25,7 +27,7 @@ func TestClaimPreviewPlanDistinguishesProvenanceFromLinkedSources(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	content := eventstore.NewContent(newHistoryObjects())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	for index, test := range []struct {
 		name      string
 		sourceKey string

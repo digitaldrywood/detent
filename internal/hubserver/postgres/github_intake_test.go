@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -16,8 +18,8 @@ import (
 )
 
 func TestGitHubWebhookReplayRetryAndTenantIsolation(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	now := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)
 	expectLatest := func(org tracker.OrganizationID, want *time.Time) {
 		t.Helper()

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -93,16 +95,16 @@ func TestRecordBillingCostsSerializesOppositeOrderBatches(t *testing.T) {
 		},
 	} {
 		t.Run(check.name, func(t *testing.T) {
-			admin := template.Database(t)
+			admin := pgstoretest.Template.Database(t)
 			poolConfig := postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}
-			repository, pool := repositoryFor(t, admin, poolConfig)
+			repository, pool := pgstoretest.RepositoryFor(t, admin, poolConfig)
 			admin.SetMaxOpenConns(4)
 			var login string
 			if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 				t.Fatal(err)
 			}
 			const organization tracker.OrganizationID = "org_cost_batch"
-			seedTenantAccess(t, repository, organization)
+			pgstoretest.SeedTenantAccess(t, repository, organization)
 			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				_, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: "project_example", Name: "Example", Profile: "native"})
 				return err
@@ -123,13 +125,13 @@ func TestRecordBillingCostsSerializesOppositeOrderBatches(t *testing.T) {
 			release := lockBillingTestGate(t, admin, check.gate)
 			recordsA := check.batchA(t, organization, base)
 			recordsB := check.batchB(t, organization, base)
-			batchA := startRepositoryTask(t, func(ctx context.Context) error {
+			batchA := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 					_, err := w.RecordBillingCosts(ctx, recordsA)
 					return err
 				})
 			})
-			batchB := startRepositoryTask(t, func(ctx context.Context) error {
+			batchB := pgstoretest.StartRepositoryTask(t, func(ctx context.Context) error {
 				return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 					_, err := w.RecordBillingCosts(ctx, recordsB)
 					return err
@@ -142,10 +144,10 @@ func TestRecordBillingCostsSerializesOppositeOrderBatches(t *testing.T) {
 			defer cancelWait()
 			waitForBillingLockWaiters(t, waitCtx, admin, login, 2)
 			releaseGate()
-			if err := batchA.wait(t); err != nil {
+			if err := batchA.Wait(t); err != nil {
 				t.Fatalf("first billing batch: %v", err)
 			}
-			if err := batchB.wait(t); err != nil {
+			if err := batchB.Wait(t); err != nil {
 				t.Fatalf("second billing batch: %v", err)
 			}
 			check.assertion(t, admin, organization, base)

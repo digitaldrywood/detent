@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -14,15 +16,15 @@ func TestSummaryDeliveryClaimsAndTenantIsolation(t *testing.T) {
 	if _, ok := any(candidate).(accountstore.SummaryDeliveryRepository); !ok {
 		t.Fatal("PostgreSQL summary delivery owner is missing")
 	}
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	delivery, ok := any(repository).(accountstore.SummaryDeliveryRepository)
 	if !ok {
 		t.Fatal("PostgreSQL summary delivery owner is missing")
 	}
 	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, org)
+		pgstoretest.SeedTenantAccess(t, repository, org)
 		for _, user := range []string{"first", "second"} {
 			err := repository.SetDailySummaryPreference(t.Context(), org, user, "membership_"+user, user, accountstore.DailySummaryPreference{Enabled: true, TimeZone: "UTC", WindowEnd: now.Unix()}, string(org)+user, now.Unix())
 			if err != nil {

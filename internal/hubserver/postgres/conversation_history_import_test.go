@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	conversationmodel "github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -22,9 +24,9 @@ import (
 )
 
 func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *testing.T) {
-	admin := template.Database(t)
-	seedCore(t, admin)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	pgstoretest.SeedCore(t, admin)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +49,7 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	objects := &countingHistoryObjects{base: newHistoryObjects(), storedPayloads: make(map[string]int)}
+	objects := &countingHistoryObjects{base: pgstoretest.NewHistoryObjects(), storedPayloads: make(map[string]int)}
 	archiveReferences := make(map[tracker.OrganizationID]attachment.ArchiveReference)
 	archivePayloads := make(map[tracker.OrganizationID]string)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -87,7 +89,7 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 		copies[organization] = copy.seal(t)
 	}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, organization)
+		pgstoretest.SeedTenantAccess(t, repository, organization)
 		source := postgres.ConversationHistoryImportSource{BundlePath: copies[organization], Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: objects, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
 		storesBefore, readsBefore := objects.stores, objects.reads
 		objects.failKey = archiveReferences[organization].Key
@@ -110,7 +112,7 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 		if err := repository.Close(); err != nil {
 			t.Fatal(err)
 		}
-		repository, _ = repositoryFor(t, admin, smallPool())
+		repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 		conversationID := "conversation_" + string(organization)
 		messageID := "message_" + string(organization)
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -239,7 +241,7 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 }
 
 type countingHistoryObjects struct {
-	base           *historyObjects
+	base           *pgstoretest.HistoryObjects
 	stores         int
 	reads          int
 	failKey        string

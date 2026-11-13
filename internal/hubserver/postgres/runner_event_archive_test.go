@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -19,18 +21,18 @@ import (
 )
 
 func TestRunnerReceiptRollsBackWhenArchiveDisappears(t *testing.T) {
-	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION remove_unowned_receipt_archive() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN DELETE FROM public.archive_objects a USING public.native_commands c WHERE a.organization_id=NEW.organization_id AND c.organization_id=a.organization_id AND c.command_key='archive-race' AND a.object_key=c.payload_object_key AND NOT EXISTS(SELECT 1 FROM public.archive_object_owners o WHERE o.organization_id=a.organization_id AND o.archive_id=a.id); RETURN NEW; END$$; CREATE TRIGGER remove_unowned_receipt_archive AFTER INSERT ON archive_objects FOR EACH ROW EXECUTE FUNCTION remove_unowned_receipt_archive()`); err != nil {
 		t.Fatal(err)
 	}
-	content := eventstore.NewContent(newHistoryObjects())
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
 	expectedBytes := make(map[tracker.OrganizationID]int64)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedLeaseFamily(t, repository, org)
-		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_1", historyAt(), true)
-		lease := claimLease(t, repository, org, leaseClaim(1))
-		receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "runner_shared", Operation: "archive-race", CommandKey: "archive-race", RequestHash: strings.Repeat("a", 64), CreatedAt: historyAt()}, json.RawMessage(`{"fixture":true}`))
+		pgstoretest.SeedLeaseFamily(t, repository, org)
+		pgstoretest.SeedRunnerIdentity(t, repository, org, "runner_shared", "machine_1", pgstoretest.HistoryAt(), true)
+		lease := pgstoretest.ClaimLease(t, repository, org, pgstoretest.LeaseClaim(1))
+		receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "runner_shared", Operation: "archive-race", CommandKey: "archive-race", RequestHash: strings.Repeat("a", 64), CreatedAt: pgstoretest.HistoryAt()}, json.RawMessage(`{"fixture":true}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,7 +69,7 @@ func TestRunnerReceiptRollsBackWhenArchiveDisappears(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			charged, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "runner_shared", Operation: "archive-quota-" + mode, CommandKey: "archive-quota-" + mode, RequestHash: strings.Repeat("b", 64), CreatedAt: historyAt()}, json.RawMessage(fmt.Sprintf(`{"quota":%q}`, mode)))
+			charged, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "runner_shared", Operation: "archive-quota-" + mode, CommandKey: "archive-quota-" + mode, RequestHash: strings.Repeat("b", 64), CreatedAt: pgstoretest.HistoryAt()}, json.RawMessage(fmt.Sprintf(`{"quota":%q}`, mode)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -179,7 +181,7 @@ func TestRunnerReceiptRollsBackWhenArchiveDisappears(t *testing.T) {
 				}
 			}
 		}
-		legacy, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "runner_shared", Operation: "archive-legacy", CommandKey: "archive-legacy", RequestHash: strings.Repeat("c", 64), CreatedAt: historyAt()}, json.RawMessage(`{"quota":"legacy"}`))
+		legacy, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org, ActorID: "runner_shared", Operation: "archive-legacy", CommandKey: "archive-legacy", RequestHash: strings.Repeat("c", 64), CreatedAt: pgstoretest.HistoryAt()}, json.RawMessage(`{"quota":"legacy"}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -190,10 +192,10 @@ func TestRunnerReceiptRollsBackWhenArchiveDisappears(t *testing.T) {
 			if err := w.LockArchiveAccounting(t.Context()); err != nil {
 				return err
 			}
-			if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: legacyID, Reference: legacyRef, CreatedAt: historyAt()}); err != nil {
+			if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: legacyID, Reference: legacyRef, CreatedAt: pgstoretest.HistoryAt()}); err != nil {
 				return err
 			}
-			if err := w.AddArchiveOwner(t.Context(), artifactstore.ArchiveOwner{OrganizationID: org, ArchiveID: legacyID, Kind: "attempt-diff", ID: "example-legacy", CreatedAt: historyAt()}); err != nil {
+			if err := w.AddArchiveOwner(t.Context(), artifactstore.ArchiveOwner{OrganizationID: org, ArchiveID: legacyID, Kind: "attempt-diff", ID: "example-legacy", CreatedAt: pgstoretest.HistoryAt()}); err != nil {
 				return err
 			}
 			usage, err := w.AdjustCollaborationBytes(t.Context(), legacyRef.CompressedSize, math.MaxInt64)
