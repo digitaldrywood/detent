@@ -1,4 +1,4 @@
-package cloudentry
+package health_test
 
 import (
 	"encoding/json"
@@ -8,11 +8,16 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entryfixture"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/harness"
 )
 
 func TestEntryHealthRequiresServingTenants(t *testing.T) {
 	t.Parallel()
-	f := newEntryFixture(t)
+	f := entryfixture.New(t)
 	for _, test := range []struct {
 		name          string
 		body          string
@@ -33,9 +38,9 @@ func TestEntryHealthRequiresServingTenants(t *testing.T) {
 		{name: "recovered", tenantStatus: http.StatusNoContent, want: http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f.service.config.Transport = func(organization Organization) (http.RoundTripper, error) {
+			f.Seams.SetTransport(func(organization cloudentry.Organization) (http.RoundTripper, error) {
 				if test.factsComplete {
-					return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					return entrytest.HandlerTransport{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						w.WriteHeader(test.tenantStatus)
 						_, _ = io.WriteString(w, test.body)
 					})}, nil
@@ -44,15 +49,15 @@ func TestEntryHealthRequiresServingTenants(t *testing.T) {
 					if test.unreachable {
 						return nil, errors.New("connection refused")
 					}
-					return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					return entrytest.HandlerTransport{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						w.WriteHeader(test.tenantStatus)
 						_, _ = io.WriteString(w, test.body)
 					})}, nil
 				}
-				return handlerTransport{f.tenants[organization.Endpoint]}, nil
-			}
+				return entrytest.HandlerTransport{Handler: f.Tenants[organization.Endpoint]}, nil
+			})
 			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+			f.Service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
 			var health struct {
 				SchemaVersion       int64 `json:"schema_version"`
 				MigrationsRunning   bool  `json:"migrations_running"`
@@ -73,13 +78,13 @@ func TestEntryHealthRequiresServingTenants(t *testing.T) {
 
 func TestEntryHealthCompletesWithoutTenantDatabases(t *testing.T) {
 	t.Parallel()
-	admin := entryPostgresDatabase(t)
-	f := newEntryFixtureWithConfig(t, nil, []func(*Config){entryPostgresConfig(t, admin)})
+	admin := harness.PostgresDatabase(t)
+	f := entryfixture.NewWithConfig(t, nil, []func(*cloudentry.Config){entryfixture.PostgresConfig(t, admin)})
 	if _, err := admin.ExecContext(t.Context(), "TRUNCATE platform.organizations CASCADE"); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	f.service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+	f.Service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
 	var health struct {
 		SchemaVersion            int64  `json:"schema_version"`
 		HubSchemaApplicable      bool   `json:"hub_schema_applicable"`
@@ -115,12 +120,12 @@ func TestEntryHealthLifecycleApplicability(t *testing.T) {
 		{name: "deleted tenant does not require a Hub schema", state: "deleted", factsComplete: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newEntryFixture(t)
-			if _, err := f.service.registry.store.db.ExecContext(t.Context(), `UPDATE platform.organizations SET state=$1`, test.state); err != nil {
+			f := entryfixture.New(t)
+			if _, err := f.DB.ExecContext(t.Context(), `UPDATE platform.organizations SET state=$1`, test.state); err != nil {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+			f.Service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
 			var health struct {
 				HubSchemaApplicable bool   `json:"hub_schema_applicable"`
 				SchemaFactsComplete bool   `json:"schema_facts_complete"`
