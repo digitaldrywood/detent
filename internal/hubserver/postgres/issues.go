@@ -117,10 +117,11 @@ func (s *session) updateWorkItem(ctx context.Context, record corestore.WorkItem,
 	if err := s.lockDuplicateSourceProject(ctx, record.ProjectID, "issue"); err != nil {
 		return corestore.WorkItem{}, err
 	}
-	previous, err := s.WorkItem(ctx, record.ProjectID, record.NativeID)
+	locked, err := s.queries.LockWorkItem(ctx, pgquery.LockWorkItemParams{OrganizationID: s.organization, ProjectID: record.ProjectID, NativeID: record.NativeID})
 	if err != nil {
-		return corestore.WorkItem{}, err
+		return corestore.WorkItem{}, mapError(ctx, err)
 	}
+	previous := corestore.WorkItem(locked)
 	if previous.Number != record.Number || !reflect.DeepEqual(previous.NativeSourceKey, record.NativeSourceKey) {
 		if err := s.lockOrganizationCounter(ctx); err != nil {
 			return corestore.WorkItem{}, err

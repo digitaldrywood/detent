@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -642,6 +643,34 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		}
 	}
 	converse := converseOn("wi_first_1")
+	var raw struct {
+		db           *sql.DB
+		tx           *sql.Tx
+		organization tracker.OrganizationID
+	}
+	holdIssue := func(item tracker.NativeWorkItemID) step {
+		return func(ctx context.Context, w tenantstore.Writer) error {
+			current, err := w.WorkItem(ctx, "prj_first", item)
+			if err != nil {
+				return err
+			}
+			raw.organization = current.OrganizationID
+			raw.tx, err = raw.db.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			_, err = raw.tx.ExecContext(ctx, `SELECT 1 FROM issues WHERE organization_id=$1 AND project_id='prj_first' AND native_id=$2 FOR NO KEY UPDATE`, raw.organization, item)
+			return err
+		}
+	}
+	counterAfterIssue := func(ctx context.Context, _ tenantstore.Writer) error {
+		tx := raw.tx
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.ExecContext(ctx, `SELECT 1 FROM archive_usage_counters WHERE organization_id=$1 FOR UPDATE`, raw.organization); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 	idle := func(ctx context.Context, w tenantstore.Writer) error {
 		return w.RequireProjectIdle(ctx, "prj_first", time.Now())
 	}
@@ -676,6 +705,15 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 	}
 	bind := func(ctx context.Context, w tenantstore.Writer) error {
 		return w.BindArtifactService(ctx, "prj_first", artifact.Binding{ServiceID: "service_0123456789abcdef0123456789abcdef", Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: "owner"})
+	}
+	renumberUnlocked := func(ctx context.Context, w tenantstore.Writer) error {
+		item, err := w.WorkItem(ctx, "prj_first", "wi_first_1")
+		if err != nil {
+			return err
+		}
+		item.Number = 9
+		_, err = w.UpdateWorkItem(ctx, item)
+		return err
 	}
 	complete := func(item tracker.NativeWorkItemID) step {
 		return func(ctx context.Context, w tenantstore.Writer) error {
@@ -731,10 +769,13 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"idle project check waits for foreign key insert before receipt", noop, bind, receipt, noop, idle, true, 4},
 		{"project key change waits for foreign key insert before receipt", noop, bind, receipt, noop, rename, true, 4},
 		{"storage archive publication while archive holder checks keys", complete("wi_first_2"), archive, converseOn("wi_first_2"), noop, publish("wi_first_2"), false, 3},
+		{"unlocked issue key change while issue writer awaits counter", noop, holdIssue("wi_first_1"), counterAfterIssue, noop, renumberUnlocked, true, 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			admin := template.Database(t)
 			repository, _ := repositoryFor(t, admin, smallPool())
+			admin.SetMaxOpenConns(2)
+			raw.db = admin
 			organizations := []tracker.OrganizationID{"org_first", "org_second"}
 			for _, organization := range organizations {
 				seedRepository(t, repository, organization)
@@ -826,6 +867,10 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 					if err := task.wait(t); err != nil {
 						t.Errorf("%s %s transaction: %v", organization, name, err)
 					}
+				}
+				if raw.tx != nil {
+					_ = raw.tx.Rollback()
+					raw.tx = nil
 				}
 				var counted, actual int64
 				if err := admin.QueryRowContext(t.Context(), `SELECT
