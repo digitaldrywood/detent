@@ -48,7 +48,6 @@ func TestOnboardingPageDoesNotReadObjects(t *testing.T) {
 			previousHosted := service.config.Hosted
 			service.config.Hosted = &HostedConfig{OrganizationID: string(organization)}
 			scheduler, err := service.newReadModelMaintenance()
-			service.config.Hosted = previousHosted
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -57,6 +56,7 @@ func TestOnboardingPageDoesNotReadObjects(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			service.config.Hosted = previousHosted
 			objects := 0
 			details.beforeRead = func(context.Context) error { objects++; return nil }
 			service.config.TenantRepository, service.config.AccessRepository = measured, measured
