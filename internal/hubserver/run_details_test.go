@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/activitystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -965,7 +966,8 @@ func TestNativeBoardRefreshReadsRunDetailReferences(t *testing.T) {
 	if store.uploads == 0 {
 		t.Fatal("attempt detail was not stored as a reference")
 	}
-	if _, processed, err := f.service.MaintainBoardRecord(t.Context(), f.project.OrganizationID, ""); err != nil || !processed {
+	maintenance := (hubmaintenance.Budget{Items: 1, Bytes: BoardMaintenanceBytes}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(f.project.OrganizationID), Generation: 1})
+	if _, processed, err := f.service.MaintainBoardRecord(maintenance, f.project.OrganizationID, ""); err != nil || !processed {
 		t.Fatalf("background refresh did not process referenced run: processed=%v error=%v", processed, err)
 	}
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
