@@ -431,6 +431,7 @@ func (s *Service) prepareExpiredNativeLeaseCancellation(ctx context.Context, sco
 	var attempt leasestore.Attempt
 	var workItem corestore.WorkItem
 	var event eventstore.Event
+	var policyID string
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		current, err := r.LeaseLossCandidate(ctx, issueID, includeReleased)
 		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
@@ -451,10 +452,18 @@ func (s *Service) prepareExpiredNativeLeaseCancellation(ctx context.Context, sco
 			return err
 		}
 		event, err = r.LatestRunEvent(ctx, scope.project, current.ID)
+		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+			event, err = eventstore.Event{}, nil
+			bound, policyErr := r.LeasePolicy(ctx, tracker.LeaseID(lease.LeaseID))
+			if policyErr != nil && !errors.Is(policyErr, corestore.ErrNotFound) && !errors.Is(policyErr, sql.ErrNoRows) {
+				return policyErr
+			}
+			policyID = bound.PolicyID
+		}
 		if err != nil {
 			return err
 		}
-		if event.WorkItemID != workItem.NativeID {
+		if event.AttemptID != "" && event.WorkItemID != workItem.NativeID {
 			return artifact.ErrIntegrity
 		}
 		attempt = current
@@ -467,7 +476,12 @@ func (s *Service) prepareExpiredNativeLeaseCancellation(ctx context.Context, sco
 	if reason == "" && lease.ReleasedAt == nil {
 		reason = "expired"
 	}
-	prepared, err := s.prepareLeaseCancellationContent(ctx, scope.organization, scope.project, lease, attempt, workItem, event, reason, "")
+	var prepared *preparedNativeLeaseCancellation
+	if event.AttemptID == "" {
+		prepared, err = s.prepareAttemptCancellationContent(ctx, scope.organization, scope.project, lease, attempt, workItem, policyID, reason)
+	} else {
+		prepared, err = s.prepareLeaseCancellationContent(ctx, scope.organization, scope.project, lease, attempt, workItem, event, reason, "")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -508,21 +522,40 @@ func (s *Service) prepareLeaseCancellationContent(ctx context.Context, organizat
 		return nil, artifact.ErrIntegrity
 	}
 	data := *stored.Data.Run
+	if runnerID != "" {
+		data.RunnerID = runnerID
+	}
+	return s.prepareCancelledRunContent(ctx, organization, project, lease, attempt, workItem, stored.AggregateID, data, reason, true)
+}
+
+func (s *Service) prepareAttemptCancellationContent(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, lease leasestore.Lease, attempt leasestore.Attempt, workItem corestore.WorkItem, policyID, reason string) (*preparedNativeLeaseCancellation, error) {
+	if s.runDetailStore() == nil {
+		return nil, nativeRunEventStorageUnavailable()
+	}
+	if attempt.LeaseID != lease.LeaseID || attempt.FencingToken != lease.FencingToken || attempt.IssueID != workItem.ID {
+		return nil, artifact.ErrIntegrity
+	}
+	data := tracker.NativeRunData{LeaseID: tracker.LeaseID(attempt.LeaseID), FencingToken: tracker.FencingToken(attempt.FencingToken), RunID: attempt.RunID, AttemptID: attempt.ID, PolicyID: policyID}
+	if lease.RunnerID != nil {
+		data.RunnerID = *lease.RunnerID
+	}
+	return s.prepareCancelledRunContent(ctx, organization, project, lease, attempt, workItem, workItem.NativeID, data, reason, false)
+}
+
+func (s *Service) prepareCancelledRunContent(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, lease leasestore.Lease, attempt leasestore.Attempt, workItem corestore.WorkItem, aggregate tracker.NativeWorkItemID, data tracker.NativeRunData, reason string, validate bool) (*preparedNativeLeaseCancellation, error) {
 	data.Sequence = attempt.Sequence + 1
 	data.Outcome = "cancelled"
 	data.Handoff, data.ArtifactIDs = nil, nil
 	data.MachineID, data.SessionID = tracker.MachineID(lease.MachineID), lease.SessionID
-	if runnerID != "" {
-		data.RunnerID = runnerID
-	}
 	now := s.config.now().UTC()
 	failure := nativeLeaseReleaseFailure(reason, now)
 	data.TerminalFailure = &failure
 	prepared := tracker.NativeRunEvent{Type: "run.finished", SchemaVersion: 1, OccurredAt: now, Data: data}
-	if err := validateNativeRunEvent(prepared); err != nil {
-		return nil, err
+	if validate {
+		if err := validateNativeRunEvent(prepared); err != nil {
+			return nil, err
+		}
 	}
-	data = prepared.Data
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
@@ -534,7 +567,7 @@ func (s *Service) prepareLeaseCancellationContent(ctx context.Context, organizat
 	if err := validateNativeDetailReference(ctx, store, organization, ref, encoded); err != nil {
 		return nil, err
 	}
-	eventValue := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: organization, ProjectID: project, AggregateType: "issue", AggregateID: stored.AggregateID, Type: "run.finished", SchemaVersion: 1, RecordedAt: now,
+	eventValue := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: organization, ProjectID: project, AggregateType: "issue", AggregateID: aggregate, Type: "run.finished", SchemaVersion: 1, RecordedAt: now,
 		Actor: tracker.Actor{Kind: "integration", PrincipalID: "lease_release"}, Data: tracker.CollaborationData{Run: &data}}
 	raw, err := json.Marshal(eventValue)
 	if err != nil {

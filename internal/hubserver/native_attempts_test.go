@@ -1888,3 +1888,68 @@ func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
 		})
 	}
 }
+
+func TestExpiredLeaseCancellationWithoutRunEvent(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	issue := f.create(t, "expired attempt without run evidence")
+	organization, project := f.project.OrganizationID, f.project.ID
+	claimed := claimNativeAttempt(t, f, f.worker(t, "worker"), "example-host", "session_example", issue.WorkItemID)
+	var lease leasestore.Lease
+	var issueID int64
+	attemptID, runID := newNativeID("attempt"), newNativeID("run")
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		var err error
+		lease, err = w.Lease(t.Context(), string(claimed.ID))
+		if err != nil {
+			return err
+		}
+		issueID = lease.IssueID
+		_, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: attemptID, RunID: runID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, Sequence: 1, Status: "running", StartedAt: f.service.config.now().UTC(), PayloadObjectKey: "example/attempt"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), `UPDATE leases SET acquired_at=acquired_at-interval '3 minutes',renewed_at=renewed_at-interval '2 minutes',expires_at=expires_at-interval '2 minutes' WHERE organization_id=$1 AND lease_id=$2`, organization, lease.LeaseID); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := f.service.prepareExpiredNativeLeaseCancellation(t.Context(), nativeScope{organization: organization, project: project}, issueID, false)
+	if err != nil || prepared == nil {
+		t.Fatalf("expired attempt without run event: prepared=%v error=%v", prepared, err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.ExpireWithCancellation(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, prepared.attemptCancellation())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		expired, err := r.Lease(t.Context(), lease.LeaseID)
+		if err != nil {
+			return err
+		}
+		attempt, err := r.Attempt(t.Context(), attemptID)
+		if err != nil {
+			return err
+		}
+		if expired.ReleasedAt == nil || expired.ReleaseReason != "expired" || attempt.Status != "cancelled" || attempt.Sequence != 2 {
+			return fmt.Errorf("expiry lease=%+v attempt=%+v", expired, attempt)
+		}
+		event, err := r.LatestRunEvent(t.Context(), project, attemptID)
+		if err != nil {
+			return err
+		}
+		stored, err := eventstore.NewContent(f.service.runDetailStore()).Event(t.Context(), event)
+		if err != nil {
+			return err
+		}
+		run := stored.Data.Run
+		if event.Type != "run.finished" || stored.AggregateID != issue.WorkItemID || run == nil || run.AttemptID != attemptID || run.RunID != runID || run.Outcome != "cancelled" || run.Sequence != 2 || run.PolicyID != hubTestPolicy().ID || string(run.LeaseID) != lease.LeaseID || int64(run.FencingToken) != lease.FencingToken || run.TerminalFailure == nil {
+			return fmt.Errorf("cancelled run event=%+v run=%+v", event, run)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
