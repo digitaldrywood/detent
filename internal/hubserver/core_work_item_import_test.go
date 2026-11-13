@@ -618,11 +618,11 @@ func coreWorkItemNeutralFixtureBody(t *testing.T, org tracker.OrganizationID, pr
 		if err != nil {
 			t.Fatal(err)
 		}
-		baseKeys, baseFields, err := nativeVersionObject(baseRaw)
+		baseKeys, baseFields, err := neutralimport.VersionObject(baseRaw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		baseRaw, err = nativeVersionObjectBytes(baseKeys, baseFields)
+		baseRaw, err = neutralimport.VersionObjectBytes(baseKeys, baseFields)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -635,15 +635,15 @@ func coreWorkItemNeutralFixtureBody(t *testing.T, org tracker.OrganizationID, pr
 		if err != nil {
 			t.Fatal(err)
 		}
-		currentKeys, currentFields, err := nativeVersionObject(currentRaw)
+		currentKeys, currentFields, err := neutralimport.VersionObject(currentRaw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		currentRaw, err = nativeVersionObjectBytes(currentKeys, currentFields)
+		currentRaw, err = neutralimport.VersionObjectBytes(currentKeys, currentFields)
 		if err != nil {
 			t.Fatal(err)
 		}
-		patch, encoding, err := encodeNativeVersion(baseRaw, "snapshot", currentRaw, 2)
+		patch, encoding, err := neutralimport.EncodeVersion(baseRaw, "snapshot", currentRaw, 2)
 		if err != nil || body != "" && encoding != "patch" {
 			t.Fatalf("encode source history encoding=%q error=%v", encoding, err)
 		}

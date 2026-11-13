@@ -76,7 +76,7 @@ func reconstructCoreNeutralVersion(ctx context.Context, source *neutralimport.Qu
 	if revision < 1 {
 		return nil, sql.ErrNoRows
 	}
-	rows, err := source.Rows(ctx, "collaboration_versions", map[string]string{"organization_id": organization, "project_id": project, "work_item_id": item, "record_id": record}, []string{"revision"}, []string{strconv.FormatInt(max(0, revision-nativeVersionSnapshotInterval), 10)}, nativeVersionSnapshotInterval)
+	rows, err := source.Rows(ctx, "collaboration_versions", map[string]string{"organization_id": organization, "project_id": project, "work_item_id": item, "record_id": record}, []string{"revision"}, []string{strconv.FormatInt(max(0, revision-neutralimport.VersionSnapshotInterval), 10)}, neutralimport.VersionSnapshotInterval)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func reconstructCoreNeutralVersion(ctx context.Context, source *neutralimport.Qu
 		case "snapshot":
 			raw = encoded
 		case "patch":
-			raw, err = applyNativeVersionPatch(raw, encoded)
+			raw, err = neutralimport.ApplyVersionPatch(raw, encoded)
 			if err != nil {
 				return nil, err
 			}

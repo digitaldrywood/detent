@@ -71,11 +71,11 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			keys, values, err := nativeVersionObject(raw)
+			keys, values, err := neutralimport.VersionObject(raw)
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, err = nativeVersionObjectBytes(keys, values)
+			raw, err = neutralimport.VersionObjectBytes(keys, values)
 			if err != nil {
 				t.Fatal(err)
 			}

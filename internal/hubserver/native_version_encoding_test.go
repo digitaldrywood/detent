@@ -41,7 +41,7 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"issue", "comment"} {
 		t.Run(kind, func(t *testing.T) {
-			const count = 2*nativeVersionSnapshotInterval + 7
+			const count = 2*neutralimport.VersionSnapshotInterval + 7
 			const organization tracker.OrganizationID = "org_version_history"
 			const project tracker.ProjectID = "prj_history"
 			const item tracker.NativeWorkItemID = "wi_history"
@@ -242,7 +242,7 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 						if _, err := service.readVersion(t.Context(), denied, string(item), comment, 1); err == nil || fetches != 0 {
 							t.Fatalf("unauthorized historical read error=%v fetches=%d", err, fetches)
 						}
-						for _, revision := range []int64{1, 2, nativeVersionSnapshotInterval - 1, nativeVersionSnapshotInterval, nativeVersionSnapshotInterval + 1, count} {
+						for _, revision := range []int64{1, 2, neutralimport.VersionSnapshotInterval - 1, neutralimport.VersionSnapshotInterval, neutralimport.VersionSnapshotInterval + 1, count} {
 							ctx := service.archiveContext(t.Context(), scope, false)
 							before := fetches
 							got, err := service.readVersion(ctx, scope, string(item), comment, revision)
@@ -546,7 +546,7 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			org, project := f.project.OrganizationID, f.project.ID
 			admin := conversationTestAdmin(t, f.service)
-			const revisions = 2*nativeVersionSnapshotInterval + 3
+			const revisions = 2*neutralimport.VersionSnapshotInterval + 3
 			source := coreWorkItemNeutralFixture(t, org, project, false)
 			source.Records["collaboration_versions"] = nil
 			var creation []neutralimport.Row
@@ -593,11 +593,11 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 						}
 						original[record.id][revision] = raw
 						rawBytes, versionCount = rawBytes+int64(len(raw)), versionCount+1
-						encoded, encoding, err := encodeNativeVersion(previous[record.id], previousEncoding[record.id], raw, revision)
+						encoded, encoding, err := neutralimport.EncodeVersion(previous[record.id], previousEncoding[record.id], raw, revision)
 						if err != nil {
 							t.Fatal(err)
 						}
-						if (revision == 1 || revision%nativeVersionSnapshotInterval == 0) && encoding != "snapshot" || record.id == item && revision > 2 && revision%nativeVersionSnapshotInterval != 0 && encoding != "patch" {
+						if (revision == 1 || revision%neutralimport.VersionSnapshotInterval == 0) && encoding != "snapshot" || record.id == item && revision > 2 && revision%neutralimport.VersionSnapshotInterval != 0 && encoding != "patch" {
 							t.Fatalf("source %s revision %d lost checkpoint/delta encoding: %s", record.id, revision, encoding)
 						}
 						previous[record.id], previousEncoding[record.id] = encoded, encoding

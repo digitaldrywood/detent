@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -330,7 +331,7 @@ func pendingLinkedIssue(t *testing.T, f nativeFixture) tracker.NativeIssue {
 		raw := row.Values["record_json"].Data
 		if string(row.Values["encoding"].Data) == "patch" {
 			var err error
-			raw, err = applyNativeVersionPatch(originalPrevious, raw)
+			raw, err = neutralimport.ApplyVersionPatch(originalPrevious, raw)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -346,15 +347,15 @@ func pendingLinkedIssue(t *testing.T, f nativeFixture) tracker.NativeIssue {
 		if err != nil {
 			t.Fatal(err)
 		}
-		keys, fields, err := nativeVersionObject(raw)
+		keys, fields, err := neutralimport.VersionObject(raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw, err = nativeVersionObjectBytes(keys, fields)
+		raw, err = neutralimport.VersionObjectBytes(keys, fields)
 		if err != nil {
 			t.Fatal(err)
 		}
-		encoded, encoding, err := encodeNativeVersion(canonicalPrevious, "snapshot", raw, int64(historical.Revision))
+		encoded, encoding, err := neutralimport.EncodeVersion(canonicalPrevious, "snapshot", raw, int64(historical.Revision))
 		if err != nil {
 			t.Fatalf("historical linked version encoding=%s error=%v", encoding, err)
 		}

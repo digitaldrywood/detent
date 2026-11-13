@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -982,11 +983,11 @@ func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		keys, values, err := nativeVersionObject(currentRaw)
+		keys, values, err := neutralimport.VersionObject(currentRaw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		currentRaw, err = nativeVersionObjectBytes(keys, values)
+		currentRaw, err = neutralimport.VersionObjectBytes(keys, values)
 		if err != nil {
 			t.Fatal(err)
 		}

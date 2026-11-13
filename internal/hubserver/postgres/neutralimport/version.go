@@ -1,4 +1,4 @@
-package hubserver
+package neutralimport
 
 import (
 	"bytes"
@@ -10,9 +10,9 @@ import (
 	"strings"
 )
 
-const nativeVersionSnapshotInterval = 32
+const VersionSnapshotInterval = 32
 
-type nativeVersionPatch struct {
+type versionPatch struct {
 	Op      string          `json:"op"`
 	Path    string          `json:"path"`
 	Value   json.RawMessage `json:"value,omitempty"`
@@ -20,7 +20,7 @@ type nativeVersionPatch struct {
 	Digests string          `json:"digests,omitempty"`
 }
 
-func nativeVersionObject(raw []byte) ([]string, map[string]json.RawMessage, error) {
+func VersionObject(raw []byte) ([]string, map[string]json.RawMessage, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	token, err := decoder.Token()
 	if err != nil {
@@ -59,7 +59,7 @@ func nativeVersionObject(raw []byte) ([]string, map[string]json.RawMessage, erro
 	return keys, fields, nil
 }
 
-func nativeVersionObjectBytes(keys []string, fields map[string]json.RawMessage) ([]byte, error) {
+func VersionObjectBytes(keys []string, fields map[string]json.RawMessage) ([]byte, error) {
 	if len(keys) != len(fields) {
 		return nil, errors.New("history member count mismatch")
 	}
@@ -87,7 +87,7 @@ func nativeVersionObjectBytes(keys []string, fields map[string]json.RawMessage) 
 	return out.Bytes(), nil
 }
 
-func nativeVersionDigests(keys []string, fields map[string]json.RawMessage) []byte {
+func versionDigests(keys []string, fields map[string]json.RawMessage) []byte {
 	digests := make([]byte, 0, len(keys)*sha256.Size)
 	for _, key := range keys {
 		digest := sha256.Sum256(fields[key])
@@ -96,16 +96,16 @@ func nativeVersionDigests(keys []string, fields map[string]json.RawMessage) []by
 	return digests
 }
 
-func nativeVersionBasis(raw []byte, encoding string) ([]string, []byte, error) {
+func versionBasis(raw []byte, encoding string) ([]string, []byte, error) {
 	switch encoding {
 	case "snapshot":
-		keys, fields, err := nativeVersionObject(raw)
+		keys, fields, err := VersionObject(raw)
 		if err != nil {
 			return nil, nil, err
 		}
-		return keys, nativeVersionDigests(keys, fields), nil
+		return keys, versionDigests(keys, fields), nil
 	case "patch":
-		var operations []nativeVersionPatch
+		var operations []versionPatch
 		if err := json.Unmarshal(raw, &operations); err != nil {
 			return nil, nil, err
 		}
@@ -125,12 +125,12 @@ func nativeVersionBasis(raw []byte, encoding string) ([]string, []byte, error) {
 	}
 }
 
-func encodeNativeVersion(previous []byte, previousEncoding string, raw []byte, revision int64) ([]byte, string, error) {
-	keys, fields, err := nativeVersionObject(raw)
+func EncodeVersion(previous []byte, previousEncoding string, raw []byte, revision int64) ([]byte, string, error) {
+	keys, fields, err := VersionObject(raw)
 	if err != nil {
 		return nil, "", err
 	}
-	canonical, err := nativeVersionObjectBytes(keys, fields)
+	canonical, err := VersionObjectBytes(keys, fields)
 	if err != nil {
 		return nil, "", err
 	}
@@ -138,19 +138,19 @@ func encodeNativeVersion(previous []byte, previousEncoding string, raw []byte, r
 	if err != nil {
 		return nil, "", err
 	}
-	if len(previous) == 0 || revision == 1 || revision%nativeVersionSnapshotInterval == 0 || !bytes.Equal(canonical, raw) || !bytes.Equal(compact, raw) {
+	if len(previous) == 0 || revision == 1 || revision%VersionSnapshotInterval == 0 || !bytes.Equal(canonical, raw) || !bytes.Equal(compact, raw) {
 		return raw, "snapshot", nil
 	}
-	oldKeys, oldDigests, err := nativeVersionBasis(previous, previousEncoding)
+	oldKeys, oldDigests, err := versionBasis(previous, previousEncoding)
 	if err != nil {
 		return nil, "", err
 	}
-	digests := nativeVersionDigests(keys, fields)
+	digests := versionDigests(keys, fields)
 	old := make(map[string][]byte, len(oldKeys))
 	for index, key := range oldKeys {
 		old[key] = oldDigests[index*sha256.Size : (index+1)*sha256.Size]
 	}
-	operations := []nativeVersionPatch{}
+	operations := []versionPatch{}
 	pointer := func(key string) string {
 		return "/" + strings.ReplaceAll(strings.ReplaceAll(key, "~", "~0"), "/", "~1")
 	}
@@ -163,11 +163,11 @@ func encodeNativeVersion(previous []byte, previousEncoding string, raw []byte, r
 		if !exists {
 			op = "add"
 		}
-		operations = append(operations, nativeVersionPatch{Op: op, Path: pointer(key), Value: fields[key]})
+		operations = append(operations, versionPatch{Op: op, Path: pointer(key), Value: fields[key]})
 	}
 	for _, key := range oldKeys {
 		if _, exists := fields[key]; !exists {
-			operations = append(operations, nativeVersionPatch{Op: "remove", Path: pointer(key)})
+			operations = append(operations, versionPatch{Op: "remove", Path: pointer(key)})
 		}
 	}
 	if len(operations) == 0 {
@@ -182,16 +182,16 @@ func encodeNativeVersion(previous []byte, previousEncoding string, raw []byte, r
 	return encoded, "patch", err
 }
 
-func applyNativeVersionPatch(previous, patch []byte) ([]byte, error) {
-	_, fields, err := nativeVersionObject(previous)
+func ApplyVersionPatch(previous, patch []byte) ([]byte, error) {
+	_, fields, err := VersionObject(previous)
 	if err != nil {
 		return nil, err
 	}
-	var operations []nativeVersionPatch
+	var operations []versionPatch
 	if err := json.Unmarshal(patch, &operations); err != nil {
 		return nil, err
 	}
-	keys, digests, err := nativeVersionBasis(patch, "patch")
+	keys, digests, err := versionBasis(patch, "patch")
 	if err != nil {
 		return nil, err
 	}
@@ -219,8 +219,8 @@ func applyNativeVersionPatch(previous, patch []byte) ([]byte, error) {
 			fields[key] = operation.Value
 		}
 	}
-	if !bytes.Equal(digests, nativeVersionDigests(keys, fields)) {
+	if !bytes.Equal(digests, versionDigests(keys, fields)) {
 		return nil, errors.New("history patch digest mismatch")
 	}
-	return nativeVersionObjectBytes(keys, fields)
+	return VersionObjectBytes(keys, fields)
 }

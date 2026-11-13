@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -222,7 +223,7 @@ func TestNativeIssueTypeMigration(t *testing.T) {
 				patch = []byte(raw)
 			}
 		}
-		current, err := applyNativeVersionPatch(base, patch)
+		current, err := neutralimport.ApplyVersionPatch(base, patch)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -238,7 +239,7 @@ func TestNativeIssueTypeMigration(t *testing.T) {
 			}
 		}
 		fixture.Set("collaboration_versions", map[string]string{"record_id": string(test.id), "revision": "1"}, map[string]any{"encoding": "snapshot", "record_json": string(base)})
-		patch, encoding, err := encodeNativeVersion(base, "snapshot", current, 2)
+		patch, encoding, err := neutralimport.EncodeVersion(base, "snapshot", current, 2)
 		if err != nil {
 			t.Fatal(err)
 		}

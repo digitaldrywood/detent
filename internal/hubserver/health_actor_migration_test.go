@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -95,7 +96,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 						encoded, encoding := raw, "snapshot"
 						if version.revision == 2 {
 							var err error
-							encoded, encoding, err = encodeNativeVersion(previous, "snapshot", raw, 2)
+							encoded, encoding, err = neutralimport.EncodeVersion(previous, "snapshot", raw, 2)
 							if err != nil {
 								t.Fatal(err)
 							}
