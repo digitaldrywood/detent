@@ -1693,9 +1693,12 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 					}
 					want := full[seen]
 					want.Runtime, want.RuntimeFreshness = nil, "unavailable"
+					if view == "recorded_blockers" {
+						want.Evidence, want.Unavailable = nil, []string{"evidence"}
+					}
 					if seen == 0 {
 						want.CompletionBody, want.Usage = "", nil
-						want.Unavailable = []string{"completion_body", "usage"}
+						want.Unavailable = append(want.Unavailable, "completion_body", "usage")
 					}
 					if !reflect.DeepEqual(got, want) {
 						t.Fatalf("attempt %d lost authority, checkpoint or unaffected detail", seen)
