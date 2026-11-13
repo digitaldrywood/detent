@@ -269,7 +269,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 				if test.duplicate {
 					refreshNativeDuplicateSearchFixture(t, f.service, scope.Organization)
 					search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, tracker.CreateIssue{Body: snapshot.Body}, true)
-					if err != nil || !search.available || len(search.matches) != 1 || search.matches[0].WorkItemID != issue.WorkItemID {
+					if err != nil || !search.Available || len(search.Matches) != 1 || search.Matches[0].WorkItemID != issue.WorkItemID {
 						t.Fatalf("expected an indexed same-project owner, search=%+v error=%v", search, err)
 					}
 				}

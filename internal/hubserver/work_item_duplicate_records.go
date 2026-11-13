@@ -21,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -443,88 +442,11 @@ func consumeWorkItemDuplicateConfirmation(ctx context.Context, writer tenantstor
 	return nil
 }
 
-type workItemDuplicateSearch struct {
-	available bool
-	sequence  int64
-	matches   []hubscope.PossibleDuplicate
-}
-
 func workItemDuplicatePolicyHash(revision policystore.Revision, found bool) (string, error) {
 	return hubapi.CommandHash(struct {
 		Revision policystore.Revision
 		Found    bool
 	}{revision, found})
-}
-
-func (s *Service) prepareWorkItemDuplicates(ctx context.Context, scope hubscope.NativeScope, request tracker.CreateIssue, machine bool) (*workItemDuplicateSearch, error) {
-	text := request.Title + "\n" + request.Body
-	if origin, stamped := issueorigin.Parse(request.Body); stamped {
-		text = origin.Fingerprint + "\n" + issueorigin.DefectFingerprint(request.Body) + "\n" + text
-	}
-	query := searchstore.DuplicateSourceQuery{ProjectID: scope.Project, Machine: machine, Request: &searchstore.Text{Title: request.Title, Body: request.Body}, Text: nativeSearchBytePrefix(text, searchstore.MaxQueryTextBytes), Now: s.config.now()}
-	if scope.Credential.HostedRole == "reporter" {
-		query.Reporter = new(scope.Actor().PrincipalID)
-	}
-	var page searchstore.DuplicateSourcePage
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
-			return err
-		}
-		reader, ok := r.(searchstore.DuplicateSourceReader)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
-		}
-		var err error
-		page, err = reader.DuplicateSources(ctx, query)
-		return err
-	})
-	if errors.Is(err, searchstore.ErrIndexPending) || err == nil && !page.State.Ready {
-		s.config.Logger.InfoContext(ctx, "duplicate search unavailable; allowing canonical filing", "availability", "unavailable")
-		return &workItemDuplicateSearch{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(page.Sources) > 5 {
-		return nil, hubapi.NativeWorkItemStorageUnavailable()
-	}
-	content := searchstore.NewContent(s.runDetailStore())
-	var matches []searchstore.DuplicateMatch
-	for _, source := range page.Sources {
-		text, err := content.Read(ctx, source.Document)
-		if err != nil {
-			return nil, err
-		}
-		source.Statistics = searchstore.Describe(source.Document, text)
-		parent := text
-		if source.Document.Kind == "comment" || source.Document.Payload != source.Parent.Payload {
-			parent, err = content.Read(ctx, source.Parent)
-			if err != nil {
-				return nil, err
-			}
-		}
-		match, matched := searchstore.MatchDuplicateSource(source, text, parent, searchstore.Text{Title: request.Title, Body: request.Body})
-		if matched && (!machine || match.Fingerprint) {
-			matches = searchstore.MergeDuplicateMatches(matches, []searchstore.DuplicateMatch{match})
-		}
-	}
-	search := &workItemDuplicateSearch{available: true, sequence: page.State.Sequence}
-	for _, match := range matches {
-		source := match.Source
-		item, err := s.readWorkItem(ctx, scope, string(source.Document.WorkItemID))
-		if err != nil {
-			return nil, err
-		}
-		if item.Archived || item.Revision != source.Revision {
-			return nil, hubapi.NativeConflict(item.Revision)
-		}
-		why := "Matching terms: " + strings.Join(match.Terms[:min(6, len(match.Terms))], ", ")
-		if match.Fingerprint {
-			why = "Matching machine fingerprint"
-		}
-		search.matches = append(search.matches, hubscope.PossibleDuplicate{WorkItemID: item.WorkItemID, Number: item.Number, Title: item.Title, State: item.State, Revision: item.Revision, Terminal: source.Terminal, Why: why, Identifier: string(scope.Project) + "#" + strconv.Itoa(item.Number)})
-	}
-	return search, nil
 }
 
 func lockWorkItemDuplicateSource(ctx context.Context, w tenantstore.Writer, project tracker.ProjectID, sequence int64) error {

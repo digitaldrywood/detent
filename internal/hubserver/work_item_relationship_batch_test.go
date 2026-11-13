@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -39,7 +40,7 @@ func (r *relationshipBatchCountingReader) WorkItemRelationshipFacts(ctx context.
 }
 
 func (r *relationshipBatchCountingReader) RelationshipProjects(ctx context.Context, authority accessstore.Authority, projects []tracker.ProjectID, now time.Time) (map[tracker.ProjectID]bool, error) {
-	return r.Reader.(relationshipProjectReader).RelationshipProjects(ctx, authority, projects, now)
+	return r.Reader.(workitemread.ProjectReader).RelationshipProjects(ctx, authority, projects, now)
 }
 
 func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testing.T) {

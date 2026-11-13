@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -42,7 +43,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 			id := tracker.NativeWorkItemID(fmt.Sprintf("item_%d", index))
 			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "project", WorkItemID: id, Number: index, Revision: 1, Profile: "native"}, Title: "Example " + string(id), State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: now, UpdatedAt: now}
 			if org == "org_second" && index == 1 {
-				issue.BlockedReason = tracker.DependencyReason{Text: "Retained dependency reason.", Basis: dependencyBasis([]string{"item_2"}), Revision: 3}
+				issue.BlockedReason = tracker.DependencyReason{Text: "Retained dependency reason.", Basis: workitemread.DependencyBasis([]string{"item_2"}), Revision: 3}
 			}
 			raw, err := json.Marshal(issue)
 			if err != nil {
@@ -127,7 +128,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 	}
 	now = now.Add(time.Second)
 	path := "/api/v2/organizations/org_first/projects/project/work-items/item_1/dependency-reasons"
-	request := tracker.UpdateDependencyReason{Mutation: tracker.Mutation{IdempotencyKey: "reason-current", LeaseID: tracker.LeaseID(leases["org_first"].LeaseID), FencingToken: tracker.FencingToken(leases["org_first"].FencingToken)}, WorkItemID: "item_1", Kind: "blocked", Text: "Waits for the shared foundation.", Basis: dependencyBasis([]string{"item_2"}), ExpectedRevision: 0}
+	request := tracker.UpdateDependencyReason{Mutation: tracker.Mutation{IdempotencyKey: "reason-current", LeaseID: tracker.LeaseID(leases["org_first"].LeaseID), FencingToken: tracker.FencingToken(leases["org_first"].FencingToken)}, WorkItemID: "item_1", Kind: "blocked", Text: "Waits for the shared foundation.", Basis: workitemread.DependencyBasis([]string{"item_2"}), ExpectedRevision: 0}
 	setTags := func(tags []string) {
 		t.Helper()
 		if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
@@ -191,7 +192,7 @@ func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.
 	neighbor.WorkItemID = "item_2"
 	neighbor.Kind = "unblocks"
 	neighbor.Text = "Enables the dependent feature."
-	neighbor.Basis = dependencyBasis([]string{"item_1"})
+	neighbor.Basis = workitemread.DependencyBasis([]string{"item_1"})
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, "org_first_token", neighbor), http.StatusOK)
 	neighborRead := performHubAPIRequest(t, service, http.MethodGet, strings.TrimSuffix(path, "item_1/dependency-reasons")+"item_2", "org_first_token", nil)
 	requireNativeStatus(t, neighborRead, http.StatusOK)

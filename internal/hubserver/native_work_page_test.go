@@ -339,7 +339,7 @@ func indexNativeWorkPageFixtureIssues(t *testing.T, f nativeFixture, issues []tr
 		}
 	}
 	for {
-		more, err := content.RefreshOne(t.Context(), tenantSearchRepository{f.service.config.TenantRepository}, scope.Organization)
+		more, err := content.RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: f.service.config.TenantRepository}, scope.Organization)
 		if err != nil {
 			t.Fatalf("refresh fixture search: %v", err)
 		}

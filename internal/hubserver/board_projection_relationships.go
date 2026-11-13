@@ -12,13 +12,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) boardProjectedRelationshipIssues(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, issue tracker.NativeIssue) (tracker.NativeIssue, viewstore.BoardReporterRelations, error) {
 	var facts []tenantstore.WorkItemRelationshipFact
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
-		if err := loadDependencyReasonRecords(ctx, reader, project, []*tracker.NativeIssue{&issue}); err != nil {
+		if err := workitemread.LoadDependencyReasons(ctx, reader, project, []*tracker.NativeIssue{&issue}); err != nil {
 			return err
 		}
 		batch, ok := reader.(tenantstore.WorkItemRelationshipBatchReader)
@@ -110,8 +111,8 @@ func (s *Service) projectBoardRelationships(scope hubscope.NativeScope, issue *t
 	slices.SortFunc(issue.Blockers, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 	slices.SortFunc(issue.Dependents, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 	slices.SortFunc(issue.Related, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
-	issue.BlockedReason.CurrentBasis = dependencyBasis(edges.blocked)
-	issue.UnblocksReason.CurrentBasis = dependencyBasis(edges.unblocks)
+	issue.BlockedReason.CurrentBasis = workitemread.DependencyBasis(edges.blocked)
+	issue.UnblocksReason.CurrentBasis = workitemread.DependencyBasis(edges.unblocks)
 	if issue.BlockedReason.Basis != issue.BlockedReason.CurrentBasis || edges.privateBlocked {
 		issue.BlockedReason.Text = ""
 	}

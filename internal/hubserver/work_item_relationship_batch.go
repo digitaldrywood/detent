@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -42,7 +43,7 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 	}
 	batchUnavailable := false
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := loadDependencyReasonRecords(ctx, r, scope.Project, issues); err != nil {
+		if err := workitemread.LoadDependencyReasons(ctx, r, scope.Project, issues); err != nil {
 			return err
 		}
 		if batch, ok := r.(tenantstore.WorkItemRelationshipBatchReader); ok {
@@ -171,8 +172,8 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 			slices.SortFunc(issue.Blockers, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 			slices.SortFunc(issue.Dependents, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 			slices.SortFunc(issue.Related, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
-			issue.BlockedReason.CurrentBasis = dependencyBasis(edges.blocked)
-			issue.UnblocksReason.CurrentBasis = dependencyBasis(edges.unblocks)
+			issue.BlockedReason.CurrentBasis = workitemread.DependencyBasis(edges.blocked)
+			issue.UnblocksReason.CurrentBasis = workitemread.DependencyBasis(edges.unblocks)
 			if issue.BlockedReason.Basis != issue.BlockedReason.CurrentBasis || edges.privateBlocked {
 				issue.BlockedReason.Text = ""
 			}

@@ -10,7 +10,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -23,43 +22,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func (s *Service) readLinkedIssueSourceRecord(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, item tracker.NativeWorkItemID) (tracker.LinkedIssueSource, bool, error) {
-	var record eventstore.LinkedSource
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		record, err = r.LinkedSource(ctx, project, item)
-		return err
-	})
-	if errors.Is(err, corestore.ErrNotFound) {
-		return tracker.LinkedIssueSource{}, false, nil
-	}
-	if err != nil {
-		return tracker.LinkedIssueSource{}, false, hubapi.ProjectRecordError(err)
-	}
-	result, err := s.hydrateLinkedIssueSourceRecord(ctx, organization, record)
-	if err != nil {
-		return tracker.LinkedIssueSource{}, false, err
-	}
-	return result, true, nil
-}
-
-func (s *Service) hydrateLinkedIssueSourceRecord(ctx context.Context, organization tracker.OrganizationID, record eventstore.LinkedSource) (tracker.LinkedIssueSource, error) {
-	result := &tracker.LinkedIssueSource{URL: record.URL, Status: "pending"}
-	if record.SnapshotObjectKey == "" {
-		return *result, nil
-	}
-	snapshot, err := eventstore.NewContent(s.runDetailStore()).LinkedIssueSnapshot(ctx, organization, eventstore.Reference(record.SnapshotObjectKey, record.SnapshotSHA256, record.SnapshotBytes, record.SnapshotContentBytes))
-	if err != nil {
-		return tracker.LinkedIssueSource{}, err
-	}
-	if snapshot.URL != record.URL {
-		return tracker.LinkedIssueSource{}, artifact.ErrIntegrity
-	}
-	result.Status = "complete"
-	result.Snapshot = &snapshot
-	return *result, nil
-}
 
 func requireLinkedIssueLease(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item corestore.WorkItem, mutation tracker.Mutation, now time.Time) error {
 	if mutation.LeaseID == "" || mutation.FencingToken <= 0 {

@@ -1669,7 +1669,7 @@ func TestWorkItemRecordRollback(t *testing.T) {
 				if indexed {
 					service.maintainNativeSearch(t.Context())
 				}
-				page, err := searchstore.NewContent(service.runDetailStore()).Find(t.Context(), tenantSearchRepository{repository}, org.ID, searchstore.Query{Kind: "work", ProjectID: project.ID, Text: "Example", Limit: 10})
+				page, err := searchstore.NewContent(service.runDetailStore()).Find(t.Context(), tenantstore.SearchRepository{Repository: repository}, org.ID, searchstore.Query{Kind: "work", ProjectID: project.ID, Text: "Example", Limit: 10})
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -62,7 +62,7 @@ func TestNativeWorkSearch(t *testing.T) {
 	for _, mode := range []string{"pending", "indexed"} {
 		if mode == "indexed" {
 			for {
-				more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantSearchRepository{f.repository}, "org_security")
+				more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: f.repository}, "org_security")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -294,7 +294,7 @@ func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
 				t.Fatal(err)
 			}
 			for {
-				more, err := searchstore.NewContent(service.runDetailStore()).RefreshOne(t.Context(), tenantSearchRepository{service.config.TenantRepository}, org)
+				more, err := searchstore.NewContent(service.runDetailStore()).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: service.config.TenantRepository}, org)
 				if err != nil {
 					t.Fatal(err)
 				}

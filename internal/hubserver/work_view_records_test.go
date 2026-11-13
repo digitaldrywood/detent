@@ -160,7 +160,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	refreshSearch := func(t *testing.T) {
 		t.Helper()
 		for range 500 {
-			more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantSearchRepository{repository}, org)
+			more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: repository}, org)
 			if err != nil {
 				t.Fatal(err)
 			}

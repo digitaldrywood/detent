@@ -2,9 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"net/http"
 	"slices"
 	"strconv"
@@ -17,14 +15,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func dependencyBasis(ids []string) string {
-	slices.Sort(ids)
-	digest := sha256.Sum256([]byte(strings.Join(ids, "\x00")))
-	return hex.EncodeToString(digest[:])
-}
 
 func readNativeDependencyDetails(ctx context.Context, q hubapi.NativeQueryer, scope hubscope.NativeScope, issue *tracker.NativeIssue) error {
 	return readNativeDependencyDetailsBatch(ctx, q, scope, []*tracker.NativeIssue{issue})
@@ -161,8 +154,8 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q hubapi.NativeQuerye
 		if issue == nil || edge == nil {
 			return sql.ErrNoRows
 		}
-		blocked.CurrentBasis = dependencyBasis(edge.blocked)
-		unblocks.CurrentBasis = dependencyBasis(edge.unblocks)
+		blocked.CurrentBasis = workitemread.DependencyBasis(edge.blocked)
+		unblocks.CurrentBasis = workitemread.DependencyBasis(edge.unblocks)
 		if blocked.Basis != blocked.CurrentBasis || edge.privateBlocked {
 			blocked.Text = ""
 		}

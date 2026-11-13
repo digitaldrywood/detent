@@ -4,43 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func nativeSearchBytePrefix(content string, budget int) string {
-	if len(content) <= budget {
-		return content
-	}
-	for budget > 0 && !utf8.RuneStart(content[budget]) {
-		budget--
-	}
-	return content[:budget]
-}
-
-type tenantSearchRepository struct {
-	tenantstore.Repository
-}
-
-func (r tenantSearchRepository) ReadSearch(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(searchstore.Reader) error) error {
-	return r.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error { return read(reader) })
-}
-
-func (r tenantSearchRepository) WriteSearch(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(searchstore.Writer) error) error {
-	return r.WriteTenant(ctx, organization, workload, func(writer tenantstore.Writer) error { return write(writer) })
-}
 
 func (s *Service) maintainNativeSearch(ctx context.Context) {
 	if _, err := s.refreshNativeIdentity(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped origin identities", "error", err)
 	}
-	_, err := searchstore.NewContent(s.runDetailStore()).RefreshOne(s.runDetailContext(ctx), tenantSearchRepository{s.config.TenantRepository}, s.accessOrganization())
+	_, err := searchstore.NewContent(s.runDetailStore()).RefreshOne(s.runDetailContext(ctx), tenantstore.SearchRepository{Repository: s.config.TenantRepository}, s.accessOrganization())
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped search index", "error", err)
 	}

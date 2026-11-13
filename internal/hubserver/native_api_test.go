@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
@@ -1055,7 +1056,7 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", testHubAdminToken, request), http.StatusOK)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		owner := w.(corestore.DependencyReasonWriter)
-		return owner.CompareAndSwapDependencyReason(t.Context(), corestore.DependencyReason{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, Kind: "blocked", Reason: tracker.DependencyReason{Text: "Private dependency details.", Basis: dependencyBasis([]string{string(blocker.WorkItemID)}), Revision: 1}}, 0)
+		return owner.CompareAndSwapDependencyReason(t.Context(), corestore.DependencyReason{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, Kind: "blocked", Reason: tracker.DependencyReason{Text: "Private dependency details.", Basis: workitemread.DependencyBasis([]string{string(blocker.WorkItemID)}), Revision: 1}}, 0)
 	}); err != nil {
 		t.Fatal(err)
 	}

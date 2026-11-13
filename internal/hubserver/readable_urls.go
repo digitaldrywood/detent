@@ -32,17 +32,6 @@ func readIssueBrowserPath(ctx context.Context, query hubapi.NativeQueryer, id st
 	return hubrecords.IssueBrowserPath(organization, project, number), nil
 }
 
-func (s *Service) issueBrowserURL(ctx context.Context, organization tracker.OrganizationID, id string) (string, error) {
-	path, err := s.readIssueBrowserPath(ctx, organization, id)
-	if err != nil {
-		return "", err
-	}
-	if s.config.Hosted != nil {
-		path = strings.TrimRight(s.config.Hosted.PublicURL, "/") + path
-	}
-	return path, nil
-}
-
 func (s *Service) syncOrganizationSlug(ctx context.Context, slug string) error {
 	if slug == "" {
 		return nil

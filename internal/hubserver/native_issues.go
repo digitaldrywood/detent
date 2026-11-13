@@ -22,16 +22,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeIssue {
-	if s.config.Hosted != nil && strings.HasPrefix(issue.WebURL, "/") {
-		issue.WebURL = strings.TrimRight(s.config.Hosted.PublicURL, "/") + issue.WebURL
-	}
-	if s.config.Hosted == nil {
-		issue.WebURL = ""
-	}
-	return issue
-}
-
 func (s *Service) nativeIssueJSON(ctx context.Context, scope hubscope.NativeScope, body json.RawMessage) (json.RawMessage, error) {
 	var challenge duplicateChallenge
 	if err := json.Unmarshal(body, &challenge); err != nil {

@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workduplicates"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -36,110 +37,6 @@ import (
 type workItemArchive struct {
 	archiveIssueRequest
 	Archived bool `json:"archived"`
-}
-
-func (s *Service) readWorkItemRecord(ctx context.Context, scope hubscope.NativeScope, id string) (corestore.WorkItem, eventstore.CollaborationVersion, error) {
-	var row corestore.WorkItem
-	var version eventstore.CollaborationVersion
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		project, err := r.Project(ctx, scope.Project)
-		if err != nil {
-			return err
-		}
-		if project.DeletedAt != nil {
-			return corestore.ErrNotFound
-		}
-		row, err = r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(id))
-		if err != nil {
-			return err
-		}
-		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
-			return corestore.ErrNotFound
-		}
-		version, err = r.CollaborationVersion(ctx, id, row.Revision)
-		return err
-	})
-	return row, version, hubapi.ProjectRecordError(err)
-}
-
-func (s *Service) hydrateWorkItemRecord(ctx context.Context, row corestore.WorkItem, version eventstore.CollaborationVersion) (tracker.NativeIssue, error) {
-	issue, err := s.hydrateCanonicalWorkItemRecord(ctx, row, version)
-	if err != nil {
-		return issue, err
-	}
-	if source, found, err := s.readLinkedIssueSourceRecord(ctx, row.OrganizationID, row.ProjectID, row.NativeID); err != nil {
-		return issue, err
-	} else if found {
-		issue.LinkedSource = &source
-		issue.ExternalReferences = append(issue.ExternalReferences, tracker.GitHubIssueSourceReference(source.URL, source.URL))
-	}
-	return s.nativeIssueResponse(issue), nil
-}
-
-func (s *Service) hydrateCanonicalWorkItemRecord(ctx context.Context, row corestore.WorkItem, version eventstore.CollaborationVersion) (tracker.NativeIssue, error) {
-	var issue tracker.NativeIssue
-	if version.OrganizationID != row.OrganizationID || version.ProjectID != row.ProjectID || version.WorkItemID != row.NativeID || version.RecordID != string(row.NativeID) || version.Revision != row.Revision {
-		return issue, artifact.ErrIntegrity
-	}
-	raw, err := eventstore.NewContent(s.runDetailStore()).CollaborationVersion(ctx, version)
-	if err != nil {
-		return issue, err
-	}
-	issue, err = eventstore.DecodeCollaborationIssue(version, raw)
-	if err != nil || issue.OrganizationID != row.OrganizationID || issue.ProjectID != row.ProjectID || issue.WorkItemID != row.NativeID || int64(issue.Revision) != row.Revision || int64(issue.Number) != row.Number || issue.Title != row.Title || issue.Archived != row.Archived || issue.State != hubapi.StringValue(row.WorkflowStateName) || issue.Actor.Kind != hubapi.StringValue(row.ActorKind) || issue.Actor.PrincipalID != hubapi.StringValue(row.ActorPrincipalID) {
-		return issue, artifact.ErrIntegrity
-	}
-	issue.ChangeSequence = 0
-	issue.LastActivityAt = row.LastActivityAt
-	return issue, nil
-}
-
-func (s *Service) readWorkItem(ctx context.Context, scope hubscope.NativeScope, id string) (tracker.NativeIssue, error) {
-	row, version, err := s.readWorkItemRecord(ctx, scope, id)
-	if err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
-	if err == nil {
-		issue.WebURL, err = s.issueBrowserURL(ctx, row.OrganizationID, string(row.NativeID))
-	}
-	if err == nil {
-		err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue)
-	}
-	if err == nil {
-		err = s.hydrateWorkItemActorNames(ctx, scope.Organization, []*tracker.NativeIssue{&issue})
-	}
-	issue.OmittedFields = append(issue.OmittedFields, "change_sequence")
-	return scope.ReporterIssue(issue), err
-}
-
-func (s *Service) hydrateWorkItemActorNames(ctx context.Context, organization tracker.OrganizationID, issues []*tracker.NativeIssue) error {
-	principals := make([]string, 0, len(issues))
-	seen := make(map[string]bool, len(issues))
-	for _, issue := range issues {
-		principal := issue.Actor.PrincipalID
-		if principal != "" && !seen[principal] {
-			principals = append(principals, principal)
-			seen[principal] = true
-		}
-	}
-	if len(principals) == 0 {
-		return nil
-	}
-	var names map[string]string
-	if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		var err error
-		names, err = reader.AccessPublicNames(ctx, principals)
-		return err
-	}); err != nil {
-		return fmt.Errorf("read filer identities: %w", err)
-	}
-	for _, issue := range issues {
-		if name := names[issue.Actor.PrincipalID]; name != "" {
-			issue.Actor.DisplayName = name
-		}
-	}
-	return nil
 }
 
 func (s *Service) hydrateCommentRecord(ctx context.Context, row corestore.Comment, version eventstore.CollaborationVersion) (tracker.NativeComment, error) {
@@ -807,7 +704,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 		if err != nil {
 			return nil, err
 		}
-		var machineSearch *workItemDuplicateSearch
+		var machineSearch *workduplicates.Search
 		var machineReused bool
 		var machinePriority *workItemMachinePriority
 		if request, ok := plannedInput.(tracker.CreateIssue); ok && !plan.Existing && request.GitHubIssueURL == "" && scope.Credential.HostedRole != "reporter" {
@@ -816,8 +713,8 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 				if err != nil {
 					return nil, err
 				}
-				if len(machineSearch.matches) > 0 {
-					candidate := machineSearch.matches[0]
+				if len(machineSearch.Matches) > 0 {
+					candidate := machineSearch.Matches[0]
 					matched, err := s.loadWorkItemPlan(ctx, scope, string(candidate.WorkItemID), "", tracker.CreateComment{})
 					if err != nil {
 						return nil, err
@@ -885,13 +782,13 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 				if err != nil {
 					return nil, err
 				}
-				if len(duplicateSearch.matches) > 0 {
+				if len(duplicateSearch.Matches) > 0 {
 					now := s.config.now().UTC().Truncate(time.Microsecond)
-					challenge = &corestore.DuplicateChallenge{OrganizationID: scope.Organization, ProjectID: scope.Project, Token: hubapi.NewID("dup"), PrincipalID: scope.Actor().PrincipalID, RequestID: request.IdempotencyKey, ContentHash: hash, PolicyHash: policyHash, SourceSequence: duplicateSearch.sequence, CreatedAt: now, ExpiresAt: now.Add(duplicateChallengeLifetime)}
-					for _, candidate := range duplicateSearch.matches {
+					challenge = &corestore.DuplicateChallenge{OrganizationID: scope.Organization, ProjectID: scope.Project, Token: hubapi.NewID("dup"), PrincipalID: scope.Actor().PrincipalID, RequestID: request.IdempotencyKey, ContentHash: hash, PolicyHash: policyHash, SourceSequence: duplicateSearch.Sequence, CreatedAt: now, ExpiresAt: now.Add(duplicateChallengeLifetime)}
+					for _, candidate := range duplicateSearch.Matches {
 						challenge.Candidates = append(challenge.Candidates, corestore.DuplicateCandidate{WorkItemID: candidate.WorkItemID, Number: int64(candidate.Number), Revision: int64(candidate.Revision)})
 					}
-					challengeResponse = &duplicateChallenge{ChallengeToken: challenge.Token, PossibleDuplicates: duplicateSearch.matches}
+					challengeResponse = &duplicateChallenge{ChallengeToken: challenge.Token, PossibleDuplicates: duplicateSearch.Matches}
 				}
 			}
 		}
@@ -1119,10 +1016,10 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 			if !hubrecords.SameWorkItemProjectPlan(plan.Project, project) {
 				return corestore.ErrSerializationFailure
 			}
-			if duplicateSearch != nil && duplicateSearch.available {
-				if err := lockWorkItemDuplicateSource(ctx, w, scope.Project, duplicateSearch.sequence); err != nil {
+			if duplicateSearch != nil && duplicateSearch.Available {
+				if err := lockWorkItemDuplicateSource(ctx, w, scope.Project, duplicateSearch.Sequence); err != nil {
 					if errors.Is(err, corestore.ErrRevisionConflict) {
-						if machineSearch != nil && len(machineSearch.matches) > 0 {
+						if machineSearch != nil && len(machineSearch.Matches) > 0 {
 							return hubapi.NativeConflict(0)
 						}
 						return corestore.ErrSerializationFailure
@@ -1137,8 +1034,8 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 					return err
 				}
 			}
-			if machineSearch != nil && len(machineSearch.matches) > 0 {
-				candidate := machineSearch.matches[0]
+			if machineSearch != nil && len(machineSearch.Matches) > 0 {
+				candidate := machineSearch.Matches[0]
 				current, err := w.LockWorkItem(ctx, scope.Project, candidate.WorkItemID)
 				if err != nil {
 					return err
@@ -1438,7 +1335,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 		}
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, write)
 		err = errors.Join(err, hubrecords.ReleaseWorkItemAuthority(authority))
-		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) || duplicateSearch != nil && duplicateSearch.available && errors.Is(err, searchstore.ErrIndexPending) {
+		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) || duplicateSearch != nil && duplicateSearch.Available && errors.Is(err, searchstore.ErrIndexPending) {
 			continue
 		}
 		if err != nil {
@@ -1458,7 +1355,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 	}
 }
 
-func (s *Service) prepareLinkedScheduledDuplicate(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan, request tracker.CreateIssue) (hubrecords.WorkItemRecordPlan, *workItemDuplicateSearch, bool, error) {
+func (s *Service) prepareLinkedScheduledDuplicate(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan, request tracker.CreateIssue) (hubrecords.WorkItemRecordPlan, *workduplicates.Search, bool, error) {
 	verified := scope.ScheduledRepair
 	if scope.IntegrationRepository == "" || verified == nil || verified.ImportURL != request.GitHubIssueURL || verified.ImportReason != "" || verified.PolicyID == "" || request.Title != "" || request.Body != "" || request.Priority != nil {
 		return plan, nil, false, nil
@@ -1476,10 +1373,10 @@ func (s *Service) prepareLinkedScheduledDuplicate(ctx context.Context, scope hub
 		return plan, nil, false, nil
 	}
 	search, err := s.prepareWorkItemDuplicates(ctx, scope, tracker.CreateIssue{Body: verified.ImportBody}, true)
-	if err != nil || len(search.matches) == 0 {
+	if err != nil || len(search.Matches) == 0 {
 		return plan, search, false, err
 	}
-	candidate := search.matches[0]
+	candidate := search.Matches[0]
 	matched, err := s.loadWorkItemPlan(ctx, scope, string(candidate.WorkItemID), "", tracker.CreateComment{})
 	if err != nil {
 		return plan, search, false, err

@@ -271,38 +271,6 @@ func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APIC
 	return string(scope.Project), item, canonical, nil
 }
 
-func (s *Service) readIssueBrowserPath(ctx context.Context, organization tracker.OrganizationID, id string) (string, error) {
-	if s.config.TenantRepository == nil {
-		return "", hubapi.NativeWorkItemStorageUnavailable()
-	}
-	var organizationSlug, projectSlug string
-	var number int64
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
-		row, err := r.WorkItemByNativeID(ctx, tracker.NativeWorkItemID(id))
-		if err != nil {
-			return err
-		}
-		project, err := r.Project(ctx, row.ProjectID)
-		if err != nil {
-			return err
-		}
-		if project.DeletedAt != nil {
-			return corestore.ErrNotFound
-		}
-		tenant, err := r.AccessOrganization(ctx)
-		if err != nil {
-			return err
-		}
-		organizationSlug = tenant.Slug
-		projectSlug, number = project.Slug, row.Number
-		return nil
-	})
-	if err != nil {
-		return "", hubapi.ProjectRecordError(err)
-	}
-	return "/" + organizationSlug + "/" + projectSlug + "/issues/" + strconv.FormatInt(number, 10), nil
-}
-
 func (s *Service) projectBrowserPath(ctx context.Context, id tracker.ProjectID) (string, error) {
 	if s.config.TenantRepository == nil {
 		return "", hubapi.NativeWorkItemStorageUnavailable()

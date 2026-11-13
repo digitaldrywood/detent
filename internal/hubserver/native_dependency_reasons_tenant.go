@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -65,7 +66,7 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 		return nil, err
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		return loadDependencyReasonRecords(ctx, r, scope.Project, []*tracker.NativeIssue{&issue})
+		return workitemread.LoadDependencyReasons(ctx, r, scope.Project, []*tracker.NativeIssue{&issue})
 	}); err != nil {
 		return nil, err
 	}
@@ -150,7 +151,7 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 			}
 			related = append(related, string(edge.WorkItemID))
 		}
-		if request.Basis != dependencyBasis(related) {
+		if request.Basis != workitemread.DependencyBasis(related) {
 			return hubapi.NativeConflict(tracker.Revision(reason.Revision))
 		}
 		if s.database.plansService().Plans() != nil {
@@ -267,36 +268,4 @@ func (s *Service) dependencyReasonPolicy(ctx context.Context, scope hubscope.Nat
 	}
 	descriptor, err := eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, revision)
 	return revision, descriptor.Requirements, err
-}
-
-func loadDependencyReasonRecords(ctx context.Context, r tenantstore.Reader, project tracker.ProjectID, issues []*tracker.NativeIssue) error {
-	reader, ok := r.(corestore.DependencyReasonReader)
-	if !ok {
-		return nil
-	}
-	byID := map[tracker.NativeWorkItemID][]*tracker.NativeIssue{}
-	ids := []tracker.NativeWorkItemID{}
-	for _, issue := range issues {
-		if _, ok := byID[issue.WorkItemID]; !ok {
-			ids = append(ids, issue.WorkItemID)
-		}
-		byID[issue.WorkItemID] = append(byID[issue.WorkItemID], issue)
-	}
-	for start := 0; start < len(ids); start += corestore.MaxRelationshipBatch {
-		records, err := reader.DependencyReasonRecords(ctx, project, ids[start:min(start+corestore.MaxRelationshipBatch, len(ids))])
-		if err != nil {
-			return err
-		}
-		for _, record := range records {
-			for _, issue := range byID[record.WorkItemID] {
-				switch record.Kind {
-				case "blocked":
-					issue.BlockedReason = record.Reason
-				case "unblocks":
-					issue.UnblocksReason = record.Reason
-				}
-			}
-		}
-	}
-	return nil
 }

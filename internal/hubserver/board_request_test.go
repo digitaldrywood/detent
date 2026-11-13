@@ -134,7 +134,7 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 					}
 				}
 				for {
-					more, err := searchstore.NewContent(details).RefreshOne(t.Context(), tenantSearchRepository{original}, org)
+					more, err := searchstore.NewContent(details).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: original}, org)
 					if err != nil {
 						t.Fatal(err)
 					}

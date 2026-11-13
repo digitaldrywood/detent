@@ -1537,7 +1537,7 @@ func operatorRefreshSearch(t *testing.T, f nativeFixture) {
 	t.Helper()
 	drainTestNativeBoard(t, f.service)
 	for range 128 {
-		more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantSearchRepository{f.service.config.TenantRepository}, f.project.OrganizationID)
+		more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantstore.SearchRepository{Repository: f.service.config.TenantRepository}, f.project.OrganizationID)
 		if err != nil {
 			t.Fatal(err)
 		}
