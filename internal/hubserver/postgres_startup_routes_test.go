@@ -611,7 +611,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("authenticate diagnostic runner: status=%d error=%v", status, err)
 	}
-	diagnosticAt := now.Add(time.Second)
+	diagnosticAt := service.config.now().UTC().Truncate(time.Microsecond).Add(-time.Second)
 	diagnosticView := runnerauth.ProjectConfiguration{ProjectID: string(project.ID), ObservedAt: diagnosticAt, Diagnostics: &runnerauth.ProjectDiagnostics{
 		ObservedAt: diagnosticAt, RuntimeObservedAt: diagnosticAt, Source: "runner_runtime_and_durable_attempt_owners", Truncated: true,
 		RunningBuild: &runnerauth.BuildEvidence{Version: "v0.177.4", Commit: "abcdef1234567", Source: "development", OS: "darwin", Architecture: "arm64", ObservedAt: diagnosticAt},
