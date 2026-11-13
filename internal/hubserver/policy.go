@@ -704,6 +704,19 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 	if err != nil {
 		return err
 	}
+	projectSnapshot, err := s.readTenantProjectRecord(ctx, scope)
+	if err != nil {
+		return err
+	}
+	if observation.Workflow == nil && projectSnapshot.Core.Profile == "native" {
+		markdown, err := s.projectRecordWorkflow(ctx, projectSnapshot)
+		if err != nil {
+			return err
+		}
+		if err := validateCloudWorkflowPolicy(markdown, observation.Descriptor); err != nil {
+			return err
+		}
+	}
 	content := eventstore.NewContent(s.runDetailStore())
 	revision, found, err := s.tenantProjectPolicyRevisionForDescriptor(ctx, scope.organization, scope.project, observation.Descriptor, content)
 	if err != nil {
@@ -780,6 +793,9 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 		project, err := writer.ProjectRecord(ctx, scope.project)
 		if err != nil {
 			return err
+		}
+		if observation.Workflow == nil && (project.Core.Profile != projectSnapshot.Core.Profile || project.Settings.WorkflowKey != projectSnapshot.Settings.WorkflowKey || project.Settings.WorkflowSHA256 != projectSnapshot.Settings.WorkflowSHA256 || project.Settings.WorkflowBytes != projectSnapshot.Settings.WorkflowBytes || project.Settings.WorkflowContentBytes != projectSnapshot.Settings.WorkflowContentBytes) {
+			return corestore.ErrRevisionConflict
 		}
 		storedRevision, err := writer.ProjectPolicyRevision(ctx, scope.project, observation.ID)
 		if err == nil {
@@ -1369,6 +1385,29 @@ func claimPolicyScope(query claimCandidateQuery) (string, error) {
 		return "", policyMismatch("A repository policy claim requires exactly one repository")
 	}
 	return "repository:" + strings.ToLower(strings.TrimSpace(query.Repositories[0])), nil
+}
+
+func validateCloudWorkflowPolicy(markdown string, descriptor policy.Descriptor) error {
+	if markdown == "" {
+		return nil
+	}
+	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)})
+	if err != nil {
+		return policyMismatch("Saved Cloud workflow is invalid; correct its Markdown definition before approving execution")
+	}
+	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
+		workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
+		expected, err := workflowconfig.ResolvePolicy(workflow)
+		if err != nil {
+			return err
+		}
+		if descriptor.Authored.Files["WORKFLOW.md"] == expected.Authored.Files["WORKFLOW.md"] {
+			return nil
+		}
+	} else if descriptor.Configuration != nil && descriptor.Configuration.DefinitionDigest == workflow.SourceHash {
+		return nil
+	}
+	return policyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
 }
 
 func validateWorkflowPolicy(ctx context.Context, db policyQuerier, scope string, descriptor policy.Descriptor) error {
