@@ -802,7 +802,9 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 			status                        int
 		}{
 			{name: "available with exhausted event window", apiLimit: 100, status: http.StatusOK},
-			{name: "API window exhausted", apiLimit: 0, status: http.StatusTooManyRequests, code: "allowance_exhausted"},
+			{name: "API window exhausted", apiLimit: 0, status: http.StatusOK},
+			{name: "API window exhausted with stale fence", apiLimit: 0, fenceOffset: 1, status: http.StatusConflict, code: "stale_fencing_token"},
+			{name: "API window exhausted with expired lease", apiLimit: 0, statement: "UPDATE leases SET acquired_at=acquired_at-interval '2 minutes',renewed_at=acquired_at-interval '2 minutes',expires_at=acquired_at-interval '1 minute' WHERE lease_id=$1", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
 			{name: "stale fence", apiLimit: 100, fenceOffset: 1, status: http.StatusConflict, code: "stale_fencing_token"},
 			{name: "expired lease", apiLimit: 100, statement: "UPDATE leases SET acquired_at=acquired_at-interval '2 minutes',renewed_at=acquired_at-interval '2 minutes',expires_at=acquired_at-interval '1 minute' WHERE lease_id=$1", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
 			{name: "released lease", apiLimit: 100, statement: "UPDATE leases SET released_at=acquired_at WHERE lease_id=$1", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
@@ -919,7 +921,6 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 					if adopted.RunnerID != r.binding.RunnerID || adopted.OrganizationID != f.project.OrganizationID {
 						t.Fatalf("validated runner = %#v", adopted.Binding)
 					}
-					before["api_mutations"]++
 				}
 				if !maps.Equal(before, after) {
 					t.Fatalf("validation accounting=%v want=%v", after, before)
@@ -928,7 +929,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 				if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT expires_at FROM leases WHERE lease_id=$1", lease.ID).Scan(&expires); err != nil {
 					t.Fatal(err)
 				}
-				if test.name != "expired lease" && !expires.Equal(lease.ExpiresAt) {
+				if !strings.Contains(test.statement, "expires_at") && !expires.Equal(lease.ExpiresAt) {
 					t.Fatal("validation changed lease expiry")
 				}
 			})
