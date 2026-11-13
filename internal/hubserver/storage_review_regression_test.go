@@ -18,7 +18,7 @@ import (
 func TestNativeCommandReceiptsExcludeEvidence(t *testing.T) {
 	t.Parallel()
 	objects := &changeObjectFixture{}
-	service := openTestService(t, Config{Content: objects.call})
+	service := newPostgresNativeService(t, Config{Content: objects.call})
 	if err := service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
