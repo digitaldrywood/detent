@@ -162,7 +162,7 @@ func (s *session) UpdateWorkspaceSession(ctx context.Context, arg WorkspaceUpdat
 	retainedClose := (arg.State == workspacesession.StateClosing || workspacesession.Terminal(arg.State)) && arg.RunnerID == current.RunnerID && arg.MachineID == current.MachineID && arg.LeaseID == current.LeaseID && arg.FencingToken == current.FencingToken
 	retainedRecovery := arg.State == workspacesession.StateRequested && arg.Reason == workspacesession.ReasonHubRestarted && arg.RebindDeadline != nil && arg.RebindDeadline.After(arg.UpdatedAt) && arg.RunnerID == current.RunnerID && arg.MachineID == current.MachineID && arg.LeaseID == current.LeaseID && arg.FencingToken == current.FencingToken
 	if arg.LeaseID != "" && !retainedClose && !retainedRecovery {
-		valid, err := s.queries.WorkspaceOwnerLease(ctx, pgquery.WorkspaceOwnerLeaseParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, WorkspaceID: arg.ID, LeaseID: arg.LeaseID, FencingToken: arg.FencingToken, MachineID: arg.MachineID, RunnerID: arg.RunnerID})
+		valid, err := s.queries.WorkspaceOwnerLease(ctx, pgquery.WorkspaceOwnerLeaseParams{OrganizationID: s.organization, ProjectID: arg.ProjectID, WorkspaceID: arg.ID, LeaseID: arg.LeaseID, FencingToken: arg.FencingToken, MachineID: arg.MachineID, RunnerID: arg.RunnerID, LeaseClock: s.leaseClockValue()})
 		if err != nil {
 			return WorkspaceSession{}, mapError(ctx, err)
 		}

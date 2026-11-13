@@ -206,7 +206,7 @@ WHERE a.organization_id=$16 AND a.project_id=$17 AND a.id=$18 AND a.action_id=$1
  AND (a.lease_id='' OR (a.lease_id=$13 AND a.fencing_token=$14))
  AND w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=a.workspace_id AND w.runner_id=$12
  AND w.lease_id=$13 AND w.fencing_token=$14
- AND l.released_at IS NULL AND l.expires_at>clock_timestamp() AND l.expires_at>$15::timestamptz
+ AND l.released_at IS NULL AND l.expires_at>COALESCE($22::timestamptz,clock_timestamp()) AND l.expires_at>$15::timestamptz
 RETURNING a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at,w.subject_work_item_id
 `
 
@@ -232,6 +232,7 @@ type ApplyReportedActionRunParams struct {
 	ActionID           string
 	WorkspaceID        string
 	ExpectedRevision   int64
+	LeaseClock         *time.Time
 }
 
 type ApplyReportedActionRunRow struct {
@@ -262,6 +263,7 @@ func (q *Queries) ApplyReportedActionRun(ctx context.Context, arg ApplyReportedA
 		arg.ActionID,
 		arg.WorkspaceID,
 		arg.ExpectedRevision,
+		arg.LeaseClock,
 	)
 	var i ApplyReportedActionRunRow
 	err := row.Scan(
@@ -327,7 +329,7 @@ func (q *Queries) AttachRelayRecording(ctx context.Context, arg AttachRelayRecor
 
 const claimActionRun = `-- name: ClaimActionRun :one
 UPDATE project_action_runs a SET status='running',claimed_by=COALESCE(NULLIF($1::text,''),$2::text),lease_id=$3,fencing_token=$4,started_at=$5,updated_at=$5,revision=a.revision+1
-FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>clock_timestamp()
+FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>COALESCE($9::timestamptz,clock_timestamp())
 JOIN workspace_items wi ON wi.organization_id=w.organization_id AND wi.project_id=w.project_id AND wi.workspace_id=w.id
 JOIN issues i ON i.organization_id=wi.organization_id AND i.project_id=wi.project_id AND i.native_id=wi.work_item_id AND i.id=l.issue_id
 WHERE a.organization_id=$6 AND a.project_id=$7 AND a.id=$8 AND a.status='queued' AND a.claimed_by='' AND ($1::text='' OR (l.project_id=a.project_id AND l.runner_id=$2)) AND w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=a.workspace_id AND w.runner_id=$2 AND w.lease_id=$3 AND w.fencing_token=$4 AND NOT w.read_only AND w.state IN ('starting','ready','idle') RETURNING a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at,w.subject_work_item_id
@@ -342,6 +344,7 @@ type ClaimActionRunParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	ID             string
+	LeaseClock     *time.Time
 }
 
 type ClaimActionRunRow struct {
@@ -359,6 +362,7 @@ func (q *Queries) ClaimActionRun(ctx context.Context, arg ClaimActionRunParams) 
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
+		arg.LeaseClock,
 	)
 	var i ClaimActionRunRow
 	err := row.Scan(
@@ -603,7 +607,7 @@ FROM project_actions a JOIN workspace_sessions w ON w.organization_id=a.organiza
 JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.runner_id=w.runner_id AND l.project_id=w.project_id
 WHERE a.organization_id=$15 AND a.project_id=$16 AND a.id=$17 AND a.run_on_worktree_creation
  AND w.runner_id=$12 AND w.lease_id=$18 AND w.fencing_token=$19
- AND l.released_at IS NULL AND l.expires_at>clock_timestamp() AND l.expires_at>$13::timestamptz
+ AND l.released_at IS NULL AND l.expires_at>COALESCE($20::timestamptz,clock_timestamp()) AND l.expires_at>$13::timestamptz
 RETURNING project_action_runs.organization_id, project_action_runs.project_id, project_action_runs.id, project_action_runs.action_id, project_action_runs.workspace_id, project_action_runs.command_object_key, project_action_runs.command_sha256, project_action_runs.command_bytes, project_action_runs.command_content_bytes, project_action_runs.status, project_action_runs.exit_code, project_action_runs.reason, project_action_runs.started_at, project_action_runs.finished_at, project_action_runs.output_object_key, project_action_runs.output_sha256, project_action_runs.output_bytes, project_action_runs.output_content_bytes, project_action_runs.output_sequence, project_action_runs.truncated, project_action_runs.claimed_by, project_action_runs.lease_id, project_action_runs.fencing_token, project_action_runs.created_by, project_action_runs.revision, project_action_runs.created_at, project_action_runs.updated_at,COALESCE((SELECT subject.subject_work_item_id FROM workspace_sessions subject WHERE subject.organization_id=project_action_runs.organization_id AND subject.project_id=project_action_runs.project_id AND subject.id=project_action_runs.workspace_id),'')::text AS subject_work_item_id
 `
 
@@ -627,6 +631,7 @@ type CreateReportedActionRunParams struct {
 	ActionID           string
 	LeaseID            string
 	FencingToken       int64
+	LeaseClock         *time.Time
 }
 
 type CreateReportedActionRunRow struct {
@@ -655,6 +660,7 @@ func (q *Queries) CreateReportedActionRun(ctx context.Context, arg CreateReporte
 		arg.ActionID,
 		arg.LeaseID,
 		arg.FencingToken,
+		arg.LeaseClock,
 	)
 	var i CreateReportedActionRunRow
 	err := row.Scan(
@@ -870,13 +876,13 @@ WHERE a.organization_id=$10 AND a.project_id=$11 AND a.id=$12 AND a.workspace_id
  AND a.revision=$17 AND a.output_sequence=$18
  AND l.organization_id=a.organization_id AND l.lease_id=a.lease_id AND l.fencing_token=a.fencing_token
  AND l.project_id=a.project_id AND l.runner_id=$19
- AND (($3::text='' AND l.released_at IS NULL AND l.expires_at>clock_timestamp() AND l.expires_at>$4::timestamptz
+ AND (($3::text='' AND l.released_at IS NULL AND l.expires_at>COALESCE($20::timestamptz,clock_timestamp()) AND l.expires_at>$4::timestamptz
   AND EXISTS(SELECT 1 FROM runner_identities r WHERE r.organization_id=a.organization_id AND r.runner_id=$19
-   AND r.machine_id=l.machine_id AND r.removed_at IS NULL AND r.state<>'disabled' AND r.expires_at>clock_timestamp() AND r.expires_at>$4::timestamptz))
+   AND r.machine_id=l.machine_id AND r.removed_at IS NULL AND r.state<>'disabled' AND r.expires_at>COALESCE($20::timestamptz,clock_timestamp()) AND r.expires_at>$4::timestamptz))
  OR ($1::text='failed' AND $2::integer IS NULL AND
   ($3::text='stream_closed'
    OR ($3::text='workspace_closed' AND w.state IN ('closed','failed') AND w.updated_at>=a.started_at)
-   OR ($3::text='lease_lost' AND (l.released_at IS NOT NULL OR l.expires_at<=clock_timestamp() OR l.expires_at<=$4::timestamptz OR (w.state='failed' AND w.reason='lease_lost' AND w.updated_at>=a.started_at))))))
+   OR ($3::text='lease_lost' AND (l.released_at IS NOT NULL OR l.expires_at<=COALESCE($20::timestamptz,clock_timestamp()) OR l.expires_at<=$4::timestamptz OR (w.state='failed' AND w.reason='lease_lost' AND w.updated_at>=a.started_at))))))
 RETURNING a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at,w.subject_work_item_id
 `
 
@@ -900,6 +906,7 @@ type FinishRelayActionRunParams struct {
 	ExpectedRevision       int64
 	ExpectedOutputSequence int64
 	RunnerID               *string
+	LeaseClock             *time.Time
 }
 
 type FinishRelayActionRunRow struct {
@@ -928,6 +935,7 @@ func (q *Queries) FinishRelayActionRun(ctx context.Context, arg FinishRelayActio
 		arg.ExpectedRevision,
 		arg.ExpectedOutputSequence,
 		arg.RunnerID,
+		arg.LeaseClock,
 	)
 	var i FinishRelayActionRunRow
 	err := row.Scan(
@@ -1356,7 +1364,7 @@ func (q *Queries) RelayTicketPage(ctx context.Context, arg RelayTicketPageParams
 
 const reportActionRun = `-- name: ReportActionRun :one
 UPDATE project_action_runs a SET status=$1,exit_code=$2,reason=$3,finished_at=$4,output_object_key=$5,output_sha256=$6,output_bytes=$7,output_content_bytes=$8,output_sequence=$9,truncated=$10,revision=a.revision+1,updated_at=$11
-FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>clock_timestamp()
+FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>COALESCE($18::timestamptz,clock_timestamp())
 WHERE a.organization_id=$12 AND a.project_id=$13 AND a.id=$14 AND a.status='running' AND a.claimed_by=$15 AND a.lease_id=$16 AND a.fencing_token=$17 AND a.output_sequence<$9
 AND w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=a.workspace_id AND w.runner_id=a.claimed_by AND w.lease_id=a.lease_id AND w.fencing_token=a.fencing_token RETURNING a.organization_id, a.project_id, a.id, a.action_id, a.workspace_id, a.command_object_key, a.command_sha256, a.command_bytes, a.command_content_bytes, a.status, a.exit_code, a.reason, a.started_at, a.finished_at, a.output_object_key, a.output_sha256, a.output_bytes, a.output_content_bytes, a.output_sequence, a.truncated, a.claimed_by, a.lease_id, a.fencing_token, a.created_by, a.revision, a.created_at, a.updated_at,w.subject_work_item_id
 `
@@ -1379,6 +1387,7 @@ type ReportActionRunParams struct {
 	RunnerID           string
 	LeaseID            string
 	FencingToken       int64
+	LeaseClock         *time.Time
 }
 
 type ReportActionRunRow struct {
@@ -1405,6 +1414,7 @@ func (q *Queries) ReportActionRun(ctx context.Context, arg ReportActionRunParams
 		arg.RunnerID,
 		arg.LeaseID,
 		arg.FencingToken,
+		arg.LeaseClock,
 	)
 	var i ReportActionRunRow
 	err := row.Scan(

@@ -207,6 +207,7 @@ func (s *session) ClaimActionRun(ctx context.Context, arg ClaimActionRunInput) (
 	if arg.StartedAt == nil || arg.StartedAt.IsZero() || arg.FencingToken < 1 {
 		return ActionRun{}, corestore.ErrInvalidPage
 	}
+	arg.LeaseClock = s.leaseClockValue()
 	row, err := s.queries.ClaimActionRun(ctx, arg)
 	return s.actionRunMutation(row.ProjectActionRun, row.SubjectWorkItemID, updated(ctx, err))
 }
@@ -217,6 +218,7 @@ func (s *session) ReportActionRun(ctx context.Context, arg ReportActionRunInput)
 	if arg.UpdatedAt.IsZero() || arg.OutputSequence < 1 || arg.Status != "running" && arg.Status != "succeeded" && arg.Status != "failed" || arg.Status != "running" && arg.FinishedAt == nil || arg.OutputObjectKey != nil && (*arg.OutputObjectKey == "" || len(arg.OutputSha256) != 64) {
 		return ActionRun{}, corestore.ErrInvalidPage
 	}
+	arg.LeaseClock = s.leaseClockValue()
 	row, err := s.queries.ReportActionRun(ctx, arg)
 	return s.actionRunMutation(row.ProjectActionRun, row.SubjectWorkItemID, updated(ctx, err))
 }
@@ -245,6 +247,7 @@ func (s *session) FinishRelayActionRun(ctx context.Context, arg FinishRelayActio
 	} else if arg.Status != workspacesession.RunFailed || arg.ExitCode.Valid || arg.Reason != workspacesession.RunReasonStreamClosed && arg.Reason != workspacesession.RunReasonWorkspaceEnd && arg.Reason != workspacesession.RunReasonLeaseLost {
 		return ActionRun{}, corestore.ErrInvalidPage
 	}
+	arg.LeaseClock = s.leaseClockValue()
 	row, err := s.queries.FinishRelayActionRun(ctx, arg)
 	return s.actionRunMutation(row.ProjectActionRun, row.SubjectWorkItemID, updated(ctx, err))
 }
@@ -353,6 +356,7 @@ func (s *session) CreateReportedActionRun(ctx context.Context, arg CreateReporte
 	if arg.ID == "" || arg.CreatedAt.IsZero() || arg.FencingToken < 1 || !validReportedActionRun(arg.Status, arg.Reason, arg.OutputObjectKey, arg.OutputSha256, arg.OutputBytes, arg.OutputContentBytes) {
 		return ActionRun{}, corestore.ErrInvalidPage
 	}
+	arg.LeaseClock = s.leaseClockValue()
 	row, err := s.queries.CreateReportedActionRun(ctx, arg)
 	return s.actionRunMutation(row.ProjectActionRun, row.SubjectWorkItemID, updated(ctx, err))
 }
@@ -363,6 +367,7 @@ func (s *session) ApplyReportedActionRun(ctx context.Context, arg ApplyReportedA
 	if arg.UpdatedAt.IsZero() || arg.ExpectedRevision < 1 || arg.FencingToken < 1 || !validReportedActionRun(arg.Status, arg.Reason, arg.OutputObjectKey, arg.OutputSha256, arg.OutputBytes, arg.OutputContentBytes) {
 		return ActionRun{}, corestore.ErrInvalidPage
 	}
+	arg.LeaseClock = s.leaseClockValue()
 	row, err := s.queries.ApplyReportedActionRun(ctx, arg)
 	return s.actionRunMutation(row.ProjectActionRun, row.SubjectWorkItemID, updated(ctx, err))
 }
@@ -414,4 +419,11 @@ func (s *session) DeleteActionRun(ctx context.Context, project tracker.ProjectID
 		return err
 	}
 	return s.recordBoardDelta(project, viewstore.BoardDelta{WorkItemID: tracker.NativeWorkItemID(subject), Topic: "action_run", EntityID: id, EntityRevision: &current, Kind: "delete"})
+}
+
+func (s *session) leaseClockValue() *time.Time {
+	if s.leaseClock == nil {
+		return nil
+	}
+	return new(s.leaseClock().UTC())
 }

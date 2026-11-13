@@ -31,7 +31,7 @@ WHERE ws.organization_id=sqlc.arg(organization_id) AND ws.project_id=sqlc.arg(pr
 SELECT EXISTS(SELECT 1 FROM leases l JOIN runner_identities r ON r.organization_id=l.organization_id AND r.machine_id=l.machine_id
  JOIN workspace_items w ON w.organization_id=l.organization_id AND w.project_id=sqlc.arg(project_id) AND w.workspace_id=sqlc.arg(workspace_id)
  JOIN issues i ON i.organization_id=w.organization_id AND i.project_id=w.project_id AND i.native_id=w.work_item_id AND i.id=l.issue_id
- WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id) AND l.fencing_token=sqlc.arg(fencing_token) AND l.machine_id=sqlc.arg(machine_id) AND r.runner_id=sqlc.arg(runner_id) AND l.released_at IS NULL AND l.expires_at>clock_timestamp());
+ WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id) AND l.fencing_token=sqlc.arg(fencing_token) AND l.machine_id=sqlc.arg(machine_id) AND r.runner_id=sqlc.arg(runner_id) AND l.released_at IS NULL AND l.expires_at>COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp()));
 
 -- name: ExpiringWorkspaces :many
 SELECT * FROM workspace_sessions WHERE organization_id=$1 AND state NOT IN ('closed','failed') AND expires_at<=$2 ORDER BY expires_at,id LIMIT $3;

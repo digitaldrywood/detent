@@ -41,14 +41,14 @@ WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(proj
 
 -- name: ClaimActionRun :one
 UPDATE project_action_runs a SET status='running',claimed_by=COALESCE(NULLIF(sqlc.arg(claimant)::text,''),sqlc.arg(runner_id)::text),lease_id=sqlc.arg(lease_id),fencing_token=sqlc.arg(fencing_token),started_at=sqlc.arg(started_at),updated_at=sqlc.arg(started_at),revision=a.revision+1
-FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>clock_timestamp()
+FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp())
 JOIN workspace_items wi ON wi.organization_id=w.organization_id AND wi.project_id=w.project_id AND wi.workspace_id=w.id
 JOIN issues i ON i.organization_id=wi.organization_id AND i.project_id=wi.project_id AND i.native_id=wi.work_item_id AND i.id=l.issue_id
 WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(project_id) AND a.id=sqlc.arg(id) AND a.status='queued' AND a.claimed_by='' AND (sqlc.arg(claimant)::text='' OR (l.project_id=a.project_id AND l.runner_id=sqlc.arg(runner_id))) AND w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=a.workspace_id AND w.runner_id=sqlc.arg(runner_id) AND w.lease_id=sqlc.arg(lease_id) AND w.fencing_token=sqlc.arg(fencing_token) AND NOT w.read_only AND w.state IN ('starting','ready','idle') RETURNING sqlc.embed(a),w.subject_work_item_id;
 
 -- name: ReportActionRun :one
 UPDATE project_action_runs a SET status=sqlc.arg(status),exit_code=sqlc.narg(exit_code),reason=sqlc.arg(reason),finished_at=sqlc.narg(finished_at),output_object_key=sqlc.narg(output_object_key),output_sha256=sqlc.arg(output_sha256),output_bytes=sqlc.arg(output_bytes),output_content_bytes=sqlc.arg(output_content_bytes),output_sequence=sqlc.arg(output_sequence),truncated=sqlc.arg(truncated),revision=a.revision+1,updated_at=sqlc.arg(updated_at)
-FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>clock_timestamp()
+FROM workspace_sessions w JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.released_at IS NULL AND l.expires_at>COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp())
 WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(project_id) AND a.id=sqlc.arg(id) AND a.status='running' AND a.claimed_by=sqlc.arg(runner_id) AND a.lease_id=sqlc.arg(lease_id) AND a.fencing_token=sqlc.arg(fencing_token) AND a.output_sequence<sqlc.arg(output_sequence)
 AND w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=a.workspace_id AND w.runner_id=a.claimed_by AND w.lease_id=a.lease_id AND w.fencing_token=a.fencing_token RETURNING sqlc.embed(a),w.subject_work_item_id;
 
@@ -76,13 +76,13 @@ WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(proj
  AND a.revision=sqlc.arg(expected_revision) AND a.output_sequence=sqlc.arg(expected_output_sequence)
  AND l.organization_id=a.organization_id AND l.lease_id=a.lease_id AND l.fencing_token=a.fencing_token
  AND l.project_id=a.project_id AND l.runner_id=sqlc.arg(runner_id)
- AND ((sqlc.arg(reason)::text='' AND l.released_at IS NULL AND l.expires_at>clock_timestamp() AND l.expires_at>sqlc.arg(finished_at)::timestamptz
+ AND ((sqlc.arg(reason)::text='' AND l.released_at IS NULL AND l.expires_at>COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp()) AND l.expires_at>sqlc.arg(finished_at)::timestamptz
   AND EXISTS(SELECT 1 FROM runner_identities r WHERE r.organization_id=a.organization_id AND r.runner_id=sqlc.arg(runner_id)
-   AND r.machine_id=l.machine_id AND r.removed_at IS NULL AND r.state<>'disabled' AND r.expires_at>clock_timestamp() AND r.expires_at>sqlc.arg(finished_at)::timestamptz))
+   AND r.machine_id=l.machine_id AND r.removed_at IS NULL AND r.state<>'disabled' AND r.expires_at>COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp()) AND r.expires_at>sqlc.arg(finished_at)::timestamptz))
  OR (sqlc.arg(status)::text='failed' AND sqlc.narg(exit_code)::integer IS NULL AND
   (sqlc.arg(reason)::text='stream_closed'
    OR (sqlc.arg(reason)::text='workspace_closed' AND w.state IN ('closed','failed') AND w.updated_at>=a.started_at)
-   OR (sqlc.arg(reason)::text='lease_lost' AND (l.released_at IS NOT NULL OR l.expires_at<=clock_timestamp() OR l.expires_at<=sqlc.arg(finished_at)::timestamptz OR (w.state='failed' AND w.reason='lease_lost' AND w.updated_at>=a.started_at))))))
+   OR (sqlc.arg(reason)::text='lease_lost' AND (l.released_at IS NOT NULL OR l.expires_at<=COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp()) OR l.expires_at<=sqlc.arg(finished_at)::timestamptz OR (w.state='failed' AND w.reason='lease_lost' AND w.updated_at>=a.started_at))))))
 RETURNING sqlc.embed(a),w.subject_work_item_id;
 
 -- name: RecentActionRuns :many
@@ -145,7 +145,7 @@ FROM project_actions a JOIN workspace_sessions w ON w.organization_id=a.organiza
 JOIN leases l ON l.organization_id=w.organization_id AND l.lease_id=w.lease_id AND l.fencing_token=w.fencing_token AND l.runner_id=w.runner_id AND l.project_id=w.project_id
 WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(project_id) AND a.id=sqlc.arg(action_id) AND a.run_on_worktree_creation
  AND w.runner_id=sqlc.arg(runner_id) AND w.lease_id=sqlc.arg(lease_id) AND w.fencing_token=sqlc.arg(fencing_token)
- AND l.released_at IS NULL AND l.expires_at>clock_timestamp() AND l.expires_at>sqlc.arg(created_at)::timestamptz
+ AND l.released_at IS NULL AND l.expires_at>COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp()) AND l.expires_at>sqlc.arg(created_at)::timestamptz
 RETURNING sqlc.embed(project_action_runs),COALESCE((SELECT subject.subject_work_item_id FROM workspace_sessions subject WHERE subject.organization_id=project_action_runs.organization_id AND subject.project_id=project_action_runs.project_id AND subject.id=project_action_runs.workspace_id),'')::text AS subject_work_item_id;
 
 -- name: ApplyReportedActionRun :one
@@ -165,7 +165,7 @@ WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(proj
  AND (a.lease_id='' OR (a.lease_id=sqlc.arg(lease_id) AND a.fencing_token=sqlc.arg(fencing_token)))
  AND w.organization_id=a.organization_id AND w.project_id=a.project_id AND w.id=a.workspace_id AND w.runner_id=sqlc.arg(runner_id)
  AND w.lease_id=sqlc.arg(lease_id) AND w.fencing_token=sqlc.arg(fencing_token)
- AND l.released_at IS NULL AND l.expires_at>clock_timestamp() AND l.expires_at>sqlc.arg(updated_at)::timestamptz
+ AND l.released_at IS NULL AND l.expires_at>COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp()) AND l.expires_at>sqlc.arg(updated_at)::timestamptz
 RETURNING sqlc.embed(a),w.subject_work_item_id;
 
 -- name: RecentTerminalRecordings :many

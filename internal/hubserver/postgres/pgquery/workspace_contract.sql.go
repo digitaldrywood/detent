@@ -559,7 +559,7 @@ const workspaceOwnerLease = `-- name: WorkspaceOwnerLease :one
 SELECT EXISTS(SELECT 1 FROM leases l JOIN runner_identities r ON r.organization_id=l.organization_id AND r.machine_id=l.machine_id
  JOIN workspace_items w ON w.organization_id=l.organization_id AND w.project_id=$1 AND w.workspace_id=$2
  JOIN issues i ON i.organization_id=w.organization_id AND i.project_id=w.project_id AND i.native_id=w.work_item_id AND i.id=l.issue_id
- WHERE l.organization_id=$3 AND l.lease_id=$4 AND l.fencing_token=$5 AND l.machine_id=$6 AND r.runner_id=$7 AND l.released_at IS NULL AND l.expires_at>clock_timestamp())
+ WHERE l.organization_id=$3 AND l.lease_id=$4 AND l.fencing_token=$5 AND l.machine_id=$6 AND r.runner_id=$7 AND l.released_at IS NULL AND l.expires_at>COALESCE($8::timestamptz,clock_timestamp()))
 `
 
 type WorkspaceOwnerLeaseParams struct {
@@ -570,6 +570,7 @@ type WorkspaceOwnerLeaseParams struct {
 	FencingToken   int64
 	MachineID      string
 	RunnerID       string
+	LeaseClock     *time.Time
 }
 
 func (q *Queries) WorkspaceOwnerLease(ctx context.Context, arg WorkspaceOwnerLeaseParams) (bool, error) {
@@ -581,6 +582,7 @@ func (q *Queries) WorkspaceOwnerLease(ctx context.Context, arg WorkspaceOwnerLea
 		arg.FencingToken,
 		arg.MachineID,
 		arg.RunnerID,
+		arg.LeaseClock,
 	)
 	var exists bool
 	err := row.Scan(&exists)

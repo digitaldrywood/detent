@@ -127,9 +127,11 @@ func withReadOnlyExec(fixture *relayFixture) {
 // dispatchable to a runner that could not serve it.
 func withGit(fixture *relayFixture) { fixture.git = true }
 
+const relayHubClockLag = time.Hour
+
 func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture {
 	t.Helper()
-	fixture := &relayFixture{clock: time.Now().UTC().Truncate(time.Microsecond)}
+	fixture := &relayFixture{clock: time.Now().UTC().Truncate(time.Microsecond).Add(-relayHubClockLag)}
 	for _, option := range options {
 		option(fixture)
 	}
