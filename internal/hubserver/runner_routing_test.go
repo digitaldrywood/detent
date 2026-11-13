@@ -84,19 +84,12 @@ func TestRunnerRoutingClaims(t *testing.T) {
 						return err
 					}
 					record.States = append(record.States, states[0])
-					if _, err := w.UpdateProjectRecord(t.Context(), record); err != nil {
-						return err
-					}
-					item, err := w.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
-					if err != nil {
-						return err
-					}
-					item.WorkflowStateName = &test.lane
-					_, err = w.UpdateWorkItem(t.Context(), item)
+					_, err = w.UpdateProjectRecord(t.Context(), record)
 					return err
 				}); err != nil {
 					t.Fatal(err)
 				}
+				issue = setSelectionFixtureState(t, f, issue.WorkItemID, test.lane)
 			}
 			settings := map[string]any{"expected_revision": 1, "display_name": "Build runner", "tags": test.tags, "state": test.state, "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)

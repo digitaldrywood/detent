@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -196,7 +197,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				generalIssue = general.create(t, "available model")
 			}
 			if scenario.contract == "rank quota" {
-				setSelectionFixtureState(t, general, generalIssue.WorkItemID, "In Progress")
+				generalIssue = setSelectionFixtureState(t, general, generalIssue.WorkItemID, "In Progress")
 			}
 			if scenario.contract == "lower rank quota" {
 				if _, err := usagePostgresAdmin(t, preferred.service).ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=CASE WHEN id=$1 THEN 3 ELSE 1 END WHERE organization_id=$2", preferred.project.ID, preferred.project.OrganizationID); err != nil {
@@ -206,7 +207,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 					setSelectionFixtureState(t, preferred, item, "In Progress")
 				}
 				if preferredIssue.WorkItemID != "" {
-					setSelectionFixtureState(t, preferred, preferredIssue.WorkItemID, "In Progress")
+					preferredIssue = setSelectionFixtureState(t, preferred, preferredIssue.WorkItemID, "In Progress")
 				}
 			}
 			if scenario.contract == "priority quota" {
@@ -454,17 +455,18 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				issue := project.fixture.create(t, "ready")
 				if (scenario.allowed == "in-progress" || strings.HasSuffix(scenario.allowed, "-in-progress")) && project.fixture.project.ID == first.project.ID {
 
-					setSelectionFixtureState(t, first, issue.WorkItemID, "In Progress")
+					issue = setSelectionFixtureState(t, first, issue.WorkItemID, "In Progress")
 				}
 				if project.rework {
-					setSelectionFixtureState(t, project.fixture, issue.WorkItemID, "Rework")
+					issue = setSelectionFixtureState(t, project.fixture, issue.WorkItemID, "Rework")
 				}
 				if project.landing != "" && project.landing != "missing version" {
 					f := project.fixture
-					var principal string
-					if err := usagePostgresAdmin(t, first.service).QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name=$1", "operator-"+f.project.Name).Scan(&principal); err != nil {
-						t.Fatal(err)
+					credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+					if err != nil {
+						t.Fatalf("operator credential status=%d error=%v", status, err)
 					}
+					principal := credential.ID
 					rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
 					requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
 					path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
@@ -487,7 +489,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 					}
 				}
 				if project.landing != "" {
-					setSelectionFixtureState(t, project.fixture, issue.WorkItemID, "Merging")
+					issue = setSelectionFixtureState(t, project.fixture, issue.WorkItemID, "Merging")
 				}
 				issues[project.fixture.project.ID] = issue
 				for _, statement := range []struct {
@@ -874,8 +876,10 @@ func updateSelectionFixtureBody(t *testing.T, f nativeFixture, item tracker.Nati
 	return item
 }
 
-func setSelectionFixtureState(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID, state string) {
+func setSelectionFixtureState(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID, state string) tracker.NativeIssue {
 	t.Helper()
+	snapshot := readWorkItem(t, f, item, "")
+	var updated corestore.WorkItem
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), f.project.ID)
 		if err != nil {
@@ -892,7 +896,8 @@ func setSelectionFixtureState(t *testing.T, f nativeFixture, item tracker.Native
 			return err
 		}
 		row.WorkflowStateName = &state
-		if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
+		updated, err = w.UpdateWorkItem(t.Context(), row)
+		if err != nil {
 			return err
 		}
 		queue, err := w.QueueEntry(t.Context(), f.project.ID, item, string(f.project.ID))
@@ -904,4 +909,20 @@ func setSelectionFixtureState(t *testing.T, f nativeFixture, item tracker.Native
 	}); err != nil {
 		t.Fatal(err)
 	}
+	snapshot.State, snapshot.Revision, snapshot.UpdatedAt, snapshot.LastActivityAt = state, tracker.Revision(updated.Revision), updated.NativeUpdatedAt, updated.LastActivityAt
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: item, RecordID: string(item), Revision: updated.Revision}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateCollaborationVersion(t.Context(), version)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
