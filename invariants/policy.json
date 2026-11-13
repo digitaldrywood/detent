@@ -138,6 +138,7 @@
       "TestSQLiteDependencyCompletion",
       "TestRepositoryTenancy",
       "TestTenancyPolicyViolations",
+      "TestTenancyBaselineRefusesGrowth",
       "TestRepositorySources",
       "TestRepositoryWorkflow",
       "TestRepositoryHasNoPullRequestActions",
