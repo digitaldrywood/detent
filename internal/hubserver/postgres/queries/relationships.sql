@@ -164,7 +164,7 @@ WITH requested AS MATERIALIZED (
  SELECT requested.project_id,requested.native_id FROM ROWS FROM(unnest(sqlc.arg(project_ids)::text[]),unnest(sqlc.arg(native_ids)::text[])) AS requested(project_id,native_id)
 )
 SELECT i.* FROM requested r JOIN issues i ON i.organization_id=sqlc.arg(organization_id) AND i.project_id=r.project_id AND i.native_id=r.native_id
-ORDER BY i.project_id COLLATE "C",i.native_id COLLATE "C" FOR UPDATE OF i;
+ORDER BY i.project_id COLLATE "C",i.native_id COLLATE "C" FOR NO KEY UPDATE OF i;
 
 -- name: LabelCatalog :many
 SELECT l.label, count(*) AS usage_count

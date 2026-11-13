@@ -647,6 +647,10 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		})
 		return facts.WithRunnerEventFacts(ctx, eventstore.RunCommand{Project: "prj_first", WorkItem: "wi_first_1", Operation: "append-event"}, func(tenantstore.Writer) error { return nil })
 	}
+	batch := func(ctx context.Context, w tenantstore.Writer) error {
+		_, err := w.LockWorkItems(ctx, []corestore.WorkItemReference{{ProjectID: "prj_first", WorkItemID: "wi_first_1"}})
+		return err
+	}
 	for _, test := range []struct {
 		name                                         string
 		holdFirst, finishFirst, holdNext, finishNext step
@@ -657,6 +661,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"receipt while archive holder checks keys", lock("prj_first", "wi_first_1"), receipt, archive, converse, false, 4},
 		{"receipt after population write", archiveItem("prj_first", "wi_first_1"), receipt, archive, archiveItem("prj_second", "wi_second_1"), false, 2},
 		{"optimized runner snapshot while archive holder checks keys", snapshot, receipt, archive, converse, false, 4},
+		{"batch issue lock while archive holder checks keys", batch, receipt, archive, converse, false, 4},
 		{"idle project check excludes conversation insert", idle, receipt, archive, converse, true, 4},
 		{"idle project check waits for work item writer", lock("prj_first", "wi_first_1"), receipt, noop, idle, true, 4},
 	} {
