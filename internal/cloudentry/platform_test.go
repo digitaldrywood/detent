@@ -366,6 +366,11 @@ func TestPlatformMembersCreateAndJoinOrganizations(t *testing.T) {
 	t.Run("create", func(t *testing.T) {
 		t.Parallel()
 		f := newProvisioningFixture(t, 3, nil)
+		defer func() {
+			if err := f.service.closeAllocator(); err != nil {
+				t.Error(err)
+			}
+		}()
 		f.provider.users["user_staff"] = "staff@example.test"
 		staff := newBrowser(t, f.service.Handler())
 		if landing := staff.login("/auth/oidc/start", "user_staff:"); landing != "/platform" {
