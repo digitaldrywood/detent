@@ -755,6 +755,7 @@ type configurationHeartbeat struct {
 	initialize       bool
 	identityRevision int64
 	reported         *runnerauth.ProjectConfiguration
+	policy           *policystore.Observation
 }
 
 func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential apiCredential, projectID tracker.ProjectID, reported *runnerauth.ProjectConfiguration) (*configurationHeartbeat, error) {
@@ -831,7 +832,10 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 	}
 	if reported != nil {
 		if reported.SelectedPolicy != nil {
-			if err := s.recordConfigurationPolicyObservation(ctx, nativeScope{organization: org, project: projectID, credential: credential}, policy.Observation{Descriptor: *reported.SelectedPolicy}); err != nil {
+			observation, err := s.prepareConfigurationPolicyObservation(ctx, nativeScope{organization: org, project: projectID, credential: credential}, policy.Observation{Descriptor: *reported.SelectedPolicy})
+			if err == nil {
+				p.policy = &observation
+			} else {
 				var limit *hostedLimitError
 				if errors.As(err, &limit) {
 					return nil, err
@@ -1044,6 +1048,11 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 			return err
 		}
 	}
+	if p.policy != nil {
+		if err := writeConfigurationPolicyObservation(ctx, w, identity.RunnerID, *p.policy, now); err != nil {
+			return err
+		}
+	}
 	if p.reported != nil {
 		current, err := owner.ConfigurationProject(ctx, identity.RunnerID, projectID)
 		if err != nil {
@@ -1069,20 +1078,28 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 	return nil
 }
 
-func (s *Service) recordConfigurationPolicyObservation(ctx context.Context, scope nativeScope, observation policy.Observation) error {
-	credential := scope.credential
+func (s *Service) prepareConfigurationPolicyObservation(ctx context.Context, scope nativeScope, observation policy.Observation) (policystore.Observation, error) {
 	content := eventstore.NewContent(s.runDetailStore())
 	revision, found, err := s.tenantProjectPolicyRevisionForDescriptor(ctx, scope.organization, scope.project, observation.Descriptor, content)
 	if err != nil {
-		return err
+		return policystore.Observation{}, err
 	}
 	if !found {
 		ref, err := s.prepareConfigurationPayload(ctx, scope.organization, observation.Descriptor)
 		if err != nil {
-			return err
+			return policystore.Observation{}, err
 		}
 		gate := observation.Gates.GitHubPullRequest
 		revision = policystore.Revision{OrganizationID: scope.organization, ProjectID: scope.project, PolicyID: observation.ID, GitHubPullRequest: &gate, PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}
+	}
+	return policystore.Observation{OrganizationID: scope.organization, ProjectID: scope.project, PolicyID: observation.ID, Source: observation.Source, Revision: revision}, nil
+}
+
+func (s *Service) recordConfigurationPolicyObservation(ctx context.Context, scope nativeScope, observation policy.Observation) error {
+	credential := scope.credential
+	prepared, err := s.prepareConfigurationPolicyObservation(ctx, scope, observation)
+	if err != nil {
+		return err
 	}
 	now := s.config.now().UTC()
 	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -1103,16 +1120,21 @@ func (s *Service) recordConfigurationPolicyObservation(ctx context.Context, scop
 		if identity.RunnerID != credential.Runner.RunnerID || identity.OrganizationID != scope.organization || identity.RemovedAt != nil || !identity.ExpiresAt.After(now) {
 			return runnerUnauthorized()
 		}
-		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return nativeNotFound()
-		}
-		_, err = w.RecordProjectPolicyObservation(ctx, policystore.Observation{OrganizationID: scope.organization, ProjectID: scope.project, RunnerID: identity.RunnerID, PolicyID: observation.ID, ObservedAt: now, Source: observation.Source, Revision: revision})
-		return err
+		return writeConfigurationPolicyObservation(ctx, w, identity.RunnerID, prepared, now)
 	})
+}
+
+func writeConfigurationPolicyObservation(ctx context.Context, w tenantstore.Writer, runnerID string, observation policystore.Observation, now time.Time) error {
+	allowed, err := w.RunnerProjectAuthorized(ctx, runnerID, observation.ProjectID, now)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return nativeNotFound()
+	}
+	observation.RunnerID, observation.ObservedAt = runnerID, now
+	_, err = w.RecordProjectPolicyObservation(ctx, observation)
+	return err
 }
 
 func validateConfigurationRunner(view *runnerauth.ProjectConfiguration, identity runnerstore.Identity) error {
