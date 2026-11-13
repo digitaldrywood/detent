@@ -318,7 +318,7 @@ func TestPostgresProjectRecords(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			deniedStatus := http.StatusForbidden
+			deniedStatus := http.StatusNotFound
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base, token.Token, nil), deniedStatus)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, base, token.Token, map[string]any{"idempotency_key": "unauthorized", "name": "Rejected", "expected_revision": "3"}), deniedStatus)
 			read = performHubAPIRequest(t, service, http.MethodGet, base, testHubAdminToken, nil)
