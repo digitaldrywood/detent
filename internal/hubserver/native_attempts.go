@@ -185,7 +185,10 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 		return nativeRejection(nativePublicInvalid("Final summary must be bounded UTF-8 text"), "execution_validation", "data.disposition")
 	}
 	if data.Sequence == 0 {
-		return nativeRejection(nativePublicInvalid("Current run events require a positive sequence"), "execution_validation", "data.sequence")
+		if data.Identity != nil || data.Handoff != nil || data.MachineID != "" || data.RunnerID != "" || data.SessionID != "" {
+			return nativeRejection(nativePublicInvalid("Current run events require a positive sequence"), "execution_validation", "data.sequence")
+		}
+		return nil
 	}
 	if data.Identity == nil && eventType == "run.finished" && data.Sequence == 1 && data.TerminalFailure != nil &&
 		(data.Runtime == nil && data.Outcome == "cancelled" && data.TerminalFailure.ErrorClass == "lease_released" ||

@@ -17,6 +17,7 @@ func TestTerminalPublicationRejectionAllowlist(t *testing.T) {
 		{"event", PublicationRejection{Category: "event_validation", Field: "data.outcome"}, true},
 		{"runtime", PublicationRejection{Category: "runtime_validation", Field: "data.runtime.activity"}, true},
 		{"execution", PublicationRejection{Category: "execution_validation", Field: "data.finalization"}, true},
+		{"execution sequence", PublicationRejection{Category: "execution_validation", Field: "data.sequence"}, true},
 		{"owner", PublicationRejection{Category: "owner_validation", Field: "data.finalization"}, true},
 		{"usage", PublicationRejection{Category: "usage_validation", Field: "data.usage"}, true},
 		{"decode", PublicationRejection{Category: "body_decode"}, true},
