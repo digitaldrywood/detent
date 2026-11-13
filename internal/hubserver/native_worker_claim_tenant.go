@@ -784,8 +784,11 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			if err != nil {
 				return err
 			}
-			if machine.Capacity <= 0 || usage.Host >= machine.Capacity {
+			if machine.Capacity <= 0 {
 				return providerWait("host_capacity", "Runner host has no available execution slots")
+			}
+			if usage.Host >= machine.Capacity {
+				return ErrNoClaimableWork
 			}
 			if usage.Runner >= int64(availableCapacity) || projectCapacityConfigured && usage.Project >= int64(projectCapacity) {
 				return providerWait("runner_capacity", "Runner has no available execution slots")
