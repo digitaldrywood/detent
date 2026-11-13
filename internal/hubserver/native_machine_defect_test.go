@@ -54,9 +54,9 @@ func TestNativeReleaseStabilizationOccurrences(t *testing.T) {
 			origin := issueorigin.Origin{Kind: "worker", Instance: "runner", Source: key, Fingerprint: issueorigin.Fingerprint("go-test:example/pkg:TestOne")}
 			if series != "" {
 				body += "\nRelease stabilization: `" + series + "`\n"
-				origin = issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/example-org/example-project/actions/runs/1/attempts/1", Fingerprint: issueorigin.ReleaseStabilizationFingerprint(series)}
+				origin = issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/digitaldrywood/detent/actions/runs/1/attempts/1", Fingerprint: issueorigin.ReleaseStabilizationFingerprint(series)}
 			}
-			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: "Scheduled repair", Body: issueorigin.Stamp(body, origin), State: "Todo", Priority: new(1)}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: string(project) + "/" + key}, Title: "Scheduled repair", Body: issueorigin.Stamp(body, origin), State: "Todo", Priority: new(1)}
 			raw, err := f.service.executeWorkItemRecordMutation(t.Context(), scope, nativeCommandOptions{OperationID: "release-stabilization-fixture", Feature: "collaboration"}, request.Mutation, request, "")
 			if err != nil {
 				t.Fatal(err)
