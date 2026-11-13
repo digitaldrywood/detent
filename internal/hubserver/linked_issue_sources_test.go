@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -267,6 +269,21 @@ func linkedSnapshot() tracker.GitHubIssueSnapshot {
 	return tracker.GitHubIssueSnapshot{URL: "https://github.com/acme/orders/issues/12", Title: "Fetched source title", Body: "Full source body" + issueContractTestSections, Provenance: prov, Comments: []tracker.GitHubIssueComment{{Body: "Source discussion", Provenance: comment}}}
 }
 
+func moveLinkedFixtureToTodo(t *testing.T, f nativeFixture, item tracker.NativeWorkItemID) {
+	t.Helper()
+	previous := readWorkItem(t, f, item, "")
+	moved := monthlyBudgetState(t, f, item, "Todo")
+	document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: item, ID: "issue:" + string(item), SourceID: string(item), Kind: "issue", Scope: "issue", Revision: int64(moved.Revision), UpdatedAt: moved.UpdatedAt}, searchstore.Text{Title: moved.Title, Body: moved.Body, Labels: moved.Labels})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.PutSearch(t.Context(), document, int64(previous.Revision))
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"unedited", "native edits", "title edit", "body edit", "edit back to placeholder", "incomplete source contract"} {
@@ -321,6 +338,7 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 						response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "label-only"}, ExpectedRevision: issue.Revision, Labels: &[]string{"example"}})
 						requireNativeStatus(t, response, http.StatusOK)
 					}
+					moveLinkedFixtureToTodo(t, f, issue.WorkItemID)
 				} else {
 					source := coreWorkItemNeutralFixture(t, f.project.OrganizationID, f.project.ID, false)
 					linked := newCoreNeutralFixture(t, f.project.OrganizationID, "linked_issue_sources")
@@ -337,7 +355,8 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 						item := tracker.NativeWorkItemID("wi_core_import" + suffix)
 						url := fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", 12+itemIndex)
 						source.add("linked_issue_sources", map[string]any{"work_item_id": item, "source_url": url, "title_supplied": false, "body_supplied": false, "snapshot_json": nil})
-						title, body := "Updated title", coreImportBody()
+						source.set("queue_entries", map[string]string{"issue_id": strconv.Itoa(41 + itemIndex*2)}, map[string]any{"scope": string(f.project.ID)})
+						title, body := "Updated title", nativeContractTestBody
 						if titleOwned && mode != "edit back to placeholder" {
 							title = "Native title"
 						}
