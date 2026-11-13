@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -11,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runneradvice"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const capacityGiB = runneradvice.CapacityGiB
@@ -60,4 +62,15 @@ func (s *Service) registerRunnerAdviceRoutes(e *echo.Echo) {
 		Admin: s.requireInstanceAdmin(),
 		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
 	})
+}
+
+type runnerHostHour = runneradvice.HostHour
+
+func prepareRunnerHostMetrics(raw json.RawMessage) []hostmetrics.Summary {
+	return runneradvice.PrepareHostMetrics(raw)
+}
+
+func (s *Service) readRunnerHostHistory(ctx context.Context, organization tracker.OrganizationID, runner string, from, to time.Time) ([]runnerHostHour, error) {
+	history, err := s.runnerAdviceService().HostHistory(ctx, organization, runner, from, to)
+	return history, fromFeatureError(err)
 }

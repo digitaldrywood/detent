@@ -1,4 +1,4 @@
-package hubserver
+package runneradvice
 
 import (
 	"context"
@@ -10,13 +10,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const maxHostSegments = 128
+const MaxHostSegments = 128
 
-func validHostSummary(s hostmetrics.Summary) bool {
+func ValidHostSummary(s hostmetrics.Summary) bool {
 	if s.Hour.IsZero() || !s.Hour.Equal(s.Hour.UTC().Truncate(time.Hour)) || s.SegmentID.IsZero() || s.SampleCount == 0 || s.SampleCount > 120 || s.LogicalCores <= 0 || s.LogicalCores > 65536 {
 		return false
 	}
@@ -59,7 +60,7 @@ func validHostSummary(s hostmetrics.Summary) bool {
 	return s.CPUBusyMaxPercent <= 100 && s.CPUBusyMaxPercent <= s.CPUBusySumPercent && s.CPUBusySumPercent <= s.CPUBusyMaxPercent*float64(s.CPUSampleCount)
 }
 
-func prepareRunnerHostMetrics(raw json.RawMessage) []hostmetrics.Summary {
+func PrepareHostMetrics(raw json.RawMessage) []hostmetrics.Summary {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -71,7 +72,7 @@ func prepareRunnerHostMetrics(raw json.RawMessage) []hostmetrics.Summary {
 	summaries := make([]hostmetrics.Summary, 0, len(segments))
 	for _, segment := range segments {
 		var summary hostmetrics.Summary
-		if len(segment) > 1024 || json.Unmarshal(segment, &summary) != nil || !validHostSummary(summary) {
+		if len(segment) > 1024 || json.Unmarshal(segment, &summary) != nil || !ValidHostSummary(summary) {
 			slog.Default().Warn("runner host summary dropped", "reason", "invalid summary")
 			continue
 		}
@@ -80,7 +81,7 @@ func prepareRunnerHostMetrics(raw json.RawMessage) []hostmetrics.Summary {
 	return summaries
 }
 
-type runnerHostHour struct {
+type HostHour struct {
 	hostmetrics.Summary
 	SegmentID                   *time.Time `json:"segment_id,omitempty"`
 	MemoryAvailableAverageBytes *float64   `json:"memory_available_average_bytes,omitempty"`
@@ -97,10 +98,10 @@ func hostMetricAverage(sum float64, count uint64) *float64 {
 	return &value
 }
 
-func (s *Service) readRunnerHostHistory(ctx context.Context, organization tracker.OrganizationID, runner string, from, to time.Time) ([]runnerHostHour, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) HostHistory(ctx context.Context, organization tracker.OrganizationID, runner string, from, to time.Time) ([]HostHour, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	now := s.config.now().UTC().Truncate(time.Hour)
+	now := s.deps.Now().UTC().Truncate(time.Hour)
 	if from.IsZero() {
 		from = now.Add(-167 * time.Hour)
 	}
@@ -108,30 +109,30 @@ func (s *Service) readRunnerHostHistory(ctx context.Context, organization tracke
 		to = now.Add(time.Hour)
 	}
 	if !from.Before(to) || to.Sub(from) > 720*time.Hour {
-		return nil, nativePublicInvalid("Host history range must be positive and at most 30 days")
+		return nil, hubapi.PublicInvalid("Host history range must be positive and at most 30 days")
 	}
 	from = from.UTC()
 	from = maxHostHistoryTime(from, now.Add(-719*time.Hour))
 	var segments []hostmetrics.Summary
-	if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.deps.Repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		segments, err = r.RunnerHostMetrics(ctx, runner, from, to.UTC())
 		return err
 	}); err != nil {
 		return nil, err
 	}
-	return aggregateRunnerHostHours(segments)
+	return AggregateHostHours(segments)
 }
 
-func aggregateRunnerHostHours(segments []hostmetrics.Summary) ([]runnerHostHour, error) {
-	history := make([]runnerHostHour, 0, len(segments))
+func AggregateHostHours(segments []hostmetrics.Summary) ([]HostHour, error) {
+	history := make([]HostHour, 0, len(segments))
 	for _, segment := range segments {
 		if len(history) == 0 || !history[len(history)-1].Hour.Equal(segment.Hour) {
-			history = append(history, runnerHostHour{Summary: segment})
+			history = append(history, HostHour{Summary: segment})
 			continue
 		}
 		previous := history[len(history)-1].Summary
-		merged, ok := mergeHostSummary(previous, segment)
+		merged, ok := MergeHostSummary(previous, segment)
 		if !ok {
 			return nil, errors.New("host hour sum overflow")
 		}
