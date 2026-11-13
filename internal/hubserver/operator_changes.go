@@ -38,7 +38,7 @@ func (e hubOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Defi
 			continue // The library belongs to the daemon dashboard application.
 		}
 		scope := apikey.ScopeRead
-		if !d.Annotations.ReadOnly && d.Name != operatortool.ArtifactAccess {
+		if !d.Annotations.ReadOnly {
 			scope = apikey.ScopeWrite
 		}
 		if d.Name == operatortool.ApproveChangeReviewPolicy || d.Name == operatortool.BindArtifactService || d.Name == operatortool.ReviewChange && e.service.config.Hosted != nil {
@@ -94,10 +94,10 @@ func (e hubOperatorExecutor) Execute(ctx context.Context, call operatortool.Call
 	if err != nil {
 		return result, err
 	}
-	definition, _ := operatortool.ChangeDefinition(call.Name)
+	read := changeReadDispatch(call.Name)
 	var m mutation.Metadata
 	outcome := "failed"
-	if !definition.Annotations.ReadOnly {
+	if !read {
 		m, err = changeMutationMetadata(ctx, call.Name, args, call.Arguments)
 		if err != nil {
 			return result, err
@@ -108,7 +108,7 @@ func (e hubOperatorExecutor) Execute(ctx context.Context, call operatortool.Call
 	if err != nil {
 		return result, err
 	}
-	if definition.Annotations.ReadOnly {
+	if read {
 		value, err := app.ReadChange(ctx, call.Name, args)
 		if err != nil {
 			return result, hubSafeChangeError(fmt.Errorf("read change: %w", err))
@@ -130,7 +130,7 @@ func (s *Service) hubChangeAuthority(ctx context.Context, name string, raw json.
 	}
 	d, _ := operatortool.ChangeDefinition(name)
 	scope := apikey.ScopeRead
-	if !d.Annotations.ReadOnly && name != operatortool.ArtifactAccess {
+	if !d.Annotations.ReadOnly {
 		scope = apikey.ScopeWrite
 	}
 	if name == operatortool.ApproveChangeReviewPolicy || name == operatortool.BindArtifactService || name == operatortool.ReviewChange && s.config.Hosted != nil {
@@ -155,7 +155,7 @@ func (s *Service) hubChangeAuthority(ctx context.Context, name string, raw json.
 	if name == operatortool.ArtifactAccess {
 		readName = operatortool.GetArtifactReference
 	}
-	if args.ItemID == "" || d.Annotations.ReadOnly {
+	if args.ItemID == "" || changeReadDispatch(name) {
 		return ctx, app, nil
 	}
 	if s.config.TenantRepository != nil && (name == operatortool.CreateChange || name == operatortool.PublishChangeVersion || name == operatortool.ReviewChange) {
@@ -311,4 +311,9 @@ func hubSafeChangeError(err error) error {
 		return err
 	}
 	return fmt.Errorf("%w: %w", operatortool.ErrServiceUnavailable, err)
+}
+
+func changeReadDispatch(name string) bool {
+	d, _ := operatortool.ChangeDefinition(name)
+	return d.Annotations.ReadOnly && name != operatortool.ArtifactAccess
 }

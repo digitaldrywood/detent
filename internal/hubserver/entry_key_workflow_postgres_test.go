@@ -2038,13 +2038,14 @@ func TestPostgresEntryKeyWorkCommandCatalog(t *testing.T) {
 				for _, test := range []struct {
 					name      string
 					available bool
-				}{{operatortool.MoveItem, user != "reader"}, {operatortool.StopRun, user == "owner" || user == "admin" || user == "member"}} {
+					read      bool
+				}{{operatortool.MoveItem, user != "reader", false}, {operatortool.StopRun, user == "owner" || user == "admin" || user == "member", false}, {operatortool.ArtifactAccess, true, true}} {
 					definition, found := entryKeyDefinition(definitions, test.name)
 					if found != test.available {
 						t.Errorf("%s availability=%v want=%v", test.name, found, test.available)
 					}
-					if found && definition.Annotations.ReadOnly {
-						t.Errorf("%s is a mutation", test.name)
+					if found && definition.Annotations.ReadOnly != test.read {
+						t.Errorf("%s read-only annotation=%v want=%v", test.name, definition.Annotations.ReadOnly, test.read)
 					}
 				}
 				for _, definition := range definitions {
