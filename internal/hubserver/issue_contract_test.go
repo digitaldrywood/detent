@@ -692,6 +692,9 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 			}
 			if test.noPolicy {
 				clearNativeFixturePolicy(t, f)
+				updateWorkflowPolicyFixtureProject(t, f, func(project *projectstore.Record) {
+					project.Core.WorkflowSource, project.Core.WorkflowSourceRevision = "", ""
+				})
 			}
 			if test.configError {
 				descriptor.Configuration = &policy.Configuration{Behavior: json.RawMessage(`{"Unknown":true}`)}
