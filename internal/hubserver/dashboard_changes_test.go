@@ -232,7 +232,7 @@ func testDashboardChangeLog(t *testing.T) {
 					return err
 				}
 				item.Title = "Updated dashboard item"
-				_, err = w.UpdateWorkItem(ctx, item)
+				_, err = updateDashboardWorkItem(ctx, w, eventstore.NewContent(f.service.runDetailStore()), item)
 				return err
 			}},
 			{"human_action", string(issues[i].WorkItemID), 3, func(w tenantstore.Writer) error {
@@ -241,7 +241,7 @@ func testDashboardChangeLog(t *testing.T) {
 					return err
 				}
 				item.IssueContractObjectKey = &contract.Key
-				_, err = w.UpdateWorkItem(ctx, item)
+				_, err = updateDashboardWorkItem(ctx, w, eventstore.NewContent(f.service.runDetailStore()), item)
 				return err
 			}},
 			{"lane", string(scope.project), -1, func(w tenantstore.Writer) error {
@@ -605,6 +605,15 @@ func testDashboardChangeLog(t *testing.T) {
 			if len(rows) != 1 || rows[0].EntityRevision == nil || *rows[0].EntityRevision != 4 || head(scope).Sequence != before[i]+1 {
 				t.Fatalf("project %d committed revisions=%+v", i, rows)
 			}
+			if err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				item, err := w.WorkItem(ctx, scope.project, issues[i].WorkItemID)
+				if err != nil {
+					return err
+				}
+				return writeDashboardWorkItemVersion(ctx, w, eventstore.NewContent(f.service.runDetailStore()), item)
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}
 	})
 	t.Run("dashboard snapshot pins its data and watermark", func(t *testing.T) {
@@ -640,7 +649,7 @@ func testDashboardChangeLog(t *testing.T) {
 			}
 			item.Title = "After snapshot"
 			item.Archived = true
-			_, err = w.UpdateWorkItem(ctx, item)
+			_, err = updateDashboardWorkItem(ctx, w, eventstore.NewContent(f.service.runDetailStore()), item)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -896,7 +905,7 @@ func testDashboardChangeLog(t *testing.T) {
 				t.Fatalf("watermarks=%+v want (%d,%d)", watermark, beforeHead, floor)
 			}
 			for _, since := range []int64{floor - 1, floor} {
-				sub := &dashboardSubscription{initial: true, sequence: since, frames: make(chan dashboardFrame, 2), done: make(chan struct{})}
+				sub := &dashboardSubscription{sequence: since, frames: make(chan dashboardFrame, 2), done: make(chan struct{})}
 				delivery := &dashboardDelivery{config: dashboardDeliveryConfig{pageSize: 1}}
 				more, err := f.service.dashboardProjectRecordPage(ctx, delivery, sub, scope)
 				if err != nil {
@@ -1026,4 +1035,40 @@ func testDashboardProjectionAfterSourceSnapshot(t *testing.T) {
 
 func dashboardWorkspaceID(id string) string {
 	return "ws_" + strings.Repeat("0", 32-len(id)) + id
+}
+
+func updateDashboardWorkItem(ctx context.Context, w tenantstore.Writer, content *eventstore.Content, item corestore.WorkItem) (corestore.WorkItem, error) {
+	updated, err := w.UpdateWorkItem(ctx, item)
+	if err != nil {
+		return corestore.WorkItem{}, err
+	}
+	return updated, writeDashboardWorkItemVersion(ctx, w, content, updated)
+}
+
+func writeDashboardWorkItemVersion(ctx context.Context, w tenantstore.Writer, content *eventstore.Content, item corestore.WorkItem) error {
+	previous, err := w.CollaborationVersion(ctx, string(item.NativeID), item.Revision-1)
+	if err != nil {
+		return err
+	}
+	raw, err := content.CollaborationVersion(ctx, previous)
+	if err != nil {
+		return err
+	}
+	var issue tracker.NativeIssue
+	if err := json.Unmarshal(raw, &issue); err != nil {
+		return err
+	}
+	issue.Revision, issue.Title, issue.Archived = tracker.Revision(item.Revision), item.Title, item.Archived
+	raw, err = json.Marshal(issue)
+	if err != nil {
+		return err
+	}
+	next := previous
+	next.Revision = item.Revision
+	version, err := content.PrepareCollaborationVersion(ctx, next, raw)
+	if err != nil {
+		return err
+	}
+	_, err = w.CreateCollaborationVersion(ctx, version)
+	return err
 }
