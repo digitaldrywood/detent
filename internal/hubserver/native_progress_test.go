@@ -212,6 +212,13 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 					t.Fatalf("%s allowed a publication against stale canonical event sequence", eventType)
 				}
 			}
+			request, _ = readRequest(t, issue)
+			id, err = request.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.RequestID, record.EvidenceRevision = id, request.EvidenceRevision
+			owner.request = request
 			owner.guardRevision = nil
 			if _, err := admin.ExecContext(t.Context(), `CREATE FUNCTION reject_progress_receipt_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.actor_id='native-progress' THEN RAISE EXCEPTION 'injected final progress persistence failure'; END IF; RETURN NEW; END $$`); err != nil {
 				t.Fatal(err)
