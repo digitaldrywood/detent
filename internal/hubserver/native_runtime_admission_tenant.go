@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -41,6 +42,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 	var unresolved []tracker.NativeDependency
 	dependencyPartial := false
 	plan := nativeClaimPlan{issue: issue}
+	var answeredPlan nativeClaimPlan
 	truncated := false
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
@@ -137,6 +139,23 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		if err != nil {
 			return err
 		}
+		if len(candidates.Items) > 0 {
+			batch, ok := r.(tenantstore.ClaimPreviewPlanRowsReader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			rows, err := batch.ClaimPreviewPlanRows(ctx, scope.project, candidates.Items[:1])
+			if err != nil {
+				return err
+			}
+			if len(rows) != 1 {
+				return corestore.ErrRevisionConflict
+			}
+			if rows[0].Err != nil {
+				return rows[0].Err
+			}
+			answeredPlan = nativeClaimPlanFromBatch(nativeClaimPlan{project: project}, candidates.Items[0], rows[0])
+		}
 		if project.Core.Profile == "github_compatible" {
 			item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
 			if err != nil {
@@ -172,6 +191,13 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		return err
 	}
 	plan.descriptor = descriptor
+	var answered *tracker.NativeAnsweredExclusion
+	if answeredPlan.snapshotLoaded {
+		answered, err = s.nativeClaimAnsweredExclusion(ctx, scope, answeredPlan, now)
+		if err != nil {
+			return err
+		}
+	}
 	contract, err := nativeRuntimeIssueContractEvaluation(plan)
 	if err != nil {
 		return err
@@ -265,6 +291,9 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			if dependencyPartial {
 				entry.Unavailable = append(entry.Unavailable, "unresolved_dependencies")
 			}
+		case answered != nil:
+			entry.Outcome, entry.ReasonCode, entry.Reason, entry.AnsweredExclusion = "skipped", "no_claimable_work", nativeAnsweredExclusionReason(*answered), answered
+			entry.Unavailable = append(entry.Unavailable, "other_native_candidate_exclusions")
 		case !found:
 			entry.Unavailable = append(entry.Unavailable, "runner_specific_candidate_selection")
 		case !runtimeAdmissionSelects(selected, candidates.Items[0]):
@@ -428,4 +457,11 @@ func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenan
 	}
 	slices.SortFunc(unresolved, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 	return unresolved[:min(limit, len(unresolved))], len(rows) > limit, nil
+}
+
+func nativeAnsweredExclusionReason(answered tracker.NativeAnsweredExclusion) string {
+	if answered.Kind == string(gate.ReasonAutomatedReviewMissing) {
+		return "The existing native claim candidate query does not select this item; waiting on review evidence for the published current Change version"
+	}
+	return "The existing native claim candidate query does not select this item; current answered exclusion: " + answered.Kind
 }

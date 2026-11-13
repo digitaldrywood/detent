@@ -1320,6 +1320,11 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 	if nativeClaimDispatchSatisfied(plan) {
 		return nativeClaimPlan{}, errNativeClaimPlanRefused
 	}
+	if exclusion, err := s.nativeClaimAnsweredExclusion(ctx, scope, plan, now); err != nil {
+		return nativeClaimPlan{}, err
+	} else if exclusion != nil {
+		return nativeClaimPlan{}, errNativeClaimPlanRefused
+	}
 	plan.issue.State = valueOrEmpty(plan.item.WorkflowStateName)
 	plan.issue.LastActivityAt = plan.item.LastActivityAt
 	if plan.linkedRecord != nil {
