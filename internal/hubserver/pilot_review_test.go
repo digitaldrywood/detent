@@ -70,7 +70,10 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		input.PolicyID, input.Repository = descriptor.ID, "https://github.com/example/"+project
 		input.External = &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: input.Repository + "/pull/1"}
 		input.RunID, input.AttemptID = start.Data.RunID, start.Data.AttemptID
-		response = f.setupRequest(t, "owner", http.MethodPost, path+"/versions", tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "pilot-version"}, ChangeVersionInput: input})
+		bundle := changeTestSource(t, &input, []byte("pilot source "+project))
+		diff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: start.Data.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, Files: []tracker.AttemptDiffFile{{Path: "example.go", Status: tracker.DiffStatusModified, Patch: "@@ -1 +1 @@\n-old\n+new\n"}}}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/attempts/"+start.Data.AttemptID+"/diff", runner.Credential, diff), http.StatusAccepted)
+		response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", runner.Credential, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "pilot-version", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: bundle})
 		requireNativeStatus(t, response, http.StatusOK)
 		var version tracker.ChangeVersion
 		decodeHubResponse(t, response, &version)
