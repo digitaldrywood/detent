@@ -31,7 +31,18 @@ func placementNativeFixture(t *testing.T, cfg Config) nativeFixture {
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		cfg.now = func() time.Time { return now }
 	}
-	return newDefaultNativeFixture(t, cfg)
+	f := newDefaultNativeFixture(t, cfg)
+	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.Core.RequireDependencies = true
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	})
+	f.project.RequireDependencies = true
+	return f
 }
 
 func placementFixtureScope(t *testing.T, f nativeFixture) nativeScope {
