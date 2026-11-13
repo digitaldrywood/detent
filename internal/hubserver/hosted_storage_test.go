@@ -409,7 +409,7 @@ func TestHostedMetadataExcludesCustomerContent(t *testing.T) {
 		if _, err := w.AppendEvent(t.Context(), event); err != nil {
 			return err
 		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "metadata_credential", Name: sentinel, Fingerprint: sentinel, Hash: apikey.HashToken(sentinel), Scope: "operator", Kind: "service", CreatedAt: at, UpdatedAt: at, LastUsedAt: &at}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "metadata_credential", Name: sentinel, Fingerprint: sentinel, Hash: apikey.HashToken(sentinel), Scope: "operator", Kind: "service", ProjectAccess: "all", CreatedAt: at, UpdatedAt: at, LastUsedAt: &at}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_metadata", Email: sentinel + "@example.test", MembershipID: "membership_metadata", PrincipalID: "test_hub_admin", Role: "viewer", Active: true, CreatedAt: at, UpdatedAt: at}); err != nil {
