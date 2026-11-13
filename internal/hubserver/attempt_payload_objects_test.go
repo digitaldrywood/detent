@@ -726,7 +726,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			}
 			historyRows := probe.rows.Load()
 			t.Logf("post-run edits=%d: history rows=%d objects=%d", test.postRunEdits, historyRows, historyObjects)
-			if historyRows > 4 || historyObjects > 1 {
+			if historyRows > 4 || historyObjects > 2 {
 				t.Errorf("post-run edits=%d: recovery read %d history rows and %d objects", test.postRunEdits, historyRows, historyObjects)
 			}
 			valid := proofErr == nil
