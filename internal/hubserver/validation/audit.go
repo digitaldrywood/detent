@@ -36,14 +36,13 @@ func (s *Service) AuditRecord(ctx context.Context, scope hubapi.Scope, item trac
 	if item.OrganizationID != scope.Organization || item.ProjectID != scope.Project || item.WorkItemID == "" {
 		return nil, artifact.ErrIntegrity
 	}
-	attemptID := ""
-	if attempt != nil {
-		attemptID = attempt.AttemptID
-		if attemptID == "" {
-			return nil, artifact.ErrIntegrity
-		}
+	if attempt == nil {
+		return s.AuditTenant(ctx, scope, string(item.WorkItemID), "", "", "")
 	}
-	return s.AuditTenant(ctx, scope, string(item.WorkItemID), string(item.WorkItemID), "", attemptID)
+	if attempt.AttemptID == "" {
+		return nil, artifact.ErrIntegrity
+	}
+	return s.AuditTenant(ctx, scope, "", string(item.WorkItemID), "", attempt.AttemptID)
 }
 
 func (s *Service) AuditTenant(ctx context.Context, scope hubapi.Scope, scheduledItem, localItem, changeID, attemptID string) (*tracker.ValidationAudit, error) {

@@ -192,6 +192,10 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope hubscope.Na
 	if err := s.recheckChangeReadAuthority(ctx, scope); err != nil {
 		return result, err
 	}
+	if result.Detail != nil {
+		detail := changeDetailResponse(*result.Detail)
+		result.Detail = &detail
+	}
 	return result, nil
 }
 

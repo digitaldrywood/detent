@@ -603,7 +603,8 @@ func TestOperatorChangeCommands(t *testing.T) {
 	foreignScope := scope
 	foreignScope.Project = "prj_foreign"
 	foreignAudit, err := f.service.readValidationAuditTenant(t.Context(), foreignScope, "", "", "", "")
-	if err != nil || len(foreignAudit.Occurrences) != 0 {
+	var foreignRefusal *hubapi.NativeError
+	if !errors.As(err, &foreignRefusal) || foreignRefusal.Code != "not_found" || foreignRefusal.Status != http.StatusNotFound || foreignAudit != nil {
 		t.Fatalf("foreign evidence=%+v %v", foreignAudit, err)
 	}
 	args := base
@@ -815,7 +816,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 			t.Fatalf("unrealistic policy bytes=%d: %v", len(policyBytes), err)
 		}
 		for i := range 3 {
-			unrelated := f.create(t, "unrelated scheduled failure")
+			unrelated := f.create(t, "unrelated scheduled failure "+strconv.Itoa(i))
 			record := scheduled
 			record.OccurrenceKey = policy.Digest([]byte(strconv.Itoa(i)))
 			record.RunID = strconv.Itoa(200 + i)
