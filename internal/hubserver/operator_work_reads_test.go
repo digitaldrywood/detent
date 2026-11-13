@@ -512,7 +512,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if err := json.Unmarshal(result.Content, &listing); err != nil {
 		t.Fatal(err)
 	}
-	if len(listing.Data.Items) != 1 || listing.Data.Items[0].WorkItemID != first.WorkItemID || listing.Data.NextCursor == "" || listing.Data.Items[0].URL == "" {
+	if len(listing.Data.Items) != 1 || listing.Data.Items[0].WorkItemID != second.WorkItemID || listing.Data.NextCursor == "" || listing.Data.Items[0].URL == "" {
 		t.Fatalf("list=%s", result.Content)
 	}
 	listArgs["cursor"] = listing.Data.NextCursor
@@ -524,7 +524,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if err := json.Unmarshal(result.Content, &listing); err != nil {
 		t.Fatal(err)
 	}
-	if len(listing.Data.Items) != 1 || listing.Data.Items[0].WorkItemID != second.WorkItemID || listing.Data.NextCursor != "" {
+	if len(listing.Data.Items) != 1 || listing.Data.Items[0].WorkItemID != first.WorkItemID || listing.Data.NextCursor != "" {
 		t.Fatalf("next list=%s", result.Content)
 	}
 	commentsArgs := args()
