@@ -81,15 +81,6 @@ func TestNativeWorkSearch(t *testing.T) {
 		} {
 			t.Run(mode+"/"+test.name, func(t *testing.T) {
 				response := f.request(t, user, http.MethodGet, f.base+"/work-items?"+url.Values{"q": {test.query}, "include": {test.include}, "limit": {"1"}}.Encode(), nil)
-				if mode == "pending" {
-					requireNativeStatus(t, response, http.StatusServiceUnavailable)
-					var failure apiErrorResponse
-					decodeHubResponse(t, response, &failure)
-					if failure.Code != "not_ready" {
-						t.Fatalf("pending search code=%q", failure.Code)
-					}
-					return
-				}
 				requireNativeStatus(t, response, http.StatusOK)
 				var page tracker.NativeIssuePage
 				decodeHubResponse(t, response, &page)
@@ -99,6 +90,21 @@ func TestNativeWorkSearch(t *testing.T) {
 						t.Fatal("work projection missing")
 					}
 					items = page.Work.Items
+				}
+				if mode == "pending" {
+					if page.ProjectionPending || page.Total != -1 {
+						t.Fatalf("ready board fallback page=%+v", page)
+					}
+					if test.name == "body substring" || test.name == "work projection" {
+						if len(items) != 0 {
+							t.Fatalf("unindexed body matched title fallback: %+v", items)
+						}
+						return
+					}
+					if len(items) != 1 || items[0].WorkItemID != second || items[0].Snippet == "" {
+						t.Fatalf("title fallback results=%+v", items)
+					}
+					return
 				}
 				if len(items) != 1 || items[0].WorkItemID != test.want || items[0].Snippet == "" {
 					t.Fatalf("search results=%+v", items)
