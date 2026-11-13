@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -622,9 +623,44 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		source.add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
 		source.add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
 	}
-	count, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()})
-	if err != nil || count != 2 {
+	automated := []struct {
+		name, repository, target string
+		disabled, mapped, rework bool
+	}{
+		{"disabled integration", "example-org/example-project", "Merging", true, true, false},
+		{"missing source", "", "In Progress", false, true, true},
+		{"foreign source", "example-org/other-project", "Merging", false, true, false},
+		{"unmapped automated target", "example-org/example-project", "Merging", false, false, false},
+	}
+	source.add("workflow_states", map[string]any{"id": 2, "project_id": project, "detent_state": "Human Review"})
+	source.add("repositories", map[string]any{"id": 2, "github_owner": "example-org", "github_name": "other-project"})
+	for index, test := range automated {
+		id := tracker.NativeWorkItemID(fmt.Sprintf("wi_automated_%d", index))
+		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: id, Number: index + 3, Revision: 1, Profile: "github_compatible"}, Title: "Retained automated transition", Body: "Canonical local review content", State: "Human Review", Actor: actor, CreatedAt: parseTestTime(t, stamp), UpdatedAt: parseTestTime(t, stamp), LastActivityAt: parseTestTime(t, stamp)}
+		row := map[string]any{"id": 100 + index, "native_id": id, "project_id": project, "number": index + 3, "revision": 1, "event_sequence": 1, "title": issue.Title, "body": issue.Body, "actor_json": string(historyTestJSON(t, actor)), "archived": 0, "created_at": stamp, "updated_at": stamp, "native_created_at": stamp, "native_updated_at": stamp, "last_activity_at": stamp, "workflow_state_id": 2, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-owner"}
+		if test.repository != "" {
+			row["repository_id"] = 1
+			if test.repository != "example-org/example-project" {
+				row["repository_id"] = 2
+			}
+			issue.ExternalReferences = []tracker.ExternalReference{tracker.GitHubIssueSourceReference("I_"+string(id), fmt.Sprintf("https://github.com/%s/issues/%d", test.repository, issue.Number))}
+		}
+		source.add("issues", row)
+		source.add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
+		source.add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
+	}
+	bundle := source.write()
+	count, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()})
+	if err != nil || count != int64(2+len(automated)) {
 		t.Fatalf("retained compatible import=%d error=%v", count, err)
+	}
+	if count, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()}); err != nil || count != int64(2+len(automated)) {
+		t.Fatalf("same-source import retry=%d error=%v", count, err)
+	}
+	other := newCoreNeutralFixture(t, organization, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
+	other.add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
+	if _, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: other.write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()}); !errors.Is(err, mutation.ErrConflict) {
+		t.Fatalf("different core import source for the organization error=%v, want conflict", err)
 	}
 	seedHubAPIToken(t, service, "operator-token", "operator-secret-token", hubapi.APIScopeOperator)
 	const item = tracker.NativeWorkItemID("wi_operator_first")
@@ -1029,37 +1065,9 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			t.Fatalf("change workflow outbound count=%d error=%v", count, err)
 		}
 	})
-	for index, test := range []struct {
-		name, repository, target string
-		disabled, mapped, rework bool
-	}{
-		{"disabled integration", "example-org/example-project", "Merging", true, true, false},
-		{"missing source", "", "In Progress", false, true, true},
-		{"foreign source", "example-org/other-project", "Merging", false, true, false},
-		{"unmapped automated target", "example-org/example-project", "Merging", false, false, false},
-	} {
+	for index, test := range automated {
 		t.Run(test.name, func(t *testing.T) {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_automated_%d", index))
-			retained := newCoreNeutralFixture(t, organization, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
-			retained.add("workflow_states", map[string]any{"id": 2, "project_id": project, "detent_state": "Human Review"})
-			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: id, Number: index + 3, Revision: 1, Profile: "github_compatible"}, Title: "Retained automated transition", Body: "Canonical local review content", State: "Human Review", Actor: actor, CreatedAt: parseTestTime(t, stamp), UpdatedAt: parseTestTime(t, stamp), LastActivityAt: parseTestTime(t, stamp)}
-			row := map[string]any{"id": 100 + index, "native_id": id, "project_id": project, "number": index + 3, "revision": 1, "event_sequence": 1, "title": issue.Title, "body": issue.Body, "actor_json": string(historyTestJSON(t, actor)), "archived": 0, "created_at": stamp, "updated_at": stamp, "native_created_at": stamp, "native_updated_at": stamp, "last_activity_at": stamp, "workflow_state_id": 2, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-owner"}
-			if test.repository != "" {
-				owner, name, ok := strings.Cut(test.repository, "/")
-				if !ok {
-					t.Fatal("fixture repository is invalid")
-				}
-				retained.add("repositories", map[string]any{"id": 1, "github_owner": owner, "github_name": name})
-				row["repository_id"] = 1
-				issue.ExternalReferences = []tracker.ExternalReference{tracker.GitHubIssueSourceReference("I_"+string(id), fmt.Sprintf("https://github.com/%s/issues/%d", test.repository, issue.Number))}
-			}
-			retained.add("issues", row)
-			retained.add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
-			retained.add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
-			count, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: retained.write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()})
-			if err != nil || count != 1 {
-				t.Fatalf("retained automated source import=%d error=%v", count, err)
-			}
 			selectedPolicy := descriptor
 			if !test.mapped {
 				selectedPolicy.Configuration = &policy.Configuration{Behavior: json.RawMessage(`{"StateMap":{"IsMap":true,"Map":{"In Progress":"detent:in-progress","Done":"detent:done","Cancelled":"detent:cancelled","Human Review":"detent:review"}}}`), Prompt: "Follow the approved workflow"}
