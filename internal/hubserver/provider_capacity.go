@@ -1,11 +1,14 @@
 package hubserver
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -143,4 +146,36 @@ func providerConcurrencyLimit(a, b int) int {
 		return a
 	}
 	return min(a, b)
+}
+
+func validateTenantProviderAttempt(ctx context.Context, reader tenantstore.Reader, runnerID string, data tracker.NativeRunData, now time.Time) error {
+	stored, err := reader.ProviderReservation(ctx, data.LeaseID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	reservation := stored.Reservation
+	if data.Identity == nil || reservation.Requirement != (providercapacity.Requirement{Role: data.Identity.Role, Backend: data.Identity.Backend, Model: data.Identity.Model}) {
+		return providerWait("provider_incompatible", "Execution identity must match the reserved role, backend and model")
+	}
+	reports, err := reader.RunnerProviderReports(ctx, runnerID)
+	if err != nil {
+		return err
+	}
+	for _, report := range reports {
+		if !report.Supports(reservation.Requirement) || report.Provider != reservation.Report.Provider || report.AccountAlias != reservation.Report.AccountAlias || report.SharedAccountAlias != reservation.Report.SharedAccountAlias {
+			continue
+		}
+		used, err := reader.ProviderReservationUsage(ctx, report, runnerID, now)
+		if err != nil {
+			return err
+		}
+		if report.MaxConcurrent > 0 && used > report.MaxConcurrent {
+			return providerWait("provider_capacity", "Provider capacity changed after reservation; release the lease and wait")
+		}
+		return nil
+	}
+	return providerWait("provider_incompatible", "Provider account or capability changed after reservation")
 }

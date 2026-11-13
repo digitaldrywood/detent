@@ -130,6 +130,11 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Cont
 			return &leasestore.FenceError{Check: "dispatch_revision"}
 		}
 		authority.DispatchGeneration = state.Generation
+		if event.Type == "run.started" && event.Data.Identity != nil {
+			if err := validateTenantProviderAttempt(ctx, reader, authority.Scope.credential.Runner.RunnerID, event.Data, p.service.config.now().UTC()); err != nil {
+				return err
+			}
+		}
 	}
 	if event.Data.Sequence > 1 {
 		attempt, err := reader.Attempt(ctx, event.Data.AttemptID)
