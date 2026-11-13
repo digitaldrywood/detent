@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/cloudentry/socket"
 	"io"
 	"mime"
 	"net"
@@ -22,9 +21,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/socket"
 	"github.com/digitaldrywood/detent/internal/hubserver"
-	"github.com/digitaldrywood/detent/internal/mcp"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 var strippedRequestHeaders = []string{
@@ -55,18 +53,6 @@ func (s *Service) tenantTransport(organization Organization) (http.RoundTripper,
 		return stored, nil
 	}
 	return transport, nil
-}
-
-func (s *Service) claims(organization Organization, kind, method, path string, body []byte) (cloudassert.Claims, error) {
-	id, err := cloudassert.NewID()
-	if err != nil {
-		return cloudassert.Claims{}, err
-	}
-	now := s.config.now()
-	return cloudassert.Claims{
-		OrganizationSlug: organization.Slug, Issuer: s.config.Issuer, Audience: organization.ID, Generation: organization.Generation, Kind: kind,
-		Method: method, Path: path, BodyDigest: cloudassert.BodyDigest(body), IssuedAt: now, ExpiresAt: now.Add(assertionLifetime), ID: id,
-	}, nil
 }
 
 func (s *Service) browserFailure(c echo.Context, organization string, status int) error {
@@ -476,93 +462,6 @@ func (s *Service) proxy(c echo.Context) error {
 	}
 	proxy.ServeHTTP(c.Response(), request)
 	return nil
-}
-
-func (s *Service) serviceRequest(ctx context.Context, organization Organization, path string, payload any, identity func(*cloudassert.Claims)) (int, error) {
-	status, _, err := s.serviceCall(ctx, organization, path, payload, identity)
-	return status, err
-}
-
-func (s *Service) serviceCall(ctx context.Context, organization Organization, path string, payload any, identity func(*cloudassert.Claims)) (int, []byte, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return 0, nil, err
-	}
-	claims, err := s.claims(organization, cloudassert.KindService, http.MethodPost, path, body)
-	if err != nil {
-		return 0, nil, err
-	}
-	if identity != nil {
-		identity(&claims)
-	}
-	return s.signedCall(ctx, organization, claims, body, "")
-}
-
-// tenantCallResponseLimit bounds a tenant answer the entry reads itself. An
-// answer past it is an error, never a truncated body that fails to decode.
-const tenantCallResponseLimit = 64 << 10
-
-func (s *Service) machineCall(ctx context.Context, organization Organization, method, path string, body []byte, bearer string) (int, []byte, error) {
-	claims, err := s.claims(organization, cloudassert.KindMachine, method, path, body)
-	if err != nil {
-		return 0, nil, err
-	}
-	return s.signedCall(ctx, organization, claims, body, bearer)
-}
-
-func (s *Service) signedCall(ctx context.Context, organization Organization, claims cloudassert.Claims, body []byte, bearer string) (int, []byte, error) {
-	return s.signedCallCSRF(ctx, organization, claims, body, bearer, "")
-}
-
-func (s *Service) signedCallCSRF(ctx context.Context, organization Organization, claims cloudassert.Claims, body []byte, bearer, csrf string) (int, []byte, error) {
-	assertion, err := cloudassert.Sign(s.config.SigningKey, claims)
-	if err != nil {
-		return 0, nil, err
-	}
-	transport, err := s.config.transport(organization)
-	if err != nil {
-		return 0, nil, err
-	}
-	request, err := http.NewRequestWithContext(ctx, claims.Method, "http://tenant"+claims.Path, bytes.NewReader(body))
-	if err != nil {
-		return 0, nil, err
-	}
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	if bearer != "" {
-		request.Header.Set(echo.HeaderAuthorization, "Bearer "+bearer)
-	}
-	request.Header.Set(cloudassert.Header, assertion)
-	if csrf != "" {
-		request.Header.Set("X-CSRF-Token", csrf)
-	}
-	timeout := 15 * time.Second
-	response, err := (&http.Client{Transport: transport, Timeout: timeout}).Do(request)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer response.Body.Close()
-	limit := int64(tenantCallResponseLimit)
-	if claims.Path == "/internal/v1/keys/catalog" || claims.Path == "/internal/v1/keys/call" {
-		limit = mcp.MaxHTTPResponseBytes
-	}
-	if claims.Path == "/internal/v1/keys/call" {
-		var call struct {
-			Name string `json:"name"`
-		}
-		if json.Unmarshal(body, &call) == nil {
-			limit = max(limit, int64(operatortool.ResultByteLimit(call.Name)))
-		}
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
-	if err != nil {
-		return 0, nil, err
-	}
-	if int64(len(raw)) > limit {
-		return 0, nil, fmt.Errorf("tenant %s %s response exceeds %d bytes", request.Method, request.URL.Path, limit)
-	}
-	return response.StatusCode, raw, nil
 }
 
 func (s *Service) acceptInvitation(ctx context.Context, organization Organization, subject, email, providerSession, token string) error {

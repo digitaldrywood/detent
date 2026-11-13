@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -37,7 +38,7 @@ import (
 )
 
 const (
-	assertionLifetime = 20 * time.Second
+	assertionLifetime = tenantcall.AssertionLifetime
 	sessionLifetime   = 30 * 24 * time.Hour
 	contentSecurity   = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: https://workoscdn.com; font-src 'self'; connect-src 'self' https://huggingface.co https://us.aws.cdn.hf.co https://api.workos.com; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://checkout.stripe.com https://billing.stripe.com https://detent.build"
 )
