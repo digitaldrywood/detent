@@ -615,7 +615,10 @@ func TestPostgresSourceTransferCommitsAndReplays(t *testing.T) {
 							t.Fatalf("corrupt canonical attempt must be refused as an invalid archive: %s", response.Body)
 						}
 					} else {
-						requireNativeStatus(t, response, http.StatusInternalServerError)
+						requireNativeStatus(t, response, http.StatusServiceUnavailable)
+						if !strings.Contains(response.Body.String(), `"code":"archive_unavailable"`) {
+							t.Fatalf("missing canonical attempt must be refused as an unavailable archive: %s", response.Body)
+						}
 					}
 					if err := s.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 						row, err := r.WorkItem(t.Context(), "project", "item")
