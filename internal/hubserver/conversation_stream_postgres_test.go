@@ -332,7 +332,7 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 				t.Fatal(err)
 			}
 			failed.Store(tc.name == "unavailable")
-			elapsed.Store(int64(conversationStreamAuthorize))
+			elapsed.Store(int64(conversationAuthorizeInterval))
 			releaseReplay()
 			for tenant, organization := range organizations {
 				for index, project := range []string{"project_removed", "project_retained"} {

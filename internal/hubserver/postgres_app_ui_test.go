@@ -33,12 +33,10 @@ import (
 )
 
 func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
-	originalClientFS := conversationClientFS
-	conversationClientFS = fstest.MapFS{conversationClientShell: &fstest.MapFile{Data: []byte("<!doctype html><html><head></head><body></body></html>")}}
-	t.Cleanup(func() { conversationClientFS = originalClientFS })
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
+	cfg.StaticFS = fstest.MapFS{conversationClientShell: &fstest.MapFile{Data: []byte("<!doctype html><html><head></head><body></body></html>")}}
 	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Workspace = &WorkspaceConfig{Enabled: true}

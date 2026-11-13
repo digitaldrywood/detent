@@ -109,16 +109,18 @@ type Config struct {
 	ReconcileInterval          time.Duration
 	FullRepairInterval         time.Duration
 
-	hostedBindingMigration     bool
-	validateDatabaseFilesystem func(string) error
-	listen                     func(context.Context, string, string) (net.Listener, error)
-	now                        func() time.Time
-	retentionTimeout           func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	jitter                     func() float64
-	newLeaseID                 func() string
-	newOutboxTimer             func(time.Duration) outboxTimer
-	newTokenID                 func() string
-	generateToken              func() (string, error)
+	hostedBindingMigration      bool
+	conversationStreamHeartbeat time.Duration
+	conversationStreamAuthorize time.Duration
+	validateDatabaseFilesystem  func(string) error
+	listen                      func(context.Context, string, string) (net.Listener, error)
+	now                         func() time.Time
+	retentionTimeout            func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	jitter                      func() float64
+	newLeaseID                  func() string
+	newOutboxTimer              func(time.Duration) outboxTimer
+	newTokenID                  func() string
+	generateToken               func() (string, error)
 }
 
 func (c Config) normalized() Config {

@@ -26,10 +26,6 @@ import (
 // into an opaque 404 on every mutation, while the conversation contract
 // distinguishes "cannot see" (404) from "can read but cannot control" (403).
 // Write capability is therefore checked per handler by authorizeWrite.
-var (
-	conversationStreamHeartbeat = conversationHeartbeatInterval
-	conversationStreamAuthorize = conversationAuthorizeInterval
-)
 
 // requireConversationScope authenticates an operator or admin credential
 // for a project route and requires read access to the project. It mirrors
@@ -130,21 +126,17 @@ func (s *Service) registerConversationRoutes(e *echo.Echo) {
 
 func (s *Service) conversationHTTPDeps() conversations.HTTPDeps {
 	return conversations.HTTPDeps{
-		Service:        func() *conversationService { return s.conversations },
-		Scope:          s.requireConversationScope,
-		Organization:   s.requireConversationOrganization(),
-		Operator:       s.operatorAuthority,
-		Worker:         s.requireNativeScope(hubapi.APIScopeWorker),
-		Action:         s.postConversationAction,
-		Error:          func(c echo.Context, err error) error { return s.nativeAPIError(c, err) },
-		InvalidRequest: s.invalidAPIRequest,
-		RefreshStream:  s.refreshConversationStream,
-		StreamHeartbeat: func() time.Duration {
-			return conversationStreamHeartbeat
-		},
-		StreamAuthorize: func() time.Duration {
-			return conversationStreamAuthorize
-		},
+		Service:         func() *conversationService { return s.conversations },
+		Scope:           s.requireConversationScope,
+		Organization:    s.requireConversationOrganization(),
+		Operator:        s.operatorAuthority,
+		Worker:          s.requireNativeScope(hubapi.APIScopeWorker),
+		Action:          s.postConversationAction,
+		Error:           func(c echo.Context, err error) error { return s.nativeAPIError(c, err) },
+		InvalidRequest:  s.invalidAPIRequest,
+		RefreshStream:   s.refreshConversationStream,
+		StreamHeartbeat: s.config.streamHeartbeat,
+		StreamAuthorize: s.config.streamAuthorize,
 	}
 }
 
@@ -176,4 +168,18 @@ func (s *Service) refreshConversationStream(readCtx context.Context, c echo.Cont
 	}
 	_, err := s.readProjectRecord(readCtx, *scope)
 	return err
+}
+
+func (c *Config) streamHeartbeat() time.Duration {
+	if c.conversationStreamHeartbeat > 0 {
+		return c.conversationStreamHeartbeat
+	}
+	return conversationHeartbeatInterval
+}
+
+func (c *Config) streamAuthorize() time.Duration {
+	if c.conversationStreamAuthorize > 0 {
+		return c.conversationStreamAuthorize
+	}
+	return conversationAuthorizeInterval
 }

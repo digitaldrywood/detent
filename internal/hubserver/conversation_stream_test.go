@@ -109,16 +109,13 @@ type streamFixture struct {
 
 func newStreamFixture(t *testing.T) streamFixture {
 	t.Helper()
-	return newStreamFixtureWithAPI(t, newConversationAPIFixture(t, nil))
+	return newStreamFixtureWithAPI(t, newConversationAPIFixtureConfig(t, nil, Config{conversationStreamHeartbeat: 40 * time.Millisecond, conversationStreamAuthorize: 40 * time.Millisecond}))
 }
 
 func newStreamFixtureWithAPI(t *testing.T, f conversationAPIFixture) streamFixture {
 	t.Helper()
 	server := httptest.NewServer(f.service.Handler())
 	t.Cleanup(server.Close)
-	restoreHeartbeat, restoreAuthorize := conversationStreamHeartbeat, conversationStreamAuthorize
-	conversationStreamHeartbeat, conversationStreamAuthorize = 40*time.Millisecond, 40*time.Millisecond
-	t.Cleanup(func() { conversationStreamHeartbeat, conversationStreamAuthorize = restoreHeartbeat, restoreAuthorize })
 	return streamFixture{conversationAPIFixture: f, server: server}
 }
 
@@ -472,9 +469,6 @@ func (p *streamMembershipFailureProvider) fail(err error) {
 }
 
 func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
-	heartbeat := conversationStreamHeartbeat
-	conversationStreamHeartbeat = 40 * time.Millisecond
-	t.Cleanup(func() { conversationStreamHeartbeat = heartbeat })
 	for _, tt := range []struct {
 		name             string
 		account          string
@@ -628,7 +622,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, browserPreviewConfig)
+			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, browserPreviewConfig, func(cfg *Config) { cfg.conversationStreamHeartbeat = 40 * time.Millisecond })
 			f.seedConversation(t)
 			f.service.config.Hosted.Provider = &streamMembershipFailureProvider{HostedProvider: f.provider}
 			request := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation+"/events", nil)

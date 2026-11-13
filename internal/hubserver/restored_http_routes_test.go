@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func newLocalHTTPService(t *testing.T) *Service {
+func newLocalHTTPService(t *testing.T, configure ...func(*Config)) *Service {
 	t.Helper()
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
@@ -25,6 +25,9 @@ func newLocalHTTPService(t *testing.T) *Service {
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Logger = discardLogger()
 	cfg.Content = (&changeObjectFixture{}).call
+	for _, apply := range configure {
+		apply(&cfg)
+	}
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)

@@ -112,7 +112,6 @@ func TestPostgresOrganizationPageUsesGrantedProjects(t *testing.T) {
 }
 
 func TestPostgresAppAssetsUseDeclaredFiles(t *testing.T) {
-	useAppClientFS(t, fstest.MapFS{})
 	type fixture struct {
 		organization string
 		browser      *browserHostedFixture

@@ -18,8 +18,7 @@ import (
 )
 
 func TestReadableIssueRoutesAndSlugEdits(t *testing.T) {
-	useAppClientFS(t, appClientBundle())
-	f := newHostedSecurityFixture(t)
+	f := newHostedSecurityFixture(t, withAppClientFS(appClientBundle()))
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	hidden := f.user(t, "hidden", "member", "hidden@example.test", "", "")
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "readable"}, Title: "Readable", State: "Todo"})

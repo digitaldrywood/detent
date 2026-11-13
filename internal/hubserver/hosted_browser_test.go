@@ -256,6 +256,7 @@ type browserHostedFixture struct {
 	workItem       string
 	workerChat     string
 	workerItem     string
+	chatOrigin     bool
 	stop           chan struct{}
 	stopOnce       sync.Once
 }
@@ -646,8 +647,7 @@ func browserHostedStatus(t *testing.T, response *httptest.ResponseRecorder, stat
 }
 
 func TestHostedBrowserHTTPPages(t *testing.T) {
-	useAppClientFS(t, appClientBundle())
-	f := newBrowserHostedFixture(t, true)
+	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", withAppClientFS(appClientBundle()))
 	tests := []struct {
 		name, account, path, contains, excludes string
 		status                                  int
@@ -907,7 +907,7 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 	f.api(t, "owner", http.MethodPost, base+"/conversations/"+f.conversation+"/commands", map[string]any{
 		"key": "browser-preview-message", "kind": "message", "text": "Why does the lease lapse under load?",
 	}, http.StatusOK)
-	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ORIGIN") == "" {
+	if !f.chatOrigin && os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ORIGIN") == "" {
 		return
 	}
 	var issue tracker.NativeIssue
@@ -1054,8 +1054,8 @@ func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Han
 }
 
 func TestHostedBrowserPreviewSeed(t *testing.T) {
-	t.Setenv("DETENT_HOSTED_BROWSER_CHAT_ORIGIN", "1")
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+	f.chatOrigin = true
 
 	f.seedPreview(t)
 	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
@@ -1376,10 +1376,7 @@ func (w browserShutdownFrameWriter) Flush() {
 }
 
 func TestHostedBrowserPreviewRestartDrainsStreams(t *testing.T) {
-	heartbeat := conversationStreamHeartbeat
-	conversationStreamHeartbeat = time.Millisecond
-	t.Cleanup(func() { conversationStreamHeartbeat = heartbeat })
-	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig, func(cfg *Config) { cfg.conversationStreamHeartbeat = time.Millisecond })
 	f.seedConversation(t)
 	draining := make(chan struct{})
 	f.server.Config.RegisterOnShutdown(func() { close(draining) })

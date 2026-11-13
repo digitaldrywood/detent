@@ -46,16 +46,22 @@ func (f conversationDispatchRequestFunc) RequestDispatch(ctx context.Context, wr
 
 func newConversationAPIFixture(t *testing.T, cfg *ConversationConfig, clocks ...func() time.Time) conversationAPIFixture {
 	t.Helper()
+	config := Config{}
+	if len(clocks) > 0 {
+		config.now = clocks[0]
+	}
+	return newConversationAPIFixtureConfig(t, cfg, config)
+}
+
+func newConversationAPIFixtureConfig(t *testing.T, cfg *ConversationConfig, config Config) conversationAPIFixture {
+	t.Helper()
 	if cfg == nil {
 		cfg = &ConversationConfig{Enabled: true}
 	}
 	if cfg.ArchiveContents == nil {
 		cfg.ArchiveContents = &conversationContentFixture{}
 	}
-	config := Config{Conversation: cfg}
-	if len(clocks) > 0 {
-		config.now = clocks[0]
-	}
+	config.Conversation = cfg
 	f := newDefaultNativeFixture(t, config)
 	f.service.registerConversationRoutes(f.service.echo)
 	now := f.service.config.now().UTC().Truncate(time.Microsecond)

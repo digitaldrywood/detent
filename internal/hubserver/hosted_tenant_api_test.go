@@ -382,8 +382,7 @@ func TestHostedProjectsAPI(t *testing.T) {
 }
 
 func TestHostedSharedTenantAPI(t *testing.T) {
-	useAppClientFS(t, appClientBundle())
-	f := newHostedSharedFixture(t)
+	f := newHostedSharedFixture(t, withAppClientFS(appClientBundle()))
 	owner := f.member(t, "owner", "owner", "write")
 	viewer := f.member(t, "viewer", "viewer", "read")
 	staff := f.member(t, "staffer", "owner", "write")

@@ -42,11 +42,8 @@ func appShellWant(base, signIn string) string {
 	return `<!doctype html><html><head><meta name="detent-base-path" content="` + base + `"><meta name="detent-sign-in-path" content="` + signIn + `"><link rel="icon" href="` + base + `/static/app/conversation/favicon.svg"><script type="module" crossorigin src="` + base + `/static/app/conversation/app.js"></script><link rel="stylesheet" crossorigin href="` + base + `/static/app/conversation/app.css"></head><body><div id="root"></div></body></html>`
 }
 
-func useAppClientFS(t *testing.T, fsys fs.FS) {
-	t.Helper()
-	restore := conversationClientFS
-	conversationClientFS = fsys
-	t.Cleanup(func() { conversationClientFS = restore })
+func withAppClientFS(fsys fs.FS) func(*Config) {
+	return func(cfg *Config) { cfg.StaticFS = fsys }
 }
 
 func appClientBundle() fstest.MapFS {
@@ -71,8 +68,7 @@ func (f *browserHostedFixture) appRequest(t *testing.T, account, method, path st
 }
 
 func TestAppShellServing(t *testing.T) {
-	useAppClientFS(t, appClientBundle())
-	f := newPostgresBrowserHostedFixture(t, true)
+	f := newPostgresBrowserHostedOrganizationFixture(t, true, "org_browser_preview", withAppClientFS(appClientBundle()))
 	var projectSlug string
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), corestore.Serving, func(r tenantstore.Reader) error {
 		project, err := r.ProjectRecord(t.Context(), tracker.ProjectID(f.project))
@@ -167,7 +163,7 @@ func TestAppShellServing(t *testing.T) {
 		})
 	}
 	t.Run("missing client bundle", func(t *testing.T) {
-		useAppClientFS(t, fstest.MapFS{})
+		f.service.config.StaticFS = fstest.MapFS{}
 		response := f.appRequest(t, "owner", http.MethodGet, "/work")
 		browserHostedStatus(t, response, http.StatusServiceUnavailable)
 		var failure hubapi.APIErrorResponse
@@ -203,8 +199,7 @@ func TestConversationClientShellFor(t *testing.T) {
 }
 
 func TestAppSharedEntry(t *testing.T) {
-	useAppClientFS(t, appClientBundle())
-	f := newOperatorSharedFixture(t).shared
+	f := newOperatorSharedFixture(t, withAppClientFS(appClientBundle())).shared
 	owner := f.member(t, "owner", "owner", "write")
 	member := f.member(t, "member", "member", "write")
 	viewer := f.member(t, "viewer", "viewer", "read")
@@ -575,8 +570,7 @@ func TestRunnerBehind(t *testing.T) {
 }
 
 func TestAppUpdates(t *testing.T) {
-	useAppClientFS(t, appClientBundle())
-	f := newPostgresBrowserHostedFixture(t, true)
+	f := newPostgresBrowserHostedOrganizationFixture(t, true, "org_browser_preview", withAppClientFS(appClientBundle()))
 	read := func(t *testing.T, account string) appUpdates {
 		t.Helper()
 		response := f.appRequest(t, account, http.MethodGet, "/app/updates")

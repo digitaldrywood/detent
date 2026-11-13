@@ -34,15 +34,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// conversationClientFS holds the built client under app/conversation. It is
-// a variable so tests can substitute an empty filesystem.
-var conversationClientFS fs.FS = detent.StaticFS()
-
 func (c *Config) staticFiles() fs.FS {
 	if c.StaticFS != nil {
 		return c.StaticFS
 	}
-	return conversationClientFS
+	return detent.StaticFS()
 }
 
 const conversationClientShell = "app/conversation/index.html"

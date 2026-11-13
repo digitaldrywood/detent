@@ -54,8 +54,13 @@ func (p *hostedCustomerProvider) CustomerOrganization(context.Context, string) (
 
 func newHostedCustomerFixture(t *testing.T, failures ...error) (*browserHostedFixture, *hostedCustomerProvider) {
 	t.Helper()
+	return newHostedCustomerFixtureWithService(t, nil, failures...)
+}
+
+func newHostedCustomerFixtureWithService(t *testing.T, service func(*Config), failures ...error) (*browserHostedFixture, *hostedCustomerProvider) {
+	t.Helper()
 	var provider *hostedCustomerProvider
-	f, _ := newHostedBillingFixture(t, func(cfg *hostedplans.HostedBillingConfig, base *hostedBillingProvider) {
+	f, _ := newHostedBillingFixtureWithService(t, service, func(cfg *hostedplans.HostedBillingConfig, base *hostedBillingProvider) {
 		provider = &hostedCustomerProvider{hostedBillingProvider: base, failures: failures}
 		cfg.CustomerID, cfg.Provider = "", provider
 	})

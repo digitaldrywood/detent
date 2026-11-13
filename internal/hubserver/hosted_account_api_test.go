@@ -107,8 +107,7 @@ func TestHostedAccountAPI(t *testing.T) {
 }
 
 func TestHostedSharedAccountAPI(t *testing.T) {
-	useAppClientFS(t, appClientBundle())
-	f := newHostedSharedFixture(t)
+	f := newHostedSharedFixture(t, withAppClientFS(appClientBundle()))
 	owner := f.member(t, "owner", "owner", "write")
 	viewer := f.member(t, "viewer", "viewer", "read")
 	csrf := cloudassert.CSRFToken("shared-user_owner", "org_security")
