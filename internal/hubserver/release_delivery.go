@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
-	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -42,8 +40,6 @@ func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
 	return c.JSON(http.StatusOK, status)
 }
 
-var releaseBranchPattern = regexp.MustCompile(`^release/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
-
 func readReleaseDelivery(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (tracker.ReleaseDelivery, bool, error) {
 	var d tracker.ReleaseDelivery
 	var at string
@@ -62,37 +58,6 @@ FROM release_deliveries WHERE organization_id = ? AND project_id = ? AND work_it
 	d.VersionID = version.String
 	d.AssociatedAt, err = parseTimeValue(at)
 	return d, err == nil, err
-}
-
-func validateReleasePick(r tracker.AssociateReleasePick) error {
-	if r.PRNumber < 1 {
-		return nativePublicInvalid("Release association requires an existing PR number")
-	}
-	return validatePreparedReleasePick(r.ReleasePickInput, r.ExpectedRevision)
-}
-
-func validatePreparedReleasePick(r tracker.ReleasePickInput, revision tracker.Revision) error {
-	if r.HeadSHA == r.BaseSHA || r.HeadRef == r.BaseRef || r.SourceMergeSHA == r.FrozenSHA {
-		return nativePublicInvalid("Release pick must identify a distinct source fix and PR head")
-	}
-	if !validNativeID(string(r.SourceIssueID), "wi") || !validNativeID(r.SourceChangeID, "change") || revision < 1 || !releaseBranchPattern.MatchString(r.BaseRef) || !validReleaseHeadRef(r.HeadRef) {
-		return nativePublicInvalid("Release delivery requires a source issue and Change, revision, pick branch and frozen release branch")
-	}
-	for _, sha := range []string{r.SourceMergeSHA, r.HeadSHA, r.BaseSHA, r.FrozenSHA} {
-		if !validCommitID(sha) {
-			return nativePublicInvalid("Release delivery requires exact commit identities")
-		}
-	}
-	return nil
-}
-
-func validReleaseHeadRef(ref string) bool {
-	return ref != "" && len(ref) <= 256 && !strings.HasPrefix(ref, "-") && !strings.HasSuffix(ref, "/") && !strings.HasSuffix(ref, ".lock") && !strings.Contains(ref, "..") && !strings.Contains(ref, "@{") && !strings.ContainsAny(ref, " ~^:?*[\\\t\r\n")
-}
-
-func sameReleasePickDelivery(prior, next tracker.ReleasePickInput) bool {
-	next.BaseSHA, next.HeadSHA = prior.BaseSHA, prior.HeadSHA
-	return prior == next
 }
 
 func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, item string, r tracker.AssociateReleasePick) error {
