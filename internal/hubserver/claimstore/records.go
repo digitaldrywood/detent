@@ -24,26 +24,27 @@ type WorkspaceItem struct {
 }
 
 type CandidateQuery struct {
-	ProjectID            tracker.ProjectID
-	Scope                string
-	WorkItemID           tracker.NativeWorkItemID
-	WorkItemIDs          []tracker.NativeWorkItemID
-	States               []string
-	Authors              []string
-	Repositories         []string
-	Assignees            []string
-	IncludeLabels        []string
-	ExcludeLabels        []string
-	WorkspaceLane        bool
-	RunnerSelection      bool
-	PrioritizeUnblockers bool
-	StatePriority        []string
-	LabelPriority        []string
-	AvailableAt          time.Time
-	After                CandidateCursor
-	AfterWorkItemID      tracker.NativeWorkItemID
-	IncludeLeasedAnchor  bool
-	Limit                int
+	ProjectID                 tracker.ProjectID
+	Scope                     string
+	WorkItemID                tracker.NativeWorkItemID
+	WorkItemIDs               []tracker.NativeWorkItemID
+	States                    []string
+	Authors                   []string
+	Repositories              []string
+	Assignees                 []string
+	IncludeLabels             []string
+	ExcludeLabels             []string
+	WorkspaceLane             bool
+	RunnerSelection           bool
+	PrioritizeUnblockers      bool
+	StatePriority             []string
+	LabelPriority             []string
+	AvailableAt               time.Time
+	After                     CandidateCursor
+	AfterWorkItemID           tracker.NativeWorkItemID
+	IncludeLeasedAnchor       bool
+	IncludeUnclassifiedSource bool
+	Limit                     int
 }
 
 type CandidateCursor struct {
@@ -70,28 +71,29 @@ type SelectionCursor struct {
 }
 
 type Candidate struct {
-	OrganizationID    tracker.OrganizationID
-	ProjectID         tracker.ProjectID
-	WorkItemID        tracker.NativeWorkItemID
-	ID                int64
-	Revision          int64
-	Number            int64
-	State             string
-	Author            string
-	Repository        string
-	Assignees         []string
-	Labels            []string
-	Rank              string
-	Priority          int64
-	StateRank         int64
-	LabelRank         int64
-	AgingBoost        int64
-	LandingRank       int64
-	LaneRank          int64
-	CreatedAt         time.Time
-	DispatchWaitSince *time.Time
-	Unblockers        int64
-	UnblockerRank     int64
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	WorkItemID         tracker.NativeWorkItemID
+	ID                 int64
+	Revision           int64
+	Number             int64
+	State              string
+	Author             string
+	Repository         string
+	Assignees          []string
+	Labels             []string
+	Rank               string
+	Priority           int64
+	StateRank          int64
+	LabelRank          int64
+	AgingBoost         int64
+	LandingRank        int64
+	LaneRank           int64
+	CreatedAt          time.Time
+	DispatchWaitSince  *time.Time
+	Unblockers         int64
+	UnblockerRank      int64
+	SourceUnclassified bool
 }
 
 type CandidatePage struct {

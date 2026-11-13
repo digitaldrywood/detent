@@ -174,6 +174,8 @@ func (s *session) PutSelectionCursor(ctx context.Context, cursor claimstore.Sele
 	return rows == 1, nil
 }
 
+const unclassifiedSource = `EXISTS(SELECT 1 FROM (SELECT a.checkpoint_preserves_source FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.checkpoint_object_key IS NOT NULL AND a.checkpoint_preserves_source IS DISTINCT FROM FALSE ORDER BY a.fencing_token DESC LIMIT 1) source WHERE source.checkpoint_preserves_source IS NULL)`
+
 func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQuery) (claimstore.CandidatePage, error) {
 	if query.ProjectID == "" || query.Limit < 1 || query.Limit > corestore.MaxPageSize || query.AvailableAt.IsZero() || len(query.WorkItemIDs) > 100 {
 		return claimstore.CandidatePage{}, claimstore.ErrInvalidCandidateQuery
@@ -225,10 +227,14 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		order = lane + "," + priority + "," + aging + "," + created + "," + statePriority + "," + labelPriority + "," + unblockerRank + "," + rank + ",i.native_id"
 	}
 	workspaceLane := bind(query.WorkspaceLane)
+	sourceColumn := "false"
+	if query.IncludeUnclassifiedSource {
+		sourceColumn = unclassifiedSource
+	}
 	statement := `SELECT i.id,i.revision,i.number,i.native_id,lower(trim(ws.name)),f.author_login,f.repository,
 	 f.assignees,
  ARRAY(SELECT l.label FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id ORDER BY l.label),
-	 COALESCE(q.rank,''),` + priority + `,` + statePriority + `,` + labelPriority + `,` + aging + `,` + landing + `,` + lane + `,i.native_created_at,f.dispatch_wait_since,` + unblockers + `,` + unblockerRank + `
+	 COALESCE(q.rank,''),` + priority + `,` + statePriority + `,` + labelPriority + `,` + aging + `,` + landing + `,` + lane + `,i.native_created_at,f.dispatch_wait_since,` + unblockers + `,` + unblockerRank + `,` + sourceColumn + `
  FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
  JOIN project_settings ps ON ps.organization_id=p.organization_id AND ps.project_id=p.id
  JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name
@@ -243,7 +249,9 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 	if !query.AvailableAt.IsZero() && !query.IncludeLeasedAnchor {
 		statement += ` AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id AND l.released_at IS NULL AND l.expires_at>$5)`
 	}
-	statement += ` AND NOT EXISTS(SELECT 1 FROM (SELECT a.checkpoint_preserves_source FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.checkpoint_object_key IS NOT NULL AND a.checkpoint_preserves_source IS DISTINCT FROM FALSE ORDER BY a.fencing_token DESC LIMIT 1) source WHERE source.checkpoint_preserves_source IS NULL)`
+	if !query.IncludeUnclassifiedSource {
+		statement += ` AND NOT ` + unclassifiedSource
+	}
 	filters := []struct {
 		values []string
 		expr   string
@@ -310,7 +318,7 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		var item claimstore.Candidate
 		var assignees, labels []string
 		var wait pgtype.Timestamptz
-		if err := rows.Scan(&item.ID, &item.Revision, &item.Number, &item.WorkItemID, &item.State, &item.Author, &item.Repository, &assignees, &labels, &item.Rank, &item.Priority, &item.StateRank, &item.LabelRank, &item.AgingBoost, &item.LandingRank, &item.LaneRank, &item.CreatedAt, &wait, &item.Unblockers, &item.UnblockerRank); err != nil {
+		if err := rows.Scan(&item.ID, &item.Revision, &item.Number, &item.WorkItemID, &item.State, &item.Author, &item.Repository, &assignees, &labels, &item.Rank, &item.Priority, &item.StateRank, &item.LabelRank, &item.AgingBoost, &item.LandingRank, &item.LaneRank, &item.CreatedAt, &wait, &item.Unblockers, &item.UnblockerRank, &item.SourceUnclassified); err != nil {
 			return claimstore.CandidatePage{}, mapError(ctx, err)
 		}
 		item.OrganizationID = s.organization

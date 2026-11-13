@@ -81,8 +81,24 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 		var descriptor *policy.Descriptor
 		var budgetRefusal, providerRefusal error
 		placement := &hubrecords.ClaimPlacementSnapshot{}
+		sourceBudget := claimSourceBudget{remaining: claimSourceClassificationLimit}
+		sourcePending := false
 		for _, rows := range scan.plans {
 			candidate := rows.Candidate
+			if candidate.SourceUnclassified {
+				state, err := s.classifyClaimCandidateSource(ctx, scope, candidate, &sourceBudget)
+				if err != nil {
+					return leasestore.Lease{}, err
+				}
+				if state == claimSourcePending {
+					sourcePending = true
+					break
+				}
+				if state == claimSourceUnverifiable {
+					position = claimCandidateCursor(candidate)
+					continue
+				}
+			}
 			rows.Placement = placement
 			plan, err := s.hydrateNativeClaimPlan(ctx, scope, request, now, rows, descriptor)
 			if errors.Is(err, ErrNoClaimableWork) {
@@ -145,6 +161,9 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 			return leasestore.Lease{}, ErrNoClaimableWork
 		}
 		scan.cursor.Position = scan.pageNext
+		if sourcePending {
+			scan.cursor.Position = position
+		}
 		if err := s.persistNativeClaimCursor(ctx, scope, scan.cursor); err != nil {
 			return leasestore.Lease{}, err
 		}
@@ -475,6 +494,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.
 		if err != nil {
 			return err
 		}
+		query.IncludeUnclassifiedSource = true
 		cursor, err := r.SelectionCursor(ctx, scope.Credential.Runner.RunnerID, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
 			cursor = claimstore.SelectionCursor{OrganizationID: scope.Organization, RunnerID: scope.Credential.Runner.RunnerID, ProjectID: scope.Project, SourceRevision: sourceRevision}
@@ -1121,6 +1141,7 @@ func nativeClaimSelectionSourceRevision(project projectstore.Record, policy poli
 	query.AfterWorkItemID = ""
 	query.Limit = 0
 	query.IncludeLeasedAnchor = false
+	query.IncludeUnclassifiedSource = false
 	var settingsRevision, contentRevision int64
 	if project.Core.Profile == "github_compatible" {
 		settingsRevision = project.Settings.Revision

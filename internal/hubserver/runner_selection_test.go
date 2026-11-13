@@ -1,16 +1,20 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
@@ -319,6 +323,194 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				t.Fatalf("provider selection = %#v", lease)
 			}
 		})
+	}
+}
+
+type claimSourceDetails struct {
+	*memoryRunDetails
+	mu          sync.Mutex
+	checkpoints map[string]bool
+	reads       int
+	unreadable  string
+	onRead      func()
+}
+
+func (d *claimSourceDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	d.mu.Lock()
+	onRead := d.onRead
+	if d.checkpoints[ref.Key] {
+		d.reads++
+		d.onRead = nil
+	} else {
+		onRead = nil
+	}
+	unreadable := d.unreadable == ref.Key
+	d.mu.Unlock()
+	if onRead != nil {
+		onRead()
+	}
+	if unreadable {
+		return nil, artifact.ErrMissing
+	}
+	return d.memoryRunDetails.ReadDetail(ctx, organization, ref)
+}
+
+func (d *claimSourceDetails) checkpointReads() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.reads
+}
+
+func TestClaimClassifiesLegacySourceWithinRequestBudget(t *testing.T) {
+	t.Parallel()
+	cleanCheckpoint := func(index int) *tracker.NativeCheckpoint {
+		return &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean", Storage: "local_only", Availability: "available", ExternalEffect: "none", EffectState: "none", HeadSHA: fmt.Sprintf("%040x", index)}
+	}
+	firstRequestReads := make(map[string]int)
+	for _, test := range []struct {
+		name         string
+		history      int
+		changeSource bool
+		unreadable   bool
+	}{
+		{name: "history 99", history: 99},
+		{name: "history 250", history: 250},
+		{name: "source changes after classification", history: 99, changeSource: true},
+		{name: "unverifiable newest checkpoint", history: 1, unreadable: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+			details := &claimSourceDetails{memoryRunDetails: &memoryRunDetails{}, checkpoints: make(map[string]bool)}
+			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }, RunDetails: details}), "", "legacy-source")
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r.enroll(t)
+			r.reportCapacity(t)
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			issue := f.create(t, "legacy source history")
+			for index := range test.history {
+				recordSelectionFixtureAttempt(t, f, r, issue, "failed", cleanCheckpoint(index))
+			}
+			admin := usagePostgresAdmin(t, f.service)
+			var ready tracker.NativeIssue
+			if test.unreadable {
+				ready = f.create(t, "ready without history")
+				if _, err := admin.ExecContext(t.Context(), "UPDATE issues SET native_created_at=$1 WHERE organization_id=$2 AND native_id=$3", now.Add(time.Second), f.project.OrganizationID, ready.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rows, err := admin.QueryContext(t.Context(), "UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE organization_id=$1 AND checkpoint_object_key IS NOT NULL RETURNING checkpoint_object_key", f.project.OrganizationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				var key string
+				if err := rows.Scan(&key); err != nil {
+					t.Fatal(err)
+				}
+				details.checkpoints[key] = true
+				if test.unreadable {
+					details.unreadable = key
+				}
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				t.Fatal(err)
+			}
+			if len(details.checkpoints) != test.history {
+				t.Fatalf("distinct unknown checkpoints=%d want=%d", len(details.checkpoints), test.history)
+			}
+			unknown := func() int {
+				t.Helper()
+				var count int
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND checkpoint_object_key IS NOT NULL AND checkpoint_preserves_source IS NULL", f.project.OrganizationID).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				return count
+			}
+			claim := func(session string) *httptest.ResponseRecorder {
+				return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: r.binding.MachineID, SessionID: session, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+			}
+			if test.unreadable {
+				response := claim("unverifiable")
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.WorkItemID != ready.WorkItemID {
+					t.Fatalf("claimed %s with unverifiable source, want %s", lease.WorkItemID, ready.WorkItemID)
+				}
+				requireNativeStatus(t, claim("unverifiable-again"), http.StatusConflict)
+				if remaining := unknown(); remaining != 1 {
+					t.Fatalf("unverifiable checkpoint classified: unknown=%d", remaining)
+				}
+				return
+			}
+			requests := (test.history + claimSourceClassificationLimit - 1) / claimSourceClassificationLimit
+			for request := range requests {
+				before, reads := unknown(), details.checkpointReads()
+				if test.changeSource && request == requests-1 {
+					details.mu.Lock()
+					details.onRead = func() {
+						if _, err := admin.ExecContext(context.WithoutCancel(t.Context()), "UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE organization_id=$1 AND id=(SELECT id FROM native_attempts WHERE organization_id=$1 AND checkpoint_object_key IS NOT NULL ORDER BY fencing_token DESC LIMIT 1)", f.project.OrganizationID); err != nil {
+							t.Error(err)
+						}
+					}
+					details.mu.Unlock()
+				}
+				response := claim(fmt.Sprintf("classify-%d", request))
+				after := unknown()
+				classified := before - after
+				if test.changeSource && request == requests-1 {
+					classified++
+				}
+				if want := min(claimSourceClassificationLimit, before); classified != want {
+					t.Fatalf("request %d classified %d of %d unknown checkpoints, want %d", request, classified, before, want)
+				}
+				if objectReads := details.checkpointReads() - reads; objectReads != classified {
+					t.Fatalf("request %d read %d checkpoint objects for %d classifications", request, objectReads, classified)
+				}
+				if request == 0 {
+					firstRequestReads[test.name] = details.checkpointReads() - reads
+				}
+				if request < requests-1 || test.changeSource {
+					requireNativeStatus(t, response, http.StatusConflict)
+					continue
+				}
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.WorkItemID != issue.WorkItemID || after != 0 {
+					t.Fatalf("claimed %s with %d unknown checkpoints, want %s", lease.WorkItemID, after, issue.WorkItemID)
+				}
+			}
+			if test.changeSource {
+				if remaining := unknown(); remaining != 1 {
+					t.Fatalf("changed source checkpoints unknown=%d want 1", remaining)
+				}
+				granted := false
+				for attempt := range 2 {
+					response := claim(fmt.Sprintf("changed-%d", attempt))
+					if response.Code == http.StatusConflict {
+						continue
+					}
+					requireNativeStatus(t, response, http.StatusOK)
+					var lease tracker.NativeLease
+					decodeHubResponse(t, response, &lease)
+					if lease.WorkItemID != issue.WorkItemID || unknown() != 0 {
+						t.Fatalf("claimed %s before the changed source was classified", lease.WorkItemID)
+					}
+					granted = true
+					break
+				}
+				if !granted {
+					t.Fatal("changed source was not classified by a following request")
+				}
+			}
+			if details.memoryRunDetails.writerReads != 0 {
+				t.Fatalf("checkpoint objects read under the claim writer: %d", details.memoryRunDetails.writerReads)
+			}
+		})
+	}
+	if firstRequestReads["history 99"] != claimSourceClassificationLimit || firstRequestReads["history 250"] != claimSourceClassificationLimit {
+		t.Fatalf("first request checkpoint reads=%v, want %d at both history sizes", firstRequestReads, claimSourceClassificationLimit)
 	}
 }
 

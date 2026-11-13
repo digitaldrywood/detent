@@ -224,14 +224,16 @@ func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasest
 	return page, nil
 }
 
+const sourceCheckpointAttempts = `SELECT organization_id,id,project_id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,updated_at,started_at_submicro_ns,runner_tokens_recorded,cleanup_acknowledged_at,runtime_heartbeat_at,runtime_summary_sequence,claim_disposition,local_attempt_id,local_attempt_id_recorded,checkpoint_preserves_source,worker_cleanup_required,usage_pending_sequence,usage_projected_sequence,failure_sequence,failure_example,failure_class,failure_landing_observed_at
+FROM native_attempts WHERE organization_id=$1 AND issue_id=$2
+AND checkpoint_object_key IS NOT NULL AND checkpoint_preserves_source IS DISTINCT FROM FALSE
+ORDER BY fencing_token DESC LIMIT $3`
+
 func (s *session) SourceCheckpointAttempt(ctx context.Context, issueID int64) (leasestore.Attempt, error) {
 	if issueID <= 0 {
 		return leasestore.Attempt{}, tracker.ErrInvalidWorkItemID
 	}
-	rows, err := s.db.Query(ctx, `SELECT organization_id,id,project_id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,updated_at,started_at_submicro_ns,runner_tokens_recorded,cleanup_acknowledged_at,runtime_heartbeat_at,runtime_summary_sequence,claim_disposition,local_attempt_id,local_attempt_id_recorded,checkpoint_preserves_source,worker_cleanup_required,usage_pending_sequence,usage_projected_sequence,failure_sequence,failure_example,failure_class,failure_landing_observed_at
-FROM native_attempts WHERE organization_id=$1 AND issue_id=$2
-AND checkpoint_object_key IS NOT NULL AND checkpoint_preserves_source IS DISTINCT FROM FALSE
-ORDER BY fencing_token DESC LIMIT 1`, s.organization, issueID)
+	rows, err := s.db.Query(ctx, sourceCheckpointAttempts, s.organization, issueID, 1)
 	if err != nil {
 		return leasestore.Attempt{}, mapError(ctx, err)
 	}
@@ -240,6 +242,28 @@ ORDER BY fencing_token DESC LIMIT 1`, s.organization, issueID)
 		return leasestore.Attempt{}, mapError(ctx, err)
 	}
 	return attemptFromPG(row), nil
+}
+
+func (s *session) SourceCheckpointAttempts(ctx context.Context, issueID int64, limit int) ([]leasestore.Attempt, error) {
+	if issueID <= 0 {
+		return nil, tracker.ErrInvalidWorkItemID
+	}
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, sourceCheckpointAttempts, s.organization, issueID, limit)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	collected, err := pgx.CollectRows(rows, pgx.RowToStructByName[pgquery.NativeAttempt])
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	attempts := make([]leasestore.Attempt, len(collected))
+	for i, row := range collected {
+		attempts[i] = attemptFromPG(row)
+	}
+	return attempts, nil
 }
 
 func (s *session) CheckpointAttemptPage(ctx context.Context, issueID int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
