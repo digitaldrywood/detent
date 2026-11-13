@@ -41,7 +41,7 @@ func (s *Service) bindCoordinatorConnection(ctx context.Context, key string) (co
 		connection.Origin = entryOrigin
 		origin += ":" + entryOrigin
 	}
-	digest := sha256.Sum256([]byte(origin + ":" + connection.Identity.PrincipalID + ":" + key))
+	digest := sha256.Sum256([]byte(origin + ":" + connection.Identity.OrganizationID + ":" + connection.Identity.PrincipalID + ":" + key))
 	connection.ID = "luna_" + hex.EncodeToString(digest[:])
 	connection.Client = "Luna"
 	ctx = operatortool.WithConnection(ctx, connection)

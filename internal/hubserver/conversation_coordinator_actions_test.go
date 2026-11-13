@@ -1965,3 +1965,21 @@ func TestBindCoordinatorConnectionWithoutOperatorChat(t *testing.T) {
 		})
 	}
 }
+
+func TestBindCoordinatorConnectionPerOrganization(t *testing.T) {
+	t.Parallel()
+	service := &Service{}
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(time.Now))
+	connections := map[string]string{}
+	for _, organization := range []string{"org_first", "org_second"} {
+		ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: operatortool.Identity{PrincipalID: "user_example", OrganizationID: organization, CredentialID: "credential_example"}, Resolve: func(context.Context) (operatortool.Authority, error) { return operatortool.Authority{}, nil }})
+		bound, err := service.bindCoordinatorConnection(ctx, "command-key")
+		if err != nil {
+			t.Fatalf("bind %s: %v", organization, err)
+		}
+		connections[operatortool.CurrentConnection(bound).ID] = organization
+	}
+	if len(connections) != 2 {
+		t.Fatalf("organizations share a coordinator connection: %v", connections)
+	}
+}
