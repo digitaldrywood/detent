@@ -38,6 +38,9 @@ type recoveringReviewAgent struct {
 	committingAgent
 	failStage          string
 	available          atomic.Bool
+	failureCommitted   atomic.Bool
+	retryRelease       sync.Once
+	retryReleased      chan struct{}
 	sourceCalls        atomic.Int32
 	sourceWorkspace    atomic.Pointer[string]
 	validatorWorkspace atomic.Pointer[string]
@@ -65,7 +68,14 @@ func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.Agen
 		a.securityPrompt.Store(&request.Prompt)
 	}
 	if stage == a.failStage && !a.available.Load() {
-		return runner.AgentTurnResult{}, errors.New("temporary provider startup failure")
+		if a.failureCommitted.CompareAndSwap(false, true) {
+			return runner.AgentTurnResult{}, errors.New("temporary provider startup failure")
+		}
+		select {
+		case <-a.retryReleased:
+		case <-ctx.Done():
+			return runner.AgentTurnResult{}, context.Cause(ctx)
+		}
 	}
 	if stage == "validator" && a.malformed {
 		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "invalid validator decision"}); err != nil {
@@ -87,6 +97,13 @@ func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.Agen
 		return runner.AgentTurnResult{ThreadID: "security-thread", TurnID: "security-turn", AuthenticationMode: "api_key"}, nil
 	}
 	return a.committingAgent.RunTurn(ctx, request, update)
+}
+
+func (a *recoveringReviewAgent) releaseRetry() {
+	a.retryRelease.Do(func() {
+		a.available.Store(true)
+		close(a.retryReleased)
+	})
 }
 
 func (a *recoveringReviewAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, _ []runner.AgentTool, _ runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
@@ -179,7 +196,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			provider := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: test.stage, malformed: test.malformed}
+			provider := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: test.stage, malformed: test.malformed, retryReleased: make(chan struct{})}
 
 			var finalizationFaulted atomic.Bool
 			var finalizationSession atomic.Int64
@@ -388,7 +405,9 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				}
 				provider.finalMessage = "Source complete; published review is pending.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Published version needs host review\nhuman_action: null\n```"
 			}
-			provider.available.Store(test.stage == "")
+			if test.stage == "" {
+				provider.releaseRetry()
+			}
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&logs, nil))
 			t.Cleanup(func() {
@@ -604,7 +623,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 							t.Fatalf("confirmed worker cleanup lost recoverable source: %+v, %v", sourceRecovery, err)
 						}
 						stopOrchestrator()
-						provider.available.Store(true)
+						provider.releaseRetry()
 						candidate := h.claim(t, issue.ID)
 						replacement := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 						result, err := agent.Run(t.Context(), runner.RunRequest{Execution: replacement, Issue: candidate, Mode: runner.RunModeImplement})
@@ -643,7 +662,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 							h.publishCaptured(t, current.WorkItemID, change.ChangeID, head, &capture, change.VersionID, change.BaseSHA)
 						}
 						stopOrchestrator()
-						provider.available.Store(true)
+						provider.releaseRetry()
 						result, err := agent.Run(t.Context(), runner.RunRequest{Execution: owner, DeferExecutionFinish: true, Issue: state.Retry[issue.ID].Issue, Mode: runner.RunModeImplement, NativeReviewContinuation: &runner.NativeReviewContinuation{Source: tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: change.HeadSHA}, FinalMessage: owner.CompletionSnapshot().PreparedMessage}})
 						if err == nil || !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && !errors.Is(err, runner.ErrNativeRecoveryRequired) || provider.writableCalls != 1 || provider.sourceCalls.Load() != 1 || result.TurnStarted {
 							t.Fatalf("obsolete owner resumed: result=%+v error=%v", result, err)
@@ -731,7 +750,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						stopOrchestrator = start(orch)
 					}
 					deferred = true
-					provider.available.Store(true)
+					provider.releaseRetry()
 				}
 				current, err := h.admin.Issue(deadline, current.WorkItemID)
 				if err != nil {
@@ -860,7 +879,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 type ReviewAgent = recoveringReviewAgent
 
 func NewReviewAgent() *ReviewAgent {
-	return &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: "unused"}
+	return &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: "unused", retryReleased: make(chan struct{})}
 }
 func (a *recoveringReviewAgent) SecurityCalls() int32    { return a.securityCalls.Load() }
 func (a *recoveringReviewAgent) SecurityPrompt() *string { return a.securityPrompt.Load() }
