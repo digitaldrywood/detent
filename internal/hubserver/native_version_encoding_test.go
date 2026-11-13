@@ -309,6 +309,7 @@ func TestNativeTransitionHistoryBytes(t *testing.T) {
 			t.Fatal(err)
 		}
 		original.WebURL = issue.WebURL
+		original = relationshipOmittedIssue(original)
 		canonical, err := json.Marshal(original)
 		if err != nil {
 			t.Fatal(err)
