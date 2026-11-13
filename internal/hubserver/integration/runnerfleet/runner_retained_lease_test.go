@@ -57,7 +57,7 @@ func TestRunnerRetainedLeaseClaimEligibility(t *testing.T) {
 			}
 			if test.expire || test.revoke {
 				now = now.Add(600 * time.Second)
-				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/machines/"+string(other.Binding.MachineID)+"/heartbeat", other.Redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": other.Redemption.BackendIsolation}), http.StatusOK)
+				other.ReportCapacity(t)
 			}
 			if test.revoke {
 				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodDelete, owner.IdentityPath(), hubfixture.AdminToken, nil), http.StatusNoContent)
