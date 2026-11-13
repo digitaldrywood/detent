@@ -124,23 +124,31 @@ func (c *Content) LandingReceipt(ctx context.Context, row LandingReceipt) (track
 }
 
 func (c *Content) read(ctx context.Context, organization tracker.OrganizationID, ref attachment.ArchiveReference, value any) error {
-	if c.store == nil {
-		return artifact.ErrStorage
-	}
-	if ref.Validate(string(organization)) != nil {
-		return fmt.Errorf("validate history reference: %w", artifact.ErrIntegrity)
-	}
-	raw, err := c.store.ReadDetail(ctx, string(organization), ref)
+	raw, err := c.readRaw(ctx, organization, ref)
 	if err != nil {
-		return fmt.Errorf("read history payload: %w", referencedObjectError(err))
-	}
-	if int64(len(raw)) != ref.UncompressedSize {
-		return fmt.Errorf("validate history content length: %w", artifact.ErrIntegrity)
+		return err
 	}
 	if err := json.Unmarshal(raw, value); err != nil {
 		return fmt.Errorf("decode history payload: %w", artifact.ErrIntegrity)
 	}
 	return nil
+}
+
+func (c *Content) readRaw(ctx context.Context, organization tracker.OrganizationID, ref attachment.ArchiveReference) ([]byte, error) {
+	if c.store == nil {
+		return nil, artifact.ErrStorage
+	}
+	if ref.Validate(string(organization)) != nil {
+		return nil, fmt.Errorf("validate history reference: %w", artifact.ErrIntegrity)
+	}
+	raw, err := c.store.ReadDetail(ctx, string(organization), ref)
+	if err != nil {
+		return nil, fmt.Errorf("read history payload: %w", referencedObjectError(err))
+	}
+	if int64(len(raw)) != ref.UncompressedSize {
+		return nil, fmt.Errorf("validate history content length: %w", artifact.ErrIntegrity)
+	}
+	return raw, nil
 }
 
 func referencedObjectError(err error) error {
@@ -497,18 +505,19 @@ func (c *Content) PrepareCollaborationVersion(ctx context.Context, row Collabora
 	if err != nil {
 		return CollaborationVersion{}, err
 	}
-	var value json.RawMessage
-	if json.Unmarshal(raw, &value) != nil {
+	if !json.Valid(raw) {
 		return CollaborationVersion{}, ErrInvalidRecord
 	}
-	ref, err := c.prepare(ctx, row.OrganizationID, value)
+	ref, err := c.PreparePayload(ctx, row.OrganizationID, raw)
 	row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
 	return row, err
 }
 
 func (c *Content) CollaborationVersion(ctx context.Context, row CollaborationVersion) (json.RawMessage, error) {
-	var value json.RawMessage
-	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
+	value, err := c.readRaw(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes))
+	if err == nil && !json.Valid(value) {
+		return nil, fmt.Errorf("decode history payload: %w", artifact.ErrIntegrity)
+	}
 	if err == nil && row.SourceKnown {
 		projected, projectErr := ProjectScheduledSource(row, value)
 		if projectErr != nil {
