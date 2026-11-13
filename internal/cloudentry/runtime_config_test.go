@@ -40,12 +40,12 @@ func (h configurationLog) Handle(_ context.Context, record slog.Record) error {
 func entitlementFixture(t *testing.T, f entryFixture, token string) {
 	t.Helper()
 	for id, tenant := range f.fixtures {
-		if err := tenant.service.Close(); err != nil {
+		if err := tenant.Service.Close(); err != nil {
 			t.Fatal(err)
 		}
-		tenant.config.Hosted.EntitlementAdministrator = "test-operator"
-		tenant.config.Hosted.EntitlementAdminToken = []byte(token)
-		service, err := hubserver.Open(t.Context(), tenant.config)
+		tenant.Config.Hosted.EntitlementAdministrator = "test-operator"
+		tenant.Config.Hosted.EntitlementAdminToken = []byte(token)
+		service, err := hubserver.Open(t.Context(), tenant.Config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -71,11 +71,11 @@ func TestCloudReloadSignupAllowlist(t *testing.T) {
 	next := f.service.config
 	next.Runtime = &hubserver.HostedRuntimeUpdate{}
 	f.service.config.Reload = func() (Config, error) { return next, nil }
-	f.provider.users["user_staff"] = "staff@example.test"
+	f.provider.Users["user_staff"] = "staff@example.test"
 	staff := newBrowser(t, f.service.Handler())
-	staff.login("/auth/oidc/start", "user_staff:")
+	staff.Login("/auth/oidc/start", "user_staff:")
 	alice := newBrowser(t, f.service.Handler())
-	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 
 	check := func(t *testing.T, emails, domains []string, allowed []bool) {
 		t.Helper()
@@ -85,7 +85,7 @@ func TestCloudReloadSignupAllowlist(t *testing.T) {
 				t.Errorf("canCreate(%s) = %v, %v; want %v", email, got, err, allowed[i])
 			}
 		}
-		response, body := staff.get("/api/cloud/platform/allowlist")
+		response, body := staff.Get("/api/cloud/platform/allowlist")
 		var result struct {
 			SelfService    bool     `json:"self_service"`
 			Open           bool     `json:"open"`
@@ -113,7 +113,7 @@ func TestCloudReloadSignupAllowlist(t *testing.T) {
 						t.Error(err)
 					}
 					if reader == 1 {
-						response, _ := staff.get("/api/cloud/platform/allowlist")
+						response, _ := staff.Get("/api/cloud/platform/allowlist")
 						if response.StatusCode != http.StatusOK {
 							t.Errorf("concurrent allowlist read = %d", response.StatusCode)
 							return
@@ -162,7 +162,7 @@ func TestCloudReloadSignupAllowlist(t *testing.T) {
 			if launches, stops, running := launcher.counts(); launches != 0 || stops != 0 || running != 2 {
 				t.Errorf("reload changed tenant processes: launches=%d stops=%d running=%d", launches, stops, running)
 			}
-			response, body := alice.get("/organizations/org_alpha/app/bootstrap")
+			response, body := alice.Get("/organizations/org_alpha/app/bootstrap")
 			if response.StatusCode != http.StatusOK || !strings.Contains(body, "Alpha secret project") {
 				t.Errorf("existing organization session = %d %s", response.StatusCode, body)
 			}
@@ -174,10 +174,10 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	f, admin := runtimePublicationFixture(t)
 	const token = "runtime-entitlement-admin-0123456789abcdef"
 	for id, tenant := range f.fixtures {
-		tenant.config.Hosted.Billing = &hubserver.HostedBillingConfig{
+		tenant.Config.Hosted.Billing = &hubserver.HostedBillingConfig{
 			Mode: "test", AccountID: "acct_runtime", CustomerID: "cus_" + id, PortalConfigurationID: "bpc_runtime",
 			WebhookSecret: []byte(testWebhookSecret), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: &fakeBilling{},
-			Prices: []hubserver.HostedBillingPrice{{PriceID: "price_initial", Label: "Initial plan", Plan: tenant.config.Hosted.Plans.Plans[1].PlanReference}},
+			Prices: []hubserver.HostedBillingPrice{{PriceID: "price_initial", Label: "Initial plan", Plan: tenant.Config.Hosted.Plans.Plans[1].PlanReference}},
 		}
 	}
 	entitlementFixture(t, f, token)
@@ -230,7 +230,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	if f.service.runtime.Load() != nil {
 		t.Fatal("invalid file replaced runtime")
 	}
-	plans := *f.fixtures["org_alpha"].config.Hosted.Plans
+	plans := *f.fixtures["org_alpha"].Config.Hosted.Plans
 	plans.Plans = append([]hubserver.HostedPlan(nil), plans.Plans...)
 	plans.Plans[0].Allowances = maps.Clone(plans.Plans[0].Allowances)
 	plans.Plans[0].Allowances["api_mutations"] = 123456
@@ -240,7 +240,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	plans.Plans = append(plans.Plans, plan)
 	next := f.service.config
 	next.PublicURL = "https://changed.example.test"
-	next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans, Prices: f.fixtures["org_alpha"].config.Hosted.Billing.Prices}
+	next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans, Prices: f.fixtures["org_alpha"].Config.Hosted.Billing.Prices}
 	readings <- reading{config: next}
 	signals <- syscall.SIGHUP
 	awaitLog("configuration reloaded")
@@ -289,7 +289,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		fixture := f.fixtures[id]
 		endpoint := testSocketEndpoint(strings.TrimPrefix(id, "org_") + ".sock")
 		previous := f.tenants[endpoint]
-		restartConfig := fixture.config
+		restartConfig := fixture.Config
 		hosted := *restartConfig.Hosted
 		hosted.Plans = before.Plans
 		if hosted.Billing != nil {

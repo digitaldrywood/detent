@@ -15,8 +15,8 @@ import (
 func TestSharedEntryReadableIssueURLs(t *testing.T) {
 	f := newEntryFixture(t)
 	alice := newBrowser(t, f.service.Handler())
-	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, raw := alice.get("/organizations/org_alpha/app/bootstrap")
+	alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	_, raw := alice.Get("/organizations/org_alpha/app/bootstrap")
 	var bootstrap struct {
 		CSRF     string `json:"csrf_token"`
 		API      string `json:"api_base"`
@@ -33,7 +33,7 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, cookie := range alice.jar.Cookies(origin) {
+		for _, cookie := range alice.Jar.Cookies(origin) {
 			request.AddCookie(cookie)
 		}
 		request.Header.Set("Origin", testPublicURL)
@@ -55,13 +55,13 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 	if issue.WebURL != testPublicURL+"/alpha/alpha-secret-project/issues/1" {
 		t.Fatalf("URL=%q", issue.WebURL)
 	}
-	legacy, _ := alice.get("/organizations/org_alpha/work/i/" + string(issue.WorkItemID))
+	legacy, _ := alice.Get("/organizations/org_alpha/work/i/" + string(issue.WorkItemID))
 	if legacy.StatusCode != http.StatusPermanentRedirect || legacy.Header.Get("Location") != issue.WebURL {
 		t.Fatalf("legacy=%+v", legacy)
 	}
 	anonymous := newBrowser(t, f.service.Handler())
-	denied, _ := anonymous.get("/alpha/alpha-secret-project/issues/1")
-	absent, _ := anonymous.get("/missing/secret-project/issues/1")
+	denied, _ := anonymous.Get("/alpha/alpha-secret-project/issues/1")
+	absent, _ := anonymous.Get("/missing/secret-project/issues/1")
 	if denied.StatusCode != http.StatusNotFound || absent.StatusCode != http.StatusNotFound || denied.Body != absent.Body {
 		t.Fatalf("denied=%+v missing=%+v", denied, absent)
 	}
@@ -73,7 +73,7 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 		{"/organizations/org_alpha/work?collapsed=Triage", "/alpha/work?collapsed=Triage"},
 		{"/organizations/org_alpha/settings", "/alpha/settings"},
 	} {
-		response, _ := alice.get(test.path)
+		response, _ := alice.Get(test.path)
 		if response.StatusCode/100 != 3 || response.Header.Get("Location") != test.location {
 			t.Fatalf("%s=%+v want %s", test.path, response, test.location)
 		}
@@ -87,52 +87,52 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 		{"/alpha/alpha-secret-project/issues/1", "/alpha/alpha-secret-project/issues/1"},
 		{"/alpha/logout", "/organizations"},
 	} {
-		response := anonymous.do(http.MethodGet, test.path, nil, html)
+		response := anonymous.Do(http.MethodGet, test.path, nil, html)
 		want := "/auth/oidc/start?" + url.Values{"return": {test.returnPath}}.Encode()
 		if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != want {
 			t.Fatalf("signed-out navigation %s=%+v want %s", test.path, response, want)
 		}
 	}
 	signedOut := newBrowser(t, f.service.Handler())
-	start := signedOut.do(http.MethodGet, "/alpha/alpha-secret-project/issues/1", nil, html).Header.Get("Location")
-	if landed := signedOut.login(start, "user_alice:porg_alpha"); landed != "/alpha/alpha-secret-project/issues/1" {
+	start := signedOut.Do(http.MethodGet, "/alpha/alpha-secret-project/issues/1", nil, html).Header.Get("Location")
+	if landed := signedOut.Login(start, "user_alice:porg_alpha"); landed != "/alpha/alpha-secret-project/issues/1" {
 		t.Fatalf("signed-out issue link landed on %q", landed)
 	}
 	otherOrganization := newBrowser(t, f.service.Handler())
-	otherOrganization.login("/organizations/org_beta/organization", "user_alice:porg_beta")
-	start = otherOrganization.do(http.MethodGet, "/alpha/alpha-secret-project/issues/1", nil, html).Header.Get("Location")
-	if landed := otherOrganization.login(start, "user_alice:porg_alpha"); landed != "/organizations/org_alpha/alpha-secret-project/issues/1" {
+	otherOrganization.Login("/organizations/org_beta/organization", "user_alice:porg_beta")
+	start = otherOrganization.Do(http.MethodGet, "/alpha/alpha-secret-project/issues/1", nil, html).Header.Get("Location")
+	if landed := otherOrganization.Login(start, "user_alice:porg_alpha"); landed != "/organizations/org_alpha/alpha-secret-project/issues/1" {
 		t.Fatalf("issue link from another organization landed on %q", landed)
 	}
-	if issuePage := otherOrganization.do(http.MethodGet, "/organizations/org_alpha/alpha-secret-project/issues/1", nil, html); issuePage.StatusCode != http.StatusPermanentRedirect || issuePage.Header.Get("Location") != "/alpha/alpha-secret-project/issues/1" {
+	if issuePage := otherOrganization.Do(http.MethodGet, "/organizations/org_alpha/alpha-secret-project/issues/1", nil, html); issuePage.StatusCode != http.StatusPermanentRedirect || issuePage.Header.Get("Location") != "/alpha/alpha-secret-project/issues/1" {
 		t.Fatalf("issue link from another organization=%+v", issuePage)
 	}
-	if member := alice.do(http.MethodGet, "/alpha/work", nil, html); member.StatusCode == http.StatusSeeOther {
+	if member := alice.Do(http.MethodGet, "/alpha/work", nil, html); member.StatusCode == http.StatusSeeOther {
 		t.Fatalf("member navigation=%+v", member)
 	}
 	accountOnly := newBrowser(t, f.service.Handler())
-	accountOnly.login("/organizations", "user_alice:")
+	accountOnly.Login("/organizations", "user_alice:")
 	nonMember := newBrowser(t, f.service.Handler())
-	nonMember.login("/organizations", "user_bob:")
+	nonMember.Login("/organizations", "user_bob:")
 	for _, test := range []struct{ path, returnPath string }{
 		{"/alpha", "/organizations/org_alpha/work"},
 		{"/alpha/", "/organizations/org_alpha/work"},
 		{"/alpha/settings", "/organizations/org_alpha/settings"},
 	} {
-		response := accountOnly.do(http.MethodGet, test.path, nil, html)
+		response := accountOnly.Do(http.MethodGet, test.path, nil, html)
 		want := "/auth/oidc/start?" + url.Values{"organization": {"org_alpha"}, "return": {test.returnPath}}.Encode()
 		if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != want {
 			t.Fatalf("account-only member %s=%+v want %s", test.path, response, want)
 		}
-		denied := nonMember.do(http.MethodGet, test.path, nil, html)
-		absent := nonMember.do(http.MethodGet, "/missing"+strings.TrimPrefix(test.path, "/alpha"), nil, html)
+		denied := nonMember.Do(http.MethodGet, test.path, nil, html)
+		absent := nonMember.Do(http.MethodGet, "/missing"+strings.TrimPrefix(test.path, "/alpha"), nil, html)
 		if denied.StatusCode != http.StatusNotFound || denied.Body != absent.Body || denied.Header.Get("Location") != "" {
 			t.Fatalf("non-member %s=%+v missing=%+v", test.path, denied, absent)
 		}
 	}
 	for _, path := range []string{"/alpha", "/alpha/"} {
-		denied, _ := anonymous.get(path)
-		absent, _ := anonymous.get("/missing" + strings.TrimPrefix(path, "/alpha"))
+		denied, _ := anonymous.Get(path)
+		absent, _ := anonymous.Get("/missing" + strings.TrimPrefix(path, "/alpha"))
 		if denied.StatusCode != http.StatusNotFound || denied.Body != absent.Body || denied.Header.Get("Location") != "" {
 			t.Fatalf("anonymous %s=%+v missing=%+v", path, denied, absent)
 		}
@@ -156,7 +156,7 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 		}
 	}
 	for _, old := range []string{"alpha", "example-organization"} {
-		response, _ := alice.get("/" + old + "/alpha-secret-project/issues/1")
+		response, _ := alice.Get("/" + old + "/alpha-secret-project/issues/1")
 		if response.StatusCode != http.StatusPermanentRedirect || response.Header.Get("Location") != "/second-name/alpha-secret-project/issues/1" {
 			t.Fatalf("old %s=%+v", old, response)
 		}
@@ -174,12 +174,12 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, method := range []string{http.MethodGet, http.MethodHead} {
-				missing := anonymous.do(method, "/missing/secret-project/issues/1", nil, nil)
+				missing := anonymous.Do(method, "/missing/secret-project/issues/1", nil, nil)
 				for _, visitor := range []struct {
 					name    string
 					browser *browser
 				}{{"anonymous", anonymous}, {"member", alice}} {
-					response := visitor.browser.do(method, "/second-name/alpha-secret-project/issues/1", nil, nil)
+					response := visitor.browser.Do(method, "/second-name/alpha-secret-project/issues/1", nil, nil)
 					if response.StatusCode != http.StatusNotFound || response.Body != missing.Body || response.Header.Get("Location") != "" || response.Header.Get("Content-Type") != missing.Header.Get("Content-Type") {
 						t.Errorf("%s %s response=%+v missing=%+v", visitor.name, method, response, missing)
 					}

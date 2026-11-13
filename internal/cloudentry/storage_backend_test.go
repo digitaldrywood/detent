@@ -1,7 +1,6 @@
 package cloudentry
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"database/sql"
@@ -21,55 +20,14 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/pressly/goose/v3"
-
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-var entryPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
-	roles, err := os.ReadFile("../hubserver/postgres/roles.sql")
-	if err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, string(roles)); err != nil {
-		return err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, "SET ROLE "+postgres.MigrationRoleName); err != nil {
-		return err
-	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../hubserver/postgres/migrations")), goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS("../hubserver/postgres/migrations"))...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
-	if err != nil {
-		return err
-	}
-	_, err = provider.Up(ctx)
-	return err
-})
-
-func entryPostgresDatabase(t *testing.T) *sql.DB {
-	t.Helper()
-	admin := entryPostgresTemplate.Database(t)
-	var name string
-	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&name); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{name}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
-		t.Fatal(err)
-	}
-	return admin
-}
 
 func entryPostgresConfig(t *testing.T, databases ...*sql.DB) func(*Config) {
 	t.Helper()
@@ -127,9 +85,9 @@ func entryPostgresStorageConfig(t *testing.T, restart bool, databases ...*sql.DB
 			t.Cleanup(cfg.Storage.PostgresPool.Close)
 		}
 		if cfg.Attachments == nil {
-			config := objects.config()
+			config := objects.Config()
 			config.Endpoint = "https://storage.example.test"
-			cfg.Attachments, cfg.attachmentTransport = &config, objects.transport
+			cfg.Attachments, cfg.attachmentTransport = &config, objects.Transport
 		}
 	}
 }
@@ -161,109 +119,19 @@ func newPostgresTenantEntryFixture(t *testing.T, configureEntry ...func(*Config)
 	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), configureEntry)
 }
 
-func configurePostgresTenant(t *testing.T, cfg *hubserver.Config, databases ...*sql.DB) *sql.DB {
-	t.Helper()
-	keys, err := hubsecrets.FromEnvironment(entrySecretEnvironment(1, 1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.SecretKeys = keys
-	var admin *sql.DB
-	if len(databases) == 0 {
-		admin = entryPostgresDatabase(t)
-	} else {
-		admin = databases[0]
-	}
-	name, password := "example_"+strings.ReplaceAll(uuid.NewString(), "-", ""), uuid.NewString()
-	quoted := pgx.Identifier{name}.Sanitize()
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)+" IN ROLE "+postgres.RuntimeRoleName); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		deadline, _ := t.Deadline()
-		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
-		defer cancel()
-		if _, err := admin.ExecContext(ctx, "DROP OWNED BY "+quoted); err != nil {
-			t.Error(err)
-		}
-		if _, err := admin.ExecContext(ctx, "DROP ROLE "+quoted); err != nil {
-			t.Error(err)
-		}
-	})
-	native := entryPostgresTemplate.NativeConfig(t, admin, name, password)
-	native.MaxConns = 4
-	pool, err := pgxpool.NewWithConfig(t.Context(), native)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	deployment, generation := "origin", int64(0)
-	if cfg.Hosted.SharedEntry != nil {
-		deployment, generation = "shared", cfg.Hosted.SharedEntry.Generation
-	}
-	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
-	now := time.Now().UTC()
-	cursorEnvelope, err := keys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), CreatedAt: now}); err != nil {
-			return err
-		}
-		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: "hub_" + strings.ReplaceAll(uuid.NewString(), "-", ""), CursorKey: bytes.Repeat([]byte{1}, 32)}); err != nil {
-			return err
-		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, BootstrapSubject: cfg.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: cfg.Hosted.PublicURL, AllocationGeneration: generation}); err != nil {
-			return err
-		}
-		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now}); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.Close(); err != nil {
-		t.Fatal(err)
-	}
-	connection := entryPostgresTemplate.Connection(t, admin, name, password)
-	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&connection.Database); err != nil {
-		t.Fatal(err)
-	}
-	connection = pgtransport.Connection{Host: connection.Host, Port: connection.Port, Database: connection.Database, SSLMode: "disable", User: name, Password: password}
-	if connection.Host == "localhost" {
-		connection.Host = "127.0.0.1"
-	}
-	cfg.DatabaseBackend = hubserver.DatabasePostgres
-
-	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}
-	cfg.RunDetails = tenantDetailFixture{&conversationArchiveFixture{}}
-	return admin
-}
-
 func tenantPostgresRepository(t *testing.T, fixture tenantFixture) *postgres.Repository {
 	t.Helper()
-	native, err := fixture.config.Postgres.Connection.PoolConfig()
+	native, err := fixture.Config.Postgres.Connection.PoolConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	native.MaxConns = int32(fixture.config.Postgres.Pool.MaxConnections)
+	native.MaxConns = int32(fixture.Config.Postgres.Pool.MaxConnections)
 	pool, err := pgxpool.NewWithConfig(t.Context(), native)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository, err := postgres.NewRepository(t.Context(), pool, fixture.config.Postgres.Pool)
+	repository, err := postgres.NewRepository(t.Context(), pool, fixture.Config.Postgres.Pool)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,18 +158,6 @@ func configurePostgresTenants(t *testing.T, databases map[string]*sql.DB) func(*
 	}
 }
 
-type tenantDetailFixture struct {
-	*conversationArchiveFixture
-}
-
-func (f tenantDetailFixture) StoreDetail(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
-	return f.PublishContent(ctx, organization, content)
-}
-
-func (f tenantDetailFixture) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	return f.ReadContent(ctx, organization, ref)
-}
-
 func TestEntryBackendPlatformOwners(t *testing.T) {
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) {
@@ -309,9 +165,9 @@ func TestEntryBackendPlatformOwners(t *testing.T) {
 			objects := newSpacesFixture(t, false)
 			f := newEntryFixture(t, configure, func(cfg *Config) {
 				cfg.LookupEnv = entrySecretEnvironment(1, 1)
-				storage := objects.config()
+				storage := objects.Config()
 				storage.Endpoint = "https://storage.example.test"
-				cfg.Attachments, cfg.attachmentTransport = &storage, objects.transport
+				cfg.Attachments, cfg.attachmentTransport = &storage, objects.Transport
 			})
 			s := f.service
 			for _, id := range []string{"org_alpha", "org_beta"} {
@@ -410,7 +266,7 @@ func TestEntryBackendPlatformOwners(t *testing.T) {
 func TestEntryPostgresLogin(t *testing.T) {
 	f := newEntryFixture(t, entryPostgresConfig(t))
 	b := newBrowser(t, f.service.Handler())
-	if location := b.login("/organizations/org_alpha/organization", "user_alice:porg_alpha"); location != "/organizations/org_alpha/organization" {
+	if location := b.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha"); location != "/organizations/org_alpha/organization" {
 		t.Fatalf("login location = %q", location)
 	}
 	for _, name := range []string{"registry.db", "auth.db"} {
@@ -466,7 +322,7 @@ func TestEntryDSNRejectsAmbientCredentialDiscovery(t *testing.T) {
 func TestEntryAuthStoreFailures(t *testing.T) {
 	f := newEntryFixture(t)
 	b := newBrowser(t, f.service.Handler())
-	b.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	b.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	a := f.service.auth
 	var hash, binding string
 	if err := a.store.reader.QueryRowContext(t.Context(), "SELECT session_hash,binding FROM platform.authorizations WHERE organization_id='org_alpha'").Scan(&hash, &binding); err != nil {

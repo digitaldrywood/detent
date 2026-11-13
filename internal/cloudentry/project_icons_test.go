@@ -23,15 +23,15 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 	for _, organizationLogo := range []bool{false, true} {
 		t.Run(fmt.Sprintf("organization=%t", organizationLogo), func(t *testing.T) {
 			store := newSpacesFixture(t, false)
-			storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+			storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)
 			if err != nil {
 				t.Fatal(err)
 			}
 			f := newEntryFixtureWithLogger(t, slog.New(slog.DiscardHandler), func(config *hubserver.Config) { config.Hosted.SharedEntry.Icons = attachment.Icons{Storage: storage} })
 			f.service.attachments = storage
 			alice := newBrowser(t, f.service.Handler())
-			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-			_, page := alice.get("/organizations/org_alpha/app/bootstrap")
+			alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			_, page := alice.Get("/organizations/org_alpha/app/bootstrap")
 			csrf := csrfFrom(t, page)
 			project := attachmentProject(t, alice, "org_alpha")
 			base := "/api/v2/organizations/org_alpha/projects/" + project
@@ -118,7 +118,7 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 				return saved
 			}
 			bob := newBrowser(t, f.service.Handler())
-			bob.login("/organizations/org_beta/organization", "user_bob:porg_beta")
+			bob.Login("/organizations/org_beta/organization", "user_bob:porg_beta")
 			first := save("image")
 			read := attachmentRequest(t, alice, http.MethodGet, first.Icon.URL, nil, nil)
 			if got := attachmentRequest(t, bob, http.MethodGet, first.Icon.URL, nil, nil); got.Code != 404 {
@@ -153,7 +153,7 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 			if got := attachmentRequest(t, alice, http.MethodDelete, deleteURL, nil, map[string]string{"X-CSRF-Token": csrf}); got.Code != 404 {
 				t.Fatalf("active icon delete=%d %s", got.Code, got.Body.String())
 			}
-			db := f.fixtures["org_alpha"].database
+			db := f.fixtures["org_alpha"].Database
 			used := func() int64 {
 				t.Helper()
 				var n int64
@@ -186,9 +186,9 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				store.mu.Lock()
-				_, exists := store.objects[key]
-				store.mu.Unlock()
+				store.Mu.Lock()
+				_, exists := store.Objects[key]
+				store.Mu.Unlock()
 				if exists {
 					t.Fatal("replaced/reset icon object remains")
 				}
@@ -212,9 +212,9 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 				if response.Code != http.StatusTooManyRequests {
 					t.Fatalf("quota refusal=%d %s", response.Code, response.Body.String())
 				}
-				store.mu.Lock()
-				objects := len(store.objects)
-				store.mu.Unlock()
+				store.Mu.Lock()
+				objects := len(store.Objects)
+				store.Mu.Unlock()
 				if objects != 0 || used() != exhaustedBytes {
 					t.Fatalf("quota refusal left objects=%d or changed storage usage", objects)
 				}

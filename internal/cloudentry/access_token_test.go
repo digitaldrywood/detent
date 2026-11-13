@@ -15,18 +15,6 @@ import (
 
 type lockedBuffer = entrytest.LockedBuffer
 
-// endSessions revokes a user's provider sessions without the entry's
-// knowledge, as an administrator revoking them in WorkOS would.
-func (p *fakeProvider) endSessions(user string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for id, session := range p.sessions {
-		if session.Subject == user {
-			delete(p.sessions, id)
-		}
-	}
-}
-
 func TestSharedEntryAccessTokenVerification(t *testing.T) {
 
 	t.Parallel()
@@ -36,129 +24,129 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 		run  func(t *testing.T, f entryFixture, alice *browser)
 	}{
 		{"valid token makes no provider calls for reads or writes", func(t *testing.T, f entryFixture, alice *browser) {
-			_, organizationPage := alice.get("/organizations/org_alpha/app/bootstrap")
-			before := f.provider.providerCalls()
+			_, organizationPage := alice.Get("/organizations/org_alpha/app/bootstrap")
+			before := f.provider.ProviderCalls()
 			for range 5 {
-				if response, body := alice.get(target); response.StatusCode != http.StatusOK {
+				if response, body := alice.Get(target); response.StatusCode != http.StatusOK {
 					t.Fatalf("read status = %d: %s", response.StatusCode, body)
 				}
 			}
 			createEntryTestProject(t, alice, "Token project", csrfFrom(t, organizationPage))
-			if calls := f.provider.providerCalls() - before; calls != 0 {
+			if calls := f.provider.ProviderCalls() - before; calls != 0 {
 				t.Fatalf("provider calls = %d, want 0", calls)
 			}
 		}},
 		{"expired token refreshes once then verifies locally", func(t *testing.T, f entryFixture, alice *browser) {
-			f.provider.expireAccess()
-			before := f.provider.providerCalls()
-			if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
+			f.provider.ExpireAccess()
+			before := f.provider.ProviderCalls()
+			if response, _ := alice.Get(target); response.StatusCode != http.StatusOK {
 				t.Fatalf("first read status = %d", response.StatusCode)
 			}
-			if calls := f.provider.providerCalls() - before; calls != 1 || f.provider.refreshes != 1 {
-				t.Fatalf("provider calls after expiry = %d (refreshes %d), want one refresh", calls, f.provider.refreshes)
+			if calls := f.provider.ProviderCalls() - before; calls != 1 || f.provider.Refreshes != 1 {
+				t.Fatalf("provider calls after expiry = %d (refreshes %d), want one refresh", calls, f.provider.Refreshes)
 			}
 			for range 3 {
-				if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
+				if response, _ := alice.Get(target); response.StatusCode != http.StatusOK {
 					t.Fatalf("read status = %d", response.StatusCode)
 				}
 			}
-			if calls := f.provider.providerCalls() - before; calls != 1 {
+			if calls := f.provider.ProviderCalls() - before; calls != 1 {
 				t.Fatalf("provider calls after the refresh = %d, want 1", calls)
 			}
 		}},
 		{"shared session refreshes alternating organizations across token lifetimes", func(t *testing.T, f entryFixture, alice *browser) {
-			f.provider.mu.Lock()
-			f.provider.sharedSessions = true
-			f.provider.mu.Unlock()
-			alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
+			f.provider.Mu.Lock()
+			f.provider.SharedSessions = true
+			f.provider.Mu.Unlock()
+			alice.Login("/organizations/org_beta/organization", "user_alice:porg_beta")
 			for range 3 {
-				f.provider.expireAccess()
+				f.provider.ExpireAccess()
 				for _, organization := range []string{"org_alpha", "org_beta"} {
-					if response, body := alice.get("/api/v2/organizations/" + organization + "/projects"); response.StatusCode != http.StatusOK {
+					if response, body := alice.Get("/api/v2/organizations/" + organization + "/projects"); response.StatusCode != http.StatusOK {
 						t.Fatalf("%s read after expiry = %d: %s", organization, response.StatusCode, body)
 					}
 				}
 			}
-			if f.provider.refreshes != 6 {
-				t.Fatalf("refreshes = %d, want 6", f.provider.refreshes)
+			if f.provider.Refreshes != 6 {
+				t.Fatalf("refreshes = %d, want 6", f.provider.Refreshes)
 			}
 		}},
 		{"refresh returning another organization drops the authorization", func(t *testing.T, f entryFixture, alice *browser) {
-			f.provider.mu.Lock()
-			f.provider.refreshOrg = "porg_beta"
-			f.provider.mu.Unlock()
-			f.provider.expireAccess()
-			if response, _ := alice.get(target); response.StatusCode != http.StatusForbidden {
+			f.provider.Mu.Lock()
+			f.provider.RefreshOrg = "porg_beta"
+			f.provider.Mu.Unlock()
+			f.provider.ExpireAccess()
+			if response, _ := alice.Get(target); response.StatusCode != http.StatusForbidden {
 				t.Fatalf("mismatched organization status = %d, want 403", response.StatusCode)
 			}
-			if response, _ := alice.get(target); response.StatusCode != http.StatusUnauthorized {
+			if response, _ := alice.Get(target); response.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("read after authorization drop = %d, want 401", response.StatusCode)
 			}
-			if f.provider.refreshes != 1 {
-				t.Fatalf("refreshes = %d, want 1", f.provider.refreshes)
+			if f.provider.Refreshes != 1 {
+				t.Fatalf("refreshes = %d, want 1", f.provider.Refreshes)
 			}
 		}},
 		{"revoked session signs the browser out", func(t *testing.T, f entryFixture, alice *browser) {
-			f.provider.endSessions("user_alice")
-			if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
+			f.provider.EndSessions("user_alice")
+			if response, _ := alice.Get(target); response.StatusCode != http.StatusOK {
 				t.Fatalf("read before expiry = %d, want 200 until the access token expires", response.StatusCode)
 			}
-			f.provider.expireAccess()
-			if response, _ := alice.get(target); response.StatusCode != http.StatusUnauthorized {
+			f.provider.ExpireAccess()
+			if response, _ := alice.Get(target); response.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("revoked API read = %d, want 401", response.StatusCode)
 			}
-			events := alice.do(http.MethodGet, "/organizations/org_alpha/projects/prj_example/events", nil, map[string]string{
+			events := alice.Do(http.MethodGet, "/organizations/org_alpha/projects/prj_example/events", nil, map[string]string{
 				"Accept": "text/event-stream", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty",
 			})
 			if events.StatusCode != http.StatusUnauthorized || events.Header.Get("Location") != "" || len(events.Header.Values("Set-Cookie")) != 0 {
 				t.Fatalf("revoked event stream = %d %v, want 401 without redirect or cookies", events.StatusCode, events.Header)
 			}
-			response, _ := alice.get("/organizations/org_alpha/app/bootstrap")
+			response, _ := alice.Get("/organizations/org_alpha/app/bootstrap")
 			if response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(response.Header.Get("Location"), "/auth/oidc/start") {
 				t.Fatalf("revoked page read = %d %q, want sign-in redirect", response.StatusCode, response.Header.Get("Location"))
 			}
-			if f.provider.refreshes != 1 {
-				t.Fatalf("refreshes = %d, want 1: the dropped authorization must not refresh again", f.provider.refreshes)
+			if f.provider.Refreshes != 1 {
+				t.Fatalf("refreshes = %d, want 1: the dropped authorization must not refresh again", f.provider.Refreshes)
 			}
 		}},
 		{"removed member is refused at the next refresh", func(t *testing.T, f entryFixture, alice *browser) {
-			f.provider.mu.Lock()
-			f.provider.sharedSessions = true
-			f.provider.mu.Unlock()
-			alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
-			f.provider.removeMember("user_alice", "porg_alpha")
-			f.provider.expireAccess()
-			if response, _ := alice.get(target); response.StatusCode != http.StatusForbidden {
+			f.provider.Mu.Lock()
+			f.provider.SharedSessions = true
+			f.provider.Mu.Unlock()
+			alice.Login("/organizations/org_beta/organization", "user_alice:porg_beta")
+			f.provider.RemoveMember("user_alice", "porg_alpha")
+			f.provider.ExpireAccess()
+			if response, _ := alice.Get(target); response.StatusCode != http.StatusForbidden {
 				t.Fatalf("removed member status = %d, want 403", response.StatusCode)
 			}
-			before := f.provider.providerCalls()
-			if response, _ := alice.get(target); response.StatusCode != http.StatusUnauthorized {
+			before := f.provider.ProviderCalls()
+			if response, _ := alice.Get(target); response.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("removed member read after authorization drop = %d, want 401", response.StatusCode)
 			}
-			if calls := f.provider.providerCalls() - before; calls != 0 {
+			if calls := f.provider.ProviderCalls() - before; calls != 0 {
 				t.Fatalf("provider calls after the drop = %d, want 0", calls)
 			}
-			if response, _ := alice.get("/api/v2/organizations/org_beta/projects"); response.StatusCode != http.StatusOK {
+			if response, _ := alice.Get("/api/v2/organizations/org_beta/projects"); response.StatusCode != http.StatusOK {
 				t.Fatalf("remaining membership status = %d, want 200", response.StatusCode)
 			}
-			response, _ := alice.get("/organizations/org_alpha/app/bootstrap")
+			response, _ := alice.Get("/organizations/org_alpha/app/bootstrap")
 			if response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(response.Header.Get("Location"), "/auth/oidc/start") {
 				t.Fatalf("removed member page = %d %q, want sign-in redirect", response.StatusCode, response.Header.Get("Location"))
 			}
 		}},
 		{"unreachable key set keeps the authorization", func(t *testing.T, f entryFixture, alice *browser) {
 			const chosen = "/organizations/org_alpha/organization?tab=work&view=board"
-			if response, body := alice.get("/organizations"); response.StatusCode != http.StatusOK || !strings.Contains(body, `/organizations/org_alpha/organization`) {
+			if response, body := alice.Get("/organizations"); response.StatusCode != http.StatusOK || !strings.Contains(body, `/organizations/org_alpha/organization`) {
 				t.Fatalf("chooser before the outage = %d: %s", response.StatusCode, body)
 			}
-			before := f.provider.sequence
-			f.provider.mu.Lock()
-			f.provider.keysDown = true
-			f.provider.mu.Unlock()
-			if response, body := alice.get(target); response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"unavailable"`) {
+			before := f.provider.Sequence
+			f.provider.Mu.Lock()
+			f.provider.KeysDown = true
+			f.provider.Mu.Unlock()
+			if response, body := alice.Get(target); response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"unavailable"`) {
 				t.Fatalf("API with the key set down = %d: %s", response.StatusCode, body)
 			}
-			response, body := alice.get(chosen)
+			response, body := alice.Get(chosen)
 			if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "Temporarily unavailable") {
 				t.Fatalf("browser outage = %d: %s", response.StatusCode, body)
 			}
@@ -172,39 +160,39 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			if len(link) != 2 || html.UnescapeString(link[1]) != chosen {
 				t.Fatalf("retry link = %v, want %s", link, chosen)
 			}
-			f.provider.mu.Lock()
-			f.provider.keysDown = false
-			f.provider.mu.Unlock()
-			if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
+			f.provider.Mu.Lock()
+			f.provider.KeysDown = false
+			f.provider.Mu.Unlock()
+			if response, _ := alice.Get(target); response.StatusCode != http.StatusOK {
 				t.Fatalf("status after the key set recovered = %d, want 200", response.StatusCode)
 			}
-			if response, body := alice.get(html.UnescapeString(link[1])); response.StatusCode != http.StatusOK || !strings.Contains(body, "Your organization") || !strings.Contains(body, "Alpha secret project") || !strings.Contains(body, "/organizations/org_alpha/") {
+			if response, body := alice.Get(html.UnescapeString(link[1])); response.StatusCode != http.StatusOK || !strings.Contains(body, "Your organization") || !strings.Contains(body, "Alpha secret project") || !strings.Contains(body, "/organizations/org_alpha/") {
 				t.Fatalf("browser retry = %d: %s", response.StatusCode, body)
 			}
-			if response, body := alice.get("/organizations"); response.StatusCode != http.StatusOK || !strings.Contains(body, `/organizations/org_alpha/organization`) {
+			if response, body := alice.Get("/organizations"); response.StatusCode != http.StatusOK || !strings.Contains(body, `/organizations/org_alpha/organization`) {
 				t.Fatalf("return to chooser = %d: %s", response.StatusCode, body)
 			}
-			if response, body := alice.get("/organizations/org_alpha/app/bootstrap"); response.StatusCode != http.StatusOK {
+			if response, body := alice.Get("/organizations/org_alpha/app/bootstrap"); response.StatusCode != http.StatusOK {
 				t.Fatalf("reselect organization = %d: %s", response.StatusCode, body)
 			}
-			if issued := f.provider.sequence - before; issued != 0 || f.provider.refreshes != 0 {
-				t.Fatalf("outage recovery issued tokens = %d, refreshes = %d", issued, f.provider.refreshes)
+			if issued := f.provider.Sequence - before; issued != 0 || f.provider.Refreshes != 0 {
+				t.Fatalf("outage recovery issued tokens = %d, refreshes = %d", issued, f.provider.Refreshes)
 			}
 		}},
 		{"concurrent requests on an expired token refresh once", func(t *testing.T, f entryFixture, alice *browser) {
-			f.provider.mu.Lock()
-			f.provider.sharedSessions = true
-			f.provider.mu.Unlock()
-			alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
+			f.provider.Mu.Lock()
+			f.provider.SharedSessions = true
+			f.provider.Mu.Unlock()
+			alice.Login("/organizations/org_beta/organization", "user_alice:porg_beta")
 			for index, organization := range []string{"org_alpha", "org_beta"} {
-				f.provider.expireAccess()
+				f.provider.ExpireAccess()
 				start := make(chan struct{})
 				var wg sync.WaitGroup
 				statuses := make([]int, 8)
 				for i := range statuses {
 					wg.Go(func() {
 						<-start
-						statuses[i] = alice.do(http.MethodGet, "/api/v2/organizations/"+organization+"/projects", nil, nil).StatusCode
+						statuses[i] = alice.Do(http.MethodGet, "/api/v2/organizations/"+organization+"/projects", nil, nil).StatusCode
 					})
 				}
 				close(start)
@@ -214,8 +202,8 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 						t.Fatalf("tenant %s request %d status = %d", organization, i, status)
 					}
 				}
-				if f.provider.refreshes != index+1 {
-					t.Fatalf("refreshes = %d, want %d", f.provider.refreshes, index+1)
+				if f.provider.Refreshes != index+1 {
+					t.Fatalf("refreshes = %d, want %d", f.provider.Refreshes, index+1)
 				}
 			}
 		}},
@@ -225,7 +213,7 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			t.Parallel()
 			f := newEntryFixture(t)
 			alice := newBrowser(t, f.service.Handler())
-			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 			test.run(t, f, alice)
 		})
 	}
@@ -237,16 +225,16 @@ func TestSharedEntryProxyLogsLatencyWithoutIdentity(t *testing.T) {
 	var logs lockedBuffer
 	f := newEntryFixtureWithLogger(t, slog.New(slog.NewTextHandler(&logs, nil)))
 	alice := newBrowser(t, f.service.Handler())
-	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	f.provider.expireAccess()
-	alice.get("/organizations/org_alpha/organization?tab=x")
-	_, organizationPage := alice.get("/organizations/org_alpha/app/bootstrap")
+	alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	f.provider.ExpireAccess()
+	alice.Get("/organizations/org_alpha/organization?tab=x")
+	_, organizationPage := alice.Get("/organizations/org_alpha/app/bootstrap")
 	path := "/api/v2/organizations/org_alpha/runner-enrollments"
-	request := httptest.NewRequest(http.MethodPost, alice.origin+path, strings.NewReader(`{"scope":"projects","project_ids":["project_unknown"],"operations":["read"],"ttl_seconds":900}`))
+	request := httptest.NewRequest(http.MethodPost, alice.Origin+path, strings.NewReader(`{"scope":"projects","project_ids":["project_unknown"],"operations":["read"],"ttl_seconds":900}`))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Origin", alice.origin)
+	request.Header.Set("Origin", alice.Origin)
 	request.Header.Set("X-CSRF-Token", csrfFrom(t, organizationPage))
-	for _, cookie := range alice.jar.Cookies(request.URL) {
+	for _, cookie := range alice.Jar.Cookies(request.URL) {
 		request.AddCookie(cookie)
 	}
 	rejected := httptest.NewRecorder()
@@ -258,11 +246,11 @@ func TestSharedEntryProxyLogsLatencyWithoutIdentity(t *testing.T) {
 		t.Fatalf("enrollment reason was lost: %s", rejected.Body.String())
 	}
 	privateField := "private-token@example.test"
-	request = httptest.NewRequest(http.MethodPost, alice.origin+path, strings.NewReader(`{"`+privateField+`":true}`))
+	request = httptest.NewRequest(http.MethodPost, alice.Origin+path, strings.NewReader(`{"`+privateField+`":true}`))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Origin", alice.origin)
+	request.Header.Set("Origin", alice.Origin)
 	request.Header.Set("X-CSRF-Token", csrfFrom(t, organizationPage))
-	for _, cookie := range alice.jar.Cookies(request.URL) {
+	for _, cookie := range alice.Jar.Cookies(request.URL) {
 		request.AddCookie(cookie)
 	}
 	rejected = httptest.NewRecorder()

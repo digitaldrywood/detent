@@ -44,7 +44,7 @@ func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true"); err != nil {
 		t.Fatal(err)
 	}
-	plans := *f.fixtures["org_alpha"].config.Hosted.Plans
+	plans := *f.fixtures["org_alpha"].Config.Hosted.Plans
 	f.service.config.Allocation = &AllocationConfig{
 		TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5,
 		Launcher: &sharedRuntimeLauncher{silentLauncher: &silentLauncher{}, adopt: func(context.Context, Organization, string, hubserver.HostedRuntimeUpdate) error {
@@ -69,7 +69,7 @@ func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
 		t.Fatal("desired runtime was not durable")
 	}
 	repo := tenantPostgresRepository(t, f.fixtures["org_alpha"])
-	snapshots, err := hubserver.NewHostedRuntimeSnapshots(repo, tenantDetailFixture{&conversationArchiveFixture{}})
+	snapshots, err := hubserver.NewHostedRuntimeSnapshots(repo, tenantDetailFixture{ConversationArchive: &conversationArchiveFixture{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
 		update, err := snapshots.Load(t.Context(), tenant)
 		want := plans.WindowSeconds
 		if i == 1 {
-			want = f.fixtures["org_beta"].config.Hosted.Plans.WindowSeconds
+			want = f.fixtures["org_beta"].Config.Hosted.Plans.WindowSeconds
 		}
 		if err != nil || update.Plans.WindowSeconds != want {
 			t.Fatalf("%s applied window=%+v want=%d error=%v", tenant.Organization, update.Plans, want, err)
@@ -204,7 +204,7 @@ func TestRuntimePublicationTenantIsolation(t *testing.T) {
 	if _, err := f.service.registry.store.db.ExecContext(pgtest.UnboundProbe(t.Context()), "UPDATE public.hosted_runtime_heads SET organization_id=organization_id WHERE organization_id=$1", "org_alpha"); pgtransport.SQLState(err) != "42501" {
 		t.Fatalf("platform runtime head write = %v", err)
 	}
-	connection := f.fixtures["org_alpha"].config.Postgres.Connection
+	connection := f.fixtures["org_alpha"].Config.Postgres.Connection
 	native := entryPostgresTemplate.NativeConfig(t, admin, connection.User, connection.Password)
 	runtimeDB, err := pgxpool.NewWithConfig(t.Context(), native)
 	if err != nil {
@@ -223,7 +223,7 @@ func TestRuntimePublicationRefreshesAllowanceConsumers(t *testing.T) {
 			const token = "runtime-entitlement-admin-0123456789abcdef"
 			for id, tenant := range f.fixtures {
 				if billing {
-					tenant.config.Hosted.Billing = &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_runtime", CustomerID: "cus_" + id, PortalConfigurationID: "bpc_runtime", WebhookSecret: []byte(testWebhookSecret), GraceSeconds: 3600, ReconcileSeconds: 3600, Provider: &fakeBilling{}, Prices: []hubserver.HostedBillingPrice{{PriceID: "price_initial", Label: "Initial plan", Plan: tenant.config.Hosted.Plans.Plans[1].PlanReference}}}
+					tenant.Config.Hosted.Billing = &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_runtime", CustomerID: "cus_" + id, PortalConfigurationID: "bpc_runtime", WebhookSecret: []byte(testWebhookSecret), GraceSeconds: 3600, ReconcileSeconds: 3600, Provider: &fakeBilling{}, Prices: []hubserver.HostedBillingPrice{{PriceID: "price_initial", Label: "Initial plan", Plan: tenant.Config.Hosted.Plans.Plans[1].PlanReference}}}
 				}
 			}
 			entitlementFixture(t, f, token)
@@ -234,11 +234,11 @@ func TestRuntimePublicationRefreshesAllowanceConsumers(t *testing.T) {
 			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true"); err != nil {
 				t.Fatal(err)
 			}
-			plans := *f.fixtures["org_alpha"].config.Hosted.Plans
+			plans := *f.fixtures["org_alpha"].Config.Hosted.Plans
 			next := f.service.config
 			next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans}
 			if billing {
-				next.Runtime.Prices = f.fixtures["org_alpha"].config.Hosted.Billing.Prices
+				next.Runtime.Prices = f.fixtures["org_alpha"].Config.Hosted.Billing.Prices
 			}
 			f.service.config.Reload = func() (Config, error) { return next, nil }
 			readers := make(map[string]func() int64)

@@ -14,38 +14,11 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
-
-func (p *fakeProvider) InvitationByID(_ context.Context, id string) (auth.Invitation, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, invitation := range p.invitations {
-		if invitation.ID == id {
-			return invitation, nil
-		}
-	}
-	return auth.Invitation{}, auth.ErrHostedIdentity
-}
-func (p *fakeProvider) AcceptInvitationByID(ctx context.Context, id, user string) error {
-	p.mu.Lock()
-	reference := ""
-	for token, invitation := range p.invitations {
-		if invitation.ID == id {
-			reference = token
-			break
-		}
-	}
-	p.mu.Unlock()
-	if reference == "" {
-		return auth.ErrHostedIdentity
-	}
-	return p.AcceptInvitation(ctx, reference, user)
-}
 
 // Catches account context switching retaining grants, cross-account selection,
 // staff privilege leakage, and revoked membership/session receipt replay.
@@ -63,16 +36,16 @@ func TestEntryAdministrationContext(t *testing.T) {
 				user = "user_support"
 			}
 			if strings.HasPrefix(scenario, "logout") {
-				b.login("/organizations/org_alpha/organization", user+":porg_alpha")
+				b.Login("/organizations/org_alpha/organization", user+":porg_alpha")
 			} else {
-				b.login("/organizations", user+":")
+				b.Login("/organizations", user+":")
 			}
 			ctxs := make(chan context.Context, 1)
 			f.service.echo.POST("/administration-test", func(c echo.Context) error {
 				ctxs <- operatortool.BindConnection(c.Request().Context(), "entry-test", "fixture")
 				return c.NoContent(http.StatusOK)
 			}, f.service.administrationAuthority)
-			if response := b.do(http.MethodPost, "/administration-test", nil, nil); response.StatusCode != http.StatusOK {
+			if response := b.Do(http.MethodPost, "/administration-test", nil, nil); response.StatusCode != http.StatusOK {
 				t.Fatalf("entry=%d %s", response.StatusCode, response.Body)
 			}
 			ctx := <-ctxs
@@ -157,7 +130,7 @@ func TestEntryAdministrationContext(t *testing.T) {
 				t.Fatalf("context lacks fresh destination: %s", result.Content)
 			}
 			if scenario == "revoked membership" {
-				f.provider.removeMember(user, "porg_alpha")
+				f.provider.RemoveMember(user, "porg_alpha")
 			}
 			if scenario == "revoked session" {
 				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.sessions SET revoked_at=$1", f.service.config.now()); err != nil {
@@ -200,7 +173,7 @@ func testEntrySessionLogout(t *testing.T, f entryFixture, b *browser, ctx contex
 		}
 	}
 	if scenario == "logout provider failure" {
-		f.provider.revokeErr = errors.New("provider-secret-sentinel")
+		f.provider.RevokeErr = errors.New("provider-secret-sentinel")
 	}
 	if scenario == "logout revoked session" {
 		if _, err := f.service.auth.revokeSession(ctx, session.Hash); err != nil {
@@ -208,13 +181,13 @@ func testEntrySessionLogout(t *testing.T, f entryFixture, b *browser, ctx contex
 		}
 	}
 	if scenario == "logout revoked provider" {
-		f.provider.mu.Lock()
-		delete(f.provider.sessions, session.Identity.SessionID)
-		f.provider.mu.Unlock()
+		f.provider.Mu.Lock()
+		delete(f.provider.Sessions, session.Identity.SessionID)
+		f.provider.Mu.Unlock()
 	}
 	result, err := e.Execute(ctx, call)
 	if scenario == "logout revoked session" || scenario == "logout revoked provider" {
-		if !errors.Is(err, operatortool.ErrAccessDenied) || len(f.provider.revoked) != 0 {
+		if !errors.Is(err, operatortool.ErrAccessDenied) || len(f.provider.Revoked) != 0 {
 			t.Fatalf("revoked signout=%v", err)
 		}
 		return
@@ -242,7 +215,7 @@ func testEntrySessionLogout(t *testing.T, f entryFixture, b *browser, ctx contex
 	if scenario != "logout provider failure" {
 		for _, providerID := range []string{session.Identity.SessionID, authorization.Identity.SessionID} {
 			found := false
-			for _, revoked := range f.provider.revoked {
+			for _, revoked := range f.provider.Revoked {
 				found = found || revoked == providerID
 			}
 			if !found {
@@ -349,7 +322,7 @@ func testEntrySessionTransports(t *testing.T, f entryFixture, ctx context.Contex
 					t.Fatalf("transport bypassed approval=%s", response.Result.Structured)
 				}
 			}
-			if len(f.provider.revoked) != 0 {
+			if len(f.provider.Revoked) != 0 {
 				t.Fatal("transport self-approved sign-out")
 			}
 		})

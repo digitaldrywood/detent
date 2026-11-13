@@ -127,11 +127,11 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 				if failed || !strings.Contains(string(listing), `"name":"read_attachment"`) || strings.Contains(string(listing), `"name":"delete_attachment"`) || strings.Contains(string(listing), `"name":"reference_attachment"`) {
 					t.Fatalf("read-only catalog=%s", listing)
 				}
-				before := len(store.requests())
+				before := len(store.Requests())
 				raw, failed := call(operatortool.ReadAttachmentMetadata, selector)
 				var metadata attachment.Metadata
-				if failed || json.Unmarshal(raw, &metadata) != nil || metadata.ID != record.ID || metadata.Size != record.Size || metadata.SHA256 != record.SHA256 || len(store.requests()) != before {
-					t.Fatalf("metadata=%s storage=%v", raw, len(store.requests()) != before)
+				if failed || json.Unmarshal(raw, &metadata) != nil || metadata.ID != record.ID || metadata.Size != record.Size || metadata.SHA256 != record.SHA256 || len(store.Requests()) != before {
+					t.Fatalf("metadata=%s storage=%v", raw, len(store.Requests()) != before)
 				}
 				for _, part := range []struct {
 					offset int64
@@ -169,8 +169,8 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 					if name == operatortool.DeleteAttachment {
 						delete(input, "work_item_id")
 					}
-					before := len(store.requests())
-					if raw, failed := call(name, input); !failed || len(store.requests()) != before {
+					before := len(store.Requests())
+					if raw, failed := call(name, input); !failed || len(store.Requests()) != before {
 						t.Fatalf("read-only mutation=%s", raw)
 					}
 				}
@@ -181,8 +181,8 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 							{"project_id": otherProject, "attachment_id": record.ID},
 							{"organization_id": "org_beta", "project_id": project, "attachment_id": record.ID},
 						} {
-							before := len(store.requests())
-							if raw, failed := call(name, input); !failed || len(store.requests()) != before {
+							before := len(store.Requests())
+							if raw, failed := call(name, input); !failed || len(store.Requests()) != before {
 								t.Fatalf("missing or forbidden personal read=%s", raw)
 							}
 						}
@@ -193,8 +193,8 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 						{"project_id": project, "attachment_id": record.ID, "offset": -1},
 						{"project_id": project, "attachment_id": record.ID, "offset": record.Size + 1},
 					} {
-						before := len(store.requests())
-						if raw, failed := call(operatortool.ReadAttachment, input); !failed || len(store.requests()) != before {
+						before := len(store.Requests())
+						if raw, failed := call(operatortool.ReadAttachment, input); !failed || len(store.Requests()) != before {
 							t.Fatalf("invalid personal read=%s", raw)
 						}
 					}
@@ -212,8 +212,8 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 		{"project_id": otherProject, "attachment_id": record.ID},
 		{"project_id": project, "attachment_id": "att_00000000000000000000000000000001"},
 	} {
-		before := len(store.requests())
-		if raw, failed := call(operatortool.ReadAttachment, input); !failed || len(store.requests()) != before {
+		before := len(store.Requests())
+		if raw, failed := call(operatortool.ReadAttachment, input); !failed || len(store.Requests()) != before {
 			t.Fatalf("invalid or foreign read=%s", raw)
 		}
 	}
@@ -222,18 +222,18 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 		t.Fatalf("ungranted project read=%s", raw)
 	}
 	betaProject := attachmentProject(t, browser, "org_beta")
-	before := len(store.requests())
-	if raw, failed := call(operatortool.ReadAttachmentMetadata, map[string]string{"project_id": betaProject, "attachment_id": record.ID}); !failed || len(store.requests()) != before {
+	before := len(store.Requests())
+	if raw, failed := call(operatortool.ReadAttachmentMetadata, map[string]string{"project_id": betaProject, "attachment_id": record.ID}); !failed || len(store.Requests()) != before {
 		t.Fatalf("foreign organization project=%s", raw)
 	}
 	objectKey, err := attachment.Key("org_alpha", record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.mu.Lock()
-	stored := store.objects[objectKey]
-	store.objects[objectKey] = spacesObject{content: []byte("short"), created: stored.created}
-	store.mu.Unlock()
+	store.Mu.Lock()
+	stored := store.Objects[objectKey]
+	store.Objects[objectKey] = spacesObject{Content: []byte("short"), Created: stored.Created}
+	store.Mu.Unlock()
 	personalCall := entryMCPClient(t, anonymous, personal.Token, mcp.ProtocolVersion, "/mcp")
 	for _, test := range []struct {
 		name string
@@ -252,9 +252,9 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 			}
 		})
 	}
-	store.mu.Lock()
-	store.objects[objectKey] = stored
-	store.mu.Unlock()
+	store.Mu.Lock()
+	store.Objects[objectKey] = stored
+	store.Mu.Unlock()
 	client, err := hubclient.New(hubclient.Config{URL: testPublicURL + "/organizations/org_alpha", TokenSource: func() string { return writeToken }, HTTPClient: &http.Client{Transport: handlerTransport{handler: f.service.Handler()}}})
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 	if failed || json.Unmarshal(raw, &bound) != nil || len(bound.ReferencedBy) != 2 {
 		t.Fatalf("replayed references=%s", raw)
 	}
-	_, page := browser.get("/organizations/org_alpha/app/bootstrap")
+	_, page := browser.Get("/organizations/org_alpha/app/bootstrap")
 	csrf := csrfFrom(t, page)
 	foreignIssue := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/projects/"+otherProject+"/work-items", strings.NewReader(`{"idempotency_key":"foreign-binding-target","title":"Foreign target","state":"Backlog"}`), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
 	var foreignItem tracker.NativeIssue
@@ -321,18 +321,18 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 				if revoked.Code != 204 {
 					t.Fatalf("revoke=%s", revoked.Body.String())
 				}
-				before := len(store.requests())
-				if raw, failed := invoke(operatortool.DeleteAttachment, input); !failed || len(store.requests()) != before {
+				before := len(store.Requests())
+				if raw, failed := invoke(operatortool.DeleteAttachment, input); !failed || len(store.Requests()) != before {
 					t.Fatalf("revoked deletion=%s", raw)
 				}
-				if _, failed := invoke(operatortool.UploadAttachment, upload); !failed || len(store.requests()) != before {
+				if _, failed := invoke(operatortool.UploadAttachment, upload); !failed || len(store.Requests()) != before {
 					t.Fatal("revoked upload replay touched storage")
 				}
 				return
 			}
-			store.mu.Lock()
-			store.failDelete = scenario == "storage unavailable"
-			store.mu.Unlock()
+			store.Mu.Lock()
+			store.FailDelete = scenario == "storage unavailable"
+			store.Mu.Unlock()
 			raw, failed = invoke(operatortool.DeleteAttachment, input)
 			var receipt struct {
 				Preview        chat.Action `json:"preview"`
@@ -346,10 +346,10 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 				if receipt.ObjectDeletion != "pending" {
 					t.Fatalf("storage pending=%s", raw)
 				}
-				store.mu.Lock()
-				_, retained := store.objects[objectKey]
-				store.failDelete = false
-				store.mu.Unlock()
+				store.Mu.Lock()
+				_, retained := store.Objects[objectKey]
+				store.FailDelete = false
+				store.Mu.Unlock()
 				if !retained {
 					t.Fatal("failed storage deletion removed bytes")
 				}
@@ -368,9 +368,9 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 			if receipt.ObjectDeletion != "confirmed" {
 				t.Fatalf("object deletion=%s", raw)
 			}
-			store.mu.Lock()
-			_, retained := store.objects[objectKey]
-			store.mu.Unlock()
+			store.Mu.Lock()
+			_, retained := store.Objects[objectKey]
+			store.Mu.Unlock()
 			if retained {
 				t.Fatal("completed deletion retained bytes")
 			}
@@ -387,13 +387,13 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 	t.Run("postgres", func(t *testing.T) {
 		f := newEntryFixture(t)
 		store := newSpacesFixture(t, false)
-		storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+		storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)
 		if err != nil {
 			t.Fatal(err)
 		}
 		f.service.attachments = storage
 		owner := newBrowser(t, f.service.Handler())
-		owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+		owner.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 		project := attachmentProject(t, owner, "org_alpha")
 		approveEntryFixturePolicy(t, owner, "org_alpha", project)
 		anonymous := newBrowser(t, f.service.Handler())
@@ -406,7 +406,7 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 		scopedPersonal := createTestAccessKey(t, owner, "project", organizations, "")
 		service := createTestAccessKey(t, owner, "selected", organizations, "org_alpha")
 		readOnlyService := createTestAccessKey(t, owner, "selected", organizations, "org_alpha")
-		_, page := owner.get("/organizations/org_alpha/app/bootstrap")
+		_, page := owner.Get("/organizations/org_alpha/app/bootstrap")
 		otherProject := createEntryTestProject(t, owner, "Other evidence project", csrfFrom(t, page))
 		otherOrganizations := []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{otherProject}}}}
 		otherPersonal := createTestAccessKey(t, owner, "project", otherOrganizations, "")
@@ -432,7 +432,7 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 				t.Logf("credential=%s route=%s", credential.name, route)
 				func() {
 					requestID := strings.ReplaceAll(credential.name+"-"+route, " ", "-")
-					before := len(store.requests())
+					before := len(store.Requests())
 					var uploaded attachment.Metadata
 					var uploadErr error
 					var failed bool
@@ -473,8 +473,8 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 						failed = uploadErr != nil
 					}
 					if credential.denied {
-						if !failed || len(store.requests()) != before {
-							t.Fatalf("unauthorized upload refused=%v storage requests=%d want=%d", failed, len(store.requests()), before)
+						if !failed || len(store.Requests()) != before {
+							t.Fatalf("unauthorized upload refused=%v storage requests=%d want=%d", failed, len(store.Requests()), before)
 						}
 						return
 					}
@@ -485,9 +485,9 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					store.mu.Lock()
-					stored := bytes.Equal(store.objects[objectKey].content, pixels.Bytes())
-					store.mu.Unlock()
+					store.Mu.Lock()
+					stored := bytes.Equal(store.Objects[objectKey].Content, pixels.Bytes())
+					store.Mu.Unlock()
 					if !stored {
 						t.Fatal("uploaded object does not contain the PNG")
 					}
@@ -567,14 +567,14 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 func TestReporterAttachmentMCPRoundTrip(t *testing.T) {
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, false)
-	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.service.attachments = storage
-	f.provider.member("user_alice", "porg_alpha", "reporter")
+	f.provider.Member("user_alice", "porg_alpha", "reporter")
 	browser := newBrowser(t, f.service.Handler())
-	browser.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	browser.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	project := attachmentProject(t, browser, "org_alpha")
 	key := createTestAccessKey(t, browser, "project", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{project}}}}, "")
 	anonymous := newBrowser(t, f.service.Handler())

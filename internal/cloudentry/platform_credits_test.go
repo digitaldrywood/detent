@@ -44,24 +44,24 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 			adminToken := "platform-entitlement-admin-0123456789abcdef"
 			f.service.config.Allocation = &AllocationConfig{EntitlementAdminToken: []byte(adminToken)}
 			alpha := f.fixtures["org_alpha"]
-			if err := alpha.service.Close(); err != nil {
+			if err := alpha.Service.Close(); err != nil {
 				t.Fatal(err)
 			}
-			alpha.config.Hosted.Billing = &hubserver.HostedBillingConfig{
+			alpha.Config.Hosted.Billing = &hubserver.HostedBillingConfig{
 				AccountID: "acct_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_0123456789"), ReconcileSeconds: 60,
 				Provider:    &platformCreditProvider{},
-				Prices:      []hubserver.HostedBillingPrice{{PriceID: "price_plus", Label: "Plus", Plan: alpha.config.Hosted.Plans.Plans[1].PlanReference}},
+				Prices:      []hubserver.HostedBillingPrice{{PriceID: "price_plus", Label: "Plus", Plan: alpha.Config.Hosted.Plans.Plans[1].PlanReference}},
 				CreditPacks: []hubserver.HostedCreditPack{{PriceID: "price_credit", Label: "AI credits", USDCents: 500}},
 			}
-			service, err := hubserver.Open(t.Context(), alpha.config)
+			service, err := hubserver.Open(t.Context(), alpha.Config)
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = service.Close() })
 			f.tenants[testSocketEndpoint("alpha.sock")] = service.Handler()
-			f.provider.users["user_admin"] = "admin@example.test"
-			f.provider.users["user_billing"] = "billing@example.test"
-			f.provider.users["user_viewer"] = "viewer@example.test"
+			f.provider.Users["user_admin"] = "admin@example.test"
+			f.provider.Users["user_billing"] = "billing@example.test"
+			f.provider.Users["user_viewer"] = "viewer@example.test"
 			for _, role := range []string{"admin", "billing", "viewer"} {
 				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES($1,$2,'test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", role+"@example.test", role); err != nil {
 					t.Fatal(err)
@@ -88,9 +88,9 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 					browser := newBrowser(t, f.service.Handler())
 					csrf := ""
 					if test.user != "" {
-						browser.login("/auth/oidc/start", test.user+":")
+						browser.Login("/auth/oidc/start", test.user+":")
 						if test.csrf {
-							_, raw := browser.get("/api/cloud/session")
+							_, raw := browser.Get("/api/cloud/session")
 							var session struct {
 								CSRF string `json:"csrf"`
 							}
@@ -111,7 +111,7 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 							request.Header.Set("Mcp-Protocol-Version", "2025-11-25")
 						}
 						base, _ := url.Parse(testPublicURL)
-						for _, cookie := range browser.jar.Cookies(base) {
+						for _, cookie := range browser.Jar.Cookies(base) {
 							request.AddCookie(cookie)
 						}
 						response := httptest.NewRecorder()
@@ -197,13 +197,13 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 						}
 					}
 					if test.want == http.StatusOK && test.user != "" {
-						detailResponse, detailBody := browser.get("/api/cloud/platform/organizations/org_alpha")
+						detailResponse, detailBody := browser.Get("/api/cloud/platform/organizations/org_alpha")
 						var detail platformTenantDetail
 						decodeJSON(t, detailBody, &detail)
 						if detailResponse.StatusCode != http.StatusOK || detail.CreditBalanceMicros == nil || *detail.CreditBalanceMicros != balance {
 							t.Fatalf("detail balance=%d %+v want=%d", detailResponse.StatusCode, detail, balance)
 						}
-						if _, err := f.service.registry.store.db.ExecContext(t.Context(), "DELETE FROM platform.platform_members WHERE email=$1", f.provider.users[test.user]); err != nil {
+						if _, err := f.service.registry.store.db.ExecContext(t.Context(), "DELETE FROM platform.platform_members WHERE email=$1", f.provider.Users[test.user]); err != nil {
 							t.Fatal(err)
 						}
 						if response := send(path, body, sessionID); response.Code != http.StatusForbidden {
@@ -213,8 +213,8 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 				})
 			}
 			owner := newBrowser(t, f.service.Handler())
-			owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-			response, body := owner.get("/api/v2/organizations/org_alpha/billing/credits/transactions")
+			owner.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			response, body := owner.Get("/api/v2/organizations/org_alpha/billing/credits/transactions")
 			if response.StatusCode != http.StatusOK || !strings.Contains(body, "complimentary") || !strings.Contains(body, "admin@example.test") || !strings.Contains(body, "design partner") || !strings.Contains(body, `"balance_micros":15750000`) {
 				t.Fatalf("billing history=%d %s", response.StatusCode, body)
 			}

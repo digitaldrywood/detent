@@ -121,18 +121,18 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 		f.billing = &BillingConfig{Mode: "test", AccountID: "acct_fixture", WebhookSecret: []byte(testWebhookSecret), Provider: stripe}
 	}, configureStorage)
 	member := newBrowser(t, f.service.Handler())
-	member.login("/auth/oidc/start", "user_member:")
+	member.Login("/auth/oidc/start", "user_member:")
 	id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 	f.waitState(t, id, "ready")
 	if stripe.creates != 0 {
 		t.Fatal("free signup created a Stripe customer")
 	}
-	member.login("/organizations/"+id+"/organization", "user_member:porg_"+id)
-	response, page := member.get("/organizations/" + id + "/app/bootstrap")
+	member.Login("/organizations/"+id+"/organization", "user_member:porg_"+id)
+	response, page := member.Get("/organizations/" + id + "/app/bootstrap")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("billing page = %d %s", response.StatusCode, page)
 	}
-	if portal := member.do(http.MethodPost, "/organizations/"+id+"/organization/billing/portal", url.Values{"csrf": {csrfFrom(t, page)}}, nil); portal.StatusCode != http.StatusConflict {
+	if portal := member.Do(http.MethodPost, "/organizations/"+id+"/organization/billing/portal", url.Values{"csrf": {csrfFrom(t, page)}}, nil); portal.StatusCode != http.StatusConflict {
 		t.Fatalf("portal before a customer = %d", portal.StatusCode)
 	}
 	// Catches losing the original billing authority/CSRF binding through the
@@ -148,7 +148,7 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 			request.Header.Set("Mcp-Protocol-Version", "2025-11-25")
 		}
 		base, _ := url.Parse(testPublicURL)
-		for _, cookie := range member.jar.Cookies(base) {
+		for _, cookie := range member.Jar.Cookies(base) {
 			request.AddCookie(cookie)
 		}
 		response := httptest.NewRecorder()
@@ -179,7 +179,7 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 		t.Fatalf("shared replay=%s", replayed.Body.String())
 	}
 	for range 2 {
-		checkout := member.do(http.MethodPost, "/organizations/"+id+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+		checkout := member.Do(http.MethodPost, "/organizations/"+id+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
 		if checkout.StatusCode != http.StatusSeeOther || !strings.HasPrefix(checkout.Header.Get("Location"), "https://checkout.stripe.com/") {
 			t.Fatalf("checkout = %d %q %s", checkout.StatusCode, checkout.Header.Get("Location"), checkout.Body)
 		}
@@ -199,22 +199,22 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 		t.Run("checkout return "+suffix, func(t *testing.T) {
 			target := parsedReturn.RequestURI() + suffix
 			headers := map[string]string{"Sec-Fetch-Site": "cross-site", "Referer": "https://checkout.stripe.com/"}
-			returned := member.do(http.MethodGet, target, nil, headers)
+			returned := member.Do(http.MethodGet, target, nil, headers)
 			if returned.StatusCode == http.StatusPermanentRedirect {
 				location, err := url.Parse(returned.Header.Get("Location"))
 				if err != nil || location.IsAbs() || location.Host != "" || location.RawQuery != strings.TrimPrefix(suffix, "?") {
 					t.Fatalf("checkout return redirect = %q: %v", returned.Header.Get("Location"), err)
 				}
-				returned = member.do(http.MethodGet, location.RequestURI(), nil, headers)
+				returned = member.Do(http.MethodGet, location.RequestURI(), nil, headers)
 			}
 			if returned.StatusCode != http.StatusOK || !strings.Contains(returned.Body, `<div id="root">`) {
 				t.Fatalf("owner checkout return = %d %s", returned.StatusCode, returned.Body)
 			}
-			f.provider.member("user_eve", "porg_"+id, "member")
-			outsider.login("/organizations/"+id+"/organization", "user_eve:porg_"+id)
-			f.provider.removeMember("user_eve", "porg_"+id)
-			f.provider.expireAccess()
-			denied := outsider.do(http.MethodGet, target, nil, headers)
+			f.provider.Member("user_eve", "porg_"+id, "member")
+			outsider.Login("/organizations/"+id+"/organization", "user_eve:porg_"+id)
+			f.provider.RemoveMember("user_eve", "porg_"+id)
+			f.provider.ExpireAccess()
+			denied := outsider.Do(http.MethodGet, target, nil, headers)
 			if denied.StatusCode != http.StatusForbidden || !strings.Contains(denied.Body, "Access unavailable") {
 				t.Fatalf("non-member checkout return = %d %s", denied.StatusCode, denied.Body)
 			}
@@ -265,13 +265,13 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 	if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT organization_id FROM platform.billing_customers WHERE customer_id = $1", customer).Scan(&mapped); err != nil || mapped != id {
 		t.Fatalf("customer mapping = %q %v", mapped, err)
 	}
-	response, page = member.get("/organizations/new")
+	response, page = member.Get("/organizations/new")
 	if response.StatusCode != http.StatusOK || !strings.Contains(page, "Your Free organization slot is used") || !strings.Contains(page, "price_team") {
 		t.Fatalf("paid creation form = %d %s", response.StatusCode, page)
 	}
 	_, rest, _ := strings.Cut(page, `name="creation_key" value="`)
 	creationKey, _, _ := strings.Cut(rest, `"`)
-	created := member.do(http.MethodPost, "/organizations", url.Values{"name": {"Second paid organization"}, "creation_key": {creationKey}, "price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+	created := member.Do(http.MethodPost, "/organizations", url.Values{"name": {"Second paid organization"}, "creation_key": {creationKey}, "price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
 	if created.StatusCode != http.StatusSeeOther {
 		t.Fatalf("paid creation = %d %s", created.StatusCode, created.Body)
 	}
@@ -281,22 +281,22 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 	if err != nil || binding.FreeOrganization {
 		t.Fatalf("paid creation consumed Free allowance: %+v %v", binding, err)
 	}
-	destination := member.login("/organizations/"+secondID+"/organization/billing", "user_member:porg_"+secondID)
+	destination := member.Login("/organizations/"+secondID+"/organization/billing", "user_member:porg_"+secondID)
 	if destination != "/organizations/"+secondID+"/organization/billing?checkout_price=price_team" {
 		t.Fatalf("paid creation login destination = %q", destination)
 	}
-	response, page = member.get("/organizations/" + secondID + "/app/bootstrap")
+	response, page = member.Get("/organizations/" + secondID + "/app/bootstrap")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("paid organization bootstrap = %d %s", response.StatusCode, page)
 	}
-	view := member.do(http.MethodGet, "/api/v2/organizations/"+secondID+"/billing", nil, map[string]string{"Accept": "application/json"})
+	view := member.Do(http.MethodGet, "/api/v2/organizations/"+secondID+"/billing", nil, map[string]string{"Accept": "application/json"})
 	var report struct {
 		Entitlement hubserver.HostedEntitlement `json:"entitlement"`
 	}
 	if view.StatusCode != http.StatusOK || json.Unmarshal([]byte(view.Body), &report) != nil || report.Entitlement.Base.ID != "payment_pending" || report.Entitlement.Allowances["projects"] != 0 || report.Entitlement.Allowances["unarchived_issues"] != 0 || slices.Contains(report.Entitlement.Features, "native_execution") {
 		t.Fatalf("unpaid creation allowances = %d %s", view.StatusCode, view.Body)
 	}
-	checkout := member.do(http.MethodPost, "/organizations/"+secondID+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+	checkout := member.Do(http.MethodPost, "/organizations/"+secondID+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
 	if checkout.StatusCode != http.StatusSeeOther || !strings.HasPrefix(checkout.Header.Get("Location"), "https://checkout.stripe.com/") {
 		t.Fatalf("paid creation checkout = %d %s", checkout.StatusCode, checkout.Body)
 	}

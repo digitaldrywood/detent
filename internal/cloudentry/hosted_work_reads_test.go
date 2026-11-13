@@ -36,8 +36,8 @@ func newHostedHubReadFixture(t *testing.T) hostedHubReadFixture {
 		cfg.RunDetails = hubmaintenance.LimitDetails(cfg.RunDetails)
 	})
 	owner := newBrowser(t, entry.service.Handler())
-	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	response, body := owner.get("/organizations/org_alpha/app/bootstrap")
+	owner.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	response, body := owner.Get("/organizations/org_alpha/app/bootstrap")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("organization status = %d: %s", response.StatusCode, body)
 	}
@@ -113,7 +113,7 @@ func TestHostedHubWorkReads(t *testing.T) {
 	var after tracker.NativeWorkItemID
 	for range len(issues) {
 		ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubserver.BoardMaintenanceBytes}).Context(t.Context(), tenant)
-		next, processed, err := f.entry.fixtures[tenant.Organization].service.MaintainBoardRecord(ctx, tracker.OrganizationID(tenant.Organization), after)
+		next, processed, err := f.entry.fixtures[tenant.Organization].Service.MaintainBoardRecord(ctx, tracker.OrganizationID(tenant.Organization), after)
 		if err != nil || !processed {
 			t.Fatalf("project fixture board after %s: processed=%t error=%v", after, processed, err)
 		}
@@ -211,9 +211,9 @@ func TestHostedHubWorkReads(t *testing.T) {
 
 func approveEntryFixturePolicy(t *testing.T, owner *browser, organization, project string) {
 	t.Helper()
-	selected := newBrowser(t, owner.entry)
-	selected.login("/organizations/"+organization+"/organization", "user_alice:p"+organization)
-	response, page := selected.get("/organizations/" + organization + "/app/bootstrap")
+	selected := newBrowser(t, owner.Entry)
+	selected.Login("/organizations/"+organization+"/organization", "user_alice:p"+organization)
+	response, page := selected.Get("/organizations/" + organization + "/app/bootstrap")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("organization=%d %s", response.StatusCode, page)
 	}
@@ -229,18 +229,4 @@ func approveEntryFixturePolicy(t *testing.T, owner *browser, organization, proje
 	if applied.Code != http.StatusOK {
 		t.Fatalf("approve fixture policy=%d %s", applied.Code, applied.Body)
 	}
-}
-
-func bootstrapCSRF(t *testing.T, body string) string {
-	t.Helper()
-	var bootstrap struct {
-		CSRF string `json:"csrf_token"`
-	}
-	if err := json.Unmarshal([]byte(body), &bootstrap); err != nil {
-		t.Fatal(err)
-	}
-	if bootstrap.CSRF == "" {
-		t.Fatal("bootstrap has no CSRF token")
-	}
-	return bootstrap.CSRF
 }

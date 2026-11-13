@@ -36,14 +36,14 @@ func TestPlatformTenantDetail(t *testing.T) {
 	for _, role := range []string{"viewer", "support", "billing", "admin"} {
 		user := "user_" + role
 		email := role + "@example.test"
-		f.provider.users[user] = email
+		f.provider.Users[user] = email
 		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES($1,$2,'test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z') ON CONFLICT(email) DO UPDATE SET role=excluded.role", email, role); err != nil {
 			t.Fatal(err)
 		}
 		b := newBrowser(t, f.service.Handler())
-		b.login("/auth/oidc/start", user+":")
+		b.Login("/auth/oidc/start", user+":")
 		t.Run(role, func(t *testing.T) {
-			response, body := b.get("/api/cloud/platform/organizations/org_alpha")
+			response, body := b.Get("/api/cloud/platform/organizations/org_alpha")
 			var detail platformTenantDetail
 			decodeJSON(t, body, &detail)
 			if response.StatusCode != http.StatusOK || detail.Organization.ID != "org_alpha" || detail.CSRF == "" || detail.CanGrant != (role == "billing" || role == "admin") || detail.Organization.CanSupport != (role == "support" || role == "admin") || detail.CanResume {
@@ -55,26 +55,26 @@ func TestPlatformTenantDetail(t *testing.T) {
 			if detail.Usage == nil || detail.Usage.Allowances == nil || detail.Members == nil || len(*detail.Members) != 1 || (*detail.Members)[0].Role != "owner" || detail.Runners == nil || detail.Projects == nil || len(*detail.Projects) == 0 || detail.Entitlements != nil || !slices.Contains(detail.Unavailable, "entitlements") || len(detail.Events) == 0 {
 				t.Fatalf("sections = %+v", detail)
 			}
-			if response, _ := b.get("/api/cloud/platform/organizations/org_unknown"); response.StatusCode != http.StatusNotFound {
+			if response, _ := b.Get("/api/cloud/platform/organizations/org_unknown"); response.StatusCode != http.StatusNotFound {
 				t.Fatalf("unknown = %d", response.StatusCode)
 			}
 		})
 	}
 	customer := newBrowser(t, f.service.Handler())
-	customer.login("/auth/oidc/start", "user_alice:")
-	if response, _ := customer.get("/api/cloud/platform/organizations/org_alpha"); response.StatusCode != http.StatusForbidden {
+	customer.Login("/auth/oidc/start", "user_alice:")
+	if response, _ := customer.Get("/api/cloud/platform/organizations/org_alpha"); response.StatusCode != http.StatusForbidden {
 		t.Fatalf("customer = %d", response.StatusCode)
 	}
 	anonymous := newBrowser(t, f.service.Handler())
-	if response, _ := anonymous.get("/api/cloud/platform/organizations/org_alpha"); response.StatusCode != http.StatusUnauthorized {
+	if response, _ := anonymous.Get("/api/cloud/platform/organizations/org_alpha"); response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("anonymous = %d", response.StatusCode)
 	}
 	admin := newBrowser(t, f.service.Handler())
-	admin.login("/auth/oidc/start", "user_admin:")
+	admin.Login("/auth/oidc/start", "user_admin:")
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='failed',error_code='tenant_start_failed',error_detail='disk floor',step='tenant_files' WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
-	response, body := admin.get("/api/cloud/platform/organizations/org_alpha")
+	response, body := admin.Get("/api/cloud/platform/organizations/org_alpha")
 	var detail platformTenantDetail
 	decodeJSON(t, body, &detail)
 	if response.StatusCode != http.StatusOK || detail.Organization.ErrorCode != "tenant_start_failed" || detail.Organization.ErrorDetail != "disk floor" || detail.Organization.Step != "tenant_files" || detail.CreditBalanceMicros != nil || len(detail.Unavailable) != 7 {
@@ -88,9 +88,9 @@ func TestPlatformTenantDetail(t *testing.T) {
 	f.service.auth.now = f.service.config.now
 	f.service.registry.now = f.service.config.now
 	synctest.Test(t, func(t *testing.T) {
-		admin := &browser{t: t, entry: admin.entry, jar: admin.jar, origin: admin.origin}
+		admin := &browser{T: t, Entry: admin.Entry, Jar: admin.Jar, Origin: admin.Origin}
 		f.service.config.transport = func(Organization) (http.RoundTripper, error) { return platformTimeoutTransport{}, nil }
-		response, body = admin.get("/api/cloud/platform/organizations/org_alpha")
+		response, body = admin.Get("/api/cloud/platform/organizations/org_alpha")
 		decodeJSON(t, body, &detail)
 		if response.StatusCode != http.StatusOK || detail.Members != nil || detail.Runners != nil || detail.Projects != nil || detail.Entitlements != nil || detail.CreditBalanceMicros != nil || detail.Organization.Billing.Available || len(detail.Unavailable) != 7 {
 			t.Fatalf("timeout = %d %+v", response.StatusCode, detail)
@@ -102,12 +102,12 @@ func TestPlatformTenantDetail(t *testing.T) {
 func TestPlatformTenantAICreditBalance(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
-	f.provider.users["user_admin"] = "admin@example.test"
+	f.provider.Users["user_admin"] = "admin@example.test"
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES('admin@example.test','admin','test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')"); err != nil {
 		t.Fatal(err)
 	}
 	b := newBrowser(t, f.service.Handler())
-	b.login("/auth/oidc/start", "user_admin:")
+	b.Login("/auth/oidc/start", "user_admin:")
 	endpoint := testSocketEndpoint("alpha.sock")
 	tenant := f.tenants[endpoint]
 	for _, test := range []struct {
@@ -138,7 +138,7 @@ func TestPlatformTenantAICreditBalance(t *testing.T) {
 				}
 				tenant.ServeHTTP(w, r)
 			})
-			response, body := b.get("/api/cloud/platform/organizations/org_alpha")
+			response, body := b.Get("/api/cloud/platform/organizations/org_alpha")
 			var detail platformTenantDetail
 			decodeJSON(t, body, &detail)
 			if response.StatusCode != http.StatusOK || (detail.CreditBalanceMicros == nil) != test.unavailable || slices.Contains(detail.Unavailable, "ai_credits") != test.unavailable {
@@ -174,13 +174,13 @@ func TestPlatformResumeProvisioning(t *testing.T) {
 	} {
 		t.Run(test.role+map[bool]string{true: " valid csrf", false: " no csrf"}[test.csrf], func(t *testing.T) {
 			user, email := "user_"+test.role, test.role+"@example.test"
-			f.provider.users[user] = email
+			f.provider.Users[user] = email
 			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES($1,$2,'test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z') ON CONFLICT(email) DO NOTHING", email, test.role); err != nil {
 				t.Fatal(err)
 			}
 			b := newBrowser(t, f.service.Handler())
-			b.login("/auth/oidc/start", user+":")
-			_, body := b.get("/api/cloud/platform/organizations/org_failed")
+			b.Login("/auth/oidc/start", user+":")
+			_, body := b.Get("/api/cloud/platform/organizations/org_failed")
 			var detail platformTenantDetail
 			decodeJSON(t, body, &detail)
 			if detail.CanResume != (test.role == "admin") {
@@ -190,7 +190,7 @@ func TestPlatformResumeProvisioning(t *testing.T) {
 			if test.csrf {
 				fields.Set("csrf", detail.CSRF)
 			}
-			response := b.do(http.MethodPost, "/api/cloud/platform/organizations/org_failed/resume", fields, map[string]string{"Accept": "application/json"})
+			response := b.Do(http.MethodPost, "/api/cloud/platform/organizations/org_failed/resume", fields, map[string]string{"Accept": "application/json"})
 			body = response.Body
 			if response.StatusCode != test.want {
 				t.Fatalf("resume = %d %s", response.StatusCode, body)

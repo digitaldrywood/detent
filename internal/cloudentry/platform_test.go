@@ -44,16 +44,16 @@ func supportIdentityBrowser(t *testing.T, f entryFixture) *browser {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
 	hosted := auth.HostedIdentity{Subject: "user_alice", OrganizationID: "porg_alpha", SessionID: "impersonation_session", CreatedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour), SupportActor: "support@example.test", SupportReason: "troubleshooting"}
-	f.provider.mu.Lock()
-	f.provider.sessions[hosted.SessionID] = hosted
-	f.provider.mu.Unlock()
+	f.provider.Mu.Lock()
+	f.provider.Sessions[hosted.SessionID] = hosted
+	f.provider.Mu.Unlock()
 	token := "impersonation-session-token"
 	if err := f.service.auth.createSession(t.Context(), apikey.HashToken(token), "impersonation-csrf", auth.Identity{Subject: "user_alice", Email: "support@example.test", EmailVerified: true, Hosted: &hosted}); err != nil {
 		t.Fatal(err)
 	}
 	b := newBrowser(t, f.service.Handler())
 	base, _ := url.Parse(testPublicURL)
-	b.jar.SetCookies(base, []*http.Cookie{{Name: f.service.cookieName("session"), Value: token, Path: "/"}})
+	b.Jar.SetCookies(base, []*http.Cookie{{Name: f.service.cookieName("session"), Value: token, Path: "/"}})
 	return b
 }
 
@@ -105,17 +105,17 @@ func TestPlatformAuthorization(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	withClientShell(f.service)
-	f.provider.users["user_staff"] = "staff@example.test"
+	f.provider.Users["user_staff"] = "staff@example.test"
 	anonymous := newBrowser(t, f.service.Handler())
 	customer := newBrowser(t, f.service.Handler())
-	customer.login("/auth/oidc/start", "user_alice:")
+	customer.Login("/auth/oidc/start", "user_alice:")
 	support := newBrowser(t, f.service.Handler())
-	support.login("/auth/oidc/start", "user_support:")
+	support.Login("/auth/oidc/start", "user_support:")
 	staff := newBrowser(t, f.service.Handler())
-	staff.login("/auth/oidc/start", "user_staff:")
-	f.provider.member("user_staff", "porg_alpha", "owner")
+	staff.Login("/auth/oidc/start", "user_staff:")
+	f.provider.Member("user_staff", "porg_alpha", "owner")
 	scoped := newBrowser(t, f.service.Handler())
-	scoped.login("/auth/oidc/start", "user_staff:porg_alpha")
+	scoped.Login("/auth/oidc/start", "user_staff:porg_alpha")
 	impersonation := supportIdentityBrowser(t, f)
 
 	for _, route := range platformRoutes {
@@ -135,7 +135,7 @@ func TestPlatformAuthorization(t *testing.T) {
 			{"support staff", support, "user_support", http.StatusOK, ""},
 		} {
 			t.Run(test.name+" "+route, func(t *testing.T) {
-				response, body := test.browser.get(route)
+				response, body := test.browser.Get(route)
 				if response.StatusCode != test.status || response.Header.Get("Location") != test.location {
 					t.Fatalf("GET %s = %d %q: %s", route, response.StatusCode, response.Header.Get("Location"), body)
 				}
@@ -167,14 +167,14 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 
 	t.Parallel()
 	f := newEntryFixture(t)
-	f.provider.users["user_staff"] = "staff@example.test"
+	f.provider.Users["user_staff"] = "staff@example.test"
 	for _, test := range []struct {
 		code       string
 		canSupport bool
 	}{{"user_support:", true}, {"user_staff:", false}} {
 		b := newBrowser(t, f.service.Handler())
-		b.login("/auth/oidc/start", test.code)
-		response, body := b.get("/api/cloud/platform/organizations")
+		b.Login("/auth/oidc/start", test.code)
+		response, body := b.Get("/api/cloud/platform/organizations")
 		var listing struct {
 			CSRF          string                 `json:"csrf"`
 			CanSupport    bool                   `json:"can_support"`
@@ -192,8 +192,8 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 		}
 	}
 	staff := newBrowser(t, f.service.Handler())
-	staff.login("/auth/oidc/start", "user_staff:")
-	_, body := staff.get("/api/cloud/platform/health")
+	staff.Login("/auth/oidc/start", "user_staff:")
+	_, body := staff.Get("/api/cloud/platform/health")
 	var health struct {
 		Registry  struct{ OK bool }               `json:"registry"`
 		Tenants   struct{ Expected, Running int } `json:"tenants"`
@@ -221,7 +221,7 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 		MinFreeDiskBytes: 4096, MinAvailableMemoryBytes: 8192,
 		Launcher: &platformHealthLauncher{Launcher: &silentLauncher{}, started: now.Add(-time.Hour), restarts: 1},
 	}
-	_, body = staff.get("/api/cloud/platform/health")
+	_, body = staff.Get("/api/cloud/platform/health")
 	decodeJSON(t, body, &health)
 	if health.Admission == nil || health.Admission.MinFreeDiskBytes != 4096 || health.Admission.MinAvailableMemoryBytes != 8192 {
 		t.Fatalf("admission floors = %s", body)
@@ -238,7 +238,7 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 		}
 		return original(org)
 	}
-	_, body = staff.get("/api/cloud/platform/health")
+	_, body = staff.Get("/api/cloud/platform/health")
 	decodeJSON(t, body, &health)
 	if !health.Registry.OK || health.Tenants.Expected != 2 || health.Tenants.Running != 1 || len(health.Hubs) != 2 {
 		t.Fatalf("health with one Hub down = %s", body)
@@ -249,7 +249,7 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 		}
 	}
 	f.service.config.Allocation = nil
-	_, body = staff.get("/api/cloud/platform/allowlist")
+	_, body = staff.Get("/api/cloud/platform/allowlist")
 	var allowlist map[string]any
 	decodeJSON(t, body, &allowlist)
 	if allowlist["self_service"] != false {
@@ -267,10 +267,10 @@ func TestPlatformAllowlistAndAdmission(t *testing.T) {
 	if err := os.MkdirAll(f.roots[0], 0o700); err != nil {
 		t.Fatal(err)
 	}
-	f.provider.users["user_staff"] = "staff@example.test"
+	f.provider.Users["user_staff"] = "staff@example.test"
 	staff := newBrowser(t, f.service.Handler())
-	staff.login("/auth/oidc/start", "user_staff:")
-	_, body := staff.get("/api/cloud/platform/allowlist")
+	staff.Login("/auth/oidc/start", "user_staff:")
+	_, body := staff.Get("/api/cloud/platform/allowlist")
 	var allowlist struct {
 		SelfService    bool     `json:"self_service"`
 		Open           bool     `json:"open"`
@@ -286,7 +286,7 @@ func TestPlatformAllowlistAndAdmission(t *testing.T) {
 		allowlist.Source.File != "/etc/detent/cloud.yaml" || strings.Join(allowlist.Source.Keys, ",") != "allocation.allowed_emails,allocation.allowed_domains" {
 		t.Fatalf("allowlist = %s", body)
 	}
-	_, body = staff.get("/api/cloud/platform/health")
+	_, body = staff.Get("/api/cloud/platform/health")
 	var health struct {
 		Admission platformAdmission `json:"admission"`
 	}
@@ -300,9 +300,9 @@ func TestPlatformStaffLanding(t *testing.T) {
 
 	t.Parallel()
 	f := newEntryFixture(t)
-	f.provider.member("user_support", "porg_alpha", "owner")
-	f.provider.users["user_staff"] = "staff@example.test"
-	f.provider.users["user_admin"] = "bootstrap@example.test"
+	f.provider.Member("user_support", "porg_alpha", "owner")
+	f.provider.Users["user_staff"] = "staff@example.test"
+	f.provider.Users["user_admin"] = "bootstrap@example.test"
 	for _, test := range []struct {
 		name, target, code, landing, home string
 		chooserStatus                     int
@@ -325,7 +325,7 @@ func TestPlatformStaffLanding(t *testing.T) {
 				f.service.config.Allocation = &AllocationConfig{}
 			}
 			user, _, _ := strings.Cut(test.code, ":")
-			session := accountSession{Subject: user, Email: f.provider.users[user], Identity: auth.HostedIdentity{Subject: user}}
+			session := accountSession{Subject: user, Email: f.provider.Users[user], Identity: auth.HostedIdentity{Subject: user}}
 			if landing := f.service.landing(t.Context(), session.Email, session.Identity); landing != test.landing {
 				t.Errorf("landing = %q, want %q", landing, test.landing)
 			}
@@ -338,17 +338,17 @@ func TestPlatformStaffLanding(t *testing.T) {
 				loginLocation = test.loginLocation
 			}
 			b := newBrowser(t, f.service.Handler())
-			if location := b.login(test.target, test.code); location != loginLocation {
+			if location := b.Login(test.target, test.code); location != loginLocation {
 				t.Fatalf("post-login location = %q, want %q", location, loginLocation)
 			}
-			if home, _ := b.get("/"); home.StatusCode != http.StatusSeeOther || home.Header.Get("Location") != test.home {
+			if home, _ := b.Get("/"); home.StatusCode != http.StatusSeeOther || home.Header.Get("Location") != test.home {
 				t.Fatalf("home = %d %q", home.StatusCode, home.Header.Get("Location"))
 			}
-			if chooser, _ := b.get("/organizations"); chooser.StatusCode != test.chooserStatus || chooser.Header.Get("Location") != test.chooserLocation {
+			if chooser, _ := b.Get("/organizations"); chooser.StatusCode != test.chooserStatus || chooser.Header.Get("Location") != test.chooserLocation {
 				t.Fatalf("chooser = %d %q", chooser.StatusCode, chooser.Header.Get("Location"))
 			}
 			for _, path := range []string{"/api/cloud/session", "/api/cloud/organizations"} {
-				_, body := b.get(path)
+				_, body := b.Get(path)
 				var session map[string]any
 				decodeJSON(t, body, &session)
 				if prices, present := session["creation_prices"]; session["platform_role"] != test.platformRole || session["can_create"] != test.canCreate || present && prices == nil {
@@ -371,21 +371,21 @@ func TestPlatformMembersCreateAndJoinOrganizations(t *testing.T) {
 				t.Error(err)
 			}
 		}()
-		f.provider.users["user_staff"] = "staff@example.test"
+		f.provider.Users["user_staff"] = "staff@example.test"
 		staff := newBrowser(t, f.service.Handler())
-		if landing := staff.login("/auth/oidc/start", "user_staff:"); landing != "/platform" {
+		if landing := staff.Login("/auth/oidc/start", "user_staff:"); landing != "/platform" {
 			t.Fatalf("member who may create lands at %q", landing)
 		}
-		if response, _ := staff.get("/organizations/new"); response.StatusCode != http.StatusOK {
+		if response, _ := staff.Get("/organizations/new"); response.StatusCode != http.StatusOK {
 			t.Fatalf("staff create page = %d %q", response.StatusCode, response.Header.Get("Location"))
 		}
-		_, body := staff.get("/api/cloud/session")
+		_, body := staff.Get("/api/cloud/session")
 		var session struct {
 			CSRF      string `json:"csrf"`
 			CanCreate bool   `json:"can_create"`
 		}
 		decodeJSON(t, body, &session)
-		created := staff.do(http.MethodPost, "/organizations", url.Values{"name": {"Staff org"}, "creation_key": {"staff-creation-key-0001"}, "csrf": {session.CSRF}}, json)
+		created := staff.Do(http.MethodPost, "/organizations", url.Values{"name": {"Staff org"}, "creation_key": {"staff-creation-key-0001"}, "csrf": {session.CSRF}}, json)
 		if !session.CanCreate || created.StatusCode != http.StatusCreated {
 			t.Fatalf("staff create = %d %s", created.StatusCode, created.Body)
 		}
@@ -398,21 +398,21 @@ func TestPlatformMembersCreateAndJoinOrganizations(t *testing.T) {
 		t.Parallel()
 		f := newEntryFixture(t)
 		alice := newBrowser(t, f.service.Handler())
-		alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-		_, page := alice.get("/organizations/org_alpha/app/bootstrap")
+		alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+		_, page := alice.Get("/organizations/org_alpha/app/bootstrap")
 		invitation := inviteEntryTestMember(t, alice, "support@example.test", "member", csrfFrom(t, page))
 		if invitation.StatusCode != http.StatusCreated {
 			t.Fatalf("invite platform member = %d: %s", invitation.StatusCode, invitation.Body)
 		}
 		staff := newBrowser(t, f.service.Handler())
-		staff.login("/auth/oidc/start", "user_support:")
+		staff.Login("/auth/oidc/start", "user_support:")
 		invited := newBrowser(t, f.service.Handler())
-		start, _ := invited.get("/invite?invitation_token=inv_support")
+		start, _ := invited.Get("/invite?invitation_token=inv_support")
 		provider, err := url.Parse(start.Header.Get("Location"))
 		if start.StatusCode != http.StatusSeeOther || err != nil {
 			t.Fatalf("invitation start = %d", start.StatusCode)
 		}
-		callback, _ := invited.get("/auth/oidc/callback?" + url.Values{"code": {"user_support:"}, "state": {provider.Query().Get("state")}}.Encode())
+		callback, _ := invited.Get("/auth/oidc/callback?" + url.Values{"code": {"user_support:"}, "state": {provider.Query().Get("state")}}.Encode())
 		if callback.StatusCode != http.StatusSeeOther {
 			t.Fatalf("staff invitation callback = %d", callback.StatusCode)
 		}
@@ -430,16 +430,16 @@ func TestPlatformSupportStartRequiresCSRFAndReason(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	staff := newBrowser(t, f.service.Handler())
-	staff.login("/auth/oidc/start", "user_support:")
-	_, body := staff.get("/api/cloud/platform/organizations")
+	staff.Login("/auth/oidc/start", "user_support:")
+	_, body := staff.Get("/api/cloud/platform/organizations")
 	var listing struct {
 		CSRF string `json:"csrf"`
 	}
 	decodeJSON(t, body, &listing)
-	f.provider.users["user_staff"] = "staff@example.test"
+	f.provider.Users["user_staff"] = "staff@example.test"
 	viewer := newBrowser(t, f.service.Handler())
-	viewer.login("/auth/oidc/start", "user_staff:")
-	viewerResponse, viewerBody := viewer.get("/api/cloud/session")
+	viewer.Login("/auth/oidc/start", "user_staff:")
+	viewerResponse, viewerBody := viewer.Get("/api/cloud/session")
 	var viewerSession struct {
 		CSRF         string `json:"csrf"`
 		PlatformRole string `json:"platform_role"`
@@ -467,7 +467,7 @@ func TestPlatformSupportStartRequiresCSRFAndReason(t *testing.T) {
 		{"oversized note", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "note": {strings.Repeat("n", 2001)}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, "", staff},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response := test.client.do(http.MethodPost, "/support/start", test.form, test.headers)
+			response := test.client.Do(http.MethodPost, "/support/start", test.form, test.headers)
 			if response.StatusCode != test.status || !strings.Contains(response.Body, test.want) {
 				t.Fatalf("support start = %d: %s", response.StatusCode, response.Body)
 			}
@@ -483,7 +483,7 @@ func TestPlatformSupportStartRequiresCSRFAndReason(t *testing.T) {
 		t.Fatalf("support note audited %d times", got)
 	}
 
-	callback, _ := staff.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|troubleshooting"))
+	callback, _ := staff.Get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|troubleshooting"))
 	if callback.StatusCode != http.StatusSeeOther {
 		t.Fatalf("support callback = %d %s", callback.StatusCode, callback.Body)
 	}
@@ -552,7 +552,7 @@ func TestPlatformTenantFanOutIsBounded(t *testing.T) {
 			transport := &fanOutTransport{delay: test.delay}
 			seed := make([]byte, ed25519.SeedSize)
 			provider := newFakeProvider()
-			provider.users["user_support"] = "support@example.test"
+			provider.Users["user_support"] = "support@example.test"
 			cfg := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
 				StaffEmails: []string{"support@example.test"}, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
 				transport: func(Organization) (http.RoundTripper, error) { return transport, nil }, platformDeadline: test.deadline}
@@ -569,13 +569,13 @@ func TestPlatformTenantFanOutIsBounded(t *testing.T) {
 				}
 			}
 			staff := newBrowser(t, service.Handler())
-			staff.login("/auth/oidc/start", "user_support:")
+			staff.Login("/auth/oidc/start", "user_support:")
 			for _, route := range []string{"/api/cloud/platform/organizations", "/api/cloud/platform/health"} {
 				transport.mu.Lock()
 				transport.peak, transport.requests = 0, 0
 				transport.mu.Unlock()
 				started := time.Now()
-				response, body := staff.get(route)
+				response, body := staff.Get(route)
 				elapsed := time.Since(started)
 				if response.StatusCode != http.StatusOK || elapsed > test.maxDuration {
 					t.Fatalf("%s = %d after %s", route, response.StatusCode, elapsed)
@@ -633,7 +633,7 @@ func TestStaffSessionsReverifyEveryRead(t *testing.T) {
 			t.Parallel()
 			seed := make([]byte, ed25519.SeedSize)
 			provider := newFakeProvider()
-			provider.users["user_reader"] = test.email
+			provider.Users["user_reader"] = test.email
 			staff := []string{"other-staff@example.test"}
 			if test.staff {
 				staff = append(staff, test.email)
@@ -648,17 +648,17 @@ func TestStaffSessionsReverifyEveryRead(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = service.Close() })
 			reader := newBrowser(t, service.Handler())
-			reader.login("/auth/oidc/start", "user_reader:")
-			reader.get("/api/cloud/session")
-			provider.mu.Lock()
-			before := provider.verifications
-			provider.mu.Unlock()
+			reader.Login("/auth/oidc/start", "user_reader:")
+			reader.Get("/api/cloud/session")
+			provider.Mu.Lock()
+			before := provider.Verifications
+			provider.Mu.Unlock()
 			for range 3 {
-				reader.get("/api/cloud/session")
+				reader.Get("/api/cloud/session")
 			}
-			provider.mu.Lock()
-			extra := provider.verifications - before
-			provider.mu.Unlock()
+			provider.Mu.Lock()
+			extra := provider.Verifications - before
+			provider.Mu.Unlock()
 			if extra != test.wantExtra {
 				t.Fatalf("provider verifications for 3 reads = %d, want %d", extra, test.wantExtra)
 			}
@@ -669,9 +669,9 @@ func TestStaffSessionsReverifyEveryRead(t *testing.T) {
 func TestPlatformAuditTimeline(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
-	f.provider.users["user_staff"] = "staff@example.test"
+	f.provider.Users["user_staff"] = "staff@example.test"
 	staff := newBrowser(t, f.service.Handler())
-	staff.login("/auth/oidc/start", "user_staff:")
+	staff.Login("/auth/oidc/start", "user_staff:")
 	ctx := t.Context()
 	for _, statement := range []struct {
 		auth  bool
@@ -695,7 +695,7 @@ func TestPlatformAuditTimeline(t *testing.T) {
 	all := []string{"member_added", "organization_ready", "plan_granted", "support_requested", "platform_opened", "support_started", "organization_deleted", "plan_revoked", "member_role_changed", "member_removed", "member_seeded"}
 	read := func(query string) platformAuditResult {
 		t.Helper()
-		response, body := staff.get("/api/cloud/platform/audit?" + query)
+		response, body := staff.Get("/api/cloud/platform/audit?" + query)
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("audit = %d: %s", response.StatusCode, body)
 		}
@@ -824,7 +824,7 @@ func TestPlatformAuditTimeline(t *testing.T) {
 	}
 	for _, query := range []string{"limit=0", "limit=201", "limit=bad", "from=yesterday", "to=bad", "from=2026-10-02&to=2026-10-01", "cursor=bad"} {
 		t.Run(query, func(t *testing.T) {
-			response, _ := staff.get("/api/cloud/platform/audit?" + query)
+			response, _ := staff.Get("/api/cloud/platform/audit?" + query)
 			if response.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status = %d", response.StatusCode)
 			}
@@ -855,12 +855,12 @@ func (timedOutPlatformTransport) RoundTrip(*http.Request) (*http.Response, error
 func TestPlatformUsersSearch(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
-	f.provider.users["user_staff"] = "staff@example.test"
+	f.provider.Users["user_staff"] = "staff@example.test"
 	staff := newBrowser(t, f.service.Handler())
-	staff.login("/auth/oidc/start", "user_staff:")
+	staff.Login("/auth/oidc/start", "user_staff:")
 	alice := newBrowser(t, f.service.Handler())
-	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, body := alice.get("/organizations/org_alpha/app/bootstrap")
+	alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	_, body := alice.Get("/organizations/org_alpha/app/bootstrap")
 	invited := inviteEntryTestMember(t, alice, "carol@example.test", "member", csrfFrom(t, body))
 	if invited.StatusCode != http.StatusCreated {
 		t.Fatalf("invite = %d %s", invited.StatusCode, invited.Body)
@@ -901,7 +901,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 		{"empty", "", 200, 8, -1, -1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response, body := staff.get("/api/cloud/platform/users?" + url.Values{"q": {test.query}}.Encode())
+			response, body := staff.Get("/api/cloud/platform/users?" + url.Values{"q": {test.query}}.Encode())
 			if response.StatusCode != test.status {
 				t.Fatalf("search = %d %s", response.StatusCode, body)
 			}
@@ -938,7 +938,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.platform_members SET role=$1 WHERE email='staff@example.test'", role); err != nil {
 				t.Fatal(err)
 			}
-			response, body := staff.get("/api/cloud/platform/users?q=staff")
+			response, body := staff.Get("/api/cloud/platform/users?q=staff")
 			var result platformusers.Result
 			decodeJSON(t, body, &result)
 			if response.StatusCode != 200 || len(result.Users) != 1 || result.Users[0].PlatformRole != role {
@@ -956,7 +956,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, body = staff.get("/api/cloud/platform/users?q=cap&sort=email")
+	_, body = staff.Get("/api/cloud/platform/users?q=cap&sort=email")
 	var capped platformusers.Result
 	decodeJSON(t, body, &capped)
 	if len(capped.Users) != 50 || capped.Users[49].Email != "cap49@example.test" {
@@ -985,7 +985,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 		{"role sort", "sort=role&direction=desc", "staff@example.test", 68, 1, 50},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response, body := staff.get("/api/cloud/platform/users?" + test.query)
+			response, body := staff.Get("/api/cloud/platform/users?" + test.query)
 			var result platformusers.Result
 			decodeJSON(t, body, &result)
 			if response.StatusCode != 200 || result.Total != test.total || result.Page != test.page || len(result.Users) != test.count || result.PageSize != 50 || len(result.Organizations) != 2 {
@@ -996,7 +996,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 			}
 		})
 	}
-	_, body = staff.get("/api/cloud/platform/users?segment=staff")
+	_, body = staff.Get("/api/cloud/platform/users?segment=staff")
 	var counts platformusers.Result
 	decodeJSON(t, body, &counts)
 	if counts.Counts.All != 68 || counts.Counts.Staff != 3 || counts.Counts.Invited != 1 || counts.Counts.NoOrganization != 67 {
@@ -1006,7 +1006,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 	if !ok {
 		t.Fatal("missing alpha tenant fixture")
 	}
-	db := alpha.database
+	db := alpha.Database
 	for i := range 900 {
 		email := fmt.Sprintf("large%03d@example.test", i)
 		if _, err := db.ExecContext(t.Context(), "INSERT INTO public.hosted_invitations(id,email,organization_id,role,accepted_user_id,created_at,expires_at) VALUES($1,$2,'org_alpha','member','',$3,$4)", email, email, formatTime(now), formatTime(now.Add(time.Hour))); err != nil {
@@ -1025,7 +1025,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 		{"q=large899@example.test", "large899@example.test", 1},
 	} {
 		t.Run(test.query, func(t *testing.T) {
-			response, body := staff.get("/api/cloud/platform/users?" + test.query)
+			response, body := staff.Get("/api/cloud/platform/users?" + test.query)
 			var result platformusers.Result
 			decodeJSON(t, body, &result)
 			if response.StatusCode != http.StatusOK || result.Total != test.total || len(result.Unsearched) != 0 || len(result.Users) == 0 || result.Users[0].Email != test.first {
@@ -1040,7 +1040,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 		}
 		return original(org)
 	}
-	_, body = staff.get("/api/cloud/platform/users?q=alice")
+	_, body = staff.Get("/api/cloud/platform/users?q=alice")
 	var partial platformusers.Result
 	decodeJSON(t, body, &partial)
 	if len(partial.Users) != 1 || len(partial.Users[0].Memberships) != 1 || len(partial.Unsearched) != 1 || partial.Unsearched[0].ID != "org_beta" {
@@ -1048,7 +1048,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 	}
 	for _, query := range []string{"q=only", "q=only&segment=no_organization", "q=staff&segment=no_organization", "q=carol&segment=no_organization"} {
 		t.Run("partial "+query, func(t *testing.T) {
-			_, body := staff.get("/api/cloud/platform/users?" + query)
+			_, body := staff.Get("/api/cloud/platform/users?" + query)
 			var result platformusers.Result
 			decodeJSON(t, body, &result)
 			if len(result.Unsearched) != 1 || result.Counts.NoOrganization != 0 || strings.Contains(query, "segment=") && result.Total != 0 {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"image"
 	"image/png"
@@ -13,9 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -27,150 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type spacesObject struct {
-	content []byte
-	created time.Time
-}
-type spacesFixture struct {
-	mu              sync.Mutex
-	objects         map[string]spacesObject
-	keys            []string
-	public          bool
-	failDelete      bool
-	failPutResponse bool
-	denyArchive     bool
-	transport       http.RoundTripper
-}
-
-func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
-	t.Helper()
-	f := &spacesFixture{objects: map[string]spacesObject{}, public: public}
-	f.transport = handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		key := strings.TrimPrefix(r.URL.Path, "/private/")
-		if r.Header.Get("Authorization") == "" && !f.public {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
-		if f.denyArchive && (r.URL.Query().Has("lifecycle") || r.URL.Query().Has("cors")) {
-			w.WriteHeader(http.StatusForbidden)
-			if _, err := io.WriteString(w, `<Error><Code>AccessDenied</Code></Error>`); err != nil {
-				t.Error(err)
-			}
-			return
-		}
-		if r.URL.Query().Has("lifecycle") {
-			w.WriteHeader(http.StatusNotFound)
-			_, err := io.WriteString(w, `<Error><Code>NoSuchLifecycleConfiguration</Code></Error>`)
-			if err != nil {
-				t.Error(err)
-			}
-			return
-		}
-		if r.URL.Query().Has("cors") && r.Method == http.MethodPut {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if !strings.HasPrefix(r.URL.Path, "/private/") && r.URL.Path != "/private" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" {
-			type item struct {
-				Key          string
-				LastModified string
-				Size         int
-			}
-			result := struct {
-				XMLName   xml.Name `xml:"ListBucketResult"`
-				Truncated bool     `xml:"IsTruncated"`
-				Items     []item   `xml:"Contents"`
-			}{}
-			var keys []string
-			for key := range f.objects {
-				if strings.HasPrefix(key, r.URL.Query().Get("prefix")) {
-					keys = append(keys, key)
-				}
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				object := f.objects[key]
-				result.Items = append(result.Items, item{Key: key, LastModified: object.created.UTC().Format(time.RFC3339), Size: len(object.content)})
-			}
-			if err := xml.NewEncoder(w).Encode(result); err != nil {
-				t.Error(err)
-			}
-			return
-		}
-		if r.Method == http.MethodGet && r.URL.Query().Has("versioning") {
-			w.Header().Set("Content-Type", "application/xml")
-			if _, err := io.WriteString(w, `<VersioningConfiguration/>`); err != nil {
-				t.Error(err)
-			}
-			return
-		}
-		f.keys = append(f.keys, r.Method+" "+key)
-		switch r.Method {
-		case http.MethodPut:
-			if r.Header.Get("Content-Type") != "application/gzip" && r.Header.Get("If-None-Match") != "*" {
-				t.Error("upload lacks conditional put")
-			}
-			content, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Error(err)
-				w.WriteHeader(500)
-				return
-			}
-			if previous, exists := f.objects[key]; exists && (r.Header.Get("Content-Type") != "application/gzip" || !bytes.Equal(content, previous.content)) {
-				w.WriteHeader(http.StatusPreconditionFailed)
-				return
-			}
-			f.objects[key] = spacesObject{content: content, created: time.Now()}
-			if f.failPutResponse {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("ETag", `"test"`)
-		case http.MethodGet:
-			object, ok := f.objects[key]
-			if !ok {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			if _, err := w.Write(object.content); err != nil {
-				t.Error(err)
-			}
-		case http.MethodHead:
-			object, ok := f.objects[key]
-			if !ok {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			w.Header().Set("Last-Modified", object.created.UTC().Format(http.TimeFormat))
-		case http.MethodDelete:
-			if f.failDelete {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				return
-			}
-			delete(f.objects, key)
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		}
-	})}
-	return f
-}
-
-func (f *spacesFixture) config() attachment.Config {
-	return attachment.Config{Endpoint: "http://127.0.0.1", Region: "test", Bucket: "private", AccessKeyID: "test-key", SecretAccessKey: "test-secret"}
-}
-func (f *spacesFixture) requests() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]string{}, f.keys...)
-}
-
 func TestAttachmentStorageProbe(t *testing.T) {
 
 	t.Parallel()
@@ -178,9 +31,9 @@ func TestAttachmentStorageProbe(t *testing.T) {
 	store := newSpacesFixture(t, true)
 	cfg := f.service.config
 	cfg.StateDir = t.TempDir()
-	settings := store.config()
+	settings := store.Config()
 	cfg.Attachments = &settings
-	cfg.attachmentTransport = store.transport
+	cfg.attachmentTransport = store.Transport
 	if service, err := Open(t.Context(), cfg); err == nil {
 		if err := service.Close(); err != nil {
 			t.Fatal(err)
@@ -194,12 +47,12 @@ func TestAttachmentArchiveConfigurationRefusalKeepsEntryRunning(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, false)
-	store.denyArchive = true
+	store.DenyArchive = true
 	cfg := f.service.config
 	cfg.StateDir = t.TempDir()
-	settings := store.config()
+	settings := store.Config()
 	cfg.Attachments = &settings
-	cfg.attachmentTransport = store.transport
+	cfg.attachmentTransport = store.Transport
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatalf("entry refused to start when archive configuration was denied: %v", err)
@@ -211,7 +64,7 @@ func TestAttachmentArchiveConfigurationRefusalKeepsEntryRunning(t *testing.T) {
 
 func attachmentProject(t *testing.T, browser *browser, org string) string {
 	t.Helper()
-	response, body := browser.get("/api/v2/organizations/" + org + "/projects")
+	response, body := browser.Get("/api/v2/organizations/" + org + "/projects")
 	var result []struct {
 		ID string `json:"id"`
 	}
@@ -231,11 +84,11 @@ func attachmentRequest(t *testing.T, b *browser, method, target string, body io.
 		r.Header.Set(key, value)
 	}
 	base, _ := url.Parse(testPublicURL)
-	for _, cookie := range b.jar.Cookies(base) {
+	for _, cookie := range b.Jar.Cookies(base) {
 		r.AddCookie(cookie)
 	}
 	recorder := httptest.NewRecorder()
-	b.entry.ServeHTTP(recorder, r)
+	b.Entry.ServeHTTP(recorder, r)
 	return recorder
 }
 
@@ -244,14 +97,14 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, false)
-	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.service.attachments = storage
 	alice := newBrowser(t, f.service.Handler())
-	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, body := alice.get("/organizations/org_alpha/app/bootstrap")
+	alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	_, body := alice.Get("/organizations/org_alpha/app/bootstrap")
 	csrf := csrfFrom(t, body)
 	project := attachmentProject(t, alice, "org_alpha")
 	base := "/organizations/org_alpha/api/v2/projects/" + project + "/attachments"
@@ -267,10 +120,10 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	if record.ProjectID != project || record.Name != "secret.txt" || record.Size <= cloudassert.MaxBodyBytes {
 		t.Fatalf("metadata=%+v", record)
 	}
-	beforeMetadata := len(store.requests())
+	beforeMetadata := len(store.Requests())
 	metadata := attachmentRequest(t, alice, http.MethodGet, base+"/"+record.ID+"/metadata", nil, nil)
-	if metadata.Code != http.StatusOK || metadata.Header().Get("Cache-Control") != "private, no-store" || len(store.requests()) != beforeMetadata {
-		t.Fatalf("metadata read=%d %s touched storage=%v", metadata.Code, metadata.Body.String(), len(store.requests()) != beforeMetadata)
+	if metadata.Code != http.StatusOK || metadata.Header().Get("Cache-Control") != "private, no-store" || len(store.Requests()) != beforeMetadata {
+		t.Fatalf("metadata read=%d %s touched storage=%v", metadata.Code, metadata.Body.String(), len(store.Requests()) != beforeMetadata)
 	}
 	var public attachment.Metadata
 	if err := json.Unmarshal(metadata.Body.Bytes(), &public); err != nil {
@@ -289,17 +142,17 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		if err := json.Unmarshal(upload.Body.Bytes(), &created); err != nil || created.ID == "" || created.ProjectID != project {
 			t.Fatalf("canonical upload metadata=%+v %v", created, err)
 		}
-		before := len(store.requests())
+		before := len(store.Requests())
 		metadataPath := canonical + "/" + created.ID + "/metadata"
 		metadata := attachmentRequest(t, alice, http.MethodGet, metadataPath, nil, nil)
 		var public attachment.Metadata
-		if metadata.Code != http.StatusOK || json.Unmarshal(metadata.Body.Bytes(), &public) != nil || public.ID != created.ID || public.ProjectID != project || public.AuthorizedPrincipal != "" || metadata.Header().Get("Cache-Control") != "private, no-store" || len(store.requests()) != before {
-			t.Fatalf("canonical metadata=%d %s touched storage=%v", metadata.Code, metadata.Body.String(), len(store.requests()) != before)
+		if metadata.Code != http.StatusOK || json.Unmarshal(metadata.Body.Bytes(), &public) != nil || public.ID != created.ID || public.ProjectID != project || public.AuthorizedPrincipal != "" || metadata.Header().Get("Cache-Control") != "private, no-store" || len(store.Requests()) != before {
+			t.Fatalf("canonical metadata=%d %s touched storage=%v", metadata.Code, metadata.Body.String(), len(store.Requests()) != before)
 		}
 		anonymous := newBrowser(t, f.service.Handler())
 		denied := attachmentRequest(t, anonymous, http.MethodGet, metadataPath, nil, nil)
-		if denied.Code != http.StatusNotFound || len(store.requests()) != before {
-			t.Fatalf("anonymous canonical metadata=%d touched storage=%v", denied.Code, len(store.requests()) != before)
+		if denied.Code != http.StatusNotFound || len(store.Requests()) != before {
+			t.Fatalf("anonymous canonical metadata=%d touched storage=%v", denied.Code, len(store.Requests()) != before)
 		}
 	})
 	key, err := attachment.Key("org_alpha", record.ID)
@@ -335,11 +188,11 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		if read.Code != test.wantRead {
 			t.Fatalf("%s token read=%d %s", scope, read.Code, read.Body.String())
 		}
-		before := len(store.requests())
+		before := len(store.Requests())
 		upload := attachmentRequest(t, anonymous, http.MethodPost, base, strings.NewReader("token data"), headers)
 		if test.wantUpload != http.StatusCreated {
-			if upload.Code != test.wantUpload || len(store.requests()) != before {
-				t.Fatalf("read token upload=%d touched storage=%v", upload.Code, len(store.requests()) != before)
+			if upload.Code != test.wantUpload || len(store.Requests()) != before {
+				t.Fatalf("read token upload=%d touched storage=%v", upload.Code, len(store.Requests()) != before)
 			}
 		} else if upload.Code != http.StatusCreated {
 			t.Fatalf("write token upload=%d %s", upload.Code, upload.Body.String())
@@ -365,18 +218,18 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		{name: "oversized", media: "text/plain", content: bytes.Repeat([]byte("a"), attachment.MaxBytes+1), status: 413},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			before := len(store.requests())
+			before := len(store.Requests())
 			r := attachmentRequest(t, alice, http.MethodPost, base, bytes.NewReader(test.content), map[string]string{"Content-Type": test.media, "X-Attachment-Name": "file", "X-CSRF-Token": csrf})
-			if r.Code != test.status || len(store.requests()) != before {
-				t.Fatalf("upload=%d %s touched storage=%v", r.Code, r.Body.String(), len(store.requests()) != before)
+			if r.Code != test.status || len(store.Requests()) != before {
+				t.Fatalf("upload=%d %s touched storage=%v", r.Code, r.Body.String(), len(store.Requests()) != before)
 			}
 		})
 	}
-	alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
+	alice.Login("/organizations/org_beta/organization", "user_alice:porg_beta")
 	betaProject := attachmentProject(t, alice, "org_beta")
-	_, betaBody := alice.get("/organizations/org_beta/app/bootstrap")
+	_, betaBody := alice.Get("/organizations/org_beta/app/bootstrap")
 	betaCSRF := csrfFrom(t, betaBody)
-	_, body = alice.get("/organizations/org_alpha/app/bootstrap")
+	_, body = alice.Get("/organizations/org_alpha/app/bootstrap")
 	csrf = csrfFrom(t, body)
 	for _, test := range []struct {
 		name, method, path string
@@ -405,26 +258,26 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		{name: "private metadata read", method: http.MethodGet, path: "/api/v2/organizations/org_alpha/projects/" + project + "/attachment-metadata/" + record.ID, client: alice, want: 404},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			before := len(store.requests())
+			before := len(store.Requests())
 			r := attachmentRequest(t, test.client, test.method, test.path, strings.NewReader("hi"), test.headers)
 			if r.Code != test.want {
 				t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
 			}
-			if len(store.requests()) != before {
+			if len(store.Requests()) != before {
 				t.Fatal("unauthorized request touched storage")
 			}
 		})
 	}
-	for _, request := range store.requests() {
+	for _, request := range store.Requests() {
 		if strings.Contains(request, "orgs/org_beta/") {
 			t.Fatalf("org alpha request touched org beta: %s", request)
 		}
 	}
-	store.mu.Lock()
-	if _, ok := store.objects[key]; !ok {
+	store.Mu.Lock()
+	if _, ok := store.Objects[key]; !ok {
 		t.Error("authenticated org key missing")
 	}
-	store.mu.Unlock()
+	store.Mu.Unlock()
 	var audits int
 	if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.audit WHERE event IN ('attachment_uploaded','attachment_read') AND organization_id='org_alpha'").Scan(&audits); err != nil {
 		t.Fatal(err)
@@ -441,9 +294,9 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	if read := attachmentRequest(t, alice, http.MethodGet, base+"/"+record.ID, nil, nil); read.Code != 404 {
 		t.Fatalf("deleted read=%d", read.Code)
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if _, ok := store.objects[key]; ok {
+	store.Mu.Lock()
+	defer store.Mu.Unlock()
+	if _, ok := store.Objects[key]; ok {
 		t.Fatal("deleted object remains")
 	}
 }
@@ -456,7 +309,7 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := newSpacesFixture(t, false)
-	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,22 +327,22 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 		if i != 0 {
 			stamp = time.Now()
 		}
-		store.mu.Lock()
-		store.objects[key] = spacesObject{content: []byte("orphan"), created: stamp}
-		store.mu.Unlock()
+		store.Mu.Lock()
+		store.Objects[key] = spacesObject{Content: []byte("orphan"), Created: stamp}
+		store.Mu.Unlock()
 		keys = append(keys, key)
 	}
 	reused, err := attachment.Key("org_alpha", "att_00000000000000000000000000000004")
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.mu.Lock()
-	store.objects[reused] = spacesObject{content: []byte("reused"), created: old}
-	store.mu.Unlock()
+	store.Mu.Lock()
+	store.Objects[reused] = spacesObject{Content: []byte("reused"), Created: old}
+	store.Mu.Unlock()
 	walks.refresh[reused] = func() {
-		store.mu.Lock()
-		store.objects[reused] = spacesObject{content: []byte("reused"), created: time.Now()}
-		store.mu.Unlock()
+		store.Mu.Lock()
+		store.Objects[reused] = spacesObject{Content: []byte("reused"), Created: time.Now()}
+		store.Mu.Unlock()
 	}
 	organization, err := f.service.readyOrganization(t.Context(), "org_alpha")
 	if err != nil {
@@ -498,17 +351,17 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 	if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
 		t.Fatal(err)
 	}
-	store.mu.Lock()
-	_, reusedExists := store.objects[reused]
-	store.mu.Unlock()
+	store.Mu.Lock()
+	_, reusedExists := store.Objects[reused]
+	store.Mu.Unlock()
 	if !reusedExists {
 		t.Fatal("sweep deleted an object refreshed after it was listed")
 	}
-	store.mu.Lock()
-	_, oldExists := store.objects[keys[0]]
-	_, newExists := store.objects[keys[1]]
-	_, betaExists := store.objects[keys[2]]
-	store.mu.Unlock()
+	store.Mu.Lock()
+	_, oldExists := store.Objects[keys[0]]
+	_, newExists := store.Objects[keys[1]]
+	_, betaExists := store.Objects[keys[2]]
+	store.Mu.Unlock()
 	if oldExists || !newExists || !betaExists {
 		t.Fatalf("old=%v new=%v other org=%v", oldExists, newExists, betaExists)
 	}
@@ -523,12 +376,12 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 	if err := f.service.finishDeletion(t.Context(), "org_alpha"); err != nil {
 		t.Fatal(err)
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if _, ok := store.objects[keys[1]]; ok {
+	store.Mu.Lock()
+	defer store.Mu.Unlock()
+	if _, ok := store.Objects[keys[1]]; ok {
 		t.Fatal("deprovisioning retained tenant objects")
 	}
-	if _, ok := store.objects[keys[2]]; !ok {
+	if _, ok := store.Objects[keys[2]]; !ok {
 		t.Fatal("deprovisioning deleted another tenant")
 	}
 }
@@ -559,11 +412,11 @@ func TestAttachmentMetadataSettlement(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newEntryFixture(t)
 			store := newSpacesFixture(t, false)
-			storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+			storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)
 			if err != nil {
 				t.Fatal(err)
 			}
-			store.failPutResponse = test.storageLoss
+			store.FailPutResponse = test.storageLoss
 			f.service.attachments = storage
 			baseTransport := f.service.config.transport
 			f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
@@ -592,8 +445,8 @@ func TestAttachmentMetadataSettlement(t *testing.T) {
 				}}, nil
 			}
 			alice := newBrowser(t, f.service.Handler())
-			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-			_, body := alice.get("/organizations/org_alpha/app/bootstrap")
+			alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			_, body := alice.Get("/organizations/org_alpha/app/bootstrap")
 			csrf := csrfFrom(t, body)
 			project := attachmentProject(t, alice, "org_alpha")
 			path := "/organizations/org_alpha/api/v2/projects/" + project + "/attachments"
@@ -625,9 +478,9 @@ func TestAttachmentMetadataSettlement(t *testing.T) {
 			if response.Code != test.status {
 				t.Fatalf("settlement=%d %s", response.Code, response.Body.String())
 			}
-			store.mu.Lock()
-			count := len(store.objects)
-			store.mu.Unlock()
+			store.Mu.Lock()
+			count := len(store.Objects)
+			store.Mu.Unlock()
 			if test.quota {
 				if count != 0 {
 					t.Fatal("quota race retained uploaded object")

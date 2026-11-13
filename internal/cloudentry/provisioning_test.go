@@ -230,7 +230,7 @@ func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*Alloc
 	root := shortTempDir(t)
 	f := &provisioningFixture{provider: newFakeProvider(), state: t.TempDir(), roots: [2]string{filepath.Join(root, "t"), filepath.Join(root, "s")}, key: ed25519.NewKeyFromSeed(seed), timeout: provisioningFixtureTimeout}
 	for _, user := range []string{"member", "eve", "fay"} {
-		f.provider.users["user_"+user] = user + "@example.test"
+		f.provider.Users["user_"+user] = user + "@example.test"
 	}
 	databases := make(map[string]*sql.DB)
 	f.launcher = &processLauncher{configureDatabase: configurePostgresTenants(t, databases), databases: databases, provider: f.provider, key: f.key, plans: capacityPlans(), running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root)}
@@ -254,9 +254,9 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 	if !f.launcher.useUnix {
 		config.transport = f.launcher.transport
 	}
-	storage := f.objects.config()
+	storage := f.objects.Config()
 	storage.Endpoint = "https://storage.example.test"
-	config.Attachments, config.attachmentTransport = &storage, f.objects.transport
+	config.Attachments, config.attachmentTransport = &storage, f.objects.Transport
 	for _, configure := range f.configureEntry {
 		configure(&config)
 	}
@@ -270,13 +270,13 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 
 func (f *provisioningFixture) create(t *testing.T, b *browser, name string) page {
 	t.Helper()
-	response, body := b.get("/organizations/new")
+	response, body := b.Get("/organizations/new")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("new organization page = %d", response.StatusCode)
 	}
 	_, rest, _ := strings.Cut(body, `name="creation_key" value="`)
 	key, _, _ := strings.Cut(rest, `"`)
-	return b.do(http.MethodPost, "/organizations", url.Values{"name": {name}, "creation_key": {key}, "csrf": {csrfFrom(t, body)}}, nil)
+	return b.Do(http.MethodPost, "/organizations", url.Values{"name": {name}, "creation_key": {key}, "csrf": {csrfFrom(t, body)}}, nil)
 }
 
 func (f *provisioningFixture) waitState(t *testing.T, id string, states ...string) Organization {
@@ -318,38 +318,38 @@ func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Con
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, nil, configureStorage)
 	member := newBrowser(t, f.service.Handler())
-	member.login("/auth/oidc/start", "user_member:")
-	_, chooser := member.get("/organizations")
+	member.Login("/auth/oidc/start", "user_member:")
+	_, chooser := member.Get("/organizations")
 	if !strings.Contains(chooser, `href="/organizations/new"`) {
 		t.Fatal("chooser does not offer organization creation")
 	}
-	response, body := member.get("/organizations/new")
+	response, body := member.Get("/organizations/new")
 	_, rest, _ := strings.Cut(body, `name="creation_key" value="`)
 	key, _, _ := strings.Cut(rest, `"`)
 	form := url.Values{"name": {"Delta"}, "creation_key": {key}, "csrf": {csrfFrom(t, body)}}
-	first := member.do(http.MethodPost, "/organizations", form, nil)
+	first := member.Do(http.MethodPost, "/organizations", form, nil)
 	if response.StatusCode != http.StatusOK || first.StatusCode != http.StatusSeeOther {
 		t.Fatalf("create = %d: %s", first.StatusCode, first.Body)
 	}
 	id := organizationFromLocation(t, first.Header.Get("Location"))
-	if again := member.do(http.MethodPost, "/organizations", form, nil); again.Header.Get("Location") != first.Header.Get("Location") {
+	if again := member.Do(http.MethodPost, "/organizations", form, nil); again.Header.Get("Location") != first.Header.Get("Location") {
 		t.Fatalf("retried intent created %q, want %q", again.Header.Get("Location"), first.Header.Get("Location"))
 	}
 	changed := url.Values{"name": {"Other"}, "creation_key": {key}, "csrf": form["csrf"]}
-	if conflict := member.do(http.MethodPost, "/organizations", changed, nil); conflict.StatusCode != http.StatusConflict {
+	if conflict := member.Do(http.MethodPost, "/organizations", changed, nil); conflict.StatusCode != http.StatusConflict {
 		t.Fatalf("changed intent status = %d", conflict.StatusCode)
 	}
 	ready := f.waitState(t, id, "ready")
-	if f.provider.creates != 1 || ready.ProviderID != "porg_"+id || ready.Generation != 1 {
-		t.Fatalf("provider creates = %d, organization = %+v", f.provider.creates, ready)
+	if f.provider.Creates != 1 || ready.ProviderID != "porg_"+id || ready.Generation != 1 {
+		t.Fatalf("provider creates = %d, organization = %+v", f.provider.Creates, ready)
 	}
-	if status, _ := member.get("/organizations/" + id + "/provisioning"); status.StatusCode != http.StatusSeeOther {
+	if status, _ := member.Get("/organizations/" + id + "/provisioning"); status.StatusCode != http.StatusSeeOther {
 		t.Fatalf("ready provisioning page = %d", status.StatusCode)
 	}
-	member.login("/organizations/"+id+"/organization", "user_member:porg_"+id)
-	response, body = member.get("/organizations/" + id + "/app/bootstrap")
+	member.Login("/organizations/"+id+"/organization", "user_member:porg_"+id)
+	response, body = member.Get("/organizations/" + id + "/app/bootstrap")
 	if response.StatusCode == http.StatusPermanentRedirect {
-		response, body = member.get(response.Header.Get("Location"))
+		response, body = member.Get(response.Header.Get("Location"))
 	}
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("owner page = %d %s", response.StatusCode, body)
@@ -358,26 +358,26 @@ func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Con
 		t.Fatalf("second organization without a paid plan status = %d", quota.StatusCode)
 	}
 	eve := newBrowser(t, f.service.Handler())
-	eve.login("/auth/oidc/start", "user_eve:")
-	if peek, _ := eve.get("/organizations/" + id + "/provisioning"); peek.StatusCode != http.StatusNotFound {
+	eve.Login("/auth/oidc/start", "user_eve:")
+	if peek, _ := eve.Get("/organizations/" + id + "/provisioning"); peek.StatusCode != http.StatusNotFound {
 		t.Fatalf("another user saw provisioning status: %d", peek.StatusCode)
 	}
-	if denied, _ := eve.get("/organizations/" + id + "/delete"); denied.StatusCode != http.StatusForbidden {
+	if denied, _ := eve.Get("/organizations/" + id + "/delete"); denied.StatusCode != http.StatusForbidden {
 		t.Fatalf("non-owner delete page = %d", denied.StatusCode)
 	}
-	_, deletePage := member.get("/organizations/" + id + "/delete")
+	_, deletePage := member.Get("/organizations/" + id + "/delete")
 	if !strings.Contains(deletePage, "Delta") {
 		t.Fatal("delete confirmation does not identify the organization")
 	}
-	if wrong := member.do(http.MethodPost, "/organizations/"+id+"/delete", url.Values{"confirm": {"delta"}, "csrf": {csrfFrom(t, deletePage)}}, nil); wrong.StatusCode != http.StatusUnprocessableEntity {
+	if wrong := member.Do(http.MethodPost, "/organizations/"+id+"/delete", url.Values{"confirm": {"delta"}, "csrf": {csrfFrom(t, deletePage)}}, nil); wrong.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("unconfirmed delete = %d", wrong.StatusCode)
 	}
-	deleted := member.do(http.MethodPost, "/organizations/"+id+"/delete", url.Values{"confirm": {"Delta"}, "csrf": {csrfFrom(t, deletePage)}}, nil)
+	deleted := member.Do(http.MethodPost, "/organizations/"+id+"/delete", url.Values{"confirm": {"Delta"}, "csrf": {csrfFrom(t, deletePage)}}, nil)
 	if deleted.StatusCode != http.StatusSeeOther {
 		t.Fatalf("delete = %d: %s", deleted.StatusCode, deleted.Body)
 	}
 	f.waitState(t, id, "deleted")
-	if gone, _ := member.get("/organizations/" + id + "/app/bootstrap"); gone.StatusCode != http.StatusNotFound {
+	if gone, _ := member.Get("/organizations/" + id + "/app/bootstrap"); gone.StatusCode != http.StatusNotFound {
 		t.Fatalf("deleted organization still routes: %d", gone.StatusCode)
 	}
 	var retained int
@@ -393,32 +393,32 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 	t.Parallel()
 	f := newProvisioningFixture(t, 1, func(a *AllocationConfig) { a.RetryLimit = 1 })
 	member := newBrowser(t, f.service.Handler())
-	member.login("/auth/oidc/start", "user_member:")
-	f.provider.mu.Lock()
-	f.provider.createFailures = 1
-	f.provider.mu.Unlock()
+	member.Login("/auth/oidc/start", "user_member:")
+	f.provider.Mu.Lock()
+	f.provider.CreateFailures = 1
+	f.provider.Mu.Unlock()
 	created := f.create(t, member, "Delta")
 	id := organizationFromLocation(t, created.Header.Get("Location"))
 	failed := f.waitState(t, id, "failed")
 	if failed.ErrorCode != "provider_organization_failed" {
 		t.Fatalf("failure = %+v", failed)
 	}
-	_, status := member.get("/organizations/" + id + "/provisioning")
+	_, status := member.Get("/organizations/" + id + "/provisioning")
 	if !strings.Contains(status, "Resume setup") {
 		t.Fatalf("failed status page = %s", status)
 	}
-	if resumed := member.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, status)}}, nil); resumed.StatusCode != http.StatusSeeOther {
+	if resumed := member.Do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, status)}}, nil); resumed.StatusCode != http.StatusSeeOther {
 		t.Fatalf("resume = %d", resumed.StatusCode)
 	}
 	f.waitState(t, id, "ready")
 	eve := newBrowser(t, f.service.Handler())
-	eve.login("/auth/oidc/start", "user_eve:")
+	eve.Login("/auth/oidc/start", "user_eve:")
 	blocked := organizationFromLocation(t, f.create(t, eve, "Echo").Header.Get("Location"))
 	capacity := f.waitState(t, blocked, "failed")
 	if capacity.ErrorCode != "capacity" || capacity.ProviderID != "" {
 		t.Fatalf("capacity failure = %+v", capacity)
 	}
-	if response, _ := member.get("/organizations/" + id + "/app/bootstrap"); response.StatusCode == http.StatusNotFound {
+	if response, _ := member.Get("/organizations/" + id + "/app/bootstrap"); response.StatusCode == http.StatusNotFound {
 		t.Fatal("capacity refusal disturbed a ready organization")
 	}
 	if err := f.service.Close(); err != nil {
@@ -429,9 +429,9 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 		t.Fatalf("restart did not relaunch ready tenants: %d starts", f.launcher.starts)
 	}
 	eveAgain := newBrowser(t, f.service.Handler())
-	eveAgain.login("/auth/oidc/start", "user_eve:")
-	_, status = eveAgain.get("/organizations/" + blocked + "/provisioning")
-	eveAgain.do(http.MethodPost, "/organizations/"+blocked+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, status)}}, nil)
+	eveAgain.Login("/auth/oidc/start", "user_eve:")
+	_, status = eveAgain.Get("/organizations/" + blocked + "/provisioning")
+	eveAgain.Do(http.MethodPost, "/organizations/"+blocked+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, status)}}, nil)
 	f.waitState(t, blocked, "ready")
 }
 
@@ -496,13 +496,13 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 				f.timeout = 100 * time.Millisecond
 			})
 			member := newBrowser(t, f.service.Handler())
-			member.login("/auth/oidc/start", "user_member:")
+			member.Login("/auth/oidc/start", "user_member:")
 			id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 			failed := f.waitState(t, id, "failed")
 			if failed.ErrorCode != "tenant_start_failed" || failed.Step != "tenant_files" || failed.ErrorDetail != tc.wantDetail || failed.Attempts != tc.retryLimit && tc.failure == nil || tc.failure != nil && failed.Attempts != 1 {
 				t.Fatalf("failure = %+v", failed)
 			}
-			status := member.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+			status := member.Do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
 			var body struct {
 				State     string `json:"state"`
 				Error     string `json:"error"`
@@ -517,8 +517,8 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 			launcher.mu.Lock()
 			launcher.err = nil
 			launcher.mu.Unlock()
-			_, page := member.get("/organizations/" + id + "/provisioning")
-			if resumed := member.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, page)}}, nil); resumed.StatusCode != http.StatusSeeOther {
+			_, page := member.Get("/organizations/" + id + "/provisioning")
+			if resumed := member.Do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, page)}}, nil); resumed.StatusCode != http.StatusSeeOther {
 				t.Fatalf("resume = %d", resumed.StatusCode)
 			}
 			f.waitState(t, id, "failed")
@@ -546,7 +546,7 @@ func TestTenantStartKeepsSlowReadyTenantSupervised(t *testing.T) {
 				f.timeout = 100 * time.Millisecond
 			})
 			member := newBrowser(t, f.service.Handler())
-			member.login("/auth/oidc/start", "user_member:")
+			member.Login("/auth/oidc/start", "user_member:")
 			organization := f.waitState(t, organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location")), "failed")
 			organization.State = tc.state
 			err := f.service.runStep(t.Context(), &organization, "tenant_start")
@@ -567,14 +567,14 @@ func TestProvisioningFailsWhenTenantExitsEveryStart(t *testing.T) {
 		f.timeout = 20 * time.Second
 	})
 	member := newBrowser(t, f.service.Handler())
-	member.login("/auth/oidc/start", "user_member:")
+	member.Login("/auth/oidc/start", "user_member:")
 	id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 	failed := f.waitState(t, id, "failed")
 	want := "the tenant Hub exited 2 times in a row without staying up (last: exit status 1)"
 	if failed.ErrorCode != "tenant_start_failed" || failed.ErrorDetail != want || failed.Attempts > 2 {
 		t.Fatalf("failure = %+v", failed)
 	}
-	status := member.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+	status := member.Do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
 	var body struct {
 		State     string `json:"state"`
 		Error     string `json:"error"`
@@ -642,36 +642,36 @@ func TestProvisioningPollsReuseProviderSessionVerification(t *testing.T) {
 			launcher := &silentLauncher{err: errors.New("no tenant in this test"), running: map[string]bool{}}
 			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 1; a.Launcher = launcher }, func(f *provisioningFixture) { f.now = now })
 			member := newBrowser(t, f.service.Handler())
-			member.login("/auth/oidc/start", "user_member:")
+			member.Login("/auth/oidc/start", "user_member:")
 			id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 			poll := func() page {
-				return member.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+				return member.Do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
 			}
 			if first := poll(); first.StatusCode != http.StatusOK {
 				t.Fatalf("first poll = %d", first.StatusCode)
 			}
-			f.provider.mu.Lock()
-			before := f.provider.verifications
-			f.provider.mu.Unlock()
+			f.provider.Mu.Lock()
+			before := f.provider.Verifications
+			f.provider.Mu.Unlock()
 			if tc.revoke {
-				f.provider.mu.Lock()
-				clear(f.provider.sessions)
-				f.provider.mu.Unlock()
+				f.provider.Mu.Lock()
+				clear(f.provider.Sessions)
+				f.provider.Mu.Unlock()
 			}
 			mu.Lock()
 			clock = clock.Add(tc.advance)
 			mu.Unlock()
 			if tc.mutate {
-				_, body := member.get("/organizations/" + id + "/provisioning")
-				member.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, body)}}, nil)
+				_, body := member.Get("/organizations/" + id + "/provisioning")
+				member.Do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, body)}}, nil)
 			}
 			last := page{}
 			for range tc.polls {
 				last = poll()
 			}
-			f.provider.mu.Lock()
-			calls := f.provider.verifications - before
-			f.provider.mu.Unlock()
+			f.provider.Mu.Lock()
+			calls := f.provider.Verifications - before
+			f.provider.Mu.Unlock()
 			if calls != tc.wantCalls-1 {
 				t.Fatalf("provider verifications after the first poll = %d, want %d", calls, tc.wantCalls-1)
 			}
@@ -686,7 +686,7 @@ func TestProvisioningRejectsIneligibleCreators(t *testing.T) {
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) { a.AllowedDomains = []string{"allowed.test"} })
 	member := newBrowser(t, f.service.Handler())
-	member.login("/auth/oidc/start", "user_member:")
+	member.Login("/auth/oidc/start", "user_member:")
 	if response := f.create(t, member, "Delta"); response.StatusCode != http.StatusForbidden {
 		t.Fatalf("ineligible create = %d", response.StatusCode)
 	}
@@ -705,7 +705,7 @@ func TestProvisioningResumesInterruptedDeletionAndMemoryFloor(t *testing.T) {
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, nil)
 	member := newBrowser(t, f.service.Handler())
-	member.login("/auth/oidc/start", "user_member:")
+	member.Login("/auth/oidc/start", "user_member:")
 	id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 	f.waitState(t, id, "ready")
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state = 'deleting' WHERE id = $1", id); err != nil {
@@ -718,7 +718,7 @@ func TestProvisioningResumesInterruptedDeletionAndMemoryFloor(t *testing.T) {
 	f.service.wakeAllocator()
 	f.waitState(t, id, "deleted")
 	eve := newBrowser(t, f.service.Handler())
-	eve.login("/auth/oidc/start", "user_eve:")
+	eve.Login("/auth/oidc/start", "user_eve:")
 	blocked := organizationFromLocation(t, f.create(t, eve, "Echo").Header.Get("Location"))
 	if failed := f.waitState(t, blocked, "failed"); failed.ErrorCode != "capacity" {
 		t.Fatalf("memory floor admission = %+v", failed)
@@ -733,23 +733,23 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	f.service.config.Billing = &BillingConfig{}
 	f.service.config.clientFS = fstest.MapFS{"app/conversation/index.html": {Data: []byte(`<html><head><script src="/static/app/conversation/app.js"></script></head><body><div id="root"></div></body></html>`)}}
 	stranger := newBrowser(t, f.service.Handler())
-	if response, body := stranger.get("/"); response.StatusCode != http.StatusOK || !strings.Contains(body, `<meta name="detent-surface" content="entry">`) || !strings.Contains(body, `content=""`) {
+	if response, body := stranger.Get("/"); response.StatusCode != http.StatusOK || !strings.Contains(body, `<meta name="detent-surface" content="entry">`) || !strings.Contains(body, `content=""`) {
 		t.Fatalf("sign-in shell = %d %s", response.StatusCode, body)
 	}
-	if response, _ := stranger.get("/organizations"); response.StatusCode != http.StatusSeeOther {
+	if response, _ := stranger.Get("/organizations"); response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("chooser without a session = %d", response.StatusCode)
 	}
-	if response := stranger.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"}); response.StatusCode != http.StatusUnauthorized {
+	if response := stranger.Do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"}); response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("organizations JSON without a session = %d", response.StatusCode)
 	}
 	member := newBrowser(t, f.service.Handler())
-	member.login("/auth/oidc/start", "user_member:")
+	member.Login("/auth/oidc/start", "user_member:")
 	for _, path := range []string{"/organizations", "/organizations/new"} {
-		if response, body := member.get(path); response.StatusCode != http.StatusOK || !strings.Contains(body, "detent-surface") {
+		if response, body := member.Get(path); response.StatusCode != http.StatusOK || !strings.Contains(body, "detent-surface") {
 			t.Fatalf("%s shell = %d", path, response.StatusCode)
 		}
 	}
-	listing := member.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
+	listing := member.Do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
 	var chooser struct {
 		CSRF      string               `json:"csrf"`
 		CanCreate bool                 `json:"can_create"`
@@ -759,7 +759,7 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 		t.Fatalf("organizations JSON = %s %v", listing.Body, err)
 	}
 	jsonHeaders := map[string]string{"Accept": "application/json", "X-CSRF-Token": chooser.CSRF}
-	created := member.do(http.MethodPost, "/organizations", url.Values{"name": {"Delta"}, "creation_key": {"key_0123456789abcdef"}}, jsonHeaders)
+	created := member.Do(http.MethodPost, "/organizations", url.Values{"name": {"Delta"}, "creation_key": {"key_0123456789abcdef"}}, jsonHeaders)
 	var result struct {
 		Next         string            `json:"next"`
 		Organization map[string]string `json:"organization"`
@@ -777,7 +777,7 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 				Label string `json:"label"`
 			} `json:"creation_prices"`
 		}
-		response := member.do(http.MethodGet, path, nil, map[string]string{"Accept": "application/json"})
+		response := member.Do(http.MethodGet, path, nil, map[string]string{"Accept": "application/json"})
 		if err := json.Unmarshal([]byte(response.Body), &limited); err != nil || !limited.CanCreate {
 			t.Fatalf("%s with a used Free slot = %s %v", path, response.Body, err)
 		}
@@ -785,27 +785,27 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 			t.Fatalf("creation plans JSON = %s", response.Body)
 		}
 	}
-	if response, body := member.get("/organizations/" + id + "/provisioning"); response.StatusCode == http.StatusOK && !strings.Contains(body, "detent-surface") {
+	if response, body := member.Get("/organizations/" + id + "/provisioning"); response.StatusCode == http.StatusOK && !strings.Contains(body, "detent-surface") {
 		t.Fatalf("provisioning shell = %s", body)
 	}
-	quota := member.do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, jsonHeaders)
+	quota := member.Do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, jsonHeaders)
 	if quota.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(quota.Body, `"code":"paid_plan_required"`) {
 		t.Fatalf("JSON paid plan required = %d %s", quota.StatusCode, quota.Body)
 	}
-	missing := member.do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, map[string]string{"Accept": "application/json"})
+	missing := member.Do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, map[string]string{"Accept": "application/json"})
 	if missing.StatusCode != http.StatusForbidden || !strings.Contains(missing.Body, `"code":"invalid_csrf"`) {
 		t.Fatalf("JSON missing CSRF = %d %s", missing.StatusCode, missing.Body)
 	}
 	f.waitState(t, id, "ready")
-	status := member.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+	status := member.Do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
 	if !strings.Contains(status.Body, `"next":"/delta/work"`) {
 		t.Fatalf("ready provisioning JSON = %s", status.Body)
 	}
-	session := member.do(http.MethodGet, "/api/cloud/session", nil, map[string]string{"Accept": "application/json"})
+	session := member.Do(http.MethodGet, "/api/cloud/session", nil, map[string]string{"Accept": "application/json"})
 	if session.StatusCode != http.StatusOK || !strings.Contains(session.Body, `"csrf":"`+chooser.CSRF+`"`) {
 		t.Fatalf("session JSON = %d %s", session.StatusCode, session.Body)
 	}
-	ready := member.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
+	ready := member.Do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
 	if !strings.Contains(ready.Body, `"id":"`+id+`"`) || !strings.Contains(ready.Body, `"role":"owner"`) {
 		t.Fatalf("ready organizations JSON = %s", ready.Body)
 	}
@@ -906,7 +906,7 @@ func TestOwnerFreeAllowance(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			email := f.provider.users[test.subject]
+			email := f.provider.Users[test.subject]
 			if test.role != "" {
 				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members(email,role,added_by,added_at,updated_at) VALUES($1,$2,'test',$3,$4)", email, test.role, formatTime(time.Now()), formatTime(time.Now())); err != nil {
 					t.Fatal(err)

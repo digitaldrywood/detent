@@ -6,7 +6,6 @@ import (
 	"crypto/cipher"
 	"crypto/ed25519"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,7 +13,6 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,26 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 )
-
-func entrySecretEnvironment(active int, versions ...int) func(string) string {
-	values := map[string]string{}
-	for _, version := range versions {
-		values[strconv.Itoa(version)] = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{byte(version)}, 32))
-	}
-	raw, _ := json.Marshal(values)
-	return func(name string) string {
-		if len(versions) == 0 {
-			return ""
-		}
-		if name == "DETENT_HUB_SECRET_KEYS" {
-			return string(raw)
-		}
-		if name == "DETENT_HUB_SECRET_KEY_VERSION" {
-			return strconv.Itoa(active)
-		}
-		return ""
-	}
-}
 
 func openSecretEntry(t *testing.T, cfg Config) *Service {
 	t.Helper()
@@ -380,7 +358,7 @@ func TestEntryOAuthKeyringState(t *testing.T) {
 	if err != nil || registration.Name != client.Name {
 		t.Fatal("client did not round trip", err)
 	}
-	response := b.do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(client).Encode(), nil, nil)
+	response := b.Do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(client).Encode(), nil, nil)
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("authorize=%d", response.StatusCode)
 	}
@@ -413,7 +391,7 @@ func TestEntryOAuthKeyringState(t *testing.T) {
 	for _, id := range []string{client.ID + "A", "oauth_client_" + cookie.Value} {
 		query := testOAuthQuery(client)
 		query.Set("client_id", id)
-		response := b.do(http.MethodGet, "/oauth/authorize?"+query.Encode(), nil, nil)
+		response := b.Do(http.MethodGet, "/oauth/authorize?"+query.Encode(), nil, nil)
 		if response.StatusCode != http.StatusBadRequest || !strings.Contains(response.Body, "unauthorized_client") {
 			t.Fatal("invalid keyring client returned wrong OAuth error")
 		}

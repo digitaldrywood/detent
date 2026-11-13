@@ -16,7 +16,7 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 	s := f.service
 	<-s.oauthBackfillDone
 	b := newBrowser(t, s.Handler())
-	b.login("/organizations", "user_alice:")
+	b.Login("/organizations", "user_alice:")
 	unconsented := registerTestOAuth(t, b, "Pending assistant", "none")
 	type issued struct {
 		client  oauthClient
@@ -84,7 +84,7 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 	b = newBrowser(t, underB.Handler())
 	for i, item := range clients {
 		t.Run(item.client.Name, func(t *testing.T) {
-			if response := b.do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(item.client).Encode(), nil, nil); response.StatusCode != http.StatusSeeOther {
+			if response := b.Do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(item.client).Encode(), nil, nil); response.StatusCode != http.StatusSeeOther {
 				t.Fatalf("authorized client after key rotation=%d", response.StatusCode)
 			}
 			if _, err := underB.activeMCPKey(t.Context(), apikey.HashToken(item.token.AccessToken)); err != nil {
@@ -93,7 +93,7 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 			refresh := url.Values{"client_id": {item.client.ID}, "client_secret": {item.client.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {item.token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
 			wrongSecret := refresh.Get("client_secret")
 			refresh.Set("client_secret", "wrong")
-			if response := b.do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusUnauthorized {
+			if response := b.Do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusUnauthorized {
 				t.Fatal("stored client secret verification bypassed")
 			}
 			refresh.Set("client_secret", wrongSecret)
@@ -110,14 +110,14 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 			exchangeTestOAuth(t, b, item.code)
 		})
 	}
-	if response := b.do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(unconsented).Encode(), nil, nil); response.StatusCode != http.StatusBadRequest || !strings.Contains(response.Body, "unauthorized_client") {
+	if response := b.Do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(unconsented).Encode(), nil, nil); response.StatusCode != http.StatusBadRequest || !strings.Contains(response.Body, "unauthorized_client") {
 		t.Fatalf("unconsented authorize=%d", response.StatusCode)
 	}
-	if response := b.do(http.MethodPost, "/oauth/token", url.Values{"client_id": {unconsented.ID}, "grant_type": {"refresh_token"}, "refresh_token": {"unknown"}, "resource": {testPublicURL + "/mcp"}}, nil); response.StatusCode != http.StatusUnauthorized || !strings.Contains(response.Body, "invalid_client") {
+	if response := b.Do(http.MethodPost, "/oauth/token", url.Values{"client_id": {unconsented.ID}, "grant_type": {"refresh_token"}, "refresh_token": {"unknown"}, "resource": {testPublicURL + "/mcp"}}, nil); response.StatusCode != http.StatusUnauthorized || !strings.Contains(response.Body, "invalid_client") {
 		t.Fatalf("unconsented token=%d", response.StatusCode)
 	}
 	registered := registerTestOAuth(t, b, "Replacement assistant", "none")
-	if response := b.do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(registered).Encode(), nil, nil); response.StatusCode != http.StatusSeeOther {
+	if response := b.Do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(registered).Encode(), nil, nil); response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("replacement authorize=%d", response.StatusCode)
 	}
 	if err := underB.Close(); err != nil {
@@ -137,14 +137,14 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 				t.Fatalf("current access token after restart: %v", err)
 			}
 			refresh := url.Values{"client_id": {item.client.ID}, "client_secret": {item.client.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {item.token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
-			if response := b.do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusBadRequest || !strings.Contains(response.Body, "invalid_grant") {
+			if response := b.Do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusBadRequest || !strings.Contains(response.Body, "invalid_grant") {
 				t.Fatalf("spent refresh replay=%d", response.StatusCode)
 			}
 			if _, err := underC.activeMCPKey(t.Context(), apikey.HashToken(item.rotated.AccessToken)); err == nil {
 				t.Fatal("spent refresh replay did not revoke current access token")
 			}
 			refresh.Set("refresh_token", item.rotated.RefreshToken)
-			if response := b.do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusBadRequest || !strings.Contains(response.Body, "invalid_grant") {
+			if response := b.Do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusBadRequest || !strings.Contains(response.Body, "invalid_grant") {
 				t.Fatal("spent refresh replay did not revoke current refresh token")
 			}
 		})

@@ -82,12 +82,12 @@ func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tenant.config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+		tenant.Config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
 			return f.service.resolveTenantKey(ctx, organization, origin)
 		}
 	}
 	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations", "user_alice:")
+	owner.Login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
 	client := newBrowser(t, f.service.Handler())
 	call := entryMCPClient(t, client, key.Token, "2025-11-25", "/mcp")
@@ -219,9 +219,9 @@ func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 			t.Fatalf("write %s=%s failed=%v", org, created, failed)
 		}
 	}
-	f.provider.mu.Lock()
-	delete(f.provider.memberships, "om_user_alice_porg_beta")
-	f.provider.mu.Unlock()
+	f.provider.Mu.Lock()
+	delete(f.provider.MembershipRecords, "om_user_alice_porg_beta")
+	f.provider.Mu.Unlock()
 	denied, failed := call("list_projects", map[string]any{"organization_id": "org_beta"})
 	if !failed || !strings.Contains(string(denied), "membership_denied") {
 		t.Fatalf("removed member=%s failed=%v", denied, failed)
@@ -242,7 +242,7 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations", "user_alice:")
+	owner.Login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
 	for i := range 55 {
 		copy := key
@@ -279,9 +279,9 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 	cursor := ""
 	for page, want := range []int{50, 6} {
 		serviceCalls = 0
-		f.provider.mu.Lock()
-		before := f.provider.membershipLists
-		f.provider.mu.Unlock()
+		f.provider.Mu.Lock()
+		before := f.provider.MembershipLists
+		f.provider.Mu.Unlock()
 		response := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/organizations/org_beta/external-keys?cursor="+cursor, nil, nil)
 		if response.Code != http.StatusOK {
 			t.Fatalf("page %d=%d %s", page, response.Code, response.Body.String())
@@ -305,9 +305,9 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 			}
 			seen[item.ID] = true
 		}
-		f.provider.mu.Lock()
-		lookups := f.provider.membershipLists - before
-		f.provider.mu.Unlock()
+		f.provider.Mu.Lock()
+		lookups := f.provider.MembershipLists - before
+		f.provider.Mu.Unlock()
 		if lookups > 3 {
 			t.Fatalf("membership lookups=%d for one owner", lookups)
 		}
@@ -333,12 +333,12 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			serviceCalls = 0
-			f.provider.mu.Lock()
+			f.provider.Mu.Lock()
 			if test.removeBeta {
-				delete(f.provider.memberships, "om_user_alice_porg_beta")
+				delete(f.provider.MembershipRecords, "om_user_alice_porg_beta")
 			}
-			before := f.provider.membershipLists
-			f.provider.mu.Unlock()
+			before := f.provider.MembershipLists
+			f.provider.Mu.Unlock()
 			response := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/account/api-keys", nil, nil)
 			if response.Code != http.StatusOK {
 				t.Fatalf("account list=%d %s", response.Code, response.Body.String())
@@ -369,9 +369,9 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 					}
 				}
 			}
-			f.provider.mu.Lock()
-			lookups := f.provider.membershipLists - before
-			f.provider.mu.Unlock()
+			f.provider.Mu.Lock()
+			lookups := f.provider.MembershipLists - before
+			f.provider.Mu.Unlock()
 			if lookups != test.memberships || serviceCalls != test.services {
 				t.Fatalf("account membership lookups=%d service calls=%d, want %d and %d", lookups, serviceCalls, test.memberships, test.services)
 			}
@@ -382,7 +382,7 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 func TestAccessKeyOrganizationControls(t *testing.T) {
 	f := newEntryFixture(t)
 	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations", "user_alice:")
+	owner.Login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
 	unused := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/organizations/org_beta/external-keys", nil, nil)
 	if unused.Code != http.StatusOK || !strings.Contains(unused.Body.String(), key.ID) || !strings.Contains(unused.Body.String(), `"last_used_at":null`) {
@@ -441,7 +441,7 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 	if result, failed := call("list_projects", map[string]any{"organization_id": "org_alpha"}); failed {
 		t.Fatalf("block affected other org=%s", result)
 	}
-	db := f.fixtures["org_beta"].database
+	db := f.fixtures["org_beta"].Database
 	for _, event := range []string{"key_call", "organization_key_policy_denied", "organization_key_blocked", "personal_key_blocked"} {
 		var count int
 		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM public.hosted_audit WHERE organization_id='org_beta' AND event=$1 AND key_id=$2", event, key.ID).Scan(&count); err != nil {
@@ -464,7 +464,7 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	f := newPostgresTenantEntryFixture(t)
 	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations", "user_alice:")
+	owner.Login("/organizations", "user_alice:")
 	global := createTestAccessKey(t, owner, "global", nil, "")
 	client := newBrowser(t, f.service.Handler())
 	call := entryMCPClient(t, client, global.Token, "2025-11-25", "/mcp")
@@ -510,10 +510,10 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), service.ID) || strings.Contains(response.Body.String(), service.Token) {
 		t.Fatalf("service key list=%d %s", response.Code, response.Body.String())
 	}
-	f.provider.mu.Lock()
-	membership := f.provider.memberships["om_user_alice_porg_alpha"]
-	delete(f.provider.memberships, "om_user_alice_porg_alpha")
-	f.provider.mu.Unlock()
+	f.provider.Mu.Lock()
+	membership := f.provider.MembershipRecords["om_user_alice_porg_alpha"]
+	delete(f.provider.MembershipRecords, "om_user_alice_porg_alpha")
+	f.provider.Mu.Unlock()
 	listed, listFailed := serviceCall("list_projects", map[string]any{"organization_id": "org_alpha"})
 	if listFailed || !strings.Contains(string(listed), project) {
 		t.Fatalf("service discovery after removal=%s failed=%v", listed, listFailed)
@@ -522,9 +522,9 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	if failed || !strings.Contains(string(created), "Service key survives creator departure") {
 		t.Fatalf("service write=%s failed=%v", created, failed)
 	}
-	f.provider.mu.Lock()
-	f.provider.memberships[membership.ID] = membership
-	f.provider.mu.Unlock()
+	f.provider.Mu.Lock()
+	f.provider.MembershipRecords[membership.ID] = membership
+	f.provider.Mu.Unlock()
 	response = attachmentRequest(t, owner, http.MethodDelete, "/api/cloud/organizations/org_alpha/service-keys/"+service.ID, nil, map[string]string{"Origin": testPublicURL})
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("service key revoke=%d %s", response.Code, response.Body.String())
@@ -547,7 +547,7 @@ func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
 		}
 	})
 	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	owner.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	key := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}, "org_alpha")
 	key, err := f.service.activeAccessKey(t.Context(), apikey.HashToken(key.Token))
 	if err != nil {
@@ -611,7 +611,7 @@ func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					verifier := &cloudassert.Verifier{PublicKeys: f.fixtures["org_alpha"].config.Hosted.SharedEntry.PublicKeys, Issuer: "entry", Audience: "org_alpha", Generation: 1, Now: service.config.now}
+					verifier := &cloudassert.Verifier{PublicKeys: f.fixtures["org_alpha"].Config.Hosted.SharedEntry.PublicKeys, Issuer: "entry", Audience: "org_alpha", Generation: 1, Now: service.config.now}
 					claims, err := verifier.Verify(request.Header.Get(cloudassert.Header), request.Method, request.URL.RequestURI(), body)
 					if err != nil {
 						return nil, err
@@ -649,7 +649,7 @@ func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
 						t.Run(name, func(t *testing.T) {
 							owner := strings.ReplaceAll(name, "/", "_")
 							if member {
-								f.provider.member(owner, "porg_alpha", role)
+								f.provider.Member(owner, "porg_alpha", role)
 							}
 							if _, err := f.service.auth.store.db.ExecContext(t.Context(), "INSERT INTO platform.organization_key_policy(organization_id,personal_keys) VALUES('org_alpha',CASE WHEN $1 THEN 'allowed' ELSE 'blocked' END) ON CONFLICT(organization_id) DO UPDATE SET personal_keys=excluded.personal_keys", allowed); err != nil {
 								t.Fatal(err)
@@ -710,7 +710,7 @@ func TestAccessKeyLifecycleAndREST(t *testing.T) {
 func testAccessKeyLifecycleAndREST(t *testing.T, configureStorage func(*Config)) {
 	f := newEntryFixture(t, configureStorage)
 	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations", "user_alice:")
+	owner.Login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
@@ -823,10 +823,10 @@ func testAccessKeyLifecycleAndREST(t *testing.T, configureStorage func(*Config))
 func TestAccessKeyMemberSettingsIsolation(t *testing.T) {
 	f := newEntryFixture(t)
 	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations", "user_alice:")
+	owner.Login("/organizations", "user_alice:")
 	other := createTestAccessKey(t, owner, "global", nil, "")
 	member := newBrowser(t, f.service.Handler())
-	member.login("/organizations", "user_bob:")
+	member.Login("/organizations", "user_bob:")
 	own := createTestAccessKey(t, member, "global", nil, "")
 	listed := attachmentRequest(t, member, http.MethodGet, "/api/cloud/account/api-keys", nil, nil)
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), own.ID) || strings.Contains(listed.Body.String(), other.ID) {
@@ -862,11 +862,11 @@ func TestAccessKeyMCPPreservesMoveItemRequestErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.fixtures[org].config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+	f.fixtures[org].Config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
 		return f.service.resolveTenantKey(ctx, organization, origin)
 	}
 	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations", "user_alice:")
+	owner.Login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
 	client := newBrowser(t, f.service.Handler())
 	call := func(name string, arguments map[string]any) (json.RawMessage, json.RawMessage, bool) {
@@ -953,13 +953,13 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				f.fixtures[org].config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+				f.fixtures[org].Config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
 					return f.service.resolveTenantKey(ctx, organization, origin)
 				}
 				owner := newBrowser(t, f.service.Handler())
-				owner.login("/organizations", "user_alice:")
+				owner.Login("/organizations", "user_alice:")
 				client := newBrowser(t, f.service.Handler())
-				db := f.fixtures[org].database
+				db := f.fixtures[org].Database
 				var project string
 				if err := db.QueryRowContext(t.Context(), "SELECT id FROM public.projects WHERE organization_id='org_alpha' AND profile='native'").Scan(&project); err != nil {
 					t.Fatal(err)
@@ -1057,7 +1057,7 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 				if failure == "service" {
 					return
 				}
-				other := f.fixtures["org_beta"].database
+				other := f.fixtures["org_beta"].Database
 				var otherProject string
 				if err := other.QueryRowContext(t.Context(), "SELECT id FROM public.projects WHERE organization_id='org_beta' AND profile='native'").Scan(&otherProject); err != nil {
 					t.Fatal(err)

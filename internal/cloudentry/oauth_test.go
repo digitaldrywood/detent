@@ -47,7 +47,7 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 				s := f.service
 				<-s.oauthBackfillDone
 				owner := newBrowser(t, s.Handler())
-				owner.login("/organizations", "user_alice:")
+				owner.Login("/organizations", "user_alice:")
 				client := registerTestOAuth(t, owner, "Example assistant", "client_secret_post")
 				faults := []string{"client registration", "registration scan", "unknown client", "bad secret", "provider", "registry", "exchange registry", "exchange provider", "authority query", "refusal audit", "membership denied", "policy denied", "organization missing", "revoked", "missing"}
 				browserEndpoint := endpoint != "authorization_code" && endpoint != "refresh_token" && endpoint != "bearer"
@@ -86,9 +86,9 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 						method := http.MethodGet
 						switch endpoint {
 						case "consent", "approve":
-							started := owner.do(http.MethodGet, path, nil, nil)
+							started := owner.Do(http.MethodGet, path, nil, nil)
 							path = started.Header.Get("Location")
-							consent := owner.do(http.MethodGet, path, nil, nil)
+							consent := owner.Do(http.MethodGet, path, nil, nil)
 							browserForm = url.Values{"csrf": {csrfFrom(t, consent.Body)}, "organization": {orgID}, "decision": {"allow"}}
 							if endpoint == "approve" {
 								method = http.MethodPost
@@ -217,7 +217,7 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 							want = http.StatusServiceUnavailable
 						}
 						if browserEndpoint {
-							response := owner.do(method, path, browserForm, nil)
+							response := owner.Do(method, path, browserForm, nil)
 							if response.StatusCode != want || outage && response.Header.Get("WWW-Authenticate") != "" || outage && response.Header.Get("Location") != "" {
 								t.Fatalf("browser status=%d want=%d challenge=%q redirect=%q body=%s", response.StatusCode, want, response.Header.Get("WWW-Authenticate"), response.Header.Get("Location"), response.Body)
 							}
@@ -225,12 +225,12 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 								t.Fatalf("outage body=%s", response.Body)
 							}
 						} else if endpoint == "bearer" {
-							response := owner.do(http.MethodPost, "/mcp", nil, map[string]string{"Authorization": "Bearer " + token.AccessToken})
+							response := owner.Do(http.MethodPost, "/mcp", nil, map[string]string{"Authorization": "Bearer " + token.AccessToken})
 							if response.StatusCode != want || outage && response.Header.Get("WWW-Authenticate") != "" || !outage && response.Header.Get("WWW-Authenticate") == "" {
 								t.Fatalf("bearer status=%d want=%d challenge=%q body=%s", response.StatusCode, want, response.Header.Get("WWW-Authenticate"), response.Body)
 							}
 						} else {
-							response := owner.do(http.MethodPost, "/oauth/token", form, nil)
+							response := owner.Do(http.MethodPost, "/oauth/token", form, nil)
 							code := "invalid_grant"
 							if fault == "unknown client" || fault == "bad secret" {
 								code = "invalid_client"
@@ -270,7 +270,7 @@ func TestOAuthAnonymousRequestsDoNotPersist(t *testing.T) {
 	for _, name := range []string{"First assistant", "Second assistant"} {
 		client := registerTestOAuth(t, b, name, "none")
 		for range 3 {
-			response := b.do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(client).Encode(), nil, nil)
+			response := b.Do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(client).Encode(), nil, nil)
 			if response.StatusCode != http.StatusSeeOther {
 				t.Fatalf("authorize=%+v", response)
 			}
@@ -401,16 +401,16 @@ func testOAuthQuery(client oauthClient) url.Values {
 
 func approveTestOAuth(t *testing.T, b *browser, client oauthClient, org string) url.Values {
 	t.Helper()
-	started := b.do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(client).Encode(), nil, nil)
+	started := b.Do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(client).Encode(), nil, nil)
 	if started.StatusCode != http.StatusSeeOther {
 		t.Fatalf("authorize=%d %s", started.StatusCode, started.Body)
 	}
 	path := started.Header.Get("Location")
-	consent := b.do(http.MethodGet, path, nil, nil)
+	consent := b.Do(http.MethodGet, path, nil, nil)
 	if consent.StatusCode != http.StatusOK || !strings.Contains(consent.Body, client.Name) || !strings.Contains(consent.Body, `value="`+org+`"`) {
 		t.Fatalf("consent=%d %s", consent.StatusCode, consent.Body)
 	}
-	approved := b.do(http.MethodPost, path, url.Values{"csrf": {csrfFrom(t, consent.Body)}, "organization": {org}, "decision": {"allow"}}, nil)
+	approved := b.Do(http.MethodPost, path, url.Values{"csrf": {csrfFrom(t, consent.Body)}, "organization": {org}, "decision": {"allow"}}, nil)
 	if approved.StatusCode != http.StatusSeeOther {
 		t.Fatalf("approve=%d %s", approved.StatusCode, approved.Body)
 	}
@@ -426,7 +426,7 @@ func approveTestOAuth(t *testing.T, b *browser, client oauthClient, org string) 
 
 func exchangeTestOAuth(t *testing.T, b *browser, form url.Values) oauthTokenResponse {
 	t.Helper()
-	response := b.do(http.MethodPost, "/oauth/token", form, nil)
+	response := b.Do(http.MethodPost, "/oauth/token", form, nil)
 	var token oauthTokenResponse
 	if response.StatusCode != http.StatusOK || json.Unmarshal([]byte(response.Body), &token) != nil || token.AccessToken == "" || token.RefreshToken == "" || token.TokenType != "Bearer" || token.ExpiresIn != 3600 || token.Scope != oauthScope {
 		t.Fatalf("token=%d %s", response.StatusCode, response.Body)
@@ -438,7 +438,7 @@ func TestOAuthDiscoveryAndRegistration(t *testing.T) {
 	f := newEntryFixture(t)
 	b := newBrowser(t, f.service.Handler())
 	for _, path := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"} {
-		p := b.do(http.MethodGet, path, nil, nil)
+		p := b.Do(http.MethodGet, path, nil, nil)
 		var metadata struct {
 			Resource string   `json:"resource"`
 			Servers  []string `json:"authorization_servers"`
@@ -447,7 +447,7 @@ func TestOAuthDiscoveryAndRegistration(t *testing.T) {
 			t.Fatalf("resource metadata=%+v", p)
 		}
 	}
-	server := b.do(http.MethodGet, "/.well-known/oauth-authorization-server", nil, nil)
+	server := b.Do(http.MethodGet, "/.well-known/oauth-authorization-server", nil, nil)
 	var metadata map[string]json.RawMessage
 	if server.StatusCode != 200 || json.Unmarshal([]byte(server.Body), &metadata) != nil {
 		t.Fatalf("metadata=%+v", server)
@@ -462,7 +462,7 @@ func TestOAuthDiscoveryAndRegistration(t *testing.T) {
 		t.Fatal("PKCE discovery missing")
 	}
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
-		p := b.do(method, "/mcp", nil, nil)
+		p := b.Do(method, "/mcp", nil, nil)
 		if p.StatusCode != 401 || p.Header.Get("WWW-Authenticate") != `Bearer resource_metadata="`+testPublicURL+`/.well-known/oauth-protected-resource", scope="detent:mcp"` {
 			t.Fatalf("challenge=%+v", p)
 		}
@@ -494,7 +494,7 @@ func TestOAuthCodeExchangeAndRotation(t *testing.T) {
 func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Config)) {
 	f := newEntryFixture(t, configureStorage)
 	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations", "user_alice:")
+	owner.Login("/organizations", "user_alice:")
 	client := registerTestOAuth(t, owner, "ChatGPT", "none")
 	other := registerTestOAuth(t, owner, "Claude", "client_secret_post")
 	for _, test := range []struct{ name, key, value string }{
@@ -504,7 +504,7 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 			form := approveTestOAuth(t, owner, client, "org_alpha")
 			valid := form.Encode()
 			form.Set(test.key, test.value)
-			refused := owner.do(http.MethodPost, "/oauth/token", form, nil)
+			refused := owner.Do(http.MethodPost, "/oauth/token", form, nil)
 			if refused.StatusCode < 400 {
 				t.Fatal("invalid exchange succeeded")
 			}
@@ -522,7 +522,7 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 			t.Fatal("consented client secret not hashed")
 		}
 		token := exchangeTestOAuth(t, owner, form)
-		if response := owner.do(http.MethodPost, "/oauth/token", form, nil); response.StatusCode != 400 {
+		if response := owner.Do(http.MethodPost, "/oauth/token", form, nil); response.StatusCode != 400 {
 			t.Fatal("code replay succeeded")
 		}
 		key, err := f.service.activeMCPKey(t.Context(), apikey.HashToken(token.AccessToken))
@@ -533,7 +533,7 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 			t.Fatal(err)
 		}
 		for _, path := range []string{"/mcp", "/organizations/org_beta/mcp"} {
-			p := owner.do(http.MethodPost, path, nil, map[string]string{"Authorization": "Bearer " + token.AccessToken})
+			p := owner.Do(http.MethodPost, path, nil, map[string]string{"Authorization": "Bearer " + token.AccessToken})
 			if p.StatusCode != 401 || p.Header.Get("WWW-Authenticate") == "" {
 				t.Fatalf("expired %s=%d", path, p.StatusCode)
 			}
@@ -544,7 +544,7 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 			t.Fatal(err)
 		}
 		f.service.config.generateToken = func() (string, error) { return "example_collision", nil }
-		if response := owner.do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode < 400 {
+		if response := owner.Do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode < 400 {
 			t.Fatal("rotation succeeded without retaining spent token")
 		}
 		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT token_hash FROM platform.oauth_refresh_tokens WHERE grant_id=$1", key.ID).Scan(&stored); err != nil || stored != apikey.HashToken(token.RefreshToken) {
@@ -581,21 +581,21 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 			{"client_id": {foreign.ID}, "client_secret": {foreign.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}},
 			{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {"https://other.example.test/mcp"}},
 		} {
-			if response := owner.do(http.MethodPost, "/oauth/token", invalid, nil); response.StatusCode != http.StatusBadRequest {
+			if response := owner.Do(http.MethodPost, "/oauth/token", invalid, nil); response.StatusCode != http.StatusBadRequest {
 				t.Fatalf("invalid refresh=%+v", response)
 			}
 			if _, err := f.service.activeMCPKey(t.Context(), apikey.HashToken(rotated.AccessToken)); err != nil {
 				t.Fatalf("invalid refresh revoked grant: %v", err)
 			}
 		}
-		if replay := owner.do(http.MethodPost, "/oauth/token", refresh, nil); replay.StatusCode != 400 {
+		if replay := owner.Do(http.MethodPost, "/oauth/token", refresh, nil); replay.StatusCode != 400 {
 			t.Fatal("refresh replay succeeded")
 		}
 		if _, err := f.service.activeMCPKey(t.Context(), apikey.HashToken(rotated.AccessToken)); err == nil {
 			t.Fatal("refresh replay did not revoke current access token")
 		}
 		rotating.Set("refresh_token", rotated.RefreshToken)
-		if response := owner.do(http.MethodPost, "/oauth/token", rotating, nil); response.StatusCode != http.StatusBadRequest {
+		if response := owner.Do(http.MethodPost, "/oauth/token", rotating, nil); response.StatusCode != http.StatusBadRequest {
 			t.Fatal("refresh replay did not revoke current refresh token")
 		}
 	}
@@ -607,7 +607,7 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 		status int
 	}{{"wrong", 401}, {basic.Secret, 200}} {
 		header := map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(basic.ID+":"+test.secret))}
-		p := owner.do(http.MethodPost, "/oauth/token", form, header)
+		p := owner.Do(http.MethodPost, "/oauth/token", form, header)
 		if p.StatusCode != test.status {
 			t.Fatalf("basic authentication=%d expected=%d", p.StatusCode, test.status)
 		}
@@ -624,7 +624,7 @@ func TestOAuthConsentBinding(t *testing.T) {
 		t.Run(test.key, func(t *testing.T) {
 			values, _ := url.ParseQuery(q.Encode())
 			values.Set(test.key, test.value)
-			if p := b.do(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil, nil); p.StatusCode != 400 || p.Header.Get("Location") != "" {
+			if p := b.Do(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil, nil); p.StatusCode != 400 || p.Header.Get("Location") != "" {
 				t.Fatalf("invalid authorize=%+v", p)
 			}
 		})
@@ -632,15 +632,15 @@ func TestOAuthConsentBinding(t *testing.T) {
 	for _, scenario := range []string{"tampered cookie", "expired request", "oversized cookie", "wrong request"} {
 		t.Run(scenario, func(t *testing.T) {
 			browser := newBrowser(t, f.service.Handler())
-			start := browser.do(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil, nil)
+			start := browser.Do(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil, nil)
 			path := start.Header.Get("Location")
-			base, err := url.Parse(browser.origin)
+			base, err := url.Parse(browser.Origin)
 			if err != nil {
 				t.Fatal(err)
 			}
 			switch scenario {
 			case "tampered cookie", "oversized cookie":
-				for _, cookie := range browser.jar.Cookies(base) {
+				for _, cookie := range browser.Jar.Cookies(base) {
 					if cookie.Name != f.service.cookieName("oauth") {
 						continue
 					}
@@ -648,7 +648,7 @@ func TestOAuthConsentBinding(t *testing.T) {
 					if scenario == "oversized cookie" {
 						cookie.Value = strings.Repeat("x", 3801)
 					}
-					browser.jar.SetCookies(base, []*http.Cookie{cookie})
+					browser.Jar.SetCookies(base, []*http.Cookie{cookie})
 				}
 			case "expired request":
 				now := f.service.config.now
@@ -657,61 +657,61 @@ func TestOAuthConsentBinding(t *testing.T) {
 			case "wrong request":
 				path += "x"
 			}
-			if response := browser.do(http.MethodGet, path, nil, nil); response.StatusCode != http.StatusBadRequest {
+			if response := browser.Do(http.MethodGet, path, nil, nil); response.StatusCode != http.StatusBadRequest {
 				t.Fatalf("invalid pending request=%+v", response)
 			}
 		})
 	}
-	start := b.do(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil, nil)
+	start := b.Do(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil, nil)
 	path := start.Header.Get("Location")
 	foreign := newBrowser(t, f.service.Handler())
-	foreign.login("/organizations", "user_bob:")
-	if p := foreign.do(http.MethodGet, path, nil, nil); p.StatusCode != 400 {
+	foreign.Login("/organizations", "user_bob:")
+	if p := foreign.Do(http.MethodGet, path, nil, nil); p.StatusCode != 400 {
 		t.Fatal("consent accepted foreign browser")
 	}
-	login := b.do(http.MethodGet, path, nil, nil)
+	login := b.Do(http.MethodGet, path, nil, nil)
 	if login.StatusCode != 303 || !strings.HasPrefix(login.Header.Get("Location"), "/auth/oidc/start?") {
 		t.Fatal("missing WorkOS redirect")
 	}
-	destination := b.login(login.Header.Get("Location"), "user_alice:")
+	destination := b.Login(login.Header.Get("Location"), "user_alice:")
 	if destination != path {
 		t.Fatalf("login lost request: %s", destination)
 	}
-	consent := b.do(http.MethodGet, path, nil, nil)
+	consent := b.Do(http.MethodGet, path, nil, nil)
 	if !strings.Contains(consent.Body, "Alpha") || !strings.Contains(consent.Body, "Beta") {
 		t.Fatal("consent omitted an available workspace")
 	}
 	form := url.Values{"csrf": {csrfFrom(t, consent.Body)}, "organization": {"org_alpha"}, "decision": {"allow"}}
-	if p := b.do(http.MethodPost, path, form, map[string]string{"Origin": "https://attacker.example.test"}); p.StatusCode != 403 {
+	if p := b.Do(http.MethodPost, path, form, map[string]string{"Origin": "https://attacker.example.test"}); p.StatusCode != 403 {
 		t.Fatal("cross-origin consent accepted")
 	}
 	bad := url.Values{"csrf": {"bad"}, "organization": {"org_alpha"}, "decision": {"allow"}}
-	if p := b.do(http.MethodPost, path, bad, nil); p.StatusCode != 403 {
+	if p := b.Do(http.MethodPost, path, bad, nil); p.StatusCode != 403 {
 		t.Fatal("CSRF accepted")
 	}
 	form.Set("organization", "org_missing")
-	if p := b.do(http.MethodPost, path, form, nil); p.StatusCode != 403 {
+	if p := b.Do(http.MethodPost, path, form, nil); p.StatusCode != 403 {
 		t.Fatal("foreign workspace accepted")
 	}
 	form.Set("decision", "deny")
-	denied := b.do(http.MethodPost, path, form, nil)
+	denied := b.Do(http.MethodPost, path, form, nil)
 	target, err := url.Parse(denied.Header.Get("Location"))
 	if err != nil || denied.StatusCode != 303 || target.Query().Get("error") != "access_denied" || target.Query().Get("state") != "original-state" || target.Query().Get("iss") != testPublicURL {
 		t.Fatalf("deny=%+v", denied)
 	}
-	start = b.do(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil, nil)
+	start = b.Do(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil, nil)
 	path = start.Header.Get("Location")
-	consent = b.do(http.MethodGet, path, nil, nil)
+	consent = b.Do(http.MethodGet, path, nil, nil)
 	form = url.Values{"csrf": {csrfFrom(t, consent.Body)}, "organization": {"org_alpha"}, "decision": {"allow"}}
-	if response := b.do(http.MethodPost, path, form, nil); response.StatusCode != http.StatusSeeOther {
+	if response := b.Do(http.MethodPost, path, form, nil); response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("consent=%+v", response)
 	}
-	base, err := url.Parse(b.origin)
+	base, err := url.Parse(b.Origin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.jar.SetCookies(base, (&http.Response{Header: start.Header}).Cookies())
-	if response := b.do(http.MethodPost, path, form, nil); response.StatusCode != http.StatusBadRequest {
+	b.Jar.SetCookies(base, (&http.Response{Header: start.Header}).Cookies())
+	if response := b.Do(http.MethodPost, path, form, nil); response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("consent replay=%+v", response)
 	}
 	var grants int
@@ -734,7 +734,7 @@ func connectTestOAuth(t *testing.T, b *browser, endpoint, name, redirect string)
 		}
 		return u.RequestURI()
 	}
-	challenge := b.do(http.MethodPost, path(endpoint), nil, nil)
+	challenge := b.Do(http.MethodPost, path(endpoint), nil, nil)
 	_, metadata, found := strings.Cut(challenge.Header.Get("WWW-Authenticate"), `resource_metadata="`)
 	metadata, _, closed := strings.Cut(metadata, `"`)
 	if challenge.StatusCode != http.StatusUnauthorized || !found || !closed {
@@ -744,7 +744,7 @@ func connectTestOAuth(t *testing.T, b *browser, endpoint, name, redirect string)
 		Resource string   `json:"resource"`
 		Servers  []string `json:"authorization_servers"`
 	}
-	response := b.do(http.MethodGet, path(metadata), nil, nil)
+	response := b.Do(http.MethodGet, path(metadata), nil, nil)
 	if response.StatusCode != http.StatusOK || json.Unmarshal([]byte(response.Body), &resource) != nil || resource.Resource != endpoint || len(resource.Servers) != 1 {
 		t.Fatalf("resource metadata=%+v", response)
 	}
@@ -759,7 +759,7 @@ func connectTestOAuth(t *testing.T, b *browser, endpoint, name, redirect string)
 		Token         string `json:"token_endpoint"`
 		Registration  string `json:"registration_endpoint"`
 	}
-	response = b.do(http.MethodGet, path(issuer.String()), nil, nil)
+	response = b.Do(http.MethodGet, path(issuer.String()), nil, nil)
 	if response.StatusCode != http.StatusOK || json.Unmarshal([]byte(response.Body), &server) != nil || server.Issuer != resource.Servers[0] {
 		t.Fatalf("server metadata=%+v", response)
 	}
@@ -774,20 +774,20 @@ func connectTestOAuth(t *testing.T, b *browser, endpoint, name, redirect string)
 	}
 	query := testOAuthQuery(client)
 	query.Set("resource", resource.Resource)
-	started := b.do(http.MethodGet, path(server.Authorization)+"?"+query.Encode(), nil, nil)
+	started := b.Do(http.MethodGet, path(server.Authorization)+"?"+query.Encode(), nil, nil)
 	if started.StatusCode != http.StatusSeeOther {
 		t.Fatalf("authorization=%+v", started)
 	}
 	consentPath := started.Header.Get("Location")
-	consent := b.do(http.MethodGet, consentPath, nil, nil)
+	consent := b.Do(http.MethodGet, consentPath, nil, nil)
 	if consent.StatusCode == http.StatusSeeOther {
-		b.login(consentPath, "user_alice:porg_alpha")
-		consent = b.do(http.MethodGet, consentPath, nil, nil)
+		b.Login(consentPath, "user_alice:porg_alpha")
+		consent = b.Do(http.MethodGet, consentPath, nil, nil)
 	}
 	if consent.StatusCode != http.StatusOK || !strings.Contains(consent.Body, name) {
 		t.Fatalf("consent=%+v", consent)
 	}
-	approved := b.do(http.MethodPost, consentPath, url.Values{"csrf": {csrfFrom(t, consent.Body)}, "organization": {"org_alpha"}, "decision": {"allow"}}, nil)
+	approved := b.Do(http.MethodPost, consentPath, url.Values{"csrf": {csrfFrom(t, consent.Body)}, "organization": {"org_alpha"}, "decision": {"allow"}}, nil)
 	callback, err := url.Parse(approved.Header.Get("Location"))
 	if approved.StatusCode != http.StatusSeeOther || err != nil || callback.Query().Get("state") != query.Get("state") || callback.Query().Get("iss") != server.Issuer || callback.Query().Get("code") == "" {
 		t.Fatalf("callback=%+v", approved)
@@ -798,7 +798,7 @@ func connectTestOAuth(t *testing.T, b *browser, endpoint, name, redirect string)
 		t.Fatalf("callback destination=%s", callback)
 	}
 	form := url.Values{"grant_type": {"authorization_code"}, "client_id": {client.ID}, "redirect_uri": {redirect}, "code": {code}, "code_verifier": {testOAuthVerifier}, "resource": {resource.Resource}}
-	response = b.do(http.MethodPost, path(server.Token), form, nil)
+	response = b.Do(http.MethodPost, path(server.Token), form, nil)
 	var token oauthTokenResponse
 	if response.StatusCode != http.StatusOK || json.Unmarshal([]byte(response.Body), &token) != nil || token.AccessToken == "" || token.RefreshToken == "" {
 		t.Fatalf("token=%+v", response)
@@ -814,7 +814,7 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newEntryFixture(t)
-			f.provider.member("user_alice", "porg_alpha", "reporter")
+			f.provider.Member("user_alice", "porg_alpha", "reporter")
 			transport, _ := entryTenantTransport(t, f.service.Handler())
 			origin, err := url.Parse(testPublicURL)
 			if err != nil {
@@ -823,7 +823,7 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 			proxy := httputil.NewSingleHostReverseProxy(origin)
 			proxy.Transport = transport
 			owner := newBrowser(t, proxy)
-			owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			owner.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 			personal := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}, "")
 			connector := newBrowser(t, proxy)
 			client, token := connectTestOAuth(t, connector, testPublicURL+"/mcp", test.name, test.redirect)
@@ -869,7 +869,7 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 			if err := json.Unmarshal(raw, &envelope); err != nil {
 				t.Fatal(err)
 			}
-			db := f.fixtures["org_alpha"].database
+			db := f.fixtures["org_alpha"].Database
 			var principal string
 			if err := db.QueryRowContext(t.Context(), "SELECT principal_id FROM public.hosted_members WHERE organization_id='org_alpha' AND user_id=$1", "user_alice").Scan(&principal); err != nil {
 				t.Fatal(err)
@@ -885,7 +885,7 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 					t.Fatalf("reporter administration=%s", raw)
 				}
 			}
-			listed := owner.do(http.MethodGet, "/api/cloud/account/oauth-grants", nil, nil)
+			listed := owner.Do(http.MethodGet, "/api/cloud/account/oauth-grants", nil, nil)
 			var grants struct {
 				Grants []oauthGrant `json:"grants"`
 			}
@@ -893,8 +893,8 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 				t.Fatalf("grants=%+v", listed)
 			}
 			foreign := newBrowser(t, proxy)
-			foreign.login("/organizations/org_beta/organization", "user_bob:porg_beta")
-			beta := f.fixtures["org_beta"].database
+			foreign.Login("/organizations/org_beta/organization", "user_bob:porg_beta")
+			beta := f.fixtures["org_beta"].Database
 			otherPrincipal := "hosted_" + apikey.HashToken("user_bob")[:32]
 			if _, err := beta.ExecContext(t.Context(), `INSERT INTO public.api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) SELECT organization_id,$1,$2,$3,'','operator',true,created_at,updated_at FROM public.hosted_members WHERE organization_id='org_beta' AND user_id=$4`, otherPrincipal, otherPrincipal, apikey.HashToken("user_bob_principal"), "user_alice"); err != nil {
 				t.Fatal(err)
@@ -907,7 +907,7 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 			if raw, failed := foreignCall(operatortool.OAuthGrantList, map[string]any{}); failed || !strings.Contains(string(raw), "org_beta") || strings.Contains(string(raw), grants.Grants[0].ID) {
 				t.Fatalf("foreign MCP grants=%s", raw)
 			}
-			if p := foreign.do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+grants.Grants[0].ID, nil, nil); p.StatusCode < 400 {
+			if p := foreign.Do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+grants.Grants[0].ID, nil, nil); p.StatusCode < 400 {
 				t.Fatal("foreign owner revoked grant")
 			}
 			if raw, failed := oauthCall(operatortool.OAuthGrantList, map[string]any{}); failed || !strings.Contains(string(raw), client.ID) {
@@ -919,14 +919,14 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 			if raw, failed := oauthCall("tools/list", nil); !failed || !strings.Contains(string(raw), "invalid_token") {
 				t.Fatalf("revoked session=%s", raw)
 			}
-			if response := anonymous.do(http.MethodPost, "/mcp", nil, map[string]string{"Authorization": "Bearer " + token.AccessToken}); response.StatusCode != http.StatusUnauthorized {
+			if response := anonymous.Do(http.MethodPost, "/mcp", nil, map[string]string{"Authorization": "Bearer " + token.AccessToken}); response.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("revoked HTTP request=%+v", response)
 			}
 			if raw, failed := foreignCall("tools/list", nil); failed {
 				t.Fatalf("other owner's session revoked=%s", raw)
 			}
 			refresh := url.Values{"client_id": {client.ID}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
-			if p := owner.do(http.MethodPost, "/oauth/token", refresh, nil); p.StatusCode != 400 {
+			if p := owner.Do(http.MethodPost, "/oauth/token", refresh, nil); p.StatusCode != 400 {
 				t.Fatal("revoked refresh accepted")
 			}
 		})
@@ -938,7 +938,7 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			f := newEntryFixture(t)
 			b := newBrowser(t, f.service.Handler())
-			b.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			b.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 			client := registerTestOAuth(t, b, "Assistant", "none")
 			token := exchangeTestOAuth(t, b, approveTestOAuth(t, b, client, "org_alpha"))
 			key, err := f.service.activeMCPKey(t.Context(), apikey.HashToken(token.AccessToken))
@@ -955,17 +955,17 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 			}
 			switch scenario {
 			case "membership removed":
-				f.provider.mu.Lock()
-				delete(f.provider.memberships, "om_user_alice_porg_alpha")
-				f.provider.mu.Unlock()
+				f.provider.Mu.Lock()
+				delete(f.provider.MembershipRecords, "om_user_alice_porg_alpha")
+				f.provider.Mu.Unlock()
 			case "project grant removed":
 				tenant := f.fixtures["org_alpha"]
-				db := tenant.database
+				db := tenant.Database
 				if _, err := db.ExecContext(t.Context(), "DELETE FROM public.hosted_project_grants WHERE organization_id='org_alpha' AND user_id='user_alice' AND project_id=$1", project); err != nil {
 					t.Fatal(err)
 				}
 			case "role downgraded":
-				f.provider.member("user_alice", "porg_alpha", "viewer")
+				f.provider.Member("user_alice", "porg_alpha", "viewer")
 			case "policy blocked":
 				exec("INSERT INTO platform.organization_key_policy(organization_id,personal_keys) VALUES($1,$2)", "org_alpha", "blocked")
 			case "policy approval":
@@ -978,25 +978,25 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 				refresh := url.Values{"client_id": {client.ID}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
 				rotated := exchangeTestOAuth(t, b, refresh)
 				f.service.config.now = func() time.Time { return now.Add(30 * 24 * time.Hour) }
-				if response := b.do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusBadRequest {
+				if response := b.Do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusBadRequest {
 					t.Fatalf("expired consumed refresh=%+v", response)
 				}
 				refresh.Set("refresh_token", rotated.RefreshToken)
 				exchangeTestOAuth(t, b, refresh)
 				return
 			case "browser revoke":
-				denied := b.do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+key.ID, nil, map[string]string{"Origin": "https://other.example.test"})
+				denied := b.Do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+key.ID, nil, map[string]string{"Origin": "https://other.example.test"})
 				if denied.StatusCode != 403 {
 					t.Fatal("cross-origin revoke accepted")
 				}
-				revoked := b.do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+key.ID, nil, nil)
+				revoked := b.Do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+key.ID, nil, nil)
 				if revoked.StatusCode != 204 {
 					t.Fatalf("revoke=%+v", revoked)
 				}
 			}
 			if scenario == "refresh expired" {
 				refresh := url.Values{"client_id": {client.ID}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
-				if p := b.do(http.MethodPost, "/oauth/token", refresh, nil); p.StatusCode != 400 {
+				if p := b.Do(http.MethodPost, "/oauth/token", refresh, nil); p.StatusCode != 400 {
 					t.Fatal("expired refresh accepted")
 				}
 				return
@@ -1012,7 +1012,7 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 				t.Fatalf("authority removal=%s", raw)
 			}
 			if scenario == "membership removed" || scenario == "browser revoke" {
-				p := b.do(http.MethodPost, "/mcp", nil, map[string]string{"Authorization": "Bearer " + token.AccessToken})
+				p := b.Do(http.MethodPost, "/mcp", nil, map[string]string{"Authorization": "Bearer " + token.AccessToken})
 				if p.StatusCode != 401 {
 					t.Fatalf("inactive HTTP=%d", p.StatusCode)
 				}

@@ -18,9 +18,9 @@ func pilotSupportSession(t *testing.T, p *sharedOriginPilot, organization string
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
 	hosted := auth.HostedIdentity{Subject: "user_member", OrganizationID: "porg_" + organization, SessionID: "impersonation_" + organization, CreatedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour), SupportActor: "staff@example.test", SupportReason: "troubleshooting"}
-	p.provider.mu.Lock()
-	p.provider.sessions[hosted.SessionID] = hosted
-	p.provider.mu.Unlock()
+	p.provider.Mu.Lock()
+	p.provider.Sessions[hosted.SessionID] = hosted
+	p.provider.Mu.Unlock()
 	token := "impersonation-token-" + organization
 	if err := p.service.auth.createSession(t.Context(), apikey.HashToken(token), "impersonation-csrf", auth.Identity{Subject: "user_member", Email: "staff@example.test", EmailVerified: true, Hosted: &hosted}); err != nil {
 		t.Fatal(err)
@@ -55,8 +55,8 @@ func TestPlatformComplimentaryPlansThroughTenantHub(t *testing.T) {
 func testPlatformEntitlement(t *testing.T, feature, planID string) {
 	t.Helper()
 	p := newSharedOriginPilot(t, 2, 1)
-	p.provider.users["user_staff"] = "staff@example.test"
-	p.provider.users["user_ops"] = "ops@example.test"
+	p.provider.Users["user_staff"] = "staff@example.test"
+	p.provider.Users["user_ops"] = "ops@example.test"
 	member := p.browser(t)
 	pilotStatus(t, "member sign-in", member.login("/auth/oidc/start", "user_member:"), http.StatusSeeOther)
 	created := member.createOrganization("Alpha Labs")

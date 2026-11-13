@@ -11,7 +11,7 @@ func TestAccessKeyThreadsMCP(t *testing.T) {
 		t.Run(protocol, func(t *testing.T) {
 			f := newEntryFixture(t)
 			owner := newBrowser(t, f.service.Handler())
-			owner.login("/organizations", "user_alice:")
+			owner.Login("/organizations", "user_alice:")
 			key := createTestAccessKey(t, owner, "global", nil, "")
 			client := newBrowser(t, f.service.Handler())
 			send := entryMCPClient(t, client, key.Token, protocol, "/mcp")

@@ -87,7 +87,7 @@ func TestPlatformMemberSeeding(t *testing.T) {
 
 func memberRequest(t *testing.T, b *browser, method, email string, body map[string]any, csrf bool) (int, []byte) {
 	t.Helper()
-	_, sessionBody := b.get("/api/cloud/session")
+	_, sessionBody := b.Get("/api/cloud/session")
 	var session struct {
 		CSRF string `json:"csrf"`
 	}
@@ -110,11 +110,11 @@ func memberRequest(t *testing.T, b *browser, method, email string, body map[stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, cookie := range b.jar.Cookies(base) {
+	for _, cookie := range b.Jar.Cookies(base) {
 		request.AddCookie(cookie)
 	}
 	recorder := httptest.NewRecorder()
-	b.entry.ServeHTTP(recorder, request)
+	b.Entry.ServeHTTP(recorder, request)
 	return recorder.Code, recorder.Body.Bytes()
 }
 
@@ -135,9 +135,9 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 	for _, role := range []string{"admin", "support", "billing", "viewer", "customer", "impersonation"} {
 		t.Run(role, func(t *testing.T) {
 			email := map[string]string{"admin": "admin@example.test", "support": "supporter@example.test", "billing": "billing@example.test", "viewer": "viewer@example.test", "customer": "customer@example.test", "impersonation": "admin@example.test"}[role]
-			f.provider.users["user_"+role] = email
+			f.provider.Users["user_"+role] = email
 			b := newBrowser(t, f.service.Handler())
-			b.login("/auth/oidc/start", "user_"+role+":")
+			b.Login("/auth/oidc/start", "user_"+role+":")
 			if role == "impersonation" {
 				session, err := f.service.auth.session(t.Context(), apikey.HashToken(sessionCookie(t, b, f.service)))
 				if err != nil {
@@ -148,7 +148,7 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 					t.Fatal(err)
 				}
 			}
-			response, raw := b.get("/api/cloud/platform/members")
+			response, raw := b.Get("/api/cloud/platform/members")
 			want := http.StatusOK
 			if role == "customer" || role == "impersonation" {
 				want = http.StatusForbidden
@@ -163,7 +163,7 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 					t.Fatalf("member listing = %+v", listing)
 				}
 			}
-			_, sessionRaw := b.get("/api/cloud/session")
+			_, sessionRaw := b.Get("/api/cloud/session")
 			var account struct {
 				PlatformRole string `json:"platform_role"`
 			}
@@ -175,7 +175,7 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 			if account.PlatformRole != wantRole {
 				t.Fatalf("session role = %q, want %q", account.PlatformRole, wantRole)
 			}
-			_, listingRaw := b.get("/api/cloud/organizations")
+			_, listingRaw := b.Get("/api/cloud/organizations")
 			var listing struct {
 				CanGrant bool `json:"can_grant"`
 			}
@@ -199,9 +199,9 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 		})
 	}
 	admin := newBrowser(t, f.service.Handler())
-	admin.login("/auth/oidc/start", "user_admin:")
+	admin.Login("/auth/oidc/start", "user_admin:")
 	read := func() platformMembersResult {
-		_, raw := admin.get("/api/cloud/platform/members")
+		_, raw := admin.Get("/api/cloud/platform/members")
 		var result platformMembersResult
 		decodeJSON(t, raw, &result)
 		return result
@@ -304,7 +304,7 @@ func sessionCookie(t *testing.T, b *browser, s *Service) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, cookie := range b.jar.Cookies(base) {
+	for _, cookie := range b.Jar.Cookies(base) {
 		if cookie.Name == s.cookieName("session") {
 			return cookie.Value
 		}

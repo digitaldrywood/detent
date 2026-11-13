@@ -63,7 +63,7 @@ func TestSharedEntryDenialLogging(t *testing.T) {
 			name: "malformed state",
 			run: func(t *testing.T) (page, []string) {
 				browser := newBrowser(t, f.service.Handler())
-				return browser.do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"code-sentinel-1"}, "state": {"not-hex.state-sentinel"}}.Encode(), nil, nil), []string{"code-sentinel-1", "state-sentinel"}
+				return browser.Do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"code-sentinel-1"}, "state": {"not-hex.state-sentinel"}}.Encode(), nil, nil), []string{"code-sentinel-1", "state-sentinel"}
 			},
 			wantStatus: http.StatusUnauthorized, wantReason: "state_invalid",
 		},
@@ -71,10 +71,10 @@ func TestSharedEntryDenialLogging(t *testing.T) {
 			name: "transaction cookie missing",
 			run: func(t *testing.T) (page, []string) {
 				owner := newBrowser(t, f.service.Handler())
-				start, _ := owner.get("/auth/oidc/start")
+				start, _ := owner.Get("/auth/oidc/start")
 				state := stateOf(t, start)
 				other := newBrowser(t, f.service.Handler())
-				return other.do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"user_alice:"}, "state": {state}}.Encode(), nil, nil), []string{state}
+				return other.Do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"user_alice:"}, "state": {state}}.Encode(), nil, nil), []string{state}
 			},
 			wantStatus: http.StatusUnauthorized, wantReason: "transaction_cookie_missing",
 		},
@@ -82,11 +82,11 @@ func TestSharedEntryDenialLogging(t *testing.T) {
 			name: "state mismatch",
 			run: func(t *testing.T) (page, []string) {
 				browser := newBrowser(t, f.service.Handler())
-				start, _ := browser.get("/auth/oidc/start")
+				start, _ := browser.Get("/auth/oidc/start")
 				state := stateOf(t, start)
 				id, _, _ := strings.Cut(state, ".")
 				cookies := cookieValues(browser)
-				return browser.do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"user_alice:"}, "state": {id + ".tampered"}}.Encode(), nil, nil), append(cookies, state)
+				return browser.Do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"user_alice:"}, "state": {id + ".tampered"}}.Encode(), nil, nil), append(cookies, state)
 			},
 			wantStatus: http.StatusUnauthorized, wantReason: "state_mismatch",
 		},
@@ -94,9 +94,9 @@ func TestSharedEntryDenialLogging(t *testing.T) {
 			name: "provider error",
 			run: func(t *testing.T) (page, []string) {
 				browser := newBrowser(t, f.service.Handler())
-				start, _ := browser.get("/auth/oidc/start")
+				start, _ := browser.Get("/auth/oidc/start")
 				state := stateOf(t, start)
-				return browser.do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"error": {"access_denied"}, "state": {state}}.Encode(), nil, nil), append(cookieValues(browser), state)
+				return browser.Do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"error": {"access_denied"}, "state": {state}}.Encode(), nil, nil), append(cookieValues(browser), state)
 			},
 			wantStatus: http.StatusUnauthorized, wantReason: "provider_error", wantFields: map[string]any{"provider_error": "access_denied"},
 		},
@@ -104,9 +104,9 @@ func TestSharedEntryDenialLogging(t *testing.T) {
 			name: "issuer mismatch from provider",
 			run: func(t *testing.T) (page, []string) {
 				browser := newBrowser(t, f.service.Handler())
-				start, _ := browser.get("/auth/oidc/start")
+				start, _ := browser.Get("/auth/oidc/start")
 				state := stateOf(t, start)
-				return browser.do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"deny:issuer_mismatch"}, "state": {state}}.Encode(), nil, nil), append(cookieValues(browser), state, "deny:issuer_mismatch")
+				return browser.Do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"deny:issuer_mismatch"}, "state": {state}}.Encode(), nil, nil), append(cookieValues(browser), state, "deny:issuer_mismatch")
 			},
 			wantStatus: http.StatusUnauthorized, wantReason: "issuer_mismatch", wantFields: map[string]any{"token_issuer": "https://api.workos.com", "flow": "login_callback"},
 		},
@@ -114,9 +114,9 @@ func TestSharedEntryDenialLogging(t *testing.T) {
 			name: "organization mismatch",
 			run: func(t *testing.T) (page, []string) {
 				browser := newBrowser(t, f.service.Handler())
-				start, _ := browser.get("/auth/oidc/start?organization=org_alpha")
+				start, _ := browser.Get("/auth/oidc/start?organization=org_alpha")
 				state := stateOf(t, start)
-				return browser.do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"user_alice:porg_beta"}, "state": {state}}.Encode(), nil, nil), append(cookieValues(browser), state, "alice@example.test", "user_alice:porg_beta")
+				return browser.Do(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"user_alice:porg_beta"}, "state": {state}}.Encode(), nil, nil), append(cookieValues(browser), state, "alice@example.test", "user_alice:porg_beta")
 			},
 			wantStatus: http.StatusForbidden, wantReason: "organization_mismatch", wantFields: map[string]any{"email_domain": "example.test"},
 		},
@@ -124,7 +124,7 @@ func TestSharedEntryDenialLogging(t *testing.T) {
 			name: "invitation invalid",
 			run: func(t *testing.T) (page, []string) {
 				browser := newBrowser(t, f.service.Handler())
-				return browser.do(http.MethodGet, "/invite?invitation_token=inv_sentinel_unknown", nil, nil), []string{"inv_sentinel_unknown"}
+				return browser.Do(http.MethodGet, "/invite?invitation_token=inv_sentinel_unknown", nil, nil), []string{"inv_sentinel_unknown"}
 			},
 			wantStatus: http.StatusForbidden, wantReason: "invitation_invalid", wantFields: map[string]any{"flow": "invitation_start"},
 		},
@@ -132,7 +132,7 @@ func TestSharedEntryDenialLogging(t *testing.T) {
 			name: "support without session",
 			run: func(t *testing.T) (page, []string) {
 				browser := newBrowser(t, f.service.Handler())
-				return browser.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}}, nil), nil
+				return browser.Do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}}, nil), nil
 			},
 			wantStatus: http.StatusForbidden, wantReason: "session_not_found", wantFields: map[string]any{"flow": "support_start"},
 		},
@@ -140,7 +140,7 @@ func TestSharedEntryDenialLogging(t *testing.T) {
 			name: "proxy request id is reused",
 			run: func(t *testing.T) (page, []string) {
 				browser := newBrowser(t, f.service.Handler())
-				return browser.do(http.MethodGet, "/auth/oidc/callback?state=bad", nil, map[string]string{"X-Request-Id": "proxy-request-1"}), nil
+				return browser.Do(http.MethodGet, "/auth/oidc/callback?state=bad", nil, map[string]string{"X-Request-Id": "proxy-request-1"}), nil
 			},
 			wantStatus: http.StatusUnauthorized, wantReason: "state_invalid", wantFields: map[string]any{"request_id": "proxy-request-1"},
 		},
@@ -182,7 +182,7 @@ func TestSharedEntryDenialLogging(t *testing.T) {
 func cookieValues(b *browser) []string {
 	base, _ := url.Parse(testPublicURL)
 	var values []string
-	for _, cookie := range b.jar.Cookies(base) {
+	for _, cookie := range b.Jar.Cookies(base) {
 		values = append(values, cookie.Value)
 	}
 	return values

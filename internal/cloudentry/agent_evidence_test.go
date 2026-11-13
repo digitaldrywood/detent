@@ -39,14 +39,14 @@ func TestNativeAgentEvidence(t *testing.T) {
 
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, false)
-	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.service.attachments = storage
 	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, page := owner.get("/organizations/org_alpha/app/bootstrap")
+	owner.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	_, page := owner.Get("/organizations/org_alpha/app/bootstrap")
 	o := pilotOrganization{id: "org_alpha", project: attachmentProject(t, owner, "org_alpha"), ownerCSRF: csrfFrom(t, page)}
 	var previousIssue tracker.NativeIssue
 	var previousAttempt string
@@ -248,9 +248,9 @@ func TestNativeAgentEvidence(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				before := len(store.requests())
+				before := len(store.Requests())
 				result, err := handler(t.Context(), runner.AgentToolCall{Name: refusal.name, Arguments: raw})
-				if !errors.Is(err, refusal.want) || result.Success || len(store.requests()) != before {
+				if !errors.Is(err, refusal.want) || result.Success || len(store.Requests()) != before {
 					t.Fatalf("worker input refusal %s %s: %+v, %v, want %v", refusal.name, raw, result, err, refusal.want)
 				}
 			}
@@ -263,9 +263,9 @@ func TestNativeAgentEvidence(t *testing.T) {
 				query string
 				want  int
 			}{{"?offset=invalid", http.StatusBadRequest}, {"?offset=-1", http.StatusBadRequest}, {"?length=1.5", http.StatusBadRequest}, {"?length=32769", http.StatusBadRequest}, {"?length=1&length=2", http.StatusNotFound}} {
-				before := len(store.requests())
+				before := len(store.Requests())
 				read := request(http.MethodGet, inputPath+"/"+inputAttachment.ID+bounds.query, nil, map[string]string{"Authorization": "Bearer " + credential})
-				if read.status != bounds.want || len(store.requests()) != before {
+				if read.status != bounds.want || len(store.Requests()) != before {
 					t.Fatalf("invalid worker read bounds %s: %+v", bounds.query, read)
 				}
 			}
@@ -277,22 +277,22 @@ func TestNativeAgentEvidence(t *testing.T) {
 				missing bool
 				want    error
 			}{{want: operatortool.ErrReadUnavailable}, {missing: true, want: operatortool.ErrAccessDenied}} {
-				store.mu.Lock()
-				object := store.objects[inputKey]
+				store.Mu.Lock()
+				object := store.Objects[inputKey]
 				if unavailable.missing {
-					delete(store.objects, inputKey)
+					delete(store.Objects, inputKey)
 				} else {
-					store.objects[inputKey] = spacesObject{content: []byte("short"), created: object.created}
+					store.Objects[inputKey] = spacesObject{Content: []byte("short"), Created: object.Created}
 				}
-				store.mu.Unlock()
+				store.Mu.Unlock()
 				raw, err := json.Marshal(map[string]string{"project_id": o.project, "attachment_id": inputAttachment.ID})
 				if err != nil {
 					t.Fatal(err)
 				}
 				result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.ReadAttachment, Arguments: raw})
-				store.mu.Lock()
-				store.objects[inputKey] = object
-				store.mu.Unlock()
+				store.Mu.Lock()
+				store.Objects[inputKey] = object
+				store.Mu.Unlock()
 				if !errors.Is(err, unavailable.want) || result.Success {
 					t.Fatalf("unavailable worker input: %+v, %v", result, err)
 				}
@@ -446,8 +446,8 @@ func TestNativeAgentEvidence(t *testing.T) {
 					t.Fatalf("%s: %+v", refusal.name, response)
 				}
 			}
-			_, organizationPage := owner.get("/organizations/" + o.id + "/app/bootstrap")
-			other := owner.do(http.MethodPost, "/organizations/"+o.id+"/projects", url.Values{"name": {fmt.Sprintf("Other evidence project %d", index)}, "grant_access": {"true"}, "csrf": {csrfFrom(t, organizationPage)}}, nil)
+			_, organizationPage := owner.Get("/organizations/" + o.id + "/app/bootstrap")
+			other := owner.Do(http.MethodPost, "/organizations/"+o.id+"/projects", url.Values{"name": {fmt.Sprintf("Other evidence project %d", index)}, "grant_access": {"true"}, "csrf": {csrfFrom(t, organizationPage)}}, nil)
 			if other.StatusCode != http.StatusSeeOther {
 				t.Fatalf("other project: %d", other.StatusCode)
 			}
@@ -547,9 +547,9 @@ func TestNativeAgentEvidence(t *testing.T) {
 			if stale.status != http.StatusConflict || !strings.Contains(stale.body, "stale_execution") {
 				t.Fatalf("stale upload: %+v", stale)
 			}
-			store.mu.Lock()
-			objects := len(store.objects)
-			store.mu.Unlock()
+			store.Mu.Lock()
+			objects := len(store.Objects)
+			store.Mu.Unlock()
 			if objects != (index+1)*14 {
 				t.Fatalf("replay or stale upload created extra storage objects: %d", objects)
 			}

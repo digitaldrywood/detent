@@ -7,32 +7,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
-
-func signedTenantFixtureCall(t *testing.T, ctx context.Context, handler http.Handler, key ed25519.PrivateKey, claims cloudassert.Claims, body []byte, csrf string) (int, []byte) {
-	t.Helper()
-	assertion, err := cloudassert.Sign(key, claims)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequestWithContext(ctx, claims.Method, "http://tenant"+claims.Path, bytes.NewReader(body))
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	request.Header.Set(cloudassert.Header, assertion)
-	if csrf != "" {
-		request.Header.Set("X-CSRF-Token", csrf)
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response.Code, response.Body.Bytes()
-}
 
 func TestTenantFixtureCallPreservesContextAndAuthorization(t *testing.T) {
 	for _, canceled := range []bool{false, true} {

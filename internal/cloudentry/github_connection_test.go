@@ -118,10 +118,10 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 	})}}
 	s.config.GitHubUserClientID, s.config.GitHubUserClientSecret = "client-id", "client-secret"
 	b := newBrowser(t, s.Handler())
-	b.login("/organizations", "user_alice:")
+	b.Login("/organizations", "user_alice:")
 	read := func(b *browser) githubRepositoryList {
 		t.Helper()
-		p := b.do(http.MethodGet, githubConnectionBase+"/repositories", nil, nil)
+		p := b.Do(http.MethodGet, githubConnectionBase+"/repositories", nil, nil)
 		if p.StatusCode != http.StatusOK {
 			t.Fatalf("listing: %d %s", p.StatusCode, p.Body)
 		}
@@ -153,7 +153,7 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.jar.SetCookies(base, start.Result().Cookies())
+	b.Jar.SetCookies(base, start.Result().Cookies())
 	var target struct {
 		URL string `json:"url"`
 	}
@@ -167,10 +167,10 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 	if install.Host != "github.com" || install.Path != "/apps/example-app/installations/new" {
 		t.Fatalf("install URL=%s", install)
 	}
-	if p := b.do(http.MethodGet, "/auth/github/callback?state=wrong&installation_id=1", nil, nil); p.StatusCode != 400 {
+	if p := b.Do(http.MethodGet, "/auth/github/callback?state=wrong&installation_id=1", nil, nil); p.StatusCode != 400 {
 		t.Fatalf("tampered state=%+v", p)
 	}
-	installed := b.do(http.MethodGet, "/auth/github/callback?installation_id=1&state="+url.QueryEscape(install.Query().Get("state")), nil, nil)
+	installed := b.Do(http.MethodGet, "/auth/github/callback?installation_id=1&state="+url.QueryEscape(install.Query().Get("state")), nil, nil)
 	authorize, err := url.Parse(installed.Header.Get("Location"))
 	if err != nil {
 		t.Fatal(err)
@@ -179,11 +179,11 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 		t.Fatalf("authorize=%s response=%+v", authorize, installed)
 	}
 	callback := "/auth/github/callback?code=accepted&state=" + url.QueryEscape(authorize.Query().Get("state"))
-	connected := b.do(http.MethodGet, callback, nil, nil)
+	connected := b.Do(http.MethodGet, callback, nil, nil)
 	if connected.StatusCode != http.StatusSeeOther || connected.Header.Get("Location") != returnTo {
 		t.Fatalf("callback=%+v", connected)
 	}
-	if replay := b.do(http.MethodGet, callback, nil, nil); replay.StatusCode != 400 {
+	if replay := b.Do(http.MethodGet, callback, nil, nil); replay.StatusCode != 400 {
 		t.Fatalf("replayed callback=%+v", replay)
 	}
 	result := read(b)
@@ -200,7 +200,7 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 		t.Fatalf("token storage not encrypted: %v", err)
 	}
 	other := newBrowser(t, s.Handler())
-	other.login("/organizations", "user_bob:")
+	other.Login("/organizations", "user_bob:")
 	if result := read(other); result.Connected || len(result.Repositories) != 0 {
 		t.Fatal("another user received the connection")
 	}
@@ -210,16 +210,16 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 	if result := read(other); !result.Connected {
 		t.Fatal("second user connection unusable")
 	}
-	grants := b.do(http.MethodGet, "/api/cloud/account/oauth-grants", nil, nil)
+	grants := b.Do(http.MethodGet, "/api/cloud/account/oauth-grants", nil, nil)
 	var page oauthGrantPage
 	if err := json.Unmarshal([]byte(grants.Body), &page); err != nil || len(page.Grants) != 1 || page.Grants[0].ClientName != "Detent Cloud GitHub App" {
 		t.Fatalf("grants=%+v %v", grants, err)
 	}
 	id := page.Grants[0].ID
-	if p := other.do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+id, nil, nil); p.StatusCode != 404 {
+	if p := other.Do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+id, nil, nil); p.StatusCode != 404 {
 		t.Fatal("foreign user revoked connection")
 	}
-	if p := b.do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+id, nil, nil); p.StatusCode != 204 {
+	if p := b.Do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+id, nil, nil); p.StatusCode != 204 {
 		t.Fatalf("revoke=%+v", p)
 	}
 	before := recordedCalls()["/user/installations?per_page=100&page=1"]
@@ -242,7 +242,7 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 			reject = !test.expired
 			mu.Unlock()
 			before := recordedCalls()["/user/installations?per_page=100&page=1"]
-			p := b.do(http.MethodGet, githubConnectionBase+"/repositories", nil, nil)
+			p := b.Do(http.MethodGet, githubConnectionBase+"/repositories", nil, nil)
 			if strings.Contains(p.Body, "customer") || strings.Contains(p.Body, "user-token") {
 				t.Fatal("listing leaked customer content or credentials")
 			}

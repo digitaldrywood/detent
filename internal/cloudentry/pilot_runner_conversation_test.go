@@ -30,9 +30,9 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			store := newSpacesFixture(t, false)
 			p := newSharedOriginPilotWith(t, 1, 1, fstest.MapFS{}, test.billing, func(cfg *Config) {
-				attachments := store.config()
+				attachments := store.Config()
 				cfg.Attachments = &attachments
-				cfg.attachmentTransport = store.transport
+				cfg.attachmentTransport = store.Transport
 			})
 			owner := p.browser(t)
 			pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_member:"), http.StatusSeeOther)
@@ -117,10 +117,10 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 			}
 			diffRequest.Generation.Seq = 3
 			diffRequest.Producer.FencingToken++
-			before := len(store.requests())
+			before := len(store.Requests())
 			denied := p.machine(t, http.MethodPost, diffPath, credential, diffRequest)
 			pilotStatus(t, "stale runner diff", denied, http.StatusConflict)
-			if !strings.Contains(denied.body, "stale_execution") || len(store.requests()) != before {
+			if !strings.Contains(denied.body, "stale_execution") || len(store.Requests()) != before {
 				t.Fatal("denied diff reached object storage or lost fencing error")
 			}
 

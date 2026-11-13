@@ -264,7 +264,7 @@ func TestTenantKeyAuthorityDenialsAreAudited(t *testing.T) {
 					t.Fatalf("refused re-resolution must remain a denial: %v", err)
 				}
 				var count int
-				if err := f.fixtures[orgID].database.QueryRowContext(t.Context(), `SELECT count(*) FROM public.hosted_audit WHERE organization_id=$1 AND key_id=$2 AND event=$3`, orgID, key.ID, test.event).Scan(&count); err != nil || count != 1 {
+				if err := f.fixtures[orgID].Database.QueryRowContext(t.Context(), `SELECT count(*) FROM public.hosted_audit WHERE organization_id=$1 AND key_id=$2 AND event=$3`, orgID, key.ID, test.event).Scan(&count); err != nil || count != 1 {
 					t.Fatalf("refusal audit count=%d err=%v", count, err)
 				}
 				if test.event == "key_context_invalid" {
@@ -307,7 +307,7 @@ func TestTenantKeyAuthorityConcurrentClaims(t *testing.T) {
 		if _, err := registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true WHERE id=$1", org.ID); err != nil {
 			t.Fatal(err)
 		}
-		provider.member("owner", org.ProviderID, "member")
+		provider.Member("owner", org.ProviderID, "member")
 		for _, kind := range []string{"service", "personal"} {
 			k := accessKey{ID: "key_" + kind + "_" + suffix, Hash: "hash_" + kind + "_" + suffix, Name: "Example", Kind: kind, Owner: "owner", Permission: apikey.ScopeWrite, AccessContext: "selected", Organizations: []keyOrganization{{OrganizationID: org.ID, ProjectContext: apikey.ProjectContext{Access: "all"}}}}
 			subject := "owner"

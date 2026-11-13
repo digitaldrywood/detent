@@ -111,7 +111,7 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 	config := hubserver.Config{
 		Version:           l.version,
 		InitialAdminToken: []byte(pilotAdminToken(spec.Organization.ID)), Logger: slog.New(slog.DiscardHandler),
-		Content: content.handleContent,
+		Content: content.HandleContent,
 		Hosted: &hubserver.HostedConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,
 			StaffEmails: []string{"staff@example.test"}, Plans: pilotPlans(),
@@ -505,7 +505,7 @@ func newSharedOriginPilotWith(t *testing.T, maxTenants, retryLimit int, client f
 	root := shortTempDir(t)
 	p := &sharedOriginPilot{provider: newFakeProvider(), state: t.TempDir(), roots: [2]string{filepath.Join(root, "t"), pilotSocketRoot(t, root)}, key: ed25519.NewKeyFromSeed(seed), handler: &swappableHandler{}, client: client, configure: append([]func(*Config){entryPostgresConfig(t)}, configure...)}
 	for _, user := range []string{"member", "eve", "fay", "gus"} {
-		p.provider.users["user_"+user] = user + "@example.test"
+		p.provider.Users["user_"+user] = user + "@example.test"
 	}
 	p.launcher = &pilotTenantLauncher{configureDatabase: configurePostgresTenants(t, make(map[string]*sql.DB)), provider: p.provider, billing: billingProvider, running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: true, specs: map[string]TenantSpec{}}
 	p.server = httptest.NewUnstartedServer(p.handler)
@@ -836,9 +836,9 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		member, eve := p.browser(t), p.browser(t)
 		pilotStatus(t, "member sign-in", member.login("/auth/oidc/start", "user_member:"), http.StatusSeeOther)
 		pilotStatus(t, "eve sign-in", eve.login("/auth/oidc/start", "user_eve:"), http.StatusSeeOther)
-		p.provider.mu.Lock()
-		p.provider.createFailures = 1
-		p.provider.mu.Unlock()
+		p.provider.Mu.Lock()
+		p.provider.CreateFailures = 1
+		p.provider.Mu.Unlock()
 		created := member.createOrganization("Alpha Labs")
 		pilotStatus(t, "member create", created, http.StatusSeeOther)
 		alpha.id = organizationFromLocation(t, created.location)
@@ -857,8 +857,8 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		pilotStatus(t, "eve create", created, http.StatusSeeOther)
 		beta.id = organizationFromLocation(t, created.location)
 		readyBeta := p.waitState(t, beta.id, "ready")
-		if alpha.id == beta.id || readyAlpha.Endpoint == readyBeta.Endpoint || !readyAlpha.Managed || !readyBeta.Managed || p.provider.creates != 2 {
-			t.Fatalf("organizations are not separate: %+v %+v creates=%d", readyAlpha, readyBeta, p.provider.creates)
+		if alpha.id == beta.id || readyAlpha.Endpoint == readyBeta.Endpoint || !readyAlpha.Managed || !readyBeta.Managed || p.provider.Creates != 2 {
+			t.Fatalf("organizations are not separate: %+v %+v creates=%d", readyAlpha, readyBeta, p.provider.Creates)
 		}
 		for _, organization := range []Organization{readyAlpha, readyBeta} {
 			spec := p.launcher.specs[organization.ID]
@@ -885,7 +885,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			t.Fatalf("eve authenticated into alpha: %q", response.location)
 		}
 		pilotRecord(t, "self_service", map[string]any{
-			"organizations": 2, "provider_organizations_created": p.provider.creates, "operator_registry_calls": 0,
+			"organizations": 2, "provider_organizations_created": p.provider.Creates, "operator_registry_calls": 0,
 			"tenant_endpoints": "private unix sockets", "injected_failure": failed.ErrorCode, "resumed_to": readyAlpha.State,
 			"cross_user_page_status": foreign.status,
 		})
@@ -935,8 +935,8 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		created := gus.createOrganization("Gamma")
 		pilotStatus(t, "gus create", created, http.StatusSeeOther)
 		gamma := p.waitState(t, organizationFromLocation(t, created.location), "failed")
-		if gamma.ErrorCode != "capacity" || gamma.ProviderID != "" || p.provider.creates != 2 {
-			t.Fatalf("capacity refusal = %+v creates=%d", gamma, p.provider.creates)
+		if gamma.ErrorCode != "capacity" || gamma.ProviderID != "" || p.provider.Creates != 2 {
+			t.Fatalf("capacity refusal = %+v creates=%d", gamma, p.provider.Creates)
 		}
 		for _, o := range []pilotOrganization{alpha, beta} {
 			pilotStatus(t, "ready organization after refusal", o.owner.get(o.page()), http.StatusOK)
@@ -1283,8 +1283,8 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			}
 			streams[o.id] = stream
 		}
-		p.provider.removeMember("user_fay", "porg_"+alpha.id)
-		p.provider.expireAccess()
+		p.provider.RemoveMember("user_fay", "porg_"+alpha.id)
+		p.provider.ExpireAccess()
 		if response := fay.get(alpha.page()); response.status == http.StatusOK {
 			t.Fatal("removed member still reads alpha after the access token refresh")
 		}

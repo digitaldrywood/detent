@@ -24,7 +24,7 @@ import (
 func TestAttemptDiffObjectStorage(t *testing.T) {
 	t.Parallel()
 	store := newSpacesFixture(t, false)
-	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,9 +61,9 @@ func TestAttemptDiffObjectStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := len(store.requests())
+	before := len(store.Requests())
 	checkStatus = http.StatusForbidden
-	if _, status, _, _ := s.uploadAttemptDiff(c, organization, claims, raw); status != http.StatusForbidden || len(store.requests()) != before {
+	if _, status, _, _ := s.uploadAttemptDiff(c, organization, claims, raw); status != http.StatusForbidden || len(store.Requests()) != before {
 		t.Fatal("refused producer uploaded a diff body")
 	}
 	checkStatus = http.StatusNoContent
@@ -79,11 +79,11 @@ func TestAttemptDiffObjectStorage(t *testing.T) {
 		t.Fatalf("metadata retained patch bodies: %s", stored)
 	}
 	ref := *uploaded.Files[0].PatchBody
-	store.failPutResponse = true
+	store.FailPutResponse = true
 	if err := s.storeDiffBody(t.Context(), "org_alpha", "prj_test", ref, "@@ original\n+λ <html>\n"); err != nil {
 		t.Fatalf("immutable upload replay: %v", err)
 	}
-	store.failPutResponse = false
+	store.FailPutResponse = false
 	for _, test := range []struct {
 		name, path, tool string
 		expired          bool
@@ -124,7 +124,7 @@ func TestAttemptDiffObjectStorage(t *testing.T) {
 			response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}
 			c := e.NewContext(httptest.NewRequest(method, requestPath, nil).WithContext(t.Context()), httptest.NewRecorder())
 			c.Request().Header.Set("Mcp-Protocol-Version", mcp.ProtocolVersion)
-			before := len(store.requests())
+			before := len(store.Requests())
 			if err := s.attemptDiffResponse(c, organization, call, response); err != nil {
 				t.Fatal(err)
 			}
@@ -168,7 +168,7 @@ func TestAttemptDiffObjectStorage(t *testing.T) {
 			want := "@@ original\n+λ <html>\n"
 			if test.expired {
 				want = ""
-				if len(store.requests()) != before {
+				if len(store.Requests()) != before {
 					t.Fatal("expired read accessed object storage")
 				}
 			}
@@ -188,9 +188,9 @@ func TestAttemptDiffObjectStorage(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.content != "" {
-				store.mu.Lock()
-				store.objects[ref.Key] = spacesObject{content: []byte(test.content)}
-				store.mu.Unlock()
+				store.Mu.Lock()
+				store.Objects[ref.Key] = spacesObject{Content: []byte(test.content)}
+				store.Mu.Unlock()
 			}
 			if _, err := s.readDiffBody(t.Context(), "org_alpha", "prj_test", test.ref); err == nil {
 				t.Fatal("unavailable body was returned as a successful diff")

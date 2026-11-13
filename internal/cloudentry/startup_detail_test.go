@@ -15,9 +15,9 @@ func TestTenantDetailStoreWritesBeforeTenantHTTPStarts(t *testing.T) {
 	store := newSpacesFixture(t, false)
 	var tenantCalls atomic.Int64
 	f := newEntryFixture(t, entryPostgresConfig(t), func(config *Config) {
-		attachments := store.config()
+		attachments := store.Config()
 		config.Attachments = &attachments
-		config.attachmentTransport = store.transport
+		config.attachmentTransport = store.Transport
 		config.transport = func(Organization) (http.RoundTripper, error) {
 			return runtimeTransport(func(request *http.Request) (*http.Response, error) {
 				if request.URL.Path == "/internal/v1/attachments/exists" {
@@ -39,18 +39,18 @@ func TestTenantDetailStoreWritesBeforeTenantHTTPStarts(t *testing.T) {
 			t.Fatalf("store startup audit: %v", err)
 		}
 		aged := time.Now().Add(-2 * attachment.OrphanTTL)
-		store.mu.Lock()
-		object := store.objects[first.Key]
-		object.created = aged
-		store.objects[first.Key] = object
-		store.mu.Unlock()
+		store.Mu.Lock()
+		object := store.Objects[first.Key]
+		object.Created = aged
+		store.Objects[first.Key] = object
+		store.Mu.Unlock()
 		second, err := owner.StoreDetail(t.Context(), organization, raw)
 		if err != nil || first != second {
 			t.Fatalf("idempotent startup store: %v", err)
 		}
-		store.mu.Lock()
-		refreshed := store.objects[first.Key].created.After(aged)
-		store.mu.Unlock()
+		store.Mu.Lock()
+		refreshed := store.Objects[first.Key].Created.After(aged)
+		store.Mu.Unlock()
 		if !refreshed {
 			t.Fatal("retried uncommitted archive retained its expired orphan age")
 		}
