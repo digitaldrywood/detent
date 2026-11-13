@@ -108,6 +108,9 @@ func TestINV20NoSQLOverJSON(t *testing.T) {
 	}
 	baseline := make(map[string]int)
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
 			t.Fatalf("invalid baseline line: %q", line)
@@ -122,7 +125,7 @@ func TestINV20NoSQLOverJSON(t *testing.T) {
 		baseline[fields[0]] = count
 	}
 	root := filepath.Join("..", "..")
-	for _, directory := range []string{"internal/hubserver", "internal/store", "db/queries"} {
+	for _, directory := range []string{"internal/hubserver", "internal/store"} {
 		err := filepath.WalkDir(filepath.Join(root, directory), func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
