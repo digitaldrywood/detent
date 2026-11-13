@@ -1135,7 +1135,7 @@ func TestNativeWorkerMutationsRequireCurrentItemFence(t *testing.T) {
 	clock := &leaseTestClock{value: time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)}
 	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}), "", "fence")
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	leased, other := f.create(t, "leased"), f.create(t, "other")
+	leased, other, fresh := f.create(t, "leased"), f.create(t, "other"), f.create(t, "fresh")
 	runners := [2]runnerFixture{}
 	for index := range runners {
 		runners[index] = prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
@@ -1236,6 +1236,24 @@ func TestNativeWorkerMutationsRequireCurrentItemFence(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("operator on leased item", func(t *testing.T) {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "operator-comment"}, Body: "operator note"}), http.StatusOK)
+		title := "Operator edit"
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "operator-edit"}, ExpectedRevision: after.Revision, Title: &title}), http.StatusOK)
+	})
+	t.Run("worker on item without attempts or lease", func(t *testing.T) {
+		freshPath := f.base + "/work-items/" + string(fresh.WorkItemID)
+		response := performHubAPIRequest(t, f.service, http.MethodPost, freshPath+"/comments", worker, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "fresh-comment"}, Body: "pre-attempt note"})
+		requireNativeStatus(t, response, http.StatusOK)
+		var comment tracker.NativeComment
+		decodeHubResponse(t, response, &comment)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, freshPath+"/comments/"+comment.ID, worker, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "fresh-comment-edit"}, ExpectedRevision: comment.Revision, Body: "edited pre-attempt note"}), http.StatusOK)
+		title := "Pre-attempt edit"
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, freshPath, worker, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "fresh-edit"}, ExpectedRevision: fresh.Revision, Title: &title}), http.StatusOK)
+		if err := f.service.referenceCloudAttachmentCommand(t.Context(), workerScope, attachmentID, attachment.SourceReference{WorkItemID: string(fresh.WorkItemID)}, tracker.Mutation{}); err != nil {
+			t.Fatalf("pre-attempt attachment reference: %v", err)
+		}
+	})
 }
 
 func nativeResponseCode(t *testing.T, response *httptest.ResponseRecorder) (int, string) {

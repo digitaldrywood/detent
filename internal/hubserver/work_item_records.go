@@ -637,11 +637,13 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 			}
 			return nil, hubapi.NativePublicInvalid("Runner credentials cannot perform this work item mutation")
 		}
-		if command.LeaseID == "" || command.FencingToken <= 0 {
-			return nil, tracker.ErrStaleFencingToken
-		}
-		if _, err := s.validateRunnerLeaseTenant(ctx, scope, command.LeaseID, command.FencingToken); err != nil {
-			return nil, err
+		if !options.RequireLease || command.LeaseID != "" || command.FencingToken != 0 {
+			if command.LeaseID == "" || command.FencingToken <= 0 {
+				return nil, tracker.ErrStaleFencingToken
+			}
+			if _, err := s.validateRunnerLeaseTenant(ctx, scope, command.LeaseID, command.FencingToken); err != nil {
+				return nil, err
+			}
 		}
 	}
 	hash, err := hubapi.CommandHash(input)
@@ -1183,7 +1185,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 			if _, edit := input.(tracker.UpdateIssue); edit && scope.Credential.Scope == hubapi.APIScopeWorker {
 				authorityItem := plan.Current
 				origin, machine := issueorigin.Parse(plan.Issue.Body)
-				if machine && origin.Kind == "worker" && plan.Issue.State == "Backlog" && hubapi.StringValue(plan.Current.ActorPrincipalID) == scope.Actor().PrincipalID {
+				if command.LeaseID != "" && machine && origin.Kind == "worker" && plan.Issue.State == "Backlog" && hubapi.StringValue(plan.Current.ActorPrincipalID) == scope.Actor().PrincipalID {
 					lease, err := w.Lease(ctx, string(command.LeaseID))
 					if err != nil {
 						return err
@@ -1193,18 +1195,18 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 						return err
 					}
 				}
-				if err := s.authorizeAttachmentCommentLease(ctx, w, scope, authorityItem, command); err != nil {
+				if err := s.authorizeWorkerItemFence(ctx, w, scope, authorityItem, command); err != nil {
 					return err
 				}
 			}
 			if _, editComment := input.(tracker.UpdateComment); editComment && options.RequireLease && scope.Credential.Scope == hubapi.APIScopeWorker {
-				if err := s.authorizeAttachmentCommentLease(ctx, w, scope, plan.Current, command); err != nil {
+				if err := s.authorizeWorkerItemFence(ctx, w, scope, plan.Current, command); err != nil {
 					return err
 				}
 			}
 			if !plan.Existing {
 				if _, comment := input.(tracker.CreateComment); comment && scope.Credential.Scope == hubapi.APIScopeWorker {
-					if err := s.authorizeAttachmentCommentLease(ctx, w, scope, plan.Current, command); err != nil {
+					if err := s.authorizeWorkerItemFence(ctx, w, scope, plan.Current, command); err != nil {
 						return err
 					}
 				}

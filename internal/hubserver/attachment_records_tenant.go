@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -637,6 +638,37 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 	return result, nil
 }
 
+func (s *Service) authorizeWorkerItemFence(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, row corestore.WorkItem, command tracker.Mutation) error {
+	if command.LeaseID != "" || command.FencingToken != 0 {
+		if command.LeaseID == "" || command.FencingToken <= 0 {
+			return tracker.ErrStaleFencingToken
+		}
+		return s.authorizeAttachmentCommentLease(ctx, w, scope, row, command)
+	}
+	current, err := w.LockWorkItem(ctx, scope.Project, row.NativeID)
+	if err != nil {
+		return err
+	}
+	if current.ID != row.ID || current.EventSequence != row.EventSequence || current.Revision != row.Revision {
+		return corestore.ErrSerializationFailure
+	}
+	if _, err := w.LatestAttempt(ctx, row.ID); err == nil {
+		return tracker.ErrStaleFencingToken
+	} else if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	locker, ok := w.(leasestore.UnreleasedIssueLeaseLocker)
+	if !ok {
+		return hubapi.NativeWorkItemStorageUnavailable()
+	}
+	if _, err := locker.LockUnreleasedIssueLease(ctx, row.ID); err == nil {
+		return tracker.ErrStaleFencingToken
+	} else if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return nil
+}
+
 func (s *Service) authorizeAttachmentCommentLease(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, row corestore.WorkItem, command tracker.Mutation) error {
 	current, err := w.LockWorkItem(ctx, scope.Project, row.NativeID)
 	if err != nil {
@@ -714,10 +746,7 @@ func (s *Service) referenceCloudAttachmentTenant(ctx context.Context, scope hubs
 			return hubapi.NativeNotFound()
 		}
 		if scope.Credential.Scope == hubapi.APIScopeWorker {
-			if fence.LeaseID == "" || fence.FencingToken <= 0 {
-				return tracker.ErrStaleFencingToken
-			}
-			if err := s.authorizeAttachmentCommentLease(ctx, w, scope, current, fence); err != nil {
+			if err := s.authorizeWorkerItemFence(ctx, w, scope, current, fence); err != nil {
 				return err
 			}
 		}
