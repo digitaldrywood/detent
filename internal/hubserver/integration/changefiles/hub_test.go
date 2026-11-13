@@ -43,6 +43,11 @@ type hub struct {
 
 func openHub(t *testing.T) hub {
 	t.Helper()
+	return openHubWith(t, func(*hubserver.Config) {})
+}
+
+func openHubWith(t *testing.T, configure func(*hubserver.Config)) hub {
+	t.Helper()
 	admin := hubtest.Database(t)
 	h := hub{admin: admin, repository: hubtest.RepositoryOn(t, admin), details: hubtest.NewDetails(), token: hubapi.NewID("token")}
 	connection := hubtest.PostgresConfig(t, admin)
@@ -59,6 +64,7 @@ func openHub(t *testing.T) hub {
 		t.Fatal(err)
 	}
 	h.config = hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres, Postgres: &connection, SecretKeys: keys, RunDetails: h.details, InitialAdminToken: []byte(h.token), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	configure(&h.config)
 	h.service, err = hubserver.Open(t.Context(), h.config)
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +158,20 @@ type changeFixture struct {
 
 func newChangeFixture(t *testing.T) changeFixture {
 	t.Helper()
-	h := openHub(t)
+	return newChangeFixtureOn(t, openHub(t))
+}
+
+func (h hub) organization(t *testing.T) tracker.OrganizationID {
+	t.Helper()
+	response := performHubAPIRequest(t, h.service, http.MethodPost, "/api/v2/organizations", h.token, map[string]string{"name": "Example organization"})
+	requireNativeStatus(t, response, http.StatusCreated)
+	var org organization
+	decodeHubResponse(t, response, &org)
+	return org.ID
+}
+
+func newChangeFixtureOn(t *testing.T, h hub) changeFixture {
+	t.Helper()
 	response := performHubAPIRequest(t, h.service, http.MethodPost, "/api/v2/organizations", h.token, map[string]string{"name": "Example organization"})
 	requireNativeStatus(t, response, http.StatusCreated)
 	var org organization

@@ -44,3 +44,9 @@ func (s *Service) viewChangeFileRecordCommand(ctx context.Context, scope nativeS
 	value, err := s.changeFilesService(scope).ViewFileCommand(ctx, s.featureScope(scope), item, change, version, operation, request)
 	return value, fromFeatureError(err)
 }
+func (s *Service) changeSource(c echo.Context) error {
+	return s.changeFilesService(nativeRequestScope(c)).Source(c)
+}
+func (s *Service) verifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) error {
+	return fromFeatureError(changefiles.VerifySource(ctx, s.sourceVerification, source, bundle))
+}
