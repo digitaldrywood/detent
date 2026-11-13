@@ -74,12 +74,22 @@ var Postgres = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 
 func PostgresDatabase(t *testing.T) *sql.DB {
 	t.Helper()
+	return postgresDatabase(t, 6)
+}
+
+func SharedPostgresDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	return postgresDatabase(t, 32)
+}
+
+func postgresDatabase(t *testing.T, connections int) *sql.DB {
+	t.Helper()
 	admin := Postgres.Database(t)
 	var name string
 	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&name); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{name}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{name}.Sanitize()+" CONNECTION LIMIT "+strconv.Itoa(connections)); err != nil {
 		t.Fatal(err)
 	}
 	return admin

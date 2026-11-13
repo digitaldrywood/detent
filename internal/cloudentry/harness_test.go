@@ -48,13 +48,14 @@ var (
 	bootstrapCSRF           = harness.BootstrapCSRF
 	jsonBody                = harness.JSONBody
 	newSpacesFixture        = harness.NewSpaces
-	newTenant               = harness.NewTenant
+	newTenantIn             = harness.NewTenantIn
 	pilotPlans              = harness.PilotPlans
 	capacityPlans           = harness.CapacityPlans
 	testSocketEndpoint      = harness.SocketEndpoint
 	signedTenantFixtureCall = harness.SignedTenantCall
 	pilotPolicy             = harness.PilotPolicy
 	entryPostgresDatabase   = harness.PostgresDatabase
+	entrySharedDatabase     = harness.SharedPostgresDatabase
 	configurePostgresTenant = harness.ConfigurePostgresTenant
 	entrySecretEnvironment  = harness.SecretEnvironment
 )

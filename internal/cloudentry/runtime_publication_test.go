@@ -15,8 +15,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -137,15 +135,8 @@ func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
 
 func runtimePublicationFixture(t *testing.T) (entryFixture, *sql.DB) {
 	t.Helper()
-	admin := entryPostgresDatabase(t)
-	var database string
-	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+" CONNECTION LIMIT 32"); err != nil {
-		t.Fatal(err)
-	}
-	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), []func(*Config){entryPostgresConfig(t, admin)}, func(cfg *hubserver.Config) { configurePostgresTenant(t, cfg, admin) }), admin
+	f := newEntryFixture(t)
+	return f, f.database
 }
 
 func TestRuntimePublicationTenantIsolation(t *testing.T) {

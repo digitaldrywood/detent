@@ -42,6 +42,11 @@ type Tenant struct {
 
 func NewTenant(t *testing.T, provider *FakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string, configure ...func(*hubserver.Config)) (Tenant, http.Handler) {
 	t.Helper()
+	return NewTenantIn(t, nil, provider, key, id, providerID, owner, project, configure...)
+}
+
+func NewTenantIn(t *testing.T, database *sql.DB, provider *FakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string, configure ...func(*hubserver.Config)) (Tenant, http.Handler) {
+	t.Helper()
 	publicKey, ok := key.Public().(ed25519.PublicKey)
 	if !ok {
 		t.Fatal("tenant fixture key has no Ed25519 public key")
@@ -65,7 +70,11 @@ func NewTenant(t *testing.T, provider *FakeProvider, key ed25519.PrivateKey, id,
 		apply(&fixture.Config)
 	}
 	if fixture.Config.DatabaseBackend != hubserver.DatabasePostgres {
-		fixture.Database = ConfigurePostgresTenant(t, &fixture.Config)
+		var databases []*sql.DB
+		if database != nil {
+			databases = append(databases, database)
+		}
+		fixture.Database = ConfigurePostgresTenant(t, &fixture.Config, databases...)
 	}
 	shared, err := hubserver.Open(t.Context(), fixture.Config)
 	if err != nil {

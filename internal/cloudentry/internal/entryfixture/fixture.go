@@ -128,8 +128,9 @@ func NewWithConfig(t *testing.T, logger *slog.Logger, configureEntry []func(*clo
 	provider.Member("user_alice", "porg_alpha", "owner")
 	provider.Member("user_alice", "porg_beta", "owner")
 	provider.Member("user_bob", "porg_beta", "member")
-	alpha, alphaHandler := harness.NewTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project", configure...)
-	beta, betaHandler := harness.NewTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project", configure...)
+	database := harness.SharedPostgresDatabase(t)
+	alpha, alphaHandler := harness.NewTenantIn(t, database, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project", configure...)
+	beta, betaHandler := harness.NewTenantIn(t, database, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project", configure...)
 	tenants := map[string]http.Handler{harness.SocketEndpoint("alpha.sock"): alphaHandler, harness.SocketEndpoint("beta.sock"): betaHandler}
 	cfg := cloudentry.Config{
 		Platform:  cloudentry.PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
@@ -144,7 +145,7 @@ func NewWithConfig(t *testing.T, logger *slog.Logger, configureEntry []func(*clo
 	}
 	var admin *sql.DB
 	if cfg.Storage.Backend == "" {
-		admin = harness.PostgresDatabase(t)
+		admin = database
 		PostgresConfig(t, admin)(&cfg)
 	} else if stored, ok := admins.Load(cfg.Storage.PostgresPool); ok && cfg.Storage.PostgresPool != nil {
 		if db, ok := stored.(*sql.DB); ok {

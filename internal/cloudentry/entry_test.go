@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -30,6 +31,7 @@ type entryFixture struct {
 	provider *fakeProvider
 	tenants  map[string]http.Handler
 	fixtures map[string]tenantFixture
+	database *sql.DB
 }
 
 func newEntryFixture(t *testing.T, configure ...func(*Config)) entryFixture {
@@ -55,8 +57,9 @@ func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry
 	provider.Member("user_alice", "porg_alpha", "owner")
 	provider.Member("user_alice", "porg_beta", "owner")
 	provider.Member("user_bob", "porg_beta", "member")
-	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project", configure...)
-	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project", configure...)
+	database := entrySharedDatabase(t)
+	alpha, alphaHandler := newTenantIn(t, database, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project", configure...)
+	beta, betaHandler := newTenantIn(t, database, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project", configure...)
 	tenants := map[string]http.Handler{testSocketEndpoint("alpha.sock"): alphaHandler, testSocketEndpoint("beta.sock"): betaHandler}
 	cfg := Config{
 		Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
@@ -70,7 +73,7 @@ func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry
 		configure(&cfg)
 	}
 	if cfg.Storage.Backend == "" {
-		entryPostgresConfig(t)(&cfg)
+		entryPostgresConfig(t, database)(&cfg)
 	}
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
@@ -86,7 +89,7 @@ func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry
 			t.Fatal(err)
 		}
 	}
-	return entryFixture{service: service, provider: provider, tenants: tenants, fixtures: map[string]tenantFixture{"org_alpha": alpha, "org_beta": beta}}
+	return entryFixture{service: service, provider: provider, tenants: tenants, fixtures: map[string]tenantFixture{"org_alpha": alpha, "org_beta": beta}, database: database}
 }
 
 type handlerTransport struct{ handler http.Handler }
