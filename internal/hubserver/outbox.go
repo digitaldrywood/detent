@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -273,84 +272,4 @@ func truncateOutboxError(message string) string {
 		return message
 	}
 	return message[:maxOutboxErrorLen]
-}
-
-type outboxWorker struct {
-	service *Service
-	cancel  context.CancelFunc
-	wake    chan struct{}
-	wait    sync.WaitGroup
-}
-
-type outboxTimer struct {
-	ticks <-chan time.Time
-	reset func(time.Duration)
-	stop  func()
-}
-
-func newOutboxWorker(service *Service) *outboxWorker {
-	return &outboxWorker{
-		service: service,
-		wake:    make(chan struct{}, 1),
-	}
-}
-
-func (w *outboxWorker) start(parent context.Context) {
-	ctx, cancel := context.WithCancel(parent)
-	w.cancel = cancel
-	w.wait.Add(1)
-	go func() {
-		defer w.wait.Done()
-		w.run(ctx)
-	}()
-}
-
-func (w *outboxWorker) run(ctx context.Context) {
-	wait := func() time.Duration {
-		return gitHubRetryDelay(1, w.service.config.OutboxPollInterval, w.service.config.OutboxPollInterval, w.service.config.jitter())
-	}
-	timer := w.service.config.newOutboxTimer(wait())
-	defer timer.stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.wake:
-		case <-timer.ticks:
-		}
-		for range 64 {
-			var github func(context.Context) (bool, error)
-			if w.service.config.OutboxBackend != nil {
-				github = w.service.ProcessOutbox
-			}
-			processed, err := processOutboxStep(ctx, github)
-			if err != nil && ctx.Err() == nil {
-				w.service.config.Logger.WarnContext(ctx, "outbox delivery failed", "error", err)
-			}
-			if !processed || ctx.Err() != nil {
-				break
-			}
-		}
-		timer.reset(wait())
-	}
-}
-
-func processOutboxStep(ctx context.Context, github func(context.Context) (bool, error)) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	if github == nil {
-		return false, nil
-	}
-	return github(ctx)
-}
-
-func (w *outboxWorker) stop() {
-	if w == nil {
-		return
-	}
-	if w.cancel != nil {
-		w.cancel()
-	}
-	w.wait.Wait()
 }

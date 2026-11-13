@@ -1,8 +1,8 @@
-package hubserver
+package githuboutbound
 
 import "time"
 
-func gitHubRetryDelay(attempt int64, base, maximum time.Duration, jitter float64) time.Duration {
+func RetryDelay(attempt int64, base, maximum time.Duration, jitter float64) time.Duration {
 	delay := min(base, maximum)
 	for range min(max(attempt-1, 0), 63) {
 		if delay >= maximum/2 {
