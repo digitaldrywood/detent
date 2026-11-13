@@ -51,10 +51,6 @@ func (s *Service) hydrateLinkedIssueSourceRecord(ctx context.Context, organizati
 	return s.workItemReader().HydrateLinkedSource(ctx, organization, record)
 }
 
-func (s *Service) issueBrowserURL(ctx context.Context, organization tracker.OrganizationID, id string) (string, error) {
-	return s.workItemReader().BrowserURL(ctx, organization, id)
-}
-
 func (s *Service) readIssueBrowserPath(ctx context.Context, organization tracker.OrganizationID, id string) (string, error) {
 	return s.workItemReader().BrowserPath(ctx, organization, id)
 }
