@@ -1,7 +1,6 @@
 package cloudentry
 
 import (
-	"bytes"
 	"html"
 	"log/slog"
 	"net/http"
@@ -10,24 +9,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
 )
 
-type lockedBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (l *lockedBuffer) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-
-func (l *lockedBuffer) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
-}
+type lockedBuffer = entrytest.LockedBuffer
 
 // endSessions revokes a user's provider sessions without the entry's
 // knowledge, as an administrator revoking them in WorkOS would.

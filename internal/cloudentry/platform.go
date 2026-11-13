@@ -10,11 +10,12 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
 )
 
 const (
 	platformPath            = "/platform"
-	platformCallTimeout     = 3 * time.Second
+	platformCallTimeout     = tenant.CallTimeout
 	platformRequestDeadline = 8 * time.Second
 	platformTenantWorkers   = 8
 )

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
 )
 
 var (
@@ -14,25 +16,7 @@ var (
 	ErrOrganizationNotFound = errors.New("organization is not registered")
 )
 
-type Organization struct {
-	ID             string    `json:"id"`
-	ProviderID     string    `json:"provider_organization_id"`
-	Slug           string    `json:"slug"`
-	Name           string    `json:"name"`
-	State          string    `json:"state"`
-	Endpoint       string    `json:"endpoint"`
-	Generation     int64     `json:"generation"`
-	Managed        bool      `json:"managed"`
-	CheckoutPrice  string    `json:"-"`
-	CreatorSubject string    `json:"-"`
-	CreatorEmail   string    `json:"-"`
-	Step           string    `json:"step,omitempty"`
-	Attempts       int       `json:"attempts,omitempty"`
-	NextAttemptAt  string    `json:"-"`
-	ErrorCode      string    `json:"error_code,omitempty"`
-	ErrorDetail    string    `json:"error_detail,omitempty"`
-	UpdatedAt      time.Time `json:"updated_at"`
-}
+type Organization = tenant.Organization
 
 func ValidOrganizationID(id string) bool {
 	if !strings.HasPrefix(id, "org_") || len(id) > 64 {

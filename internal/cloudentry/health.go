@@ -3,17 +3,17 @@ package cloudentry
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
-var errTenantMigrating = errors.New("tenant migrations are running")
+var errTenantMigrating = tenant.ErrMigrating
 
 func (s *Service) tenantMigrationHealth(ctx context.Context, organization Organization) (hubserver.MigrationHealth, error) {
 	status, body, err := s.serviceCall(ctx, organization, "/internal/v1/health", map[string]string{}, nil)

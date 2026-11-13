@@ -583,9 +583,7 @@ func TestProvisioningFailsWhenTenantExitsEveryStart(t *testing.T) {
 	if err := json.Unmarshal([]byte(status.Body), &body); err != nil || body.State != "failed" || !body.CanResume || !strings.Contains(body.Error, want) {
 		t.Fatalf("failed provisioning JSON = %s %v", status.Body, err)
 	}
-	launcher.mu.Lock()
-	running := len(launcher.running)
-	launcher.mu.Unlock()
+	running := launcher.Supervised()
 	if running != 0 {
 		t.Fatal("a tenant that never stays up is still supervised after provisioning failed")
 	}

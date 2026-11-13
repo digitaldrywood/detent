@@ -219,7 +219,7 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 	now := f.service.config.now()
 	f.service.config.Allocation = &AllocationConfig{TenantRoot: root, MaxTenants: 20, MaxConcurrent: 2,
 		MinFreeDiskBytes: 4096, MinAvailableMemoryBytes: 8192,
-		Launcher: &ExecLauncher{health: map[string]*tenantProcessHealth{"org_alpha": {startedAt: now.Add(-time.Hour), observed: true, starts: []time.Time{now.Add(-time.Hour)}}}},
+		Launcher: &platformHealthLauncher{Launcher: &silentLauncher{}, started: now.Add(-time.Hour), restarts: 1},
 	}
 	_, body = staff.get("/api/cloud/platform/health")
 	decodeJSON(t, body, &health)
@@ -1051,4 +1051,15 @@ func TestPlatformUsersSearch(t *testing.T) {
 			}
 		})
 	}
+}
+
+type platformHealthLauncher struct {
+	Launcher
+	started  time.Time
+	restarts int
+}
+
+func (l *platformHealthLauncher) Health(_ string, now time.Time) (*int64, *int) {
+	uptime := int64(now.Sub(l.started) / time.Second)
+	return &uptime, &l.restarts
 }

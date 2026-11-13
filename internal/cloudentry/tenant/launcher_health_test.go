@@ -1,4 +1,4 @@
-package cloudentry
+package tenant
 
 import (
 	"testing"

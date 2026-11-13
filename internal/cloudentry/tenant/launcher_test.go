@@ -1,6 +1,6 @@
 //go:build !windows
 
-package cloudentry
+package tenant
 
 import (
 	"bufio"
@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 )
@@ -277,7 +278,7 @@ func TestExecLauncherKeepsRestartingReadyTenants(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			directory := t.TempDir()
-			logs := &lockedBuffer{}
+			logs := &entrytest.LockedBuffer{}
 			launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: tc.limit, Logger: slog.New(slog.NewTextHandler(logs, nil)), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
 			retries := make(chan struct{}, 2)
 			launcher.after = func(time.Duration) <-chan time.Time {
@@ -477,7 +478,7 @@ func TestTenantShutdownHelperProcess(t *testing.T) {
 		return
 	}
 	organization := filepath.Base(filepath.Dir(os.Getenv("DETENT_TEST_LOCK")))
-	authority, err := entryauthority.Open(t.Context(), os.Getenv(entryauthority.BootstrapEnvironment), entryauthority.Binding{Issuer: "entry", Organization: organization, Generation: 1}, platformCallTimeout)
+	authority, err := entryauthority.Open(t.Context(), os.Getenv(entryauthority.BootstrapEnvironment), entryauthority.Binding{Issuer: "entry", Organization: organization, Generation: 1}, CallTimeout)
 	if err != nil || authority == nil {
 		t.Fatalf("managed channel bootstrap: %v", err)
 	}
