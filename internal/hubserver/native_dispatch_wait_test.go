@@ -472,12 +472,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: state, CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}), http.StatusOK)
 				refused := performHubAPIRequest(t, service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: item.WorkItemID, MachineID: r.binding.MachineID, SessionID: "routing-refused", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: []string{"Todo"}})
-				requireNativeStatus(t, refused, http.StatusNotFound)
-				var denial hubapi.APIErrorResponse
-				decodeHubResponse(t, refused, &denial)
-				if denial.Code != "machine_not_found" {
-					t.Fatalf("claim refusal code=%s", denial.Code)
-				}
+				requireNativeError(t, refused, http.StatusConflict, "runner_"+state)
 				assertNoExecution()
 			case "unchanged routing", "replayed routing", "interleaved routing replay", "rejected routing", "routing rollback":
 				want := http.StatusOK
