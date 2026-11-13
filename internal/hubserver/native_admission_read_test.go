@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -11,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -154,7 +157,16 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			}
 			if test.intake {
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-					_, err := w.CreateLinkedSource(t.Context(), eventstore.LinkedSource{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, URL: "https://github.com/example-org/example-project/issues/1"})
+					imports, ok := w.(projectstore.GitHubImportWriter)
+					if !ok {
+						return errors.New("GitHub import writer unavailable")
+					}
+					record, err := imports.CreateGitHubImport(t.Context(), projectstore.GitHubImport{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: newNativeID("import"), IssueNumber: 1, Stage: "issue", Status: "pending", ObservedAt: now})
+					if err != nil {
+						return err
+					}
+					record.WorkItemID, record.IntakePending = string(issue.WorkItemID), true
+					_, err = imports.UpdateGitHubImport(t.Context(), record)
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -175,6 +187,11 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				value.Body, value.Labels = body, labelValues
 				if test.contract == "unconfirmed" || test.contract == "exempt" {
 					value.IssueContract = &issuecontract.State{Exempt: test.contract == "exempt"}
+				} else {
+					if value.IssueContract == nil {
+						value.IssueContract = &issuecontract.State{}
+					}
+					value.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(body)
 				}
 			})
 			descriptor := hubTestPolicy()
@@ -506,6 +523,11 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				}
 			}
 			if test.reason != "" || test.contract == "exempt" || test.name == "admissible native item" || test.name == "known native label refusal" || (test.dependency && !test.intake && !test.privateDependency && test.extraDependencies < 100) {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: now})
+				}); err != nil {
+					t.Fatal(err)
+				}
 				claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "candidate-parity", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}, WorkflowStates: current.WorkflowStates, LabelExclude: current.LabelExclude}
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 				status := http.StatusOK
