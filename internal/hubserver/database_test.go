@@ -252,6 +252,7 @@ func newClockedPostgresNativeService(t *testing.T, cfg Config) *Service {
 	<-service.workerDone
 	<-service.secretRewrapDone
 	service.config.Hosted = nil
+	service.database.hostedRuntime.Store(nil)
 	service.echo = echo.New()
 	service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
 	service.registerNativeRoutes(service.echo)
