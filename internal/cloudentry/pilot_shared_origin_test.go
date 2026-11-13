@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/cloudentry/socket"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -147,7 +148,7 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 		}
 		listener.SetUnlinkOnClose(false)
 		transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			if err := verifyPrivateSocket(spec.Socket); err != nil {
+			if err := socket.Verify(spec.Socket); err != nil {
 				return nil, err
 			}
 			var connection net.Conn

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package cloudentry
+package socket
 
 import (
 	"net"
@@ -56,7 +56,7 @@ func TestVerifyPrivateSocket(t *testing.T) {
 		{"missing", filepath.Join(private, "missing.sock"), false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := verifyPrivateSocket(test.path); (err == nil) != test.ok {
+			if err := Verify(test.path); (err == nil) != test.ok {
 				t.Fatalf("verifyPrivateSocket error = %v, want ok %v", err, test.ok)
 			}
 		})

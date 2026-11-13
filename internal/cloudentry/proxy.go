@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/cloudentry/socket"
 	"io"
 	"mime"
 	"net"
@@ -43,7 +44,7 @@ func (s *Service) tenantTransport(organization Organization) (http.RoundTripper,
 	path := strings.TrimPrefix(organization.Endpoint, "unix:")
 	transport := &http.Transport{MaxIdleConnsPerHost: 16, IdleConnTimeout: time.Minute, ResponseHeaderTimeout: 30 * time.Second, DisableCompression: true,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			if err := verifyPrivateSocket(path); err != nil {
+			if err := socket.Verify(path); err != nil {
 				return nil, err
 			}
 			var dialer net.Dialer

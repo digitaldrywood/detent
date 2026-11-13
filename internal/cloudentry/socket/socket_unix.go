@@ -1,6 +1,6 @@
 //go:build !windows
 
-package cloudentry
+package socket
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-func verifyPrivateSocket(path string) error {
+func Verify(path string) error {
 	directory, err := os.Stat(filepath.Dir(path))
 	if err != nil || !directory.IsDir() || directory.Mode().Perm()&0o077 != 0 {
 		return errors.New("tenant socket directory must be private to the service user")
