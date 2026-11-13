@@ -56,7 +56,7 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 		t.Fatalf("URL=%q", issue.WebURL)
 	}
 	legacy, _ := alice.get("/organizations/org_alpha/work/i/" + string(issue.WorkItemID))
-	if legacy.StatusCode != http.StatusPermanentRedirect || legacy.Header.Get("Location") != strings.TrimPrefix(issue.WebURL, testPublicURL) {
+	if legacy.StatusCode != http.StatusPermanentRedirect || legacy.Header.Get("Location") != issue.WebURL {
 		t.Fatalf("legacy=%+v", legacy)
 	}
 	anonymous := newBrowser(t, f.service.Handler())
