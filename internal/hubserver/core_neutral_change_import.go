@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/changeattribution"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
@@ -80,8 +81,8 @@ func hydrateCoreNeutralVersion(ctx context.Context, source *neutralimport.Index,
 	if value.Validation == nil {
 		return nil
 	}
-	slots := make(map[string][]attributionSlot)
-	commandAttributionSlots(slots, "validation", value.Validation)
+	slots := make(map[string][]changeattribution.Slot)
+	changeattribution.CommandSlots(slots, "validation", value.Validation)
 	if err := source.Each(ctx, "change_finding_attributions", map[string]string{"version_id": value.ID, "record_id": value.ID}, []string{"role", "position"}, func(row neutralimport.Row) error {
 		var role, attribution string
 		var position int
@@ -103,11 +104,11 @@ func hydrateCoreNeutralVersion(ctx context.Context, source *neutralimport.Index,
 				return errors.New("stored finding attribution evidence is invalid")
 			}
 		}
-		*slot.value = attribution
-		if slot.evidence != nil {
-			*slot.evidence = nil
+		*slot.Value = attribution
+		if slot.Evidence != nil {
+			*slot.Evidence = nil
 			if evidence.BaseSHA != "" {
-				*slot.evidence = &evidence
+				*slot.Evidence = &evidence
 			}
 		}
 		return nil

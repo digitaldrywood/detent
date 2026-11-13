@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/changeattribution"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -47,7 +48,7 @@ func TestChangeFindingAttributionPersistsForTwoItems(t *testing.T) {
 				review.SecurityAudit = &tracker.SecurityAuditReview{Verdict: "rework", Run: securityaudit.Run{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Findings: []securityaudit.Finding{{ID: "invalid-input", Severity: "p1", Body: diagnostic, CheckCommand: command, CheckDiagnostic: diagnostic}}, Checks: []securityaudit.CheckComparison{{Head: gate.CommandObservation(receipt), Base: observation}}}}
 			}
 			ctx := f.service.contentContext(t.Context())
-			reviewAttributionSlots(&review)
+			changeattribution.ReviewSlots(&review)
 			raw, err := json.Marshal(review)
 			if err != nil {
 				t.Fatal(err)

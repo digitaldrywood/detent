@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
@@ -915,7 +916,7 @@ func resolveCoreGitHubReference(ctx context.Context, tx *neutralimport.Index, so
 		ref := tracker.GitHubIssueSourceReference(evidence.nodeID, complete)
 		return &ref, nil
 	}
-	evidence.add(githubMigrationSourceURL(row.Body))
+	evidence.add(githubcontract.MigrationSourceURL(row.Body))
 	_, imports := tx.Schema()["github_imports"]
 	_, records := tx.Schema()["github_import_records"]
 	if imports != records {
@@ -963,7 +964,7 @@ func resolveCoreGitHubReference(ctx context.Context, tx *neutralimport.Index, so
 				}
 				evidence.add(record.Data.URL)
 				evidence.add(record.Data.HTMLURL)
-				evidence.add(githubMigrationSourceURL(record.Body))
+				evidence.add(githubcontract.MigrationSourceURL(record.Body))
 				return nil
 			})
 		})
@@ -1008,7 +1009,7 @@ func readCoreImportVersions(ctx context.Context, tx *neutralimport.Index, source
 				return err
 			}
 			if issue.Provenance == nil || issue.Provenance.ExternalID == "" || issue.Provenance.ExternalID == references.nodeID {
-				references.add(githubMigrationSourceURL(issue.Body))
+				references.add(githubcontract.MigrationSourceURL(issue.Body))
 			}
 		}
 

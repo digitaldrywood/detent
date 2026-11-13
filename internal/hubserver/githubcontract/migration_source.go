@@ -1,4 +1,4 @@
-package hubserver
+package githubcontract
 
 import (
 	"regexp"
@@ -7,9 +7,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-var githubMigrationURL = regexp.MustCompile(`https://github\.com/[^\s<>()\[\]]+`)
+var migrationSourceURL = regexp.MustCompile(`https://github\.com/[^\s<>()\[\]]+`)
 
-func githubMigrationSourceURL(body string) string {
+func MigrationSourceURL(body string) string {
 	var candidate string
 	section := false
 	for line := range strings.SplitSeq(body, "\n") {
@@ -27,7 +27,7 @@ func githubMigrationSourceURL(body string) string {
 		} else if !section {
 			continue
 		}
-		for _, raw := range githubMigrationURL.FindAllString(line, -1) {
+		for _, raw := range migrationSourceURL.FindAllString(line, -1) {
 			canonical, _, _, err := tracker.ParseGitHubIssueURL(strings.TrimRight(raw, "`*.,;"))
 			if err != nil {
 				continue

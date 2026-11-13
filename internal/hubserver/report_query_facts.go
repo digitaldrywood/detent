@@ -104,7 +104,7 @@ func readLegacyReportFact(ctx context.Context, q hubapi.NativeQueryer, scope hub
 		values := row.values
 		if family == "report_attempts" {
 			var data tracker.NativeRunData
-			if err := decodeActivityRun(ctx, q, row.raw, &data); err != nil {
+			if err := hubrecords.DecodeActivityRun(ctx, q, row.raw, &data); err != nil {
 				return f, err
 			}
 			role, execution := "", ""

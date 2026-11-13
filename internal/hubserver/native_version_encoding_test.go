@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -700,7 +701,7 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 					payloadBytes += version.PayloadBytes
 					if record == owners[record] && revision > 1 {
 						var issue tracker.NativeIssue
-						if err := json.Unmarshal(raw, &issue); err != nil || githubMigrationSourceURL(issue.Body) != urls[record] {
+						if err := json.Unmarshal(raw, &issue); err != nil || githubcontract.MigrationSourceURL(issue.Body) != urls[record] {
 							t.Fatalf("migration changed imported URLs: %v", err)
 						}
 					}

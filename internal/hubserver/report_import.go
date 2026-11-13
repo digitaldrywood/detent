@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -260,7 +261,7 @@ func decodeCoreReportData(ctx context.Context, tx *neutralimport.Index, source C
 			return err
 		}
 		var run tracker.NativeRunData
-		if err := decodeActivityRun(ctx, nil, string(resolved), &run); err != nil {
+		if err := hubrecords.DecodeActivityRun(ctx, nil, string(resolved), &run); err != nil {
 			return err
 		}
 		data.Run = &run

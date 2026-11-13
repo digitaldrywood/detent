@@ -1,4 +1,4 @@
-package hubserver
+package changeattribution
 
 import (
 	"fmt"
@@ -9,52 +9,52 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type attributionSlot struct {
-	value    *string
-	evidence **failureattribution.Evidence
+type Slot struct {
+	Value    *string
+	Evidence **failureattribution.Evidence
 }
 
-func reviewAttributionSlots(review *tracker.ChangeReview) map[string][]attributionSlot {
-	slots := make(map[string][]attributionSlot)
+func ReviewSlots(review *tracker.ChangeReview) map[string][]Slot {
+	slots := make(map[string][]Slot)
 	for role, result := range map[string]*gate.ValidatorResult{"validator": review.Validator, "implementation_review": review.ImplementationReview} {
 		if result == nil {
 			continue
 		}
 		gate.NormalizeAttribution(result)
-		list := []attributionSlot{{value: &result.Attribution}}
+		list := []Slot{{Value: &result.Attribution}}
 		for i := range result.Findings {
 			f := &result.Findings[i]
-			list = append(list, attributionSlot{&f.Attribution, &f.AttributionEvidence})
+			list = append(list, Slot{&f.Attribution, &f.AttributionEvidence})
 		}
 		slots[role] = list
 		for i := range result.Commands {
-			commandAttributionSlots(slots, fmt.Sprintf("%s.command.%d", role, i), &result.Commands[i])
+			CommandSlots(slots, fmt.Sprintf("%s.command.%d", role, i), &result.Commands[i])
 		}
 	}
 	if review.SecurityAudit != nil {
 		run := &review.SecurityAudit.Run
 		securityaudit.NormalizeAttribution(run)
-		list := []attributionSlot{{value: &run.Attribution}}
+		list := []Slot{{Value: &run.Attribution}}
 		for i := range run.Findings {
 			f := &run.Findings[i]
-			list = append(list, attributionSlot{&f.Attribution, &f.AttributionEvidence})
+			list = append(list, Slot{&f.Attribution, &f.AttributionEvidence})
 		}
 		slots["security_audit"] = list
 	}
 	return slots
 }
 
-func commandAttributionSlots(slots map[string][]attributionSlot, role string, command *gate.CommandResult) {
+func CommandSlots(slots map[string][]Slot, role string, command *gate.CommandResult) {
 	if command.Attribution == "" {
 		command.Attribution = failureattribution.Unknown
 	}
-	list := []attributionSlot{{value: &command.Attribution}}
+	list := []Slot{{Value: &command.Attribution}}
 	for i := range command.Findings {
 		f := &command.Findings[i]
 		if f.Attribution == "" {
 			f.Attribution = failureattribution.Unknown
 		}
-		list = append(list, attributionSlot{&f.Attribution, &f.AttributionEvidence})
+		list = append(list, Slot{&f.Attribution, &f.AttributionEvidence})
 	}
 	slots[role] = list
 }

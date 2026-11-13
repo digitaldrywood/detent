@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -318,7 +319,7 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope hubscope.NativeS
 		}
 		importedURL := ""
 		if plan.Issue.Provenance != nil && plan.Issue.Provenance.Provider == "github" {
-			importedURL = githubMigrationSourceURL(plan.Issue.Body)
+			importedURL = githubcontract.MigrationSourceURL(plan.Issue.Body)
 		}
 		plan.Issue.ExternalReferences = nativeSourceReferences("", "", "", 0, "", importedURL, plan.Issue.Provenance)
 		if plan.LinkedSource != nil {
